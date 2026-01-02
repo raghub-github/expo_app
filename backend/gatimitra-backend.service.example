@@ -1,0 +1,20 @@
+[Unit]
+Description=GatiMitra Backend API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gatimitra/backend
+EnvironmentFile=/opt/gatimitra/backend/.env
+ExecStart=/usr/bin/node /opt/gatimitra/backend/dist/index.js
+Restart=always
+RestartSec=3
+
+# Hardening (optional, tune as needed)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+
+

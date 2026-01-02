@@ -1,0 +1,36 @@
+# Minimal .easignore - Only exclude what we don't need
+# Everything else is included by default
+
+# Exclude build artifacts and heavy folders
+node_modules/
+android/
+ios/
+.expo/
+.expo-shared/
+.gradle/
+dist/
+build/
+out/
+.cache/
+.next/
+tmp/
+temp/
+logs/
+
+# Exclude specific file types
+*.log
+*.tgz
+*.zip
+*.tar.gz
+*.apk
+*.aab
+*.ipa
+*.keystore
+
+# Exclude documentation (keep README)
+*.md
+!README.md
+
+# Exclude system files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,25 @@
+# Minimal exclusions - only what's absolutely unnecessary
+node_modules/
+android/
+ios/
+.expo/
+.expo-shared/
+.gradle/
+dist/
+build/
+out/
+.cache/
+.next/
+tmp/
+temp/
+logs/
+*.log
+*.tgz
+*.zip
+*.tar.gz
+*.apk
+*.aab
+*.ipa
+*.keystore
+.DS_Store
+Thumbs.db

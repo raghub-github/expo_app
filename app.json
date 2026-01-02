@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "9d4c73fc-eaea-4629-9d5c-931d2f39838c"
+      }
+    },
+    "android": {
+      "package": "com.raghubhunia.expo_app"
+    }
+  }
+}
