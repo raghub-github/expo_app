@@ -52,7 +52,7 @@ CREATE TYPE order_type AS ENUM (
   '3pl'
 );
 
-CREATE TYPE order_status AS ENUM (
+CREATE TYPE order_status_type AS ENUM (
   'assigned',
   'accepted',
   'reached_store',
@@ -88,12 +88,9 @@ CREATE TYPE withdrawal_status AS ENUM (
   'cancelled'
 );
 
-CREATE TYPE payment_status AS ENUM (
-  'pending',
-  'completed',
-  'failed',
-  'refunded'
-);
+-- REMOVED: payment_status_type enum
+-- Moved to 0008_unified_order_schema.sql for enhanced version with more statuses
+-- ('pending', 'processing', 'completed', 'failed', 'refunded', 'partially_refunded', 'cancelled')
 
 CREATE TYPE offer_scope AS ENUM (
   'global',
@@ -268,7 +265,7 @@ CREATE TABLE orders (
   fare_amount NUMERIC(10, 2),
   commission_amount NUMERIC(10, 2),
   rider_earning NUMERIC(10, 2),
-  status order_status NOT NULL DEFAULT 'assigned',
+  status order_status_type NOT NULL DEFAULT 'assigned',
   metadata JSONB DEFAULT '{}',
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
@@ -284,7 +281,7 @@ CREATE INDEX orders_external_ref_idx ON orders(external_ref) WHERE external_ref 
 -- Order Actions
 CREATE TABLE order_actions (
   id BIGSERIAL PRIMARY KEY,
-  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   action order_action NOT NULL,
   reason TEXT,
@@ -298,7 +295,7 @@ CREATE INDEX order_actions_timestamp_idx ON order_actions(timestamp);
 -- Order Events
 CREATE TABLE order_events (
   id BIGSERIAL PRIMARY KEY,
-  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   event TEXT NOT NULL,
   actor_type TEXT,
   actor_id INTEGER,
@@ -373,7 +370,7 @@ CREATE TABLE onboarding_payments (
   provider TEXT NOT NULL,
   ref_id TEXT NOT NULL UNIQUE,
   payment_id TEXT,
-  status payment_status NOT NULL DEFAULT 'pending',
+  status TEXT NOT NULL DEFAULT 'pending', -- 'pending', 'completed', 'failed', 'refunded'
   metadata JSONB DEFAULT '{}',
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
@@ -435,7 +432,7 @@ CREATE UNIQUE INDEX offer_participation_rider_offer_idx ON offer_participation(r
 CREATE TABLE ratings (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
-  order_id INTEGER REFERENCES orders(id),
+  order_id BIGINT REFERENCES orders(id),
   from_type rating_from_type NOT NULL,
   from_id INTEGER,
   rating SMALLINT NOT NULL,
@@ -456,7 +453,7 @@ CREATE INDEX ratings_created_at_idx ON ratings(created_at);
 CREATE TABLE tickets (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
-  order_id INTEGER REFERENCES orders(id),
+  order_id BIGINT REFERENCES orders(id),
   category TEXT NOT NULL,
   priority TEXT NOT NULL DEFAULT 'medium',
   subject TEXT NOT NULL,
@@ -528,7 +525,7 @@ CREATE UNIQUE INDEX rider_daily_analytics_rider_date_idx ON rider_daily_analytic
 CREATE TABLE fraud_logs (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER REFERENCES riders(id) ON DELETE SET NULL,
-  order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
+  order_id BIGINT REFERENCES orders(id) ON DELETE SET NULL,
   fraud_type TEXT NOT NULL,
   severity TEXT NOT NULL DEFAULT 'medium',
   description TEXT NOT NULL,

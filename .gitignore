@@ -10,4 +10,28 @@
 /public
 /private
 /config
+# Environment files - NEVER commit these
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+.env.development.local
+.env.production.local
+.env.test.local
+
+# Legacy env patterns (without dot)
 /env
+/env.local
+/env.local.example
+/env.example
+/env.development
+/env.production
+/env.test
+/env.development.local
+/env.production.local
+/env.test.local
+/env.development.example
+/env.production.example
+/env.test.example

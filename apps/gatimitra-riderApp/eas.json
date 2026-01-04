@@ -6,28 +6,13 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN": "$EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN",
-        "RNMAPBOX__MAPS_DOWNLOAD_TOKEN": "$RNMAPBOX__MAPS_DOWNLOAD_TOKEN",
-        "RNMAPBOX_MAPS_DOWNLOAD_TOKEN": "$RNMAPBOX__MAPS_DOWNLOAD_TOKEN"
-      }
+      "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN": "$EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN",
-        "RNMAPBOX__MAPS_DOWNLOAD_TOKEN": "$RNMAPBOX__MAPS_DOWNLOAD_TOKEN",
-        "RNMAPBOX_MAPS_DOWNLOAD_TOKEN": "$RNMAPBOX__MAPS_DOWNLOAD_TOKEN"
-      }
+      "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true,
-      "env": {
-        "EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN": "$EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN",
-        "RNMAPBOX__MAPS_DOWNLOAD_TOKEN": "$RNMAPBOX__MAPS_DOWNLOAD_TOKEN",
-        "RNMAPBOX_MAPS_DOWNLOAD_TOKEN": "$RNMAPBOX__MAPS_DOWNLOAD_TOKEN"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {

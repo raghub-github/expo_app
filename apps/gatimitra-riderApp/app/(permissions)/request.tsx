@@ -71,12 +71,13 @@ export default function PermissionRequestScreen() {
           key: "location",
           title: "Location Access",
           description: "We need your location to show nearby orders, enable navigation, and track deliveries in real-time.",
-          microText: "Location is required for receiving and delivering orders efficiently.",
+          microText: "Please select 'Allow all the time' (not 'While using the app') for continuous order tracking. Location is required to use the app.",
           icon: "📍",
           gradient: ["#14b8a6", "#0d9488"],
           mandatory: true,
           requestFn: async () => {
             // Request both foreground and background location
+            // This will trigger Android's "Allow all the time" option
             return await permissionManager.requestLocationPermissions();
           },
           openSettingsFn: () => openLocationPermissionSettings(),
@@ -102,7 +103,7 @@ export default function PermissionRequestScreen() {
           key: "notifications",
           title: "Notifications",
           description: "Receive instant alerts about new orders, order updates, earnings, and important announcements.",
-          microText: "Stay updated with sound and vibration notifications for better order management.",
+          microText: "Please enable sound and vibration in notification settings for better order management.",
           icon: "🔔",
           gradient: ["#0ea5e9", "#0284c7"],
           mandatory: false,
@@ -253,9 +254,11 @@ export default function PermissionRequestScreen() {
       await setPermissions(states);
       await setHasRequestedPermissions(true);
       if (session) {
+        // User already logged in - go to home
         router.replace("/(tabs)/orders");
       } else {
-        router.replace("/(auth)/login");
+        // New user - start onboarding flow
+        router.replace("/(onboarding)/welcome");
       }
     } catch (error) {
       console.warn("Error completing permissions:", error);
@@ -263,7 +266,8 @@ export default function PermissionRequestScreen() {
       if (session) {
         router.replace("/(tabs)/orders");
       } else {
-        router.replace("/(auth)/login");
+        // New user - start onboarding flow
+        router.replace("/(onboarding)/welcome");
       }
     }
   };
@@ -316,10 +320,10 @@ export default function PermissionRequestScreen() {
         if (result.status === "granted") {
           const enabled = await permissionManager.checkLocationServicesEnabled();
           if (enabled) {
-            // Both permission and GPS enabled - proceed
-            setTimeout(() => {
-              handleNextStep();
-            }, 1000);
+            // Both permission and GPS enabled - but still redirect to settings
+            // to ensure user selects "Allow all the time" (not just "While using app")
+            await step.openSettingsFn();
+            // Wait a bit, then auto-proceed when user returns
             setLoading(false);
             return;
           } else {
@@ -333,10 +337,31 @@ export default function PermissionRequestScreen() {
           await step.openSettingsFn();
           setLoading(false);
           return;
+        } else if (result.status === "denied") {
+          // Denied but can ask again - open settings to change
+          await step.openSettingsFn();
+          setLoading(false);
+          return;
         }
       }
 
-      // Auto-proceed if permission was granted
+      // Handle notification permission - always redirect to settings after request
+      // so user can enable sound and vibration
+      if (step.key === "notifications") {
+        if (result.status === "granted") {
+          // Even if granted, redirect to settings to ensure sound/vibration are enabled
+          await step.openSettingsFn();
+          setLoading(false);
+          return;
+        } else if (result.status === "denied") {
+          // Denied - open settings
+          await step.openSettingsFn();
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Auto-proceed if permission was granted (for other permission types)
       if (result.status === "granted") {
         setTimeout(() => {
           handleNextStep();

@@ -142,14 +142,19 @@ After EAS build completes:
    - **Android:** Transfer `.apk` to device and install, or use `adb install`
    - **iOS:** Use TestFlight or install via Xcode
 
-3. **Start development server:**
+3. **Start development server (Keep it running):**
    ```bash
+   cd apps/gatimitra-riderApp
    npx expo start --dev-client
    ```
+   **Important:** Keep this terminal running while developing. You don't need to restart it when opening/closing the app.
 
 4. **Connect to server:**
-   - Scan QR code with your device
-   - Or use `npx expo start --tunnel` for remote access
+   - **First time:** Scan QR code with your device
+   - **Subsequent times:** Just open the app - it will auto-connect
+   - **Different networks:** Use `npx expo start --dev-client --tunnel`
+
+**See `DEVELOPMENT_WORKFLOW.md` for detailed development workflow guide.**
 
 ## Troubleshooting
 
