@@ -7,120 +7,177 @@
 -- ENUMS
 -- ============================================================================
 
-CREATE TYPE onboarding_stage AS ENUM (
-  'MOBILE_VERIFIED',
-  'KYC',
-  'PAYMENT',
-  'APPROVAL',
-  'ACTIVE'
-);
+-- Create types only if they don't exist
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'onboarding_stage') THEN
+    CREATE TYPE onboarding_stage AS ENUM (
+      'MOBILE_VERIFIED',
+      'KYC',
+      'PAYMENT',
+      'APPROVAL',
+      'ACTIVE'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE kyc_status AS ENUM (
-  'PENDING',
-  'REJECTED',
-  'APPROVED',
-  'REVIEW'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'kyc_status') THEN
+    CREATE TYPE kyc_status AS ENUM (
+      'PENDING',
+      'REJECTED',
+      'APPROVED',
+      'REVIEW'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE rider_status AS ENUM (
-  'INACTIVE',
-  'ACTIVE',
-  'BLOCKED',
-  'BANNED'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rider_status') THEN
+    CREATE TYPE rider_status AS ENUM (
+      'INACTIVE',
+      'ACTIVE',
+      'BLOCKED',
+      'BANNED'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE document_type AS ENUM (
-  'aadhaar',
-  'dl',
-  'rc',
-  'pan',
-  'selfie',
-  'rental_proof',
-  'ev_proof'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'document_type') THEN
+    CREATE TYPE document_type AS ENUM (
+      'aadhaar',
+      'dl',
+      'rc',
+      'pan',
+      'selfie',
+      'rental_proof',
+      'ev_proof'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE duty_status AS ENUM (
-  'ON',
-  'OFF',
-  'AUTO_OFF'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'duty_status') THEN
+    CREATE TYPE duty_status AS ENUM (
+      'ON',
+      'OFF',
+      'AUTO_OFF'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE order_type AS ENUM (
-  'food',
-  'parcel',
-  'ride',
-  '3pl'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_type') THEN
+    CREATE TYPE order_type AS ENUM (
+      'food',
+      'parcel',
+      'ride',
+      '3pl'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE order_status_type AS ENUM (
-  'assigned',
-  'accepted',
-  'reached_store',
-  'picked_up',
-  'in_transit',
-  'delivered',
-  'cancelled',
-  'failed'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_status_type') THEN
+    CREATE TYPE order_status_type AS ENUM (
+      'assigned',
+      'accepted',
+      'reached_store',
+      'picked_up',
+      'in_transit',
+      'delivered',
+      'cancelled',
+      'failed'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE order_action AS ENUM (
-  'accept',
-  'reject',
-  'auto_reject',
-  'timeout'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_action') THEN
+    CREATE TYPE order_action AS ENUM (
+      'accept',
+      'reject',
+      'auto_reject',
+      'timeout'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE wallet_entry_type AS ENUM (
-  'earning',
-  'penalty',
-  'onboarding_fee',
-  'adjustment',
-  'refund',
-  'bonus',
-  'referral_bonus'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'wallet_entry_type') THEN
+    CREATE TYPE wallet_entry_type AS ENUM (
+      'earning',
+      'penalty',
+      'onboarding_fee',
+      'adjustment',
+      'refund',
+      'bonus',
+      'referral_bonus'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE withdrawal_status AS ENUM (
-  'pending',
-  'processing',
-  'completed',
-  'failed',
-  'cancelled'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'withdrawal_status') THEN
+    CREATE TYPE withdrawal_status AS ENUM (
+      'pending',
+      'processing',
+      'completed',
+      'failed',
+      'cancelled'
+    );
+  END IF;
+END $$;
 
 -- REMOVED: payment_status_type enum
 -- Moved to 0008_unified_order_schema.sql for enhanced version with more statuses
 -- ('pending', 'processing', 'completed', 'failed', 'refunded', 'partially_refunded', 'cancelled')
 
-CREATE TYPE offer_scope AS ENUM (
-  'global',
-  'city',
-  'rider'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'offer_scope') THEN
+    CREATE TYPE offer_scope AS ENUM (
+      'global',
+      'city',
+      'rider'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE reward_type AS ENUM (
-  'cash',
-  'voucher',
-  'bonus'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'reward_type') THEN
+    CREATE TYPE reward_type AS ENUM (
+      'cash',
+      'voucher',
+      'bonus'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE rating_from_type AS ENUM (
-  'customer',
-  'merchant'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rating_from_type') THEN
+    CREATE TYPE rating_from_type AS ENUM (
+      'customer',
+      'merchant'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE ticket_status AS ENUM (
-  'open',
-  'in_progress',
-  'resolved',
-  'closed'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ticket_status') THEN
+    CREATE TYPE ticket_status AS ENUM (
+      'open',
+      'in_progress',
+      'resolved',
+      'closed'
+    );
+  END IF;
+END $$;
 
 -- ============================================================================
 -- RIDER CORE DOMAIN
 -- ============================================================================
 
-CREATE TABLE riders (
+CREATE TABLE IF NOT EXISTS riders (
   id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   mobile TEXT NOT NULL UNIQUE,
   country_code TEXT NOT NULL DEFAULT '+91',
@@ -145,14 +202,14 @@ CREATE TABLE riders (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX riders_mobile_idx ON riders(mobile);
-CREATE UNIQUE INDEX riders_referral_code_idx ON riders(referral_code) WHERE referral_code IS NOT NULL;
-CREATE INDEX riders_status_idx ON riders(status);
-CREATE INDEX riders_city_idx ON riders(city);
-CREATE INDEX riders_kyc_status_idx ON riders(kyc_status);
+CREATE UNIQUE INDEX IF NOT EXISTS riders_mobile_idx ON riders(mobile);
+CREATE UNIQUE INDEX IF NOT EXISTS riders_referral_code_idx ON riders(referral_code) WHERE referral_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS riders_status_idx ON riders(status);
+CREATE INDEX IF NOT EXISTS riders_city_idx ON riders(city);
+CREATE INDEX IF NOT EXISTS riders_kyc_status_idx ON riders(kyc_status);
 
 -- Rider Documents
-CREATE TABLE rider_documents (
+CREATE TABLE IF NOT EXISTS rider_documents (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   doc_type document_type NOT NULL,
@@ -166,15 +223,15 @@ CREATE TABLE rider_documents (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX rider_documents_rider_id_idx ON rider_documents(rider_id);
-CREATE INDEX rider_documents_doc_type_idx ON rider_documents(doc_type);
-CREATE INDEX rider_documents_verified_idx ON rider_documents(verified);
+CREATE INDEX IF NOT EXISTS rider_documents_rider_id_idx ON rider_documents(rider_id);
+CREATE INDEX IF NOT EXISTS rider_documents_doc_type_idx ON rider_documents(doc_type);
+CREATE INDEX IF NOT EXISTS rider_documents_verified_idx ON rider_documents(verified);
 
 -- ============================================================================
 -- DEVICE & SECURITY
 -- ============================================================================
 
-CREATE TABLE rider_devices (
+CREATE TABLE IF NOT EXISTS rider_devices (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   device_id TEXT NOT NULL,
@@ -188,12 +245,12 @@ CREATE TABLE rider_devices (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX rider_devices_rider_id_idx ON rider_devices(rider_id);
-CREATE INDEX rider_devices_device_id_idx ON rider_devices(device_id);
-CREATE INDEX rider_devices_allowed_idx ON rider_devices(allowed);
+CREATE INDEX IF NOT EXISTS rider_devices_rider_id_idx ON rider_devices(rider_id);
+CREATE INDEX IF NOT EXISTS rider_devices_device_id_idx ON rider_devices(device_id);
+CREATE INDEX IF NOT EXISTS rider_devices_allowed_idx ON rider_devices(allowed);
 
 -- Blacklist History
-CREATE TABLE blacklist_history (
+CREATE TABLE IF NOT EXISTS blacklist_history (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   reason TEXT NOT NULL,
@@ -202,27 +259,27 @@ CREATE TABLE blacklist_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX blacklist_history_rider_id_idx ON blacklist_history(rider_id);
-CREATE INDEX blacklist_history_banned_idx ON blacklist_history(banned);
+CREATE INDEX IF NOT EXISTS blacklist_history_rider_id_idx ON blacklist_history(rider_id);
+CREATE INDEX IF NOT EXISTS blacklist_history_banned_idx ON blacklist_history(banned);
 
 -- ============================================================================
 -- DUTY & LOCATION TRACKING
 -- ============================================================================
 
-CREATE TABLE duty_logs (
+CREATE TABLE IF NOT EXISTS duty_logs (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   status duty_status NOT NULL,
   timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX duty_logs_rider_id_idx ON duty_logs(rider_id);
-CREATE INDEX duty_logs_timestamp_idx ON duty_logs(timestamp);
-CREATE INDEX duty_logs_rider_status_idx ON duty_logs(rider_id, status);
+CREATE INDEX IF NOT EXISTS duty_logs_rider_id_idx ON duty_logs(rider_id);
+CREATE INDEX IF NOT EXISTS duty_logs_timestamp_idx ON duty_logs(timestamp);
+CREATE INDEX IF NOT EXISTS duty_logs_rider_status_idx ON duty_logs(rider_id, status);
 
 -- Location Logs (Partition-ready)
 -- Note: PRIMARY KEY must include partition column (created_at) for partitioned tables
-CREATE TABLE location_logs (
+CREATE TABLE IF NOT EXISTS location_logs (
   id BIGSERIAL,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   lat DOUBLE PRECISION NOT NULL,
@@ -235,19 +292,34 @@ CREATE TABLE location_logs (
   PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
-CREATE INDEX location_logs_rider_id_idx ON location_logs(rider_id);
-CREATE INDEX location_logs_created_at_idx ON location_logs(created_at);
-CREATE INDEX location_logs_rider_created_idx ON location_logs(rider_id, created_at);
+CREATE INDEX IF NOT EXISTS location_logs_rider_id_idx ON location_logs(rider_id);
+CREATE INDEX IF NOT EXISTS location_logs_created_at_idx ON location_logs(created_at);
+CREATE INDEX IF NOT EXISTS location_logs_rider_created_idx ON location_logs(rider_id, created_at);
 
 -- Create initial partition for current month
-CREATE TABLE location_logs_y2025m01 PARTITION OF location_logs
-  FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'location_logs'
+      AND n.nspname = 'public'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'location_logs_y2025m01'
+      AND n.nspname = 'public'
+  ) THEN
+    CREATE TABLE location_logs_y2025m01 PARTITION OF location_logs
+      FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+  END IF;
+END $$;
 
 -- ============================================================================
 -- ORDERS & ORDER EVENTS
 -- ============================================================================
 
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS orders (
   id BIGSERIAL PRIMARY KEY,
   order_type order_type NOT NULL,
   external_ref TEXT,
@@ -271,15 +343,15 @@ CREATE TABLE orders (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX orders_rider_id_idx ON orders(rider_id);
-CREATE INDEX orders_status_idx ON orders(status);
-CREATE INDEX orders_order_type_idx ON orders(order_type);
-CREATE INDEX orders_created_at_idx ON orders(created_at);
-CREATE INDEX orders_rider_status_idx ON orders(rider_id, status);
-CREATE INDEX orders_external_ref_idx ON orders(external_ref) WHERE external_ref IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_rider_id_idx ON orders(rider_id);
+CREATE INDEX IF NOT EXISTS orders_status_idx ON orders(status);
+CREATE INDEX IF NOT EXISTS orders_order_type_idx ON orders(order_type);
+CREATE INDEX IF NOT EXISTS orders_created_at_idx ON orders(created_at);
+CREATE INDEX IF NOT EXISTS orders_rider_status_idx ON orders(rider_id, status);
+CREATE INDEX IF NOT EXISTS orders_external_ref_idx ON orders(external_ref) WHERE external_ref IS NOT NULL;
 
 -- Order Actions
-CREATE TABLE order_actions (
+CREATE TABLE IF NOT EXISTS order_actions (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
@@ -288,12 +360,12 @@ CREATE TABLE order_actions (
   timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_actions_order_id_idx ON order_actions(order_id);
-CREATE INDEX order_actions_rider_id_idx ON order_actions(rider_id);
-CREATE INDEX order_actions_timestamp_idx ON order_actions(timestamp);
+CREATE INDEX IF NOT EXISTS order_actions_order_id_idx ON order_actions(order_id);
+CREATE INDEX IF NOT EXISTS order_actions_rider_id_idx ON order_actions(rider_id);
+CREATE INDEX IF NOT EXISTS order_actions_timestamp_idx ON order_actions(timestamp);
 
 -- Order Events
-CREATE TABLE order_events (
+CREATE TABLE IF NOT EXISTS order_events (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   event TEXT NOT NULL,
@@ -303,10 +375,10 @@ CREATE TABLE order_events (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_events_order_id_idx ON order_events(order_id);
-CREATE INDEX order_events_event_idx ON order_events(event);
-CREATE INDEX order_events_created_at_idx ON order_events(created_at);
-CREATE INDEX order_events_order_event_idx ON order_events(order_id, event);
+CREATE INDEX IF NOT EXISTS order_events_order_id_idx ON order_events(order_id);
+CREATE INDEX IF NOT EXISTS order_events_event_idx ON order_events(event);
+CREATE INDEX IF NOT EXISTS order_events_created_at_idx ON order_events(created_at);
+CREATE INDEX IF NOT EXISTS order_events_order_event_idx ON order_events(order_id, event);
 
 -- ============================================================================
 -- WALLET, LEDGER & PAYMENTS
@@ -314,7 +386,7 @@ CREATE INDEX order_events_order_event_idx ON order_events(order_id, event);
 
 -- Wallet Ledger (Partitioned by HASH)
 -- Note: PRIMARY KEY must include partition column (rider_id) for partitioned tables
-CREATE TABLE wallet_ledger (
+CREATE TABLE IF NOT EXISTS wallet_ledger (
   id BIGSERIAL,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   entry_type wallet_entry_type NOT NULL,
@@ -328,20 +400,31 @@ CREATE TABLE wallet_ledger (
   PRIMARY KEY (id, rider_id)
 ) PARTITION BY HASH (rider_id);
 
-CREATE INDEX wallet_ledger_rider_id_idx ON wallet_ledger(rider_id);
-CREATE INDEX wallet_ledger_entry_type_idx ON wallet_ledger(entry_type);
-CREATE INDEX wallet_ledger_created_at_idx ON wallet_ledger(created_at);
-CREATE INDEX wallet_ledger_rider_created_idx ON wallet_ledger(rider_id, created_at);
-CREATE INDEX wallet_ledger_ref_idx ON wallet_ledger(ref) WHERE ref IS NOT NULL;
+CREATE INDEX IF NOT EXISTS wallet_ledger_rider_id_idx ON wallet_ledger(rider_id);
+CREATE INDEX IF NOT EXISTS wallet_ledger_entry_type_idx ON wallet_ledger(entry_type);
+CREATE INDEX IF NOT EXISTS wallet_ledger_created_at_idx ON wallet_ledger(created_at);
+CREATE INDEX IF NOT EXISTS wallet_ledger_rider_created_idx ON wallet_ledger(rider_id, created_at);
+CREATE INDEX IF NOT EXISTS wallet_ledger_ref_idx ON wallet_ledger(ref) WHERE ref IS NOT NULL;
 
 -- Create initial partitions for wallet_ledger (4 partitions)
-CREATE TABLE wallet_ledger_0 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 0);
-CREATE TABLE wallet_ledger_1 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 1);
-CREATE TABLE wallet_ledger_2 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 2);
-CREATE TABLE wallet_ledger_3 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'wallet_ledger_0') THEN
+    CREATE TABLE wallet_ledger_0 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'wallet_ledger_1') THEN
+    CREATE TABLE wallet_ledger_1 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'wallet_ledger_2') THEN
+    CREATE TABLE wallet_ledger_2 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'wallet_ledger_3') THEN
+    CREATE TABLE wallet_ledger_3 PARTITION OF wallet_ledger FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+  END IF;
+END $$;
 
 -- Withdrawal Requests
-CREATE TABLE withdrawal_requests (
+CREATE TABLE IF NOT EXISTS withdrawal_requests (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   amount NUMERIC(10, 2) NOT NULL,
@@ -358,12 +441,12 @@ CREATE TABLE withdrawal_requests (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX withdrawal_requests_rider_id_idx ON withdrawal_requests(rider_id);
-CREATE INDEX withdrawal_requests_status_idx ON withdrawal_requests(status);
-CREATE INDEX withdrawal_requests_created_at_idx ON withdrawal_requests(created_at);
+CREATE INDEX IF NOT EXISTS withdrawal_requests_rider_id_idx ON withdrawal_requests(rider_id);
+CREATE INDEX IF NOT EXISTS withdrawal_requests_status_idx ON withdrawal_requests(status);
+CREATE INDEX IF NOT EXISTS withdrawal_requests_created_at_idx ON withdrawal_requests(created_at);
 
 -- Onboarding Payments
-CREATE TABLE onboarding_payments (
+CREATE TABLE IF NOT EXISTS onboarding_payments (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   amount NUMERIC(10, 2) NOT NULL,
@@ -376,15 +459,15 @@ CREATE TABLE onboarding_payments (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX onboarding_payments_rider_id_idx ON onboarding_payments(rider_id);
-CREATE UNIQUE INDEX onboarding_payments_ref_id_idx ON onboarding_payments(ref_id);
-CREATE INDEX onboarding_payments_status_idx ON onboarding_payments(status);
+CREATE INDEX IF NOT EXISTS onboarding_payments_rider_id_idx ON onboarding_payments(rider_id);
+CREATE UNIQUE INDEX IF NOT EXISTS onboarding_payments_ref_id_idx ON onboarding_payments(ref_id);
+CREATE INDEX IF NOT EXISTS onboarding_payments_status_idx ON onboarding_payments(status);
 
 -- ============================================================================
 -- OFFERS & PARTICIPATION
 -- ============================================================================
 
-CREATE TABLE offers (
+CREATE TABLE IF NOT EXISTS offers (
   id BIGSERIAL PRIMARY KEY,
   title TEXT NOT NULL,
   description TEXT,
@@ -401,12 +484,12 @@ CREATE TABLE offers (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX offers_scope_idx ON offers(scope);
-CREATE INDEX offers_active_idx ON offers(active);
-CREATE INDEX offers_dates_idx ON offers(start_date, end_date);
+CREATE INDEX IF NOT EXISTS offers_scope_idx ON offers(scope);
+CREATE INDEX IF NOT EXISTS offers_active_idx ON offers(active);
+CREATE INDEX IF NOT EXISTS offers_dates_idx ON offers(start_date, end_date);
 
 -- Offer Participation
-CREATE TABLE offer_participation (
+CREATE TABLE IF NOT EXISTS offer_participation (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   offer_id INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
@@ -420,16 +503,16 @@ CREATE TABLE offer_participation (
   UNIQUE(rider_id, offer_id)
 );
 
-CREATE INDEX offer_participation_rider_id_idx ON offer_participation(rider_id);
-CREATE INDEX offer_participation_offer_id_idx ON offer_participation(offer_id);
-CREATE INDEX offer_participation_completed_idx ON offer_participation(completed);
-CREATE UNIQUE INDEX offer_participation_rider_offer_idx ON offer_participation(rider_id, offer_id);
+CREATE INDEX IF NOT EXISTS offer_participation_rider_id_idx ON offer_participation(rider_id);
+CREATE INDEX IF NOT EXISTS offer_participation_offer_id_idx ON offer_participation(offer_id);
+CREATE INDEX IF NOT EXISTS offer_participation_completed_idx ON offer_participation(completed);
+CREATE UNIQUE INDEX IF NOT EXISTS offer_participation_rider_offer_idx ON offer_participation(rider_id, offer_id);
 
 -- ============================================================================
 -- RATINGS & REVIEWS
 -- ============================================================================
 
-CREATE TABLE ratings (
+CREATE TABLE IF NOT EXISTS ratings (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   order_id BIGINT REFERENCES orders(id),
@@ -441,16 +524,16 @@ CREATE TABLE ratings (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX ratings_rider_id_idx ON ratings(rider_id);
-CREATE INDEX ratings_order_id_idx ON ratings(order_id);
-CREATE INDEX ratings_from_type_idx ON ratings(from_type);
-CREATE INDEX ratings_created_at_idx ON ratings(created_at);
+CREATE INDEX IF NOT EXISTS ratings_rider_id_idx ON ratings(rider_id);
+CREATE INDEX IF NOT EXISTS ratings_order_id_idx ON ratings(order_id);
+CREATE INDEX IF NOT EXISTS ratings_from_type_idx ON ratings(from_type);
+CREATE INDEX IF NOT EXISTS ratings_created_at_idx ON ratings(created_at);
 
 -- ============================================================================
 -- TICKETS & COMPLAINTS
 -- ============================================================================
 
-CREATE TABLE tickets (
+CREATE TABLE IF NOT EXISTS tickets (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   order_id BIGINT REFERENCES orders(id),
@@ -467,16 +550,16 @@ CREATE TABLE tickets (
   resolved_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX tickets_rider_id_idx ON tickets(rider_id);
-CREATE INDEX tickets_status_idx ON tickets(status);
-CREATE INDEX tickets_category_idx ON tickets(category);
-CREATE INDEX tickets_created_at_idx ON tickets(created_at);
+CREATE INDEX IF NOT EXISTS tickets_rider_id_idx ON tickets(rider_id);
+CREATE INDEX IF NOT EXISTS tickets_status_idx ON tickets(status);
+CREATE INDEX IF NOT EXISTS tickets_category_idx ON tickets(category);
+CREATE INDEX IF NOT EXISTS tickets_created_at_idx ON tickets(created_at);
 
 -- ============================================================================
 -- REFERRAL SYSTEM
 -- ============================================================================
 
-CREATE TABLE referrals (
+CREATE TABLE IF NOT EXISTS referrals (
   id BIGSERIAL PRIMARY KEY,
   referrer_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   referred_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
@@ -489,15 +572,15 @@ CREATE TABLE referrals (
   UNIQUE(referred_id)
 );
 
-CREATE INDEX referrals_referrer_id_idx ON referrals(referrer_id);
-CREATE INDEX referrals_referred_id_idx ON referrals(referred_id);
-CREATE UNIQUE INDEX referrals_referred_id_unique_idx ON referrals(referred_id);
+CREATE INDEX IF NOT EXISTS referrals_referrer_id_idx ON referrals(referrer_id);
+CREATE INDEX IF NOT EXISTS referrals_referred_id_idx ON referrals(referred_id);
+CREATE UNIQUE INDEX IF NOT EXISTS referrals_referred_id_unique_idx ON referrals(referred_id);
 
 -- ============================================================================
 -- ANALYTICS & AGGREGATES
 -- ============================================================================
 
-CREATE TABLE rider_daily_analytics (
+CREATE TABLE IF NOT EXISTS rider_daily_analytics (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   date DATE NOT NULL,
@@ -514,15 +597,15 @@ CREATE TABLE rider_daily_analytics (
   UNIQUE(rider_id, date)
 );
 
-CREATE INDEX rider_daily_analytics_rider_id_idx ON rider_daily_analytics(rider_id);
-CREATE INDEX rider_daily_analytics_date_idx ON rider_daily_analytics(date);
-CREATE UNIQUE INDEX rider_daily_analytics_rider_date_idx ON rider_daily_analytics(rider_id, date);
+CREATE INDEX IF NOT EXISTS rider_daily_analytics_rider_id_idx ON rider_daily_analytics(rider_id);
+CREATE INDEX IF NOT EXISTS rider_daily_analytics_date_idx ON rider_daily_analytics(date);
+CREATE UNIQUE INDEX IF NOT EXISTS rider_daily_analytics_rider_date_idx ON rider_daily_analytics(rider_id, date);
 
 -- ============================================================================
 -- FRAUD & SECURITY LOGS
 -- ============================================================================
 
-CREATE TABLE fraud_logs (
+CREATE TABLE IF NOT EXISTS fraud_logs (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER REFERENCES riders(id) ON DELETE SET NULL,
   order_id BIGINT REFERENCES orders(id) ON DELETE SET NULL,
@@ -538,17 +621,17 @@ CREATE TABLE fraud_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX fraud_logs_rider_id_idx ON fraud_logs(rider_id);
-CREATE INDEX fraud_logs_fraud_type_idx ON fraud_logs(fraud_type);
-CREATE INDEX fraud_logs_severity_idx ON fraud_logs(severity);
-CREATE INDEX fraud_logs_resolved_idx ON fraud_logs(resolved);
-CREATE INDEX fraud_logs_created_at_idx ON fraud_logs(created_at);
+CREATE INDEX IF NOT EXISTS fraud_logs_rider_id_idx ON fraud_logs(rider_id);
+CREATE INDEX IF NOT EXISTS fraud_logs_fraud_type_idx ON fraud_logs(fraud_type);
+CREATE INDEX IF NOT EXISTS fraud_logs_severity_idx ON fraud_logs(severity);
+CREATE INDEX IF NOT EXISTS fraud_logs_resolved_idx ON fraud_logs(resolved);
+CREATE INDEX IF NOT EXISTS fraud_logs_created_at_idx ON fraud_logs(created_at);
 
 -- ============================================================================
 -- ADMIN & ACTION LOGS
 -- ============================================================================
 
-CREATE TABLE admin_action_logs (
+CREATE TABLE IF NOT EXISTS admin_action_logs (
   id BIGSERIAL PRIMARY KEY,
   admin_user_id INTEGER NOT NULL,
   action TEXT NOT NULL,
@@ -563,10 +646,10 @@ CREATE TABLE admin_action_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX admin_action_logs_admin_user_id_idx ON admin_action_logs(admin_user_id);
-CREATE INDEX admin_action_logs_entity_type_idx ON admin_action_logs(entity_type);
-CREATE INDEX admin_action_logs_action_idx ON admin_action_logs(action);
-CREATE INDEX admin_action_logs_created_at_idx ON admin_action_logs(created_at);
+CREATE INDEX IF NOT EXISTS admin_action_logs_admin_user_id_idx ON admin_action_logs(admin_user_id);
+CREATE INDEX IF NOT EXISTS admin_action_logs_entity_type_idx ON admin_action_logs(entity_type);
+CREATE INDEX IF NOT EXISTS admin_action_logs_action_idx ON admin_action_logs(action);
+CREATE INDEX IF NOT EXISTS admin_action_logs_created_at_idx ON admin_action_logs(created_at);
 
 -- ============================================================================
 -- FUNCTIONS & TRIGGERS
@@ -582,42 +665,49 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger for riders table
+DROP TRIGGER IF EXISTS update_riders_updated_at ON riders;
 CREATE TRIGGER update_riders_updated_at
   BEFORE UPDATE ON riders
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for orders table
+DROP TRIGGER IF EXISTS update_orders_updated_at ON orders;
 CREATE TRIGGER update_orders_updated_at
   BEFORE UPDATE ON orders
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for withdrawal_requests table
+DROP TRIGGER IF EXISTS update_withdrawal_requests_updated_at ON withdrawal_requests;
 CREATE TRIGGER update_withdrawal_requests_updated_at
   BEFORE UPDATE ON withdrawal_requests
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for onboarding_payments table
+DROP TRIGGER IF EXISTS update_onboarding_payments_updated_at ON onboarding_payments;
 CREATE TRIGGER update_onboarding_payments_updated_at
   BEFORE UPDATE ON onboarding_payments
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for offers table
+DROP TRIGGER IF EXISTS update_offers_updated_at ON offers;
 CREATE TRIGGER update_offers_updated_at
   BEFORE UPDATE ON offers
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for offer_participation table
+DROP TRIGGER IF EXISTS update_offer_participation_updated_at ON offer_participation;
 CREATE TRIGGER update_offer_participation_updated_at
   BEFORE UPDATE ON offer_participation
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for tickets table
+DROP TRIGGER IF EXISTS update_tickets_updated_at ON tickets;
 CREATE TRIGGER update_tickets_updated_at
   BEFORE UPDATE ON tickets
   FOR EACH ROW
@@ -628,7 +718,7 @@ CREATE TRIGGER update_tickets_updated_at
 -- ============================================================================
 
 -- Rider Leaderboard (Top Earners)
-CREATE MATERIALIZED VIEW rider_leaderboard AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS rider_leaderboard AS
 SELECT 
   r.id AS rider_id,
   r.name,
@@ -643,11 +733,40 @@ LEFT JOIN ratings rt ON r.id = rt.rider_id
 WHERE r.status = 'ACTIVE'
 GROUP BY r.id, r.name, r.city;
 
-CREATE UNIQUE INDEX rider_leaderboard_rider_id_idx ON rider_leaderboard(rider_id);
-CREATE INDEX rider_leaderboard_earnings_idx ON rider_leaderboard(total_earnings DESC);
+-- Create unique index on materialized view (with existence check)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'rider_leaderboard'
+      AND n.nspname = 'public'
+      AND c.relkind = 'm'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE indexname = 'rider_leaderboard_rider_id_idx'
+      AND schemaname = 'public'
+  ) THEN
+    CREATE UNIQUE INDEX rider_leaderboard_rider_id_idx ON rider_leaderboard(rider_id);
+  END IF;
+  
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'rider_leaderboard'
+      AND n.nspname = 'public'
+      AND c.relkind = 'm'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE indexname = 'rider_leaderboard_earnings_idx'
+      AND schemaname = 'public'
+  ) THEN
+    CREATE INDEX rider_leaderboard_earnings_idx ON rider_leaderboard(total_earnings DESC);
+  END IF;
+END $$;
 
 -- Rider Performance Summary
-CREATE MATERIALIZED VIEW rider_performance_summary AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS rider_performance_summary AS
 SELECT 
   r.id AS rider_id,
   r.name,
@@ -672,7 +791,23 @@ LEFT JOIN wallet_ledger wl ON r.id = wl.rider_id
 WHERE r.status = 'ACTIVE'
 GROUP BY r.id, r.name, r.city;
 
-CREATE UNIQUE INDEX rider_performance_summary_rider_id_idx ON rider_performance_summary(rider_id);
+-- Create unique index on materialized view (with existence check)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'rider_performance_summary'
+      AND n.nspname = 'public'
+      AND c.relkind = 'm'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE indexname = 'rider_performance_summary_rider_id_idx'
+      AND schemaname = 'public'
+  ) THEN
+    CREATE UNIQUE INDEX rider_performance_summary_rider_id_idx ON rider_performance_summary(rider_id);
+  END IF;
+END $$;
 
 -- ============================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES

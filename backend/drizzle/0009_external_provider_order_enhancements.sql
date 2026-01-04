@@ -484,37 +484,43 @@ CREATE INDEX IF NOT EXISTS provider_order_analytics_calculated_at_idx ON provide
 -- ============================================================================
 
 -- Trigger: Update provider_order_mapping updated_at
-CREATE TRIGGER IF NOT EXISTS provider_order_mapping_updated_at_trigger
+DROP TRIGGER IF EXISTS provider_order_mapping_updated_at_trigger ON provider_order_mapping;
+CREATE TRIGGER provider_order_mapping_updated_at_trigger
   BEFORE UPDATE ON provider_order_mapping
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger: Update provider_rider_mapping updated_at
-CREATE TRIGGER IF NOT EXISTS provider_rider_mapping_updated_at_trigger
+DROP TRIGGER IF EXISTS provider_rider_mapping_updated_at_trigger ON provider_rider_mapping;
+CREATE TRIGGER provider_rider_mapping_updated_at_trigger
   BEFORE UPDATE ON provider_rider_mapping
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger: Update provider_order_payment_mapping updated_at
-CREATE TRIGGER IF NOT EXISTS provider_order_payment_mapping_updated_at_trigger
+DROP TRIGGER IF EXISTS provider_order_payment_mapping_updated_at_trigger ON provider_order_payment_mapping;
+CREATE TRIGGER provider_order_payment_mapping_updated_at_trigger
   BEFORE UPDATE ON provider_order_payment_mapping
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger: Update provider_order_refund_mapping updated_at
-CREATE TRIGGER IF NOT EXISTS provider_order_refund_mapping_updated_at_trigger
+DROP TRIGGER IF EXISTS provider_order_refund_mapping_updated_at_trigger ON provider_order_refund_mapping;
+CREATE TRIGGER provider_order_refund_mapping_updated_at_trigger
   BEFORE UPDATE ON provider_order_refund_mapping
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger: Update provider_order_item_mapping updated_at
-CREATE TRIGGER IF NOT EXISTS provider_order_item_mapping_updated_at_trigger
+DROP TRIGGER IF EXISTS provider_order_item_mapping_updated_at_trigger ON provider_order_item_mapping;
+CREATE TRIGGER provider_order_item_mapping_updated_at_trigger
   BEFORE UPDATE ON provider_order_item_mapping
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger: Update provider_order_conflicts updated_at
-CREATE TRIGGER IF NOT EXISTS provider_order_conflicts_updated_at_trigger
+DROP TRIGGER IF EXISTS provider_order_conflicts_updated_at_trigger ON provider_order_conflicts;
+CREATE TRIGGER provider_order_conflicts_updated_at_trigger
   BEFORE UPDATE ON provider_order_conflicts
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
@@ -550,3 +556,49 @@ COMMENT ON COLUMN orders.synced_with_provider IS 'Whether order data is synchron
 COMMENT ON COLUMN orders.provider_metadata IS 'Complete provider payload preserved for audit and reference.';
 COMMENT ON COLUMN order_rider_assignments.provider_assignment_id IS 'Provider''s assignment ID. Used for tracking provider-specific assignments.';
 COMMENT ON COLUMN order_rider_assignments.provider_rider_id IS 'Provider''s rider ID if different from internal rider_id.';
+
+-- ============================================================================
+-- ADD MISSING FOREIGN KEYS
+-- ============================================================================
+
+-- Orders -> Webhook Events (if webhook_events table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'webhook_events') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'webhook_event_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_webhook_event_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_webhook_event_id_fkey
+          FOREIGN KEY (webhook_event_id) REFERENCES webhook_events(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
+
+-- Provider Order Conflicts -> System Users (if system_users table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'system_users') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'provider_order_conflicts' 
+        AND column_name = 'resolved_by'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'provider_order_conflicts_resolved_by_fkey'
+      ) THEN
+        ALTER TABLE provider_order_conflicts
+          ADD CONSTRAINT provider_order_conflicts_resolved_by_fkey
+          FOREIGN KEY (resolved_by) REFERENCES system_users(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;

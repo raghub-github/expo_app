@@ -10,7 +10,7 @@
 -- ============================================================================
 
 -- Store Operating Hours
-CREATE TABLE merchant_store_operating_hours (
+CREATE TABLE IF NOT EXISTS merchant_store_operating_hours (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   day_of_week day_of_week NOT NULL,
@@ -35,11 +35,11 @@ CREATE TABLE merchant_store_operating_hours (
   UNIQUE(store_id, day_of_week)
 );
 
-CREATE INDEX merchant_store_operating_hours_store_id_idx ON merchant_store_operating_hours(store_id);
-CREATE INDEX merchant_store_operating_hours_day_idx ON merchant_store_operating_hours(day_of_week);
+CREATE INDEX IF NOT EXISTS merchant_store_operating_hours_store_id_idx ON merchant_store_operating_hours(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_operating_hours_day_idx ON merchant_store_operating_hours(day_of_week);
 
 -- Store Real-Time Availability
-CREATE TABLE merchant_store_availability (
+CREATE TABLE IF NOT EXISTS merchant_store_availability (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -66,11 +66,11 @@ CREATE TABLE merchant_store_availability (
   UNIQUE(store_id)
 );
 
-CREATE INDEX merchant_store_availability_store_id_idx ON merchant_store_availability(store_id);
-CREATE INDEX merchant_store_availability_is_available_idx ON merchant_store_availability(is_available) WHERE is_available = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_store_availability_store_id_idx ON merchant_store_availability(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_availability_is_available_idx ON merchant_store_availability(is_available) WHERE is_available = TRUE;
 
 -- Store Holidays
-CREATE TABLE merchant_store_holidays (
+CREATE TABLE IF NOT EXISTS merchant_store_holidays (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -91,11 +91,11 @@ CREATE TABLE merchant_store_holidays (
   created_by INTEGER
 );
 
-CREATE INDEX merchant_store_holidays_store_id_idx ON merchant_store_holidays(store_id);
-CREATE INDEX merchant_store_holidays_holiday_date_idx ON merchant_store_holidays(holiday_date);
+CREATE INDEX IF NOT EXISTS merchant_store_holidays_store_id_idx ON merchant_store_holidays(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_holidays_holiday_date_idx ON merchant_store_holidays(holiday_date);
 
 -- Store Preparation Times (Per Service/Category)
-CREATE TABLE merchant_store_preparation_times (
+CREATE TABLE IF NOT EXISTS merchant_store_preparation_times (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -120,15 +120,15 @@ CREATE TABLE merchant_store_preparation_times (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_preparation_times_store_id_idx ON merchant_store_preparation_times(store_id);
-CREATE INDEX merchant_store_preparation_times_config_type_idx ON merchant_store_preparation_times(config_type);
+CREATE INDEX IF NOT EXISTS merchant_store_preparation_times_store_id_idx ON merchant_store_preparation_times(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_preparation_times_config_type_idx ON merchant_store_preparation_times(config_type);
 
 -- ============================================================================
 -- PHASE 6: MANAGEMENT & CONTROL
 -- ============================================================================
 
 -- Area Managers
-CREATE TABLE merchant_area_managers (
+CREATE TABLE IF NOT EXISTS merchant_area_managers (
   id BIGSERIAL PRIMARY KEY,
   manager_id TEXT NOT NULL UNIQUE,
   
@@ -153,12 +153,12 @@ CREATE TABLE merchant_area_managers (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_area_managers_manager_id_idx ON merchant_area_managers(manager_id);
-CREATE INDEX merchant_area_managers_region_idx ON merchant_area_managers(region);
-CREATE INDEX merchant_area_managers_status_idx ON merchant_area_managers(status) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS merchant_area_managers_manager_id_idx ON merchant_area_managers(manager_id);
+CREATE INDEX IF NOT EXISTS merchant_area_managers_region_idx ON merchant_area_managers(region);
+CREATE INDEX IF NOT EXISTS merchant_area_managers_status_idx ON merchant_area_managers(status) WHERE status = 'ACTIVE';
 
 -- Store-Area Manager Assignments
-CREATE TABLE merchant_store_manager_assignments (
+CREATE TABLE IF NOT EXISTS merchant_store_manager_assignments (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   manager_id BIGINT NOT NULL REFERENCES merchant_area_managers(id) ON DELETE RESTRICT,
@@ -177,12 +177,12 @@ CREATE TABLE merchant_store_manager_assignments (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_manager_assignments_store_id_idx ON merchant_store_manager_assignments(store_id);
-CREATE INDEX merchant_store_manager_assignments_manager_id_idx ON merchant_store_manager_assignments(manager_id);
-CREATE INDEX merchant_store_manager_assignments_is_active_idx ON merchant_store_manager_assignments(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_store_manager_assignments_store_id_idx ON merchant_store_manager_assignments(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_manager_assignments_manager_id_idx ON merchant_store_manager_assignments(manager_id);
+CREATE INDEX IF NOT EXISTS merchant_store_manager_assignments_is_active_idx ON merchant_store_manager_assignments(is_active) WHERE is_active = TRUE;
 
 -- Store Activity Log (Delist/Relist/Block/Unblock)
-CREATE TABLE merchant_store_activity_log (
+CREATE TABLE IF NOT EXISTS merchant_store_activity_log (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -211,12 +211,12 @@ CREATE TABLE merchant_store_activity_log (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_activity_log_store_id_idx ON merchant_store_activity_log(store_id);
-CREATE INDEX merchant_store_activity_log_activity_type_idx ON merchant_store_activity_log(activity_type);
-CREATE INDEX merchant_store_activity_log_created_at_idx ON merchant_store_activity_log(created_at);
+CREATE INDEX IF NOT EXISTS merchant_store_activity_log_store_id_idx ON merchant_store_activity_log(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_activity_log_activity_type_idx ON merchant_store_activity_log(activity_type);
+CREATE INDEX IF NOT EXISTS merchant_store_activity_log_created_at_idx ON merchant_store_activity_log(created_at);
 
 -- Store Status History
-CREATE TABLE merchant_store_status_history (
+CREATE TABLE IF NOT EXISTS merchant_store_status_history (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -239,12 +239,12 @@ CREATE TABLE merchant_store_status_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_status_history_store_id_idx ON merchant_store_status_history(store_id);
-CREATE INDEX merchant_store_status_history_to_status_idx ON merchant_store_status_history(to_status);
-CREATE INDEX merchant_store_status_history_created_at_idx ON merchant_store_status_history(created_at);
+CREATE INDEX IF NOT EXISTS merchant_store_status_history_store_id_idx ON merchant_store_status_history(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_status_history_to_status_idx ON merchant_store_status_history(to_status);
+CREATE INDEX IF NOT EXISTS merchant_store_status_history_created_at_idx ON merchant_store_status_history(created_at);
 
 -- Store Settings
-CREATE TABLE merchant_store_settings (
+CREATE TABLE IF NOT EXISTS merchant_store_settings (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -279,14 +279,14 @@ CREATE TABLE merchant_store_settings (
   UNIQUE(store_id)
 );
 
-CREATE INDEX merchant_store_settings_store_id_idx ON merchant_store_settings(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_settings_store_id_idx ON merchant_store_settings(store_id);
 
 -- ============================================================================
 -- PHASE 7: FINANCIAL
 -- ============================================================================
 
 -- Commission Rules
-CREATE TABLE merchant_store_commission_rules (
+CREATE TABLE IF NOT EXISTS merchant_store_commission_rules (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT REFERENCES merchant_stores(id) ON DELETE CASCADE,
   parent_id BIGINT REFERENCES merchant_parents(id) ON DELETE CASCADE,
@@ -319,13 +319,13 @@ CREATE TABLE merchant_store_commission_rules (
   )
 );
 
-CREATE INDEX merchant_store_commission_rules_store_id_idx ON merchant_store_commission_rules(store_id);
-CREATE INDEX merchant_store_commission_rules_parent_id_idx ON merchant_store_commission_rules(parent_id);
-CREATE INDEX merchant_store_commission_rules_service_type_idx ON merchant_store_commission_rules(service_type);
-CREATE INDEX merchant_store_commission_rules_is_active_idx ON merchant_store_commission_rules(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_store_commission_rules_store_id_idx ON merchant_store_commission_rules(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_commission_rules_parent_id_idx ON merchant_store_commission_rules(parent_id);
+CREATE INDEX IF NOT EXISTS merchant_store_commission_rules_service_type_idx ON merchant_store_commission_rules(service_type);
+CREATE INDEX IF NOT EXISTS merchant_store_commission_rules_is_active_idx ON merchant_store_commission_rules(is_active) WHERE is_active = TRUE;
 
 -- Store Payouts
-CREATE TABLE merchant_store_payouts (
+CREATE TABLE IF NOT EXISTS merchant_store_payouts (
   id BIGSERIAL PRIMARY KEY,
   payout_id TEXT NOT NULL UNIQUE,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE RESTRICT,
@@ -380,14 +380,14 @@ CREATE TABLE merchant_store_payouts (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_payouts_store_id_idx ON merchant_store_payouts(store_id);
-CREATE INDEX merchant_store_payouts_parent_id_idx ON merchant_store_payouts(parent_id);
-CREATE INDEX merchant_store_payouts_status_idx ON merchant_store_payouts(status);
-CREATE INDEX merchant_store_payouts_period_idx ON merchant_store_payouts(period_start_date, period_end_date);
-CREATE INDEX merchant_store_payouts_requested_at_idx ON merchant_store_payouts(requested_at);
+CREATE INDEX IF NOT EXISTS merchant_store_payouts_store_id_idx ON merchant_store_payouts(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_payouts_parent_id_idx ON merchant_store_payouts(parent_id);
+CREATE INDEX IF NOT EXISTS merchant_store_payouts_status_idx ON merchant_store_payouts(status);
+CREATE INDEX IF NOT EXISTS merchant_store_payouts_period_idx ON merchant_store_payouts(period_start_date, period_end_date);
+CREATE INDEX IF NOT EXISTS merchant_store_payouts_requested_at_idx ON merchant_store_payouts(requested_at);
 
 -- Payout History (Immutable Log)
-CREATE TABLE merchant_store_payout_history (
+CREATE TABLE IF NOT EXISTS merchant_store_payout_history (
   id BIGSERIAL PRIMARY KEY,
   payout_id BIGINT NOT NULL REFERENCES merchant_store_payouts(id) ON DELETE CASCADE,
   
@@ -408,11 +408,11 @@ CREATE TABLE merchant_store_payout_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_payout_history_payout_id_idx ON merchant_store_payout_history(payout_id);
-CREATE INDEX merchant_store_payout_history_created_at_idx ON merchant_store_payout_history(created_at);
+CREATE INDEX IF NOT EXISTS merchant_store_payout_history_payout_id_idx ON merchant_store_payout_history(payout_id);
+CREATE INDEX IF NOT EXISTS merchant_store_payout_history_created_at_idx ON merchant_store_payout_history(created_at);
 
 -- Settlement Records
-CREATE TABLE merchant_store_settlements (
+CREATE TABLE IF NOT EXISTS merchant_store_settlements (
   id BIGSERIAL PRIMARY KEY,
   settlement_id TEXT NOT NULL UNIQUE,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE RESTRICT,
@@ -449,17 +449,17 @@ CREATE TABLE merchant_store_settlements (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_settlements_store_id_idx ON merchant_store_settlements(store_id);
-CREATE INDEX merchant_store_settlements_settlement_date_idx ON merchant_store_settlements(settlement_date);
-CREATE INDEX merchant_store_settlements_payout_id_idx ON merchant_store_settlements(payout_id);
-CREATE INDEX merchant_store_settlements_settlement_status_idx ON merchant_store_settlements(settlement_status);
+CREATE INDEX IF NOT EXISTS merchant_store_settlements_store_id_idx ON merchant_store_settlements(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_settlements_settlement_date_idx ON merchant_store_settlements(settlement_date);
+CREATE INDEX IF NOT EXISTS merchant_store_settlements_payout_id_idx ON merchant_store_settlements(payout_id);
+CREATE INDEX IF NOT EXISTS merchant_store_settlements_settlement_status_idx ON merchant_store_settlements(settlement_status);
 
 -- ============================================================================
 -- PHASE 8: ACCESS CONTROL
 -- ============================================================================
 
 -- Merchant Users (Store Managers, Staff)
-CREATE TABLE merchant_users (
+CREATE TABLE IF NOT EXISTS merchant_users (
   id BIGSERIAL PRIMARY KEY,
   user_id TEXT NOT NULL UNIQUE,
   parent_id BIGINT REFERENCES merchant_parents(id) ON DELETE CASCADE,
@@ -488,14 +488,14 @@ CREATE TABLE merchant_users (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_users_user_id_idx ON merchant_users(user_id);
-CREATE INDEX merchant_users_parent_id_idx ON merchant_users(parent_id);
-CREATE INDEX merchant_users_email_idx ON merchant_users(email);
-CREATE INDEX merchant_users_mobile_idx ON merchant_users(mobile);
-CREATE INDEX merchant_users_is_active_idx ON merchant_users(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_users_user_id_idx ON merchant_users(user_id);
+CREATE INDEX IF NOT EXISTS merchant_users_parent_id_idx ON merchant_users(parent_id);
+CREATE INDEX IF NOT EXISTS merchant_users_email_idx ON merchant_users(email);
+CREATE INDEX IF NOT EXISTS merchant_users_mobile_idx ON merchant_users(mobile);
+CREATE INDEX IF NOT EXISTS merchant_users_is_active_idx ON merchant_users(is_active) WHERE is_active = TRUE;
 
 -- Merchant User Store Access
-CREATE TABLE merchant_user_store_access (
+CREATE TABLE IF NOT EXISTS merchant_user_store_access (
   id BIGSERIAL PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES merchant_users(id) ON DELETE CASCADE,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
@@ -522,16 +522,16 @@ CREATE TABLE merchant_user_store_access (
   UNIQUE(user_id, store_id)
 );
 
-CREATE INDEX merchant_user_store_access_user_id_idx ON merchant_user_store_access(user_id);
-CREATE INDEX merchant_user_store_access_store_id_idx ON merchant_user_store_access(store_id);
-CREATE INDEX merchant_user_store_access_is_active_idx ON merchant_user_store_access(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_user_store_access_user_id_idx ON merchant_user_store_access(user_id);
+CREATE INDEX IF NOT EXISTS merchant_user_store_access_store_id_idx ON merchant_user_store_access(store_id);
+CREATE INDEX IF NOT EXISTS merchant_user_store_access_is_active_idx ON merchant_user_store_access(is_active) WHERE is_active = TRUE;
 
 -- ============================================================================
 -- PHASE 9: COMPLIANCE & AUDIT
 -- ============================================================================
 
 -- Merchant Audit Logs
-CREATE TABLE merchant_audit_logs (
+CREATE TABLE IF NOT EXISTS merchant_audit_logs (
   id BIGSERIAL PRIMARY KEY,
   
   -- Entity
@@ -562,13 +562,13 @@ CREATE TABLE merchant_audit_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_audit_logs_entity_idx ON merchant_audit_logs(entity_type, entity_id);
-CREATE INDEX merchant_audit_logs_action_idx ON merchant_audit_logs(action);
-CREATE INDEX merchant_audit_logs_performed_by_idx ON merchant_audit_logs(performed_by, performed_by_id);
-CREATE INDEX merchant_audit_logs_created_at_idx ON merchant_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS merchant_audit_logs_entity_idx ON merchant_audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS merchant_audit_logs_action_idx ON merchant_audit_logs(action);
+CREATE INDEX IF NOT EXISTS merchant_audit_logs_performed_by_idx ON merchant_audit_logs(performed_by, performed_by_id);
+CREATE INDEX IF NOT EXISTS merchant_audit_logs_created_at_idx ON merchant_audit_logs(created_at);
 
 -- Store Blocks (Block/Unblock History)
-CREATE TABLE merchant_store_blocks (
+CREATE TABLE IF NOT EXISTS merchant_store_blocks (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -601,12 +601,12 @@ CREATE TABLE merchant_store_blocks (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_blocks_store_id_idx ON merchant_store_blocks(store_id);
-CREATE INDEX merchant_store_blocks_is_unblocked_idx ON merchant_store_blocks(is_unblocked) WHERE is_unblocked = FALSE;
-CREATE INDEX merchant_store_blocks_blocked_at_idx ON merchant_store_blocks(blocked_at);
+CREATE INDEX IF NOT EXISTS merchant_store_blocks_store_id_idx ON merchant_store_blocks(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_blocks_is_unblocked_idx ON merchant_store_blocks(is_unblocked) WHERE is_unblocked = FALSE;
+CREATE INDEX IF NOT EXISTS merchant_store_blocks_blocked_at_idx ON merchant_store_blocks(blocked_at);
 
 -- Store Compliance Tracking
-CREATE TABLE merchant_store_compliance (
+CREATE TABLE IF NOT EXISTS merchant_store_compliance (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -637,17 +637,17 @@ CREATE TABLE merchant_store_compliance (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_compliance_store_id_idx ON merchant_store_compliance(store_id);
-CREATE INDEX merchant_store_compliance_compliance_type_idx ON merchant_store_compliance(compliance_type);
-CREATE INDEX merchant_store_compliance_status_idx ON merchant_store_compliance(compliance_status);
-CREATE INDEX merchant_store_compliance_expiry_date_idx ON merchant_store_compliance(expiry_date);
+CREATE INDEX IF NOT EXISTS merchant_store_compliance_store_id_idx ON merchant_store_compliance(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_compliance_compliance_type_idx ON merchant_store_compliance(compliance_type);
+CREATE INDEX IF NOT EXISTS merchant_store_compliance_status_idx ON merchant_store_compliance(compliance_status);
+CREATE INDEX IF NOT EXISTS merchant_store_compliance_expiry_date_idx ON merchant_store_compliance(expiry_date);
 
 -- ============================================================================
 -- PHASE 10: INTEGRATION
 -- ============================================================================
 
 -- ONDC Integration Mapping
-CREATE TABLE merchant_store_ondc_mapping (
+CREATE TABLE IF NOT EXISTS merchant_store_ondc_mapping (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   
@@ -678,11 +678,11 @@ CREATE TABLE merchant_store_ondc_mapping (
   UNIQUE(store_id)
 );
 
-CREATE INDEX merchant_store_ondc_mapping_store_id_idx ON merchant_store_ondc_mapping(store_id);
-CREATE INDEX merchant_store_ondc_mapping_ondc_store_id_idx ON merchant_store_ondc_mapping(ondc_store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_ondc_mapping_store_id_idx ON merchant_store_ondc_mapping(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_ondc_mapping_ondc_store_id_idx ON merchant_store_ondc_mapping(ondc_store_id);
 
 -- External Provider Mapping (Swiggy, Zomato, etc.)
-CREATE TABLE merchant_store_provider_mapping (
+CREATE TABLE IF NOT EXISTS merchant_store_provider_mapping (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   provider_type order_source_type NOT NULL,
@@ -713,55 +713,64 @@ CREATE TABLE merchant_store_provider_mapping (
   UNIQUE(store_id, provider_type)
 );
 
-CREATE INDEX merchant_store_provider_mapping_store_id_idx ON merchant_store_provider_mapping(store_id);
-CREATE INDEX merchant_store_provider_mapping_provider_type_idx ON merchant_store_provider_mapping(provider_type);
-CREATE INDEX merchant_store_provider_mapping_provider_store_id_idx ON merchant_store_provider_mapping(provider_store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_provider_mapping_store_id_idx ON merchant_store_provider_mapping(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_provider_mapping_provider_type_idx ON merchant_store_provider_mapping(provider_type);
+CREATE INDEX IF NOT EXISTS merchant_store_provider_mapping_provider_store_id_idx ON merchant_store_provider_mapping(provider_store_id);
 
 -- ============================================================================
 -- TRIGGERS
 -- ============================================================================
 
 -- Trigger: Auto-update updated_at
+DROP TRIGGER IF EXISTS merchant_parents_updated_at_trigger ON merchant_parents;
 CREATE TRIGGER merchant_parents_updated_at_trigger
   BEFORE UPDATE ON merchant_parents
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_stores_updated_at_trigger ON merchant_stores;
 CREATE TRIGGER merchant_stores_updated_at_trigger
   BEFORE UPDATE ON merchant_stores
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_store_tax_details_updated_at_trigger ON merchant_store_tax_details;
 CREATE TRIGGER merchant_store_tax_details_updated_at_trigger
   BEFORE UPDATE ON merchant_store_tax_details
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_store_bank_accounts_updated_at_trigger ON merchant_store_bank_accounts;
 CREATE TRIGGER merchant_store_bank_accounts_updated_at_trigger
   BEFORE UPDATE ON merchant_store_bank_accounts
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_menu_categories_updated_at_trigger ON merchant_menu_categories;
 CREATE TRIGGER merchant_menu_categories_updated_at_trigger
   BEFORE UPDATE ON merchant_menu_categories
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_menu_items_updated_at_trigger ON merchant_menu_items;
 CREATE TRIGGER merchant_menu_items_updated_at_trigger
   BEFORE UPDATE ON merchant_menu_items
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_offers_updated_at_trigger ON merchant_offers;
 CREATE TRIGGER merchant_offers_updated_at_trigger
   BEFORE UPDATE ON merchant_offers
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_coupons_updated_at_trigger ON merchant_coupons;
 CREATE TRIGGER merchant_coupons_updated_at_trigger
   BEFORE UPDATE ON merchant_coupons
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS merchant_store_payouts_updated_at_trigger ON merchant_store_payouts;
 CREATE TRIGGER merchant_store_payouts_updated_at_trigger
   BEFORE UPDATE ON merchant_store_payouts
   FOR EACH ROW
@@ -783,6 +792,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS merchant_stores_status_history_trigger ON merchant_stores;
 CREATE TRIGGER merchant_stores_status_history_trigger
   AFTER UPDATE OF status ON merchant_stores
   FOR EACH ROW

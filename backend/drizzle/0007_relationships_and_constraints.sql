@@ -7,13 +7,68 @@
 -- ADD MISSING FOREIGN KEY CONSTRAINTS
 -- ============================================================================
 
--- Orders -> Merchants (if merchant table exists, otherwise keep as INTEGER)
--- Note: merchant_id is INTEGER in orders table, assuming merchants table will be created
--- For now, we'll add a check constraint
+-- Orders -> Merchants (if merchant_stores table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'merchant_stores') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'merchant_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_merchant_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_merchant_id_fkey
+          FOREIGN KEY (merchant_id) REFERENCES merchant_stores(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
 
--- Orders -> Customers (if customer table exists)
--- Note: customer_id is INTEGER in orders table
--- For now, we'll add a check constraint
+-- Orders -> Merchant Parents (if merchant_parents table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'merchant_parents') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'merchant_parent_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_merchant_parent_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_merchant_parent_id_fkey
+          FOREIGN KEY (merchant_parent_id) REFERENCES merchant_parents(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
+
+-- Orders -> Customers (if customers table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'customers') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'customer_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_customer_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_customer_id_fkey
+          FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
 
 -- Add foreign key constraints where tables exist
 -- Order Actions -> Orders (already exists, verify)
@@ -885,8 +940,24 @@ FROM orders o
 WHERE o.source != 'internal'
 GROUP BY o.source, o.order_type, DATE_TRUNC('day', o.created_at);
 
-CREATE UNIQUE INDEX provider_performance_summary_unique_idx 
-  ON provider_performance_summary(provider_type, order_type, order_date);
+-- Create unique index on materialized view (with existence check)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'provider_performance_summary'
+      AND n.nspname = 'public'
+      AND c.relkind = 'm'  -- 'm' = materialized view
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE indexname = 'provider_performance_summary_unique_idx'
+      AND schemaname = 'public'
+  ) THEN
+    CREATE UNIQUE INDEX provider_performance_summary_unique_idx 
+      ON provider_performance_summary(provider_type, order_type, order_date);
+  END IF;
+END $$;
 
 -- Order Source Distribution
 CREATE MATERIALIZED VIEW IF NOT EXISTS order_source_distribution AS
@@ -899,8 +970,24 @@ SELECT
 FROM orders
 GROUP BY source, order_type, status, DATE_TRUNC('day', created_at);
 
-CREATE UNIQUE INDEX order_source_distribution_unique_idx 
-  ON order_source_distribution(source, order_type, status, order_date);
+-- Create unique index on materialized view (with existence check)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'order_source_distribution'
+      AND n.nspname = 'public'
+      AND c.relkind = 'm'  -- 'm' = materialized view
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE indexname = 'order_source_distribution_unique_idx'
+      AND schemaname = 'public'
+  ) THEN
+    CREATE UNIQUE INDEX order_source_distribution_unique_idx 
+      ON order_source_distribution(source, order_type, status, order_date);
+  END IF;
+END $$;
 
 -- ============================================================================
 -- ADD FUNCTIONS FOR COMMON OPERATIONS

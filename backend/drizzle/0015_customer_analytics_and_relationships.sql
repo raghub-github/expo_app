@@ -9,7 +9,7 @@
 -- ============================================================================
 
 -- Customer Activity Log
-CREATE TABLE customer_activity_log (
+CREATE TABLE IF NOT EXISTS customer_activity_log (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -33,13 +33,13 @@ CREATE TABLE customer_activity_log (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_activity_log_customer_id_idx ON customer_activity_log(customer_id);
-CREATE INDEX customer_activity_log_activity_type_idx ON customer_activity_log(activity_type);
-CREATE INDEX customer_activity_log_created_at_idx ON customer_activity_log(created_at);
-CREATE INDEX customer_activity_log_customer_created_idx ON customer_activity_log(customer_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS customer_activity_log_customer_id_idx ON customer_activity_log(customer_id);
+CREATE INDEX IF NOT EXISTS customer_activity_log_activity_type_idx ON customer_activity_log(activity_type);
+CREATE INDEX IF NOT EXISTS customer_activity_log_created_at_idx ON customer_activity_log(created_at);
+CREATE INDEX IF NOT EXISTS customer_activity_log_customer_created_idx ON customer_activity_log(customer_id, created_at DESC);
 
 -- Customer Login History
-CREATE TABLE customer_login_history (
+CREATE TABLE IF NOT EXISTS customer_login_history (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -66,12 +66,12 @@ CREATE TABLE customer_login_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_login_history_customer_id_idx ON customer_login_history(customer_id);
-CREATE INDEX customer_login_history_login_success_idx ON customer_login_history(login_success);
-CREATE INDEX customer_login_history_created_at_idx ON customer_login_history(created_at);
+CREATE INDEX IF NOT EXISTS customer_login_history_customer_id_idx ON customer_login_history(customer_id);
+CREATE INDEX IF NOT EXISTS customer_login_history_login_success_idx ON customer_login_history(login_success);
+CREATE INDEX IF NOT EXISTS customer_login_history_created_at_idx ON customer_login_history(created_at);
 
 -- Customer Daily Analytics
-CREATE TABLE customer_daily_analytics (
+CREATE TABLE IF NOT EXISTS customer_daily_analytics (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   analytics_date DATE NOT NULL,
@@ -105,11 +105,11 @@ CREATE TABLE customer_daily_analytics (
   UNIQUE(customer_id, analytics_date)
 );
 
-CREATE INDEX customer_daily_analytics_customer_id_idx ON customer_daily_analytics(customer_id);
-CREATE INDEX customer_daily_analytics_date_idx ON customer_daily_analytics(analytics_date);
+CREATE INDEX IF NOT EXISTS customer_daily_analytics_customer_id_idx ON customer_daily_analytics(customer_id);
+CREATE INDEX IF NOT EXISTS customer_daily_analytics_date_idx ON customer_daily_analytics(analytics_date);
 
 -- Customer Service Analytics (Per Service)
-CREATE TABLE customer_service_analytics (
+CREATE TABLE IF NOT EXISTS customer_service_analytics (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   service_type service_type NOT NULL,
@@ -144,15 +144,15 @@ CREATE TABLE customer_service_analytics (
   UNIQUE(customer_id, service_type)
 );
 
-CREATE INDEX customer_service_analytics_customer_id_idx ON customer_service_analytics(customer_id);
-CREATE INDEX customer_service_analytics_service_type_idx ON customer_service_analytics(service_type);
+CREATE INDEX IF NOT EXISTS customer_service_analytics_customer_id_idx ON customer_service_analytics(customer_id);
+CREATE INDEX IF NOT EXISTS customer_service_analytics_service_type_idx ON customer_service_analytics(service_type);
 
 -- ============================================================================
 -- PHASE 11: REFERRALS & SOCIAL
 -- ============================================================================
 
 -- Customer Referrals
-CREATE TABLE customer_referrals (
+CREATE TABLE IF NOT EXISTS customer_referrals (
   id BIGSERIAL PRIMARY KEY,
   referrer_customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   referred_customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -186,13 +186,13 @@ CREATE TABLE customer_referrals (
   UNIQUE(referred_customer_id)
 );
 
-CREATE INDEX customer_referrals_referrer_id_idx ON customer_referrals(referrer_customer_id);
-CREATE INDEX customer_referrals_referred_id_idx ON customer_referrals(referred_customer_id);
-CREATE INDEX customer_referrals_referral_code_idx ON customer_referrals(referral_code);
-CREATE INDEX customer_referrals_status_idx ON customer_referrals(referral_status);
+CREATE INDEX IF NOT EXISTS customer_referrals_referrer_id_idx ON customer_referrals(referrer_customer_id);
+CREATE INDEX IF NOT EXISTS customer_referrals_referred_id_idx ON customer_referrals(referred_customer_id);
+CREATE INDEX IF NOT EXISTS customer_referrals_referral_code_idx ON customer_referrals(referral_code);
+CREATE INDEX IF NOT EXISTS customer_referrals_status_idx ON customer_referrals(referral_status);
 
 -- Customer Referral Rewards
-CREATE TABLE customer_referral_rewards (
+CREATE TABLE IF NOT EXISTS customer_referral_rewards (
   id BIGSERIAL PRIMARY KEY,
   referral_id BIGINT NOT NULL REFERENCES customer_referrals(id) ON DELETE CASCADE,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -213,16 +213,16 @@ CREATE TABLE customer_referral_rewards (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_referral_rewards_referral_id_idx ON customer_referral_rewards(referral_id);
-CREATE INDEX customer_referral_rewards_customer_id_idx ON customer_referral_rewards(customer_id);
-CREATE INDEX customer_referral_rewards_reward_status_idx ON customer_referral_rewards(reward_status);
+CREATE INDEX IF NOT EXISTS customer_referral_rewards_referral_id_idx ON customer_referral_rewards(referral_id);
+CREATE INDEX IF NOT EXISTS customer_referral_rewards_customer_id_idx ON customer_referral_rewards(customer_id);
+CREATE INDEX IF NOT EXISTS customer_referral_rewards_reward_status_idx ON customer_referral_rewards(reward_status);
 
 -- ============================================================================
 -- PHASE 12: COMPLIANCE & LEGAL
 -- ============================================================================
 
 -- Customer Consent Log (GDPR Compliance)
-CREATE TABLE customer_consent_log (
+CREATE TABLE IF NOT EXISTS customer_consent_log (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -245,12 +245,12 @@ CREATE TABLE customer_consent_log (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_consent_log_customer_id_idx ON customer_consent_log(customer_id);
-CREATE INDEX customer_consent_log_consent_type_idx ON customer_consent_log(consent_type);
-CREATE INDEX customer_consent_log_consent_date_idx ON customer_consent_log(consent_date);
+CREATE INDEX IF NOT EXISTS customer_consent_log_customer_id_idx ON customer_consent_log(customer_id);
+CREATE INDEX IF NOT EXISTS customer_consent_log_consent_type_idx ON customer_consent_log(consent_type);
+CREATE INDEX IF NOT EXISTS customer_consent_log_consent_date_idx ON customer_consent_log(consent_date);
 
 -- Customer Data Deletion Requests (GDPR Right to be Forgotten)
-CREATE TABLE customer_data_deletion_requests (
+CREATE TABLE IF NOT EXISTS customer_data_deletion_requests (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -280,11 +280,11 @@ CREATE TABLE customer_data_deletion_requests (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_data_deletion_requests_customer_id_idx ON customer_data_deletion_requests(customer_id);
-CREATE INDEX customer_data_deletion_requests_status_idx ON customer_data_deletion_requests(request_status);
+CREATE INDEX IF NOT EXISTS customer_data_deletion_requests_customer_id_idx ON customer_data_deletion_requests(customer_id);
+CREATE INDEX IF NOT EXISTS customer_data_deletion_requests_status_idx ON customer_data_deletion_requests(request_status);
 
 -- Customer Audit Log
-CREATE TABLE customer_audit_log (
+CREATE TABLE IF NOT EXISTS customer_audit_log (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -310,16 +310,16 @@ CREATE TABLE customer_audit_log (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_audit_log_customer_id_idx ON customer_audit_log(customer_id);
-CREATE INDEX customer_audit_log_action_type_idx ON customer_audit_log(action_type);
-CREATE INDEX customer_audit_log_created_at_idx ON customer_audit_log(created_at);
+CREATE INDEX IF NOT EXISTS customer_audit_log_customer_id_idx ON customer_audit_log(customer_id);
+CREATE INDEX IF NOT EXISTS customer_audit_log_action_type_idx ON customer_audit_log(action_type);
+CREATE INDEX IF NOT EXISTS customer_audit_log_created_at_idx ON customer_audit_log(created_at);
 
 -- ============================================================================
 -- PHASE 13: ORDER RELATIONSHIPS
 -- ============================================================================
 
 -- Customer Orders Summary (Link Table)
-CREATE TABLE customer_orders_summary (
+CREATE TABLE IF NOT EXISTS customer_orders_summary (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -350,16 +350,16 @@ CREATE TABLE customer_orders_summary (
   UNIQUE(customer_id, order_id)
 );
 
-CREATE INDEX customer_orders_summary_customer_id_idx ON customer_orders_summary(customer_id);
-CREATE INDEX customer_orders_summary_order_id_idx ON customer_orders_summary(order_id);
-CREATE INDEX customer_orders_summary_service_type_idx ON customer_orders_summary(service_type);
-CREATE INDEX customer_orders_summary_order_status_idx ON customer_orders_summary(order_status);
+CREATE INDEX IF NOT EXISTS customer_orders_summary_customer_id_idx ON customer_orders_summary(customer_id);
+CREATE INDEX IF NOT EXISTS customer_orders_summary_order_id_idx ON customer_orders_summary(order_id);
+CREATE INDEX IF NOT EXISTS customer_orders_summary_service_type_idx ON customer_orders_summary(service_type);
+CREATE INDEX IF NOT EXISTS customer_orders_summary_order_status_idx ON customer_orders_summary(order_status);
 
 -- Link orders to customers
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS orders_customer_id_idx ON orders(customer_id);
+CREATE INDEX IF NOT EXISTS IF NOT EXISTS orders_customer_id_idx ON orders(customer_id);
 
 -- ============================================================================
 -- TRIGGERS

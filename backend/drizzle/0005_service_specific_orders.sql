@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS orders_order_type_priority_idx ON orders(order_type, 
 -- ============================================================================
 
 -- Food Items in Order
-CREATE TABLE order_food_items (
+CREATE TABLE IF NOT EXISTS order_food_items (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   item_name TEXT NOT NULL,
@@ -97,32 +97,36 @@ CREATE TABLE order_food_items (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_food_items_order_id_idx ON order_food_items(order_id);
-CREATE INDEX order_food_items_order_id_created_idx ON order_food_items(order_id, created_at);
+CREATE INDEX IF NOT EXISTS order_food_items_order_id_idx ON order_food_items(order_id);
+CREATE INDEX IF NOT EXISTS order_food_items_order_id_created_idx ON order_food_items(order_id, created_at);
 
 -- Food Order Status Tracking
-CREATE TYPE food_order_status AS ENUM (
-  'placed',
-  'confirmed',
-  'preparing',
-  'ready_for_pickup',
-  'picked_up',
-  'out_for_delivery',
-  'delivered',
-  'cancelled'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'food_order_status') THEN
+    CREATE TYPE food_order_status AS ENUM (
+      'placed',
+      'confirmed',
+      'preparing',
+      'ready_for_pickup',
+      'picked_up',
+      'out_for_delivery',
+      'delivered',
+      'cancelled'
+    );
+  END IF;
+END $$;
 
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS food_order_status food_order_status;
 
-CREATE INDEX orders_food_order_status_idx ON orders(food_order_status) WHERE food_order_status IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_food_order_status_idx ON orders(food_order_status) WHERE food_order_status IS NOT NULL;
 
 -- ============================================================================
 -- PARCEL DELIVERY SPECIFIC TABLES
 -- ============================================================================
 
 -- Parcel Tracking Events
-CREATE TABLE parcel_tracking_events (
+CREATE TABLE IF NOT EXISTS parcel_tracking_events (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   event_type TEXT NOT NULL, -- 'picked_up', 'in_transit', 'out_for_delivery', 'delivery_attempted', 'delivered', 'returned'
@@ -135,13 +139,13 @@ CREATE TABLE parcel_tracking_events (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX parcel_tracking_events_order_id_idx ON parcel_tracking_events(order_id);
-CREATE INDEX parcel_tracking_events_event_type_idx ON parcel_tracking_events(event_type);
-CREATE INDEX parcel_tracking_events_created_at_idx ON parcel_tracking_events(created_at);
-CREATE INDEX parcel_tracking_events_order_created_idx ON parcel_tracking_events(order_id, created_at);
+CREATE INDEX IF NOT EXISTS parcel_tracking_events_order_id_idx ON parcel_tracking_events(order_id);
+CREATE INDEX IF NOT EXISTS parcel_tracking_events_event_type_idx ON parcel_tracking_events(event_type);
+CREATE INDEX IF NOT EXISTS parcel_tracking_events_created_at_idx ON parcel_tracking_events(created_at);
+CREATE INDEX IF NOT EXISTS parcel_tracking_events_order_created_idx ON parcel_tracking_events(order_id, created_at);
 
 -- COD Collection Tracking
-CREATE TABLE cod_collections (
+CREATE TABLE IF NOT EXISTS cod_collections (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   amount NUMERIC(10, 2) NOT NULL,
@@ -156,17 +160,17 @@ CREATE TABLE cod_collections (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX cod_collections_order_id_idx ON cod_collections(order_id);
-CREATE INDEX cod_collections_collected_by_idx ON cod_collections(collected_by);
-CREATE INDEX cod_collections_collected_at_idx ON cod_collections(collected_at);
-CREATE INDEX cod_collections_deposited_to_bank_idx ON cod_collections(deposited_to_bank) WHERE deposited_to_bank = FALSE;
+CREATE INDEX IF NOT EXISTS cod_collections_order_id_idx ON cod_collections(order_id);
+CREATE INDEX IF NOT EXISTS cod_collections_collected_by_idx ON cod_collections(collected_by);
+CREATE INDEX IF NOT EXISTS cod_collections_collected_at_idx ON cod_collections(collected_at);
+CREATE INDEX IF NOT EXISTS cod_collections_deposited_to_bank_idx ON cod_collections(deposited_to_bank) WHERE deposited_to_bank = FALSE;
 
 -- ============================================================================
 -- RIDE BOOKING SPECIFIC TABLES
 -- ============================================================================
 
 -- Ride Fare Breakdown
-CREATE TABLE ride_fare_breakdown (
+CREATE TABLE IF NOT EXISTS ride_fare_breakdown (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   base_fare NUMERIC(10, 2) NOT NULL,
@@ -186,11 +190,11 @@ CREATE TABLE ride_fare_breakdown (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX ride_fare_breakdown_order_id_idx ON ride_fare_breakdown(order_id);
-CREATE UNIQUE INDEX ride_fare_breakdown_order_id_unique_idx ON ride_fare_breakdown(order_id);
+CREATE INDEX IF NOT EXISTS ride_fare_breakdown_order_id_idx ON ride_fare_breakdown(order_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ride_fare_breakdown_order_id_unique_idx ON ride_fare_breakdown(order_id);
 
 -- Ride Route Tracking
-CREATE TABLE ride_routes (
+CREATE TABLE IF NOT EXISTS ride_routes (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   waypoint_order INTEGER NOT NULL, -- 0 = pickup, 1+ = waypoints, last = drop
@@ -203,15 +207,15 @@ CREATE TABLE ride_routes (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX ride_routes_order_id_idx ON ride_routes(order_id);
-CREATE INDEX ride_routes_order_waypoint_idx ON ride_routes(order_id, waypoint_order);
-CREATE INDEX ride_routes_arrived_at_idx ON ride_routes(arrived_at) WHERE arrived_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ride_routes_order_id_idx ON ride_routes(order_id);
+CREATE INDEX IF NOT EXISTS ride_routes_order_waypoint_idx ON ride_routes(order_id, waypoint_order);
+CREATE INDEX IF NOT EXISTS ride_routes_arrived_at_idx ON ride_routes(arrived_at) WHERE arrived_at IS NOT NULL;
 
 -- ============================================================================
 -- COMMON: ORDER ITEMS (Generic items table for all order types)
 -- ============================================================================
 
-CREATE TABLE order_items (
+CREATE TABLE IF NOT EXISTS order_items (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   item_type TEXT NOT NULL, -- 'food_item', 'parcel', 'passenger', etc.
@@ -224,15 +228,15 @@ CREATE TABLE order_items (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_items_order_id_idx ON order_items(order_id);
-CREATE INDEX order_items_item_type_idx ON order_items(item_type);
-CREATE INDEX order_items_order_created_idx ON order_items(order_id, created_at);
+CREATE INDEX IF NOT EXISTS order_items_order_id_idx ON order_items(order_id);
+CREATE INDEX IF NOT EXISTS order_items_item_type_idx ON order_items(item_type);
+CREATE INDEX IF NOT EXISTS order_items_order_created_idx ON order_items(order_id, created_at);
 
 -- ============================================================================
 -- ORDER STATUS HISTORY (Detailed status tracking)
 -- ============================================================================
 
-CREATE TABLE order_status_history (
+CREATE TABLE IF NOT EXISTS order_status_history (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   from_status order_status_type,
@@ -246,16 +250,16 @@ CREATE TABLE order_status_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_status_history_order_id_idx ON order_status_history(order_id);
-CREATE INDEX order_status_history_to_status_idx ON order_status_history(to_status);
-CREATE INDEX order_status_history_created_at_idx ON order_status_history(created_at);
-CREATE INDEX order_status_history_order_created_idx ON order_status_history(order_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS order_status_history_order_id_idx ON order_status_history(order_id);
+CREATE INDEX IF NOT EXISTS order_status_history_to_status_idx ON order_status_history(to_status);
+CREATE INDEX IF NOT EXISTS order_status_history_created_at_idx ON order_status_history(created_at);
+CREATE INDEX IF NOT EXISTS order_status_history_order_created_idx ON order_status_history(order_id, created_at DESC);
 
 -- ============================================================================
 -- ORDER ASSIGNMENT LOG (Tracks assignment attempts)
 -- ============================================================================
 
-CREATE TABLE order_assignments (
+CREATE TABLE IF NOT EXISTS order_assignments (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
@@ -270,17 +274,17 @@ CREATE TABLE order_assignments (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_assignments_order_id_idx ON order_assignments(order_id);
-CREATE INDEX order_assignments_rider_id_idx ON order_assignments(rider_id);
-CREATE INDEX order_assignments_status_idx ON order_assignments(status);
-CREATE INDEX order_assignments_created_at_idx ON order_assignments(created_at);
-CREATE INDEX order_assignments_order_status_idx ON order_assignments(order_id, status);
+CREATE INDEX IF NOT EXISTS order_assignments_order_id_idx ON order_assignments(order_id);
+CREATE INDEX IF NOT EXISTS order_assignments_rider_id_idx ON order_assignments(rider_id);
+CREATE INDEX IF NOT EXISTS order_assignments_status_idx ON order_assignments(status);
+CREATE INDEX IF NOT EXISTS order_assignments_created_at_idx ON order_assignments(created_at);
+CREATE INDEX IF NOT EXISTS order_assignments_order_status_idx ON order_assignments(order_id, status);
 
 -- ============================================================================
 -- ORDER RATINGS (Separate from general ratings for order-specific feedback)
 -- ============================================================================
 
-CREATE TABLE order_ratings (
+CREATE TABLE IF NOT EXISTS order_ratings (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
@@ -292,10 +296,10 @@ CREATE TABLE order_ratings (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_ratings_order_id_idx ON order_ratings(order_id);
-CREATE INDEX order_ratings_rider_id_idx ON order_ratings(rider_id);
-CREATE INDEX order_ratings_rated_by_idx ON order_ratings(rated_by);
-CREATE INDEX order_ratings_created_at_idx ON order_ratings(created_at);
+CREATE INDEX IF NOT EXISTS order_ratings_order_id_idx ON order_ratings(order_id);
+CREATE INDEX IF NOT EXISTS order_ratings_rider_id_idx ON order_ratings(rider_id);
+CREATE INDEX IF NOT EXISTS order_ratings_rated_by_idx ON order_ratings(rated_by);
+CREATE INDEX IF NOT EXISTS order_ratings_created_at_idx ON order_ratings(created_at);
 
 -- ============================================================================
 -- TRIGGERS
@@ -327,6 +331,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS orders_status_history_trigger ON orders;
 CREATE TRIGGER orders_status_history_trigger
   AFTER UPDATE OF status ON orders
   FOR EACH ROW

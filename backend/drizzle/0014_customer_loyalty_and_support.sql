@@ -9,7 +9,7 @@
 -- ============================================================================
 
 -- Customer Loyalty Program
-CREATE TABLE customer_loyalty (
+CREATE TABLE IF NOT EXISTS customer_loyalty (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -55,11 +55,11 @@ CREATE TABLE customer_loyalty (
   UNIQUE(customer_id)
 );
 
-CREATE INDEX customer_loyalty_customer_id_idx ON customer_loyalty(customer_id);
-CREATE INDEX customer_loyalty_tier_idx ON customer_loyalty(loyalty_tier);
+CREATE INDEX IF NOT EXISTS customer_loyalty_customer_id_idx ON customer_loyalty(customer_id);
+CREATE INDEX IF NOT EXISTS customer_loyalty_tier_idx ON customer_loyalty(loyalty_tier);
 
 -- Customer Reward Points (Transaction Log)
-CREATE TABLE customer_reward_transactions (
+CREATE TABLE IF NOT EXISTS customer_reward_transactions (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -82,12 +82,12 @@ CREATE TABLE customer_reward_transactions (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_reward_transactions_customer_id_idx ON customer_reward_transactions(customer_id);
-CREATE INDEX customer_reward_transactions_transaction_type_idx ON customer_reward_transactions(transaction_type);
-CREATE INDEX customer_reward_transactions_created_at_idx ON customer_reward_transactions(created_at);
+CREATE INDEX IF NOT EXISTS customer_reward_transactions_customer_id_idx ON customer_reward_transactions(customer_id);
+CREATE INDEX IF NOT EXISTS customer_reward_transactions_transaction_type_idx ON customer_reward_transactions(transaction_type);
+CREATE INDEX IF NOT EXISTS customer_reward_transactions_created_at_idx ON customer_reward_transactions(created_at);
 
 -- Customer Coupons
-CREATE TABLE customer_coupons (
+CREATE TABLE IF NOT EXISTS customer_coupons (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -125,13 +125,13 @@ CREATE TABLE customer_coupons (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_coupons_customer_id_idx ON customer_coupons(customer_id);
-CREATE INDEX customer_coupons_coupon_code_idx ON customer_coupons(coupon_code);
-CREATE INDEX customer_coupons_status_idx ON customer_coupons(status);
-CREATE INDEX customer_coupons_validity_idx ON customer_coupons(valid_from, valid_till);
+CREATE INDEX IF NOT EXISTS customer_coupons_customer_id_idx ON customer_coupons(customer_id);
+CREATE INDEX IF NOT EXISTS customer_coupons_coupon_code_idx ON customer_coupons(coupon_code);
+CREATE INDEX IF NOT EXISTS customer_coupons_status_idx ON customer_coupons(status);
+CREATE INDEX IF NOT EXISTS customer_coupons_validity_idx ON customer_coupons(valid_from, valid_till);
 
 -- Customer Coupon Usage
-CREATE TABLE customer_coupon_usage (
+CREATE TABLE IF NOT EXISTS customer_coupon_usage (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   customer_coupon_id BIGINT REFERENCES customer_coupons(id) ON DELETE SET NULL,
@@ -147,16 +147,16 @@ CREATE TABLE customer_coupon_usage (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_coupon_usage_customer_id_idx ON customer_coupon_usage(customer_id);
-CREATE INDEX customer_coupon_usage_order_id_idx ON customer_coupon_usage(order_id);
-CREATE INDEX customer_coupon_usage_coupon_code_idx ON customer_coupon_usage(coupon_code);
+CREATE INDEX IF NOT EXISTS customer_coupon_usage_customer_id_idx ON customer_coupon_usage(customer_id);
+CREATE INDEX IF NOT EXISTS customer_coupon_usage_order_id_idx ON customer_coupon_usage(order_id);
+CREATE INDEX IF NOT EXISTS customer_coupon_usage_coupon_code_idx ON customer_coupon_usage(coupon_code);
 
 -- ============================================================================
 -- PHASE 6: RATINGS & REVIEWS
 -- ============================================================================
 
 -- Customer Ratings Given
-CREATE TABLE customer_ratings_given (
+CREATE TABLE IF NOT EXISTS customer_ratings_given (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   order_id BIGINT REFERENCES orders(id) ON DELETE SET NULL,
@@ -200,13 +200,13 @@ CREATE TABLE customer_ratings_given (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_ratings_given_customer_id_idx ON customer_ratings_given(customer_id);
-CREATE INDEX customer_ratings_given_order_id_idx ON customer_ratings_given(order_id);
-CREATE INDEX customer_ratings_given_target_idx ON customer_ratings_given(target_type, target_id);
-CREATE INDEX customer_ratings_given_service_type_idx ON customer_ratings_given(service_type);
+CREATE INDEX IF NOT EXISTS customer_ratings_given_customer_id_idx ON customer_ratings_given(customer_id);
+CREATE INDEX IF NOT EXISTS customer_ratings_given_order_id_idx ON customer_ratings_given(order_id);
+CREATE INDEX IF NOT EXISTS customer_ratings_given_target_idx ON customer_ratings_given(target_type, target_id);
+CREATE INDEX IF NOT EXISTS customer_ratings_given_service_type_idx ON customer_ratings_given(service_type);
 
 -- Customer Ratings Received (As Passenger in Ride)
-CREATE TABLE customer_ratings_received (
+CREATE TABLE IF NOT EXISTS customer_ratings_received (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   order_id BIGINT REFERENCES orders(id) ON DELETE SET NULL,
@@ -223,11 +223,11 @@ CREATE TABLE customer_ratings_received (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_ratings_received_customer_id_idx ON customer_ratings_received(customer_id);
-CREATE INDEX customer_ratings_received_order_id_idx ON customer_ratings_received(order_id);
+CREATE INDEX IF NOT EXISTS customer_ratings_received_customer_id_idx ON customer_ratings_received(customer_id);
+CREATE INDEX IF NOT EXISTS customer_ratings_received_order_id_idx ON customer_ratings_received(order_id);
 
 -- Customer Review Helpfulness (Voting)
-CREATE TABLE customer_review_helpfulness (
+CREATE TABLE IF NOT EXISTS customer_review_helpfulness (
   id BIGSERIAL PRIMARY KEY,
   review_id BIGINT NOT NULL REFERENCES customer_ratings_given(id) ON DELETE CASCADE,
   voted_by_customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -240,14 +240,14 @@ CREATE TABLE customer_review_helpfulness (
   UNIQUE(review_id, voted_by_customer_id)
 );
 
-CREATE INDEX customer_review_helpfulness_review_id_idx ON customer_review_helpfulness(review_id);
+CREATE INDEX IF NOT EXISTS customer_review_helpfulness_review_id_idx ON customer_review_helpfulness(review_id);
 
 -- ============================================================================
 -- PHASE 7: FAVORITES & PREFERENCES
 -- ============================================================================
 
 -- Customer Favorites (Merchants, Items, Routes)
-CREATE TABLE customer_favorites (
+CREATE TABLE IF NOT EXISTS customer_favorites (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -278,16 +278,16 @@ CREATE TABLE customer_favorites (
   )
 );
 
-CREATE INDEX customer_favorites_customer_id_idx ON customer_favorites(customer_id);
-CREATE INDEX customer_favorites_favorite_type_idx ON customer_favorites(favorite_type);
-CREATE INDEX customer_favorites_merchant_store_id_idx ON customer_favorites(merchant_store_id);
+CREATE INDEX IF NOT EXISTS customer_favorites_customer_id_idx ON customer_favorites(customer_id);
+CREATE INDEX IF NOT EXISTS customer_favorites_favorite_type_idx ON customer_favorites(favorite_type);
+CREATE INDEX IF NOT EXISTS customer_favorites_merchant_store_id_idx ON customer_favorites(merchant_store_id);
 
 -- ============================================================================
 -- PHASE 8: SUPPORT & DISPUTES
 -- ============================================================================
 
 -- Customer Support Tickets
-CREATE TABLE customer_tickets (
+CREATE TABLE IF NOT EXISTS customer_tickets (
   id BIGSERIAL PRIMARY KEY,
   ticket_id TEXT NOT NULL UNIQUE,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -333,14 +333,14 @@ CREATE TABLE customer_tickets (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_tickets_customer_id_idx ON customer_tickets(customer_id);
-CREATE INDEX customer_tickets_ticket_id_idx ON customer_tickets(ticket_id);
-CREATE INDEX customer_tickets_order_id_idx ON customer_tickets(order_id);
-CREATE INDEX customer_tickets_status_idx ON customer_tickets(status);
-CREATE INDEX customer_tickets_priority_idx ON customer_tickets(priority);
+CREATE INDEX IF NOT EXISTS customer_tickets_customer_id_idx ON customer_tickets(customer_id);
+CREATE INDEX IF NOT EXISTS customer_tickets_ticket_id_idx ON customer_tickets(ticket_id);
+CREATE INDEX IF NOT EXISTS customer_tickets_order_id_idx ON customer_tickets(order_id);
+CREATE INDEX IF NOT EXISTS customer_tickets_status_idx ON customer_tickets(status);
+CREATE INDEX IF NOT EXISTS customer_tickets_priority_idx ON customer_tickets(priority);
 
 -- Customer Ticket Messages
-CREATE TABLE customer_ticket_messages (
+CREATE TABLE IF NOT EXISTS customer_ticket_messages (
   id BIGSERIAL PRIMARY KEY,
   ticket_id BIGINT NOT NULL REFERENCES customer_tickets(id) ON DELETE CASCADE,
   
@@ -363,11 +363,11 @@ CREATE TABLE customer_ticket_messages (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_ticket_messages_ticket_id_idx ON customer_ticket_messages(ticket_id);
-CREATE INDEX customer_ticket_messages_created_at_idx ON customer_ticket_messages(created_at);
+CREATE INDEX IF NOT EXISTS customer_ticket_messages_ticket_id_idx ON customer_ticket_messages(ticket_id);
+CREATE INDEX IF NOT EXISTS customer_ticket_messages_created_at_idx ON customer_ticket_messages(created_at);
 
 -- Customer Disputes
-CREATE TABLE customer_disputes (
+CREATE TABLE IF NOT EXISTS customer_disputes (
   id BIGSERIAL PRIMARY KEY,
   dispute_id TEXT NOT NULL UNIQUE,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -408,12 +408,12 @@ CREATE TABLE customer_disputes (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_disputes_customer_id_idx ON customer_disputes(customer_id);
-CREATE INDEX customer_disputes_order_id_idx ON customer_disputes(order_id);
-CREATE INDEX customer_disputes_dispute_status_idx ON customer_disputes(dispute_status);
+CREATE INDEX IF NOT EXISTS customer_disputes_customer_id_idx ON customer_disputes(customer_id);
+CREATE INDEX IF NOT EXISTS customer_disputes_order_id_idx ON customer_disputes(order_id);
+CREATE INDEX IF NOT EXISTS customer_disputes_dispute_status_idx ON customer_disputes(dispute_status);
 
 -- Customer Refund Requests
-CREATE TABLE customer_refund_requests (
+CREATE TABLE IF NOT EXISTS customer_refund_requests (
   id BIGSERIAL PRIMARY KEY,
   refund_request_id TEXT NOT NULL UNIQUE,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
@@ -448,16 +448,16 @@ CREATE TABLE customer_refund_requests (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_refund_requests_customer_id_idx ON customer_refund_requests(customer_id);
-CREATE INDEX customer_refund_requests_order_id_idx ON customer_refund_requests(order_id);
-CREATE INDEX customer_refund_requests_refund_status_idx ON customer_refund_requests(refund_status);
+CREATE INDEX IF NOT EXISTS customer_refund_requests_customer_id_idx ON customer_refund_requests(customer_id);
+CREATE INDEX IF NOT EXISTS customer_refund_requests_order_id_idx ON customer_refund_requests(order_id);
+CREATE INDEX IF NOT EXISTS customer_refund_requests_refund_status_idx ON customer_refund_requests(refund_status);
 
 -- ============================================================================
 -- PHASE 9: FRAUD & TRUST
 -- ============================================================================
 
 -- Customer Trust Score Tracking
-CREATE TABLE customer_trust_score (
+CREATE TABLE IF NOT EXISTS customer_trust_score (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -486,12 +486,12 @@ CREATE TABLE customer_trust_score (
   UNIQUE(customer_id)
 );
 
-CREATE INDEX customer_trust_score_customer_id_idx ON customer_trust_score(customer_id);
-CREATE INDEX customer_trust_score_risk_level_idx ON customer_trust_score(risk_level);
-CREATE INDEX customer_trust_score_is_fraudulent_idx ON customer_trust_score(is_fraudulent) WHERE is_fraudulent = TRUE;
+CREATE INDEX IF NOT EXISTS customer_trust_score_customer_id_idx ON customer_trust_score(customer_id);
+CREATE INDEX IF NOT EXISTS customer_trust_score_risk_level_idx ON customer_trust_score(risk_level);
+CREATE INDEX IF NOT EXISTS customer_trust_score_is_fraudulent_idx ON customer_trust_score(is_fraudulent) WHERE is_fraudulent = TRUE;
 
 -- Customer Fraud Alerts
-CREATE TABLE customer_fraud_alerts (
+CREATE TABLE IF NOT EXISTS customer_fraud_alerts (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   order_id BIGINT REFERENCES orders(id) ON DELETE SET NULL,
@@ -517,12 +517,12 @@ CREATE TABLE customer_fraud_alerts (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_fraud_alerts_customer_id_idx ON customer_fraud_alerts(customer_id);
-CREATE INDEX customer_fraud_alerts_alert_type_idx ON customer_fraud_alerts(alert_type);
-CREATE INDEX customer_fraud_alerts_is_resolved_idx ON customer_fraud_alerts(is_resolved) WHERE is_resolved = FALSE;
+CREATE INDEX IF NOT EXISTS customer_fraud_alerts_customer_id_idx ON customer_fraud_alerts(customer_id);
+CREATE INDEX IF NOT EXISTS customer_fraud_alerts_alert_type_idx ON customer_fraud_alerts(alert_type);
+CREATE INDEX IF NOT EXISTS customer_fraud_alerts_is_resolved_idx ON customer_fraud_alerts(is_resolved) WHERE is_resolved = FALSE;
 
 -- Customer Blocks
-CREATE TABLE customer_blocks (
+CREATE TABLE IF NOT EXISTS customer_blocks (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -555,12 +555,12 @@ CREATE TABLE customer_blocks (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_blocks_customer_id_idx ON customer_blocks(customer_id);
-CREATE INDEX customer_blocks_service_type_idx ON customer_blocks(service_type);
-CREATE INDEX customer_blocks_is_unblocked_idx ON customer_blocks(is_unblocked) WHERE is_unblocked = FALSE;
+CREATE INDEX IF NOT EXISTS customer_blocks_customer_id_idx ON customer_blocks(customer_id);
+CREATE INDEX IF NOT EXISTS customer_blocks_service_type_idx ON customer_blocks(service_type);
+CREATE INDEX IF NOT EXISTS customer_blocks_is_unblocked_idx ON customer_blocks(is_unblocked) WHERE is_unblocked = FALSE;
 
 -- Customer Suspicious Activity
-CREATE TABLE customer_suspicious_activity (
+CREATE TABLE IF NOT EXISTS customer_suspicious_activity (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -592,12 +592,12 @@ CREATE TABLE customer_suspicious_activity (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_suspicious_activity_customer_id_idx ON customer_suspicious_activity(customer_id);
-CREATE INDEX customer_suspicious_activity_activity_type_idx ON customer_suspicious_activity(activity_type);
-CREATE INDEX customer_suspicious_activity_requires_review_idx ON customer_suspicious_activity(requires_review) WHERE requires_review = TRUE;
+CREATE INDEX IF NOT EXISTS customer_suspicious_activity_customer_id_idx ON customer_suspicious_activity(customer_id);
+CREATE INDEX IF NOT EXISTS customer_suspicious_activity_activity_type_idx ON customer_suspicious_activity(activity_type);
+CREATE INDEX IF NOT EXISTS customer_suspicious_activity_requires_review_idx ON customer_suspicious_activity(requires_review) WHERE requires_review = TRUE;
 
 -- Customer Verification History
-CREATE TABLE customer_verification_history (
+CREATE TABLE IF NOT EXISTS customer_verification_history (
   id BIGSERIAL PRIMARY KEY,
   customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   
@@ -621,8 +621,8 @@ CREATE TABLE customer_verification_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX customer_verification_history_customer_id_idx ON customer_verification_history(customer_id);
-CREATE INDEX customer_verification_history_verification_type_idx ON customer_verification_history(verification_type);
-CREATE INDEX customer_verification_history_created_at_idx ON customer_verification_history(created_at);
+CREATE INDEX IF NOT EXISTS customer_verification_history_customer_id_idx ON customer_verification_history(customer_id);
+CREATE INDEX IF NOT EXISTS customer_verification_history_verification_type_idx ON customer_verification_history(verification_type);
+CREATE INDEX IF NOT EXISTS customer_verification_history_created_at_idx ON customer_verification_history(created_at);
 
 -- Continue in Part 3...

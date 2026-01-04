@@ -8,38 +8,50 @@
 -- ============================================================================
 
 -- Provider Types Enum
-CREATE TYPE provider_type AS ENUM (
-  'internal', -- Orders from our own app
-  'swiggy',
-  'zomato',
-  'rapido',
-  'uber',
-  'dunzo',
-  'other'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'provider_type') THEN
+    CREATE TYPE provider_type AS ENUM (
+      'internal', -- Orders from our own app
+      'swiggy',
+      'zomato',
+      'rapido',
+      'uber',
+      'dunzo',
+      'other'
+    );
+  END IF;
+END $$;
 
 -- Integration Status Enum
-CREATE TYPE integration_status AS ENUM (
-  'active',
-  'inactive',
-  'suspended',
-  'testing'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'integration_status') THEN
+    CREATE TYPE integration_status AS ENUM (
+      'active',
+      'inactive',
+      'suspended',
+      'testing'
+    );
+  END IF;
+END $$;
 
 -- Webhook Event Status
-CREATE TYPE webhook_event_status AS ENUM (
-  'pending',
-  'processing',
-  'processed',
-  'failed',
-  'ignored'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'webhook_event_status') THEN
+    CREATE TYPE webhook_event_status AS ENUM (
+      'pending',
+      'processing',
+      'processed',
+      'failed',
+      'ignored'
+    );
+  END IF;
+END $$;
 
 -- ============================================================================
 -- PROVIDER CONFIGURATION
 -- ============================================================================
 
-CREATE TABLE provider_configs (
+CREATE TABLE IF NOT EXISTS provider_configs (
   id BIGSERIAL PRIMARY KEY,
   provider_type provider_type NOT NULL,
   provider_name TEXT NOT NULL, -- Display name
@@ -60,8 +72,8 @@ CREATE TABLE provider_configs (
   UNIQUE(provider_type)
 );
 
-CREATE INDEX provider_configs_provider_type_idx ON provider_configs(provider_type);
-CREATE INDEX provider_configs_status_idx ON provider_configs(status);
+CREATE INDEX IF NOT EXISTS provider_configs_provider_type_idx ON provider_configs(provider_type);
+CREATE INDEX IF NOT EXISTS provider_configs_status_idx ON provider_configs(status);
 
 -- ============================================================================
 -- ENHANCE ORDERS TABLE FOR MULTI-SOURCE SUPPORT
@@ -94,19 +106,19 @@ ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS provider_status_updated_at TIMESTAMP WITH TIME ZONE;
 
 -- Create indexes for provider queries
-CREATE INDEX orders_source_idx ON orders(source);
-CREATE INDEX orders_provider_order_id_idx ON orders(provider_order_id) WHERE provider_order_id IS NOT NULL;
-CREATE INDEX orders_provider_reference_idx ON orders(provider_reference) WHERE provider_reference IS NOT NULL;
-CREATE INDEX orders_synced_with_provider_idx ON orders(synced_with_provider);
-CREATE INDEX orders_sync_status_idx ON orders(sync_status) WHERE sync_status IS NOT NULL;
-CREATE INDEX orders_source_provider_order_id_idx ON orders(source, provider_order_id) WHERE provider_order_id IS NOT NULL;
-CREATE INDEX orders_provider_status_idx ON orders(provider_status) WHERE provider_status IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_source_idx ON orders(source);
+CREATE INDEX IF NOT EXISTS orders_provider_order_id_idx ON orders(provider_order_id) WHERE provider_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_provider_reference_idx ON orders(provider_reference) WHERE provider_reference IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_synced_with_provider_idx ON orders(synced_with_provider);
+CREATE INDEX IF NOT EXISTS orders_sync_status_idx ON orders(sync_status) WHERE sync_status IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_source_provider_order_id_idx ON orders(source, provider_order_id) WHERE provider_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_provider_status_idx ON orders(provider_status) WHERE provider_status IS NOT NULL;
 
 -- ============================================================================
 -- WEBHOOK EVENTS (From External Providers)
 -- ============================================================================
 
-CREATE TABLE webhook_events (
+CREATE TABLE IF NOT EXISTS webhook_events (
   id BIGSERIAL PRIMARY KEY,
   provider_type provider_type NOT NULL,
   event_type TEXT NOT NULL, -- 'order.created', 'order.updated', 'order.cancelled', 'payment.completed', etc.
@@ -124,19 +136,19 @@ CREATE TABLE webhook_events (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX webhook_events_provider_type_idx ON webhook_events(provider_type);
-CREATE INDEX webhook_events_event_type_idx ON webhook_events(event_type);
-CREATE INDEX webhook_events_status_idx ON webhook_events(status);
-CREATE INDEX webhook_events_event_id_idx ON webhook_events(event_id) WHERE event_id IS NOT NULL;
-CREATE INDEX webhook_events_processed_order_id_idx ON webhook_events(processed_order_id) WHERE processed_order_id IS NOT NULL;
-CREATE INDEX webhook_events_created_at_idx ON webhook_events(created_at);
-CREATE INDEX webhook_events_pending_processing_idx ON webhook_events(status, created_at) WHERE status IN ('pending', 'processing');
+CREATE INDEX IF NOT EXISTS webhook_events_provider_type_idx ON webhook_events(provider_type);
+CREATE INDEX IF NOT EXISTS webhook_events_event_type_idx ON webhook_events(event_type);
+CREATE INDEX IF NOT EXISTS webhook_events_status_idx ON webhook_events(status);
+CREATE INDEX IF NOT EXISTS webhook_events_event_id_idx ON webhook_events(event_id) WHERE event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS webhook_events_processed_order_id_idx ON webhook_events(processed_order_id) WHERE processed_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS webhook_events_created_at_idx ON webhook_events(created_at);
+CREATE INDEX IF NOT EXISTS webhook_events_pending_processing_idx ON webhook_events(status, created_at) WHERE status IN ('pending', 'processing');
 
 -- ============================================================================
 -- PROVIDER ORDER MAPPING (Internal Order ID <-> Provider Order ID)
 -- ============================================================================
 
-CREATE TABLE provider_order_mapping (
+CREATE TABLE IF NOT EXISTS provider_order_mapping (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   provider_type provider_type NOT NULL,
@@ -155,17 +167,17 @@ CREATE TABLE provider_order_mapping (
   UNIQUE(provider_type, provider_order_id)
 );
 
-CREATE INDEX provider_order_mapping_order_id_idx ON provider_order_mapping(order_id);
-CREATE INDEX provider_order_mapping_provider_type_idx ON provider_order_mapping(provider_type);
-CREATE INDEX provider_order_mapping_provider_order_id_idx ON provider_order_mapping(provider_order_id);
-CREATE INDEX provider_order_mapping_sync_status_idx ON provider_order_mapping(sync_status);
-CREATE INDEX provider_order_mapping_order_provider_idx ON provider_order_mapping(order_id, provider_type);
+CREATE INDEX IF NOT EXISTS provider_order_mapping_order_id_idx ON provider_order_mapping(order_id);
+CREATE INDEX IF NOT EXISTS provider_order_mapping_provider_type_idx ON provider_order_mapping(provider_type);
+CREATE INDEX IF NOT EXISTS provider_order_mapping_provider_order_id_idx ON provider_order_mapping(provider_order_id);
+CREATE INDEX IF NOT EXISTS provider_order_mapping_sync_status_idx ON provider_order_mapping(sync_status);
+CREATE INDEX IF NOT EXISTS provider_order_mapping_order_provider_idx ON provider_order_mapping(order_id, provider_type);
 
 -- ============================================================================
 -- API CALL LOGS (For External Provider API Calls)
 -- ============================================================================
 
-CREATE TABLE api_call_logs (
+CREATE TABLE IF NOT EXISTS api_call_logs (
   id BIGSERIAL PRIMARY KEY,
   provider_type provider_type NOT NULL,
   endpoint TEXT NOT NULL, -- API endpoint called
@@ -180,17 +192,17 @@ CREATE TABLE api_call_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX api_call_logs_provider_type_idx ON api_call_logs(provider_type);
-CREATE INDEX api_call_logs_endpoint_idx ON api_call_logs(endpoint);
-CREATE INDEX api_call_logs_success_idx ON api_call_logs(success);
-CREATE INDEX api_call_logs_order_id_idx ON api_call_logs(order_id) WHERE order_id IS NOT NULL;
-CREATE INDEX api_call_logs_created_at_idx ON api_call_logs(created_at);
+CREATE INDEX IF NOT EXISTS api_call_logs_provider_type_idx ON api_call_logs(provider_type);
+CREATE INDEX IF NOT EXISTS api_call_logs_endpoint_idx ON api_call_logs(endpoint);
+CREATE INDEX IF NOT EXISTS api_call_logs_success_idx ON api_call_logs(success);
+CREATE INDEX IF NOT EXISTS api_call_logs_order_id_idx ON api_call_logs(order_id) WHERE order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS api_call_logs_created_at_idx ON api_call_logs(created_at);
 
 -- ============================================================================
 -- ORDER SYNCHRONIZATION LOGS
 -- ============================================================================
 
-CREATE TABLE order_sync_logs (
+CREATE TABLE IF NOT EXISTS order_sync_logs (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   provider_type provider_type NOT NULL,
@@ -206,11 +218,11 @@ CREATE TABLE order_sync_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_sync_logs_order_id_idx ON order_sync_logs(order_id);
-CREATE INDEX order_sync_logs_provider_type_idx ON order_sync_logs(provider_type);
-CREATE INDEX order_sync_logs_sync_direction_idx ON order_sync_logs(sync_direction);
-CREATE INDEX order_sync_logs_success_idx ON order_sync_logs(success);
-CREATE INDEX order_sync_logs_created_at_idx ON order_sync_logs(created_at);
+CREATE INDEX IF NOT EXISTS order_sync_logs_order_id_idx ON order_sync_logs(order_id);
+CREATE INDEX IF NOT EXISTS order_sync_logs_provider_type_idx ON order_sync_logs(provider_type);
+CREATE INDEX IF NOT EXISTS order_sync_logs_sync_direction_idx ON order_sync_logs(sync_direction);
+CREATE INDEX IF NOT EXISTS order_sync_logs_success_idx ON order_sync_logs(success);
+CREATE INDEX IF NOT EXISTS order_sync_logs_created_at_idx ON order_sync_logs(created_at);
 
 -- ============================================================================
 -- ENHANCE EXISTING TABLES FOR PROVIDER SUPPORT
@@ -222,22 +234,22 @@ ALTER TABLE order_events
   ADD COLUMN IF NOT EXISTS synced_to_provider BOOLEAN DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS provider_sync_error TEXT;
 
-CREATE INDEX order_events_provider_event_id_idx ON order_events(provider_event_id) WHERE provider_event_id IS NOT NULL;
-CREATE INDEX order_events_synced_to_provider_idx ON order_events(synced_to_provider);
+CREATE INDEX IF NOT EXISTS order_events_provider_event_id_idx ON order_events(provider_event_id) WHERE provider_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS order_events_synced_to_provider_idx ON order_events(synced_to_provider);
 
 -- Add provider tracking to order_actions
 ALTER TABLE order_actions
   ADD COLUMN IF NOT EXISTS synced_to_provider BOOLEAN DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS provider_response JSONB;
 
-CREATE INDEX order_actions_synced_to_provider_idx ON order_actions(synced_to_provider);
+CREATE INDEX IF NOT EXISTS order_actions_synced_to_provider_idx ON order_actions(synced_to_provider);
 
 -- Add provider tracking to order_status_history
 ALTER TABLE order_status_history
   ADD COLUMN IF NOT EXISTS synced_to_provider BOOLEAN DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS provider_status TEXT; -- Provider's equivalent status
 
-CREATE INDEX order_status_history_synced_to_provider_idx ON order_status_history(synced_to_provider);
+CREATE INDEX IF NOT EXISTS order_status_history_synced_to_provider_idx ON order_status_history(synced_to_provider);
 
 -- ============================================================================
 -- PROVIDER-SPECIFIC ORDER FIELDS
@@ -265,15 +277,15 @@ ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS rapido_trip_id TEXT;
 
 -- Create indexes for provider-specific IDs
-CREATE INDEX orders_swiggy_order_id_idx ON orders(swiggy_order_id) WHERE swiggy_order_id IS NOT NULL;
-CREATE INDEX orders_zomato_order_id_idx ON orders(zomato_order_id) WHERE zomato_order_id IS NOT NULL;
-CREATE INDEX orders_rapido_booking_id_idx ON orders(rapido_booking_id) WHERE rapido_booking_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_swiggy_order_id_idx ON orders(swiggy_order_id) WHERE swiggy_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_zomato_order_id_idx ON orders(zomato_order_id) WHERE zomato_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS orders_rapido_booking_id_idx ON orders(rapido_booking_id) WHERE rapido_booking_id IS NOT NULL;
 
 -- ============================================================================
 -- PROVIDER RATE LIMITING
 -- ============================================================================
 
-CREATE TABLE provider_rate_limits (
+CREATE TABLE IF NOT EXISTS provider_rate_limits (
   id BIGSERIAL PRIMARY KEY,
   provider_type provider_type NOT NULL,
   endpoint TEXT NOT NULL,
@@ -286,14 +298,14 @@ CREATE TABLE provider_rate_limits (
   UNIQUE(provider_type, endpoint, window_start)
 );
 
-CREATE INDEX provider_rate_limits_provider_endpoint_idx ON provider_rate_limits(provider_type, endpoint);
-CREATE INDEX provider_rate_limits_window_end_idx ON provider_rate_limits(window_end);
+CREATE INDEX IF NOT EXISTS provider_rate_limits_provider_endpoint_idx ON provider_rate_limits(provider_type, endpoint);
+CREATE INDEX IF NOT EXISTS provider_rate_limits_window_end_idx ON provider_rate_limits(window_end);
 
 -- ============================================================================
 -- PROVIDER WEBHOOK CONFIGURATION
 -- ============================================================================
 
-CREATE TABLE webhook_configurations (
+CREATE TABLE IF NOT EXISTS webhook_configurations (
   id BIGSERIAL PRIMARY KEY,
   provider_type provider_type NOT NULL,
   event_type TEXT NOT NULL, -- 'order.created', 'order.updated', etc.
@@ -309,21 +321,25 @@ CREATE TABLE webhook_configurations (
   UNIQUE(provider_type, event_type)
 );
 
-CREATE INDEX webhook_configurations_provider_type_idx ON webhook_configurations(provider_type);
-CREATE INDEX webhook_configurations_enabled_idx ON webhook_configurations(enabled);
+CREATE INDEX IF NOT EXISTS webhook_configurations_provider_type_idx ON webhook_configurations(provider_type);
+CREATE INDEX IF NOT EXISTS webhook_configurations_enabled_idx ON webhook_configurations(enabled);
 
 -- ============================================================================
 -- ORDER CONFLICT RESOLUTION
 -- ============================================================================
 
-CREATE TYPE conflict_resolution_strategy AS ENUM (
-  'ours_wins', -- Our internal status takes precedence
-  'theirs_wins', -- Provider status takes precedence
-  'manual_review', -- Flag for manual review
-  'merge' -- Merge both statuses
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'conflict_resolution_strategy') THEN
+    CREATE TYPE conflict_resolution_strategy AS ENUM (
+      'ours_wins', -- Our internal status takes precedence
+      'theirs_wins', -- Provider status takes precedence
+      'manual_review', -- Flag for manual review
+      'merge' -- Merge both statuses
+    );
+  END IF;
+END $$;
 
-CREATE TABLE order_conflicts (
+CREATE TABLE IF NOT EXISTS order_conflicts (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   provider_type provider_type NOT NULL,
@@ -338,16 +354,16 @@ CREATE TABLE order_conflicts (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_conflicts_order_id_idx ON order_conflicts(order_id);
-CREATE INDEX order_conflicts_provider_type_idx ON order_conflicts(provider_type);
-CREATE INDEX order_conflicts_resolved_idx ON order_conflicts(resolved) WHERE resolved = FALSE;
-CREATE INDEX order_conflicts_conflict_type_idx ON order_conflicts(conflict_type);
+CREATE INDEX IF NOT EXISTS order_conflicts_order_id_idx ON order_conflicts(order_id);
+CREATE INDEX IF NOT EXISTS order_conflicts_provider_type_idx ON order_conflicts(provider_type);
+CREATE INDEX IF NOT EXISTS order_conflicts_resolved_idx ON order_conflicts(resolved) WHERE resolved = FALSE;
+CREATE INDEX IF NOT EXISTS order_conflicts_conflict_type_idx ON order_conflicts(conflict_type);
 
 -- ============================================================================
 -- PROVIDER COMMISSION STRUCTURE
 -- ============================================================================
 
-CREATE TABLE provider_commission_rules (
+CREATE TABLE IF NOT EXISTS provider_commission_rules (
   id BIGSERIAL PRIMARY KEY,
   provider_type provider_type NOT NULL,
   order_type order_type NOT NULL,
@@ -362,13 +378,13 @@ CREATE TABLE provider_commission_rules (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX provider_commission_rules_provider_type_idx ON provider_commission_rules(provider_type);
-CREATE INDEX provider_commission_rules_order_type_idx ON provider_commission_rules(order_type);
-CREATE INDEX provider_commission_rules_city_idx ON provider_commission_rules(city) WHERE city IS NOT NULL;
-CREATE INDEX provider_commission_rules_active_idx ON provider_commission_rules(effective_from, effective_to) WHERE effective_to IS NULL;
+CREATE INDEX IF NOT EXISTS provider_commission_rules_provider_type_idx ON provider_commission_rules(provider_type);
+CREATE INDEX IF NOT EXISTS provider_commission_rules_order_type_idx ON provider_commission_rules(order_type);
+CREATE INDEX IF NOT EXISTS provider_commission_rules_city_idx ON provider_commission_rules(city) WHERE city IS NOT NULL;
+CREATE INDEX IF NOT EXISTS provider_commission_rules_active_idx ON provider_commission_rules(effective_from, effective_to) WHERE effective_to IS NULL;
 
 -- Partial unique index (with WHERE clause)
-CREATE UNIQUE INDEX provider_commission_rules_active_unique_idx 
+CREATE UNIQUE INDEX IF NOT EXISTS provider_commission_rules_active_unique_idx 
   ON provider_commission_rules(provider_type, order_type, effective_from) 
   WHERE effective_to IS NULL;
 
@@ -384,24 +400,28 @@ CREATE UNIQUE INDEX provider_commission_rules_active_unique_idx
 -- ============================================================================
 
 -- Trigger for provider_configs updated_at
+DROP TRIGGER IF EXISTS update_provider_configs_updated_at ON provider_configs;
 CREATE TRIGGER update_provider_configs_updated_at
   BEFORE UPDATE ON provider_configs
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for provider_order_mapping updated_at
+DROP TRIGGER IF EXISTS update_provider_order_mapping_updated_at ON provider_order_mapping;
 CREATE TRIGGER update_provider_order_mapping_updated_at
   BEFORE UPDATE ON provider_order_mapping
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for webhook_configurations updated_at
+DROP TRIGGER IF EXISTS update_webhook_configurations_updated_at ON webhook_configurations;
 CREATE TRIGGER update_webhook_configurations_updated_at
   BEFORE UPDATE ON webhook_configurations
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for provider_rate_limits updated_at
+DROP TRIGGER IF EXISTS update_provider_rate_limits_updated_at ON provider_rate_limits;
 CREATE TRIGGER update_provider_rate_limits_updated_at
   BEFORE UPDATE ON provider_rate_limits
   FOR EACH ROW

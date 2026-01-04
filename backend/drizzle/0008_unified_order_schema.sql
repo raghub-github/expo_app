@@ -19,116 +19,168 @@
 -- NEW ENUMS (No Conflicts with Existing)
 -- ============================================================================
 
-CREATE TYPE order_source_type AS ENUM (
-  'internal',      -- Our own app
-  'swiggy',
-  'zomato',
-  'rapido',
-  'ondc',          -- Open Network for Digital Commerce
-  'shiprocket',
-  'other'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_source_type') THEN
+    CREATE TYPE order_source_type AS ENUM (
+      'internal',      -- Our own app
+      'swiggy',
+      'zomato',
+      'rapido',
+      'ondc',          -- Open Network for Digital Commerce
+      'shiprocket',
+      'other'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE order_category_type AS ENUM (
-  'food',
-  'parcel',
-  'ride',
-  '3pl'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'order_category_type') THEN
+    CREATE TYPE order_category_type AS ENUM (
+      'food',
+      'parcel',
+      'ride',
+      '3pl'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE veg_non_veg_type AS ENUM (
-  'veg',
-  'non_veg',
-  'mixed',
-  'na'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'veg_non_veg_type') THEN
+    CREATE TYPE veg_non_veg_type AS ENUM (
+      'veg',
+      'non_veg',
+      'mixed',
+      'na'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE payment_status_type AS ENUM (
-  'pending',
-  'processing',
-  'completed',
-  'failed',
-  'refunded',
-  'partially_refunded',
-  'cancelled'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_status_type') THEN
+    CREATE TYPE payment_status_type AS ENUM (
+      'pending',
+      'processing',
+      'completed',
+      'failed',
+      'refunded',
+      'partially_refunded',
+      'cancelled'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE payment_mode_type AS ENUM (
-  'cash',
-  'online',
-  'wallet',
-  'upi',
-  'card',
-  'netbanking',
-  'cod',           -- Cash on delivery
-  'other'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'payment_mode_type') THEN
+    CREATE TYPE payment_mode_type AS ENUM (
+      'cash',
+      'online',
+      'wallet',
+      'upi',
+      'card',
+      'netbanking',
+      'cod',           -- Cash on delivery
+      'other'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE refund_type AS ENUM (
-  'full',
-  'partial',
-  'item',
-  'delivery_fee',
-  'tip',
-  'penalty'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'refund_type') THEN
+    CREATE TYPE refund_type AS ENUM (
+      'full',
+      'partial',
+      'item',
+      'delivery_fee',
+      'tip',
+      'penalty'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE rider_assignment_status AS ENUM (
-  'pending',
-  'assigned',
-  'accepted',
-  'rejected',
-  'cancelled',
-  'completed',
-  'failed'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'rider_assignment_status') THEN
+    CREATE TYPE rider_assignment_status AS ENUM (
+      'pending',
+      'assigned',
+      'accepted',
+      'rejected',
+      'cancelled',
+      'completed',
+      'failed'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE notification_channel_type AS ENUM (
-  'push',
-  'sms',
-  'email',
-  'in_app',
-  'whatsapp',
-  'call'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'notification_channel_type') THEN
+    CREATE TYPE notification_channel_type AS ENUM (
+      'push',
+      'sms',
+      'email',
+      'in_app',
+      'whatsapp',
+      'call'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE ticket_source_type AS ENUM (
-  'customer',
-  'rider',
-  'merchant',
-  'system',
-  'agent'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ticket_source_type') THEN
+    CREATE TYPE ticket_source_type AS ENUM (
+      'customer',
+      'rider',
+      'merchant',
+      'system',
+      'agent'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE ticket_priority_type AS ENUM (
-  'low',
-  'medium',
-  'high',
-  'urgent',
-  'critical'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ticket_priority_type') THEN
+    CREATE TYPE ticket_priority_type AS ENUM (
+      'low',
+      'medium',
+      'high',
+      'urgent',
+      'critical'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE delivery_type AS ENUM (
-  'standard',
-  'express',
-  'scheduled',
-  'same_day',
-  'next_day'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'delivery_type') THEN
+    CREATE TYPE delivery_type AS ENUM (
+      'standard',
+      'express',
+      'scheduled',
+      'same_day',
+      'next_day'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE delivery_initiator_type AS ENUM (
-  'customer',
-  'merchant',
-  'system',
-  'agent'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'delivery_initiator_type') THEN
+    CREATE TYPE delivery_initiator_type AS ENUM (
+      'customer',
+      'merchant',
+      'system',
+      'agent'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE locality_type AS ENUM (
-  'urban',
-  'semi_urban',
-  'rural',
-  'highway'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'locality_type') THEN
+    CREATE TYPE locality_type AS ENUM (
+      'urban',
+      'semi_urban',
+      'rural',
+      'highway'
+    );
+  END IF;
+END $$;
 
 -- ============================================================================
 -- EXTEND EXISTING ORDERS TABLE
@@ -1445,6 +1497,73 @@ COMMENT ON TABLE order_notifications IS 'All notifications sent to customers, ri
 COMMENT ON TABLE order_remarks IS 'Remarks from agents, customers, riders, and merchants. Supports internal notes and public remarks.';
 COMMENT ON TABLE order_tickets IS 'Support tickets raised by customers, riders, or merchants. Tracks priority, status, and resolution.';
 COMMENT ON TABLE order_disputes IS 'Legal dispute tracking. Stores evidence, resolution details, and legal case information.';
+
+-- ============================================================================
+-- ADD MISSING FOREIGN KEYS FOR ORDERS TABLE (Conditional)
+-- ============================================================================
+
+-- Orders -> Merchant Stores (if merchant_stores table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'merchant_stores') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'merchant_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_merchant_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_merchant_id_fkey
+          FOREIGN KEY (merchant_id) REFERENCES merchant_stores(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
+
+-- Orders -> Merchant Parents (if merchant_parents table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'merchant_parents') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'merchant_parent_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_merchant_parent_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_merchant_parent_id_fkey
+          FOREIGN KEY (merchant_parent_id) REFERENCES merchant_parents(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
+
+-- Orders -> Customers (if customers table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'customers') THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns 
+      WHERE table_name = 'orders' 
+        AND column_name = 'customer_id'
+    ) THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints 
+        WHERE constraint_name = 'orders_customer_id_fkey'
+      ) THEN
+        ALTER TABLE orders
+          ADD CONSTRAINT orders_customer_id_fkey
+          FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL;
+      END IF;
+    END IF;
+  END IF;
+END $$;
 COMMENT ON TABLE order_audit_log IS 'Complete audit trail of all order changes. Tracks who changed what and when. Legal dispute safe.';
 COMMENT ON TABLE order_food_details IS 'Food delivery specific details: restaurant info, preparation time, food items count.';
 COMMENT ON TABLE order_parcel_details IS 'Parcel delivery specific details: package dimensions, COD, insurance, verification requirements.';

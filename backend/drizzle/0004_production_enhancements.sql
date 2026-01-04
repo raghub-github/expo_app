@@ -11,7 +11,7 @@
 -- 1. OTP VERIFICATION LOGS
 -- ============================================================================
 
-CREATE TABLE otp_verification_logs (
+CREATE TABLE IF NOT EXISTS otp_verification_logs (
   id BIGSERIAL PRIMARY KEY,
   phone_e164 TEXT NOT NULL,
   otp_hash TEXT NOT NULL, -- Hashed OTP, never store plain text
@@ -27,16 +27,16 @@ CREATE TABLE otp_verification_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX otp_verification_logs_phone_idx ON otp_verification_logs(phone_e164);
-CREATE INDEX otp_verification_logs_status_idx ON otp_verification_logs(status);
-CREATE INDEX otp_verification_logs_created_at_idx ON otp_verification_logs(created_at);
-CREATE INDEX otp_verification_logs_device_id_idx ON otp_verification_logs(device_id) WHERE device_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS otp_verification_logs_phone_idx ON otp_verification_logs(phone_e164);
+CREATE INDEX IF NOT EXISTS otp_verification_logs_status_idx ON otp_verification_logs(status);
+CREATE INDEX IF NOT EXISTS otp_verification_logs_created_at_idx ON otp_verification_logs(created_at);
+CREATE INDEX IF NOT EXISTS otp_verification_logs_device_id_idx ON otp_verification_logs(device_id) WHERE device_id IS NOT NULL;
 
 -- ============================================================================
 -- 2. PAYMENT WEBHOOKS
 -- ============================================================================
 
-CREATE TABLE payment_webhooks (
+CREATE TABLE IF NOT EXISTS payment_webhooks (
   id BIGSERIAL PRIMARY KEY,
   provider TEXT NOT NULL, -- 'razorpay', 'stripe', 'payu', etc.
   webhook_id TEXT, -- Provider's webhook ID
@@ -52,17 +52,17 @@ CREATE TABLE payment_webhooks (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX payment_webhooks_provider_idx ON payment_webhooks(provider);
-CREATE INDEX payment_webhooks_event_type_idx ON payment_webhooks(event_type);
-CREATE INDEX payment_webhooks_processing_status_idx ON payment_webhooks(processing_status);
-CREATE INDEX payment_webhooks_webhook_id_idx ON payment_webhooks(webhook_id) WHERE webhook_id IS NOT NULL;
-CREATE INDEX payment_webhooks_created_at_idx ON payment_webhooks(created_at);
+CREATE INDEX IF NOT EXISTS payment_webhooks_provider_idx ON payment_webhooks(provider);
+CREATE INDEX IF NOT EXISTS payment_webhooks_event_type_idx ON payment_webhooks(event_type);
+CREATE INDEX IF NOT EXISTS payment_webhooks_processing_status_idx ON payment_webhooks(processing_status);
+CREATE INDEX IF NOT EXISTS payment_webhooks_webhook_id_idx ON payment_webhooks(webhook_id) WHERE webhook_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS payment_webhooks_created_at_idx ON payment_webhooks(created_at);
 
 -- ============================================================================
 -- 3. ORDER CANCELLATION REASONS
 -- ============================================================================
 
-CREATE TABLE order_cancellation_reasons (
+CREATE TABLE IF NOT EXISTS order_cancellation_reasons (
   id BIGSERIAL PRIMARY KEY,
   order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   cancelled_by TEXT NOT NULL, -- 'rider', 'customer', 'merchant', 'system'
@@ -77,10 +77,10 @@ CREATE TABLE order_cancellation_reasons (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX order_cancellation_reasons_order_id_idx ON order_cancellation_reasons(order_id);
-CREATE INDEX order_cancellation_reasons_cancelled_by_idx ON order_cancellation_reasons(cancelled_by);
-CREATE INDEX order_cancellation_reasons_reason_code_idx ON order_cancellation_reasons(reason_code);
-CREATE INDEX order_cancellation_reasons_refund_status_idx ON order_cancellation_reasons(refund_status);
+CREATE INDEX IF NOT EXISTS order_cancellation_reasons_order_id_idx ON order_cancellation_reasons(order_id);
+CREATE INDEX IF NOT EXISTS order_cancellation_reasons_cancelled_by_idx ON order_cancellation_reasons(cancelled_by);
+CREATE INDEX IF NOT EXISTS order_cancellation_reasons_reason_code_idx ON order_cancellation_reasons(reason_code);
+CREATE INDEX IF NOT EXISTS order_cancellation_reasons_refund_status_idx ON order_cancellation_reasons(refund_status);
 
 -- Add foreign key to orders table
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancellation_reason_id BIGINT REFERENCES order_cancellation_reasons(id);
@@ -89,7 +89,7 @@ ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancellation_reason_id BIGINT REFERE
 -- 4. NOTIFICATION PREFERENCES
 -- ============================================================================
 
-CREATE TABLE notification_preferences (
+CREATE TABLE IF NOT EXISTS notification_preferences (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   notification_type TEXT NOT NULL, -- 'order', 'payment', 'offer', 'system', 'promotional'
@@ -102,15 +102,15 @@ CREATE TABLE notification_preferences (
   UNIQUE(rider_id, notification_type, channel)
 );
 
-CREATE INDEX notification_preferences_rider_id_idx ON notification_preferences(rider_id);
-CREATE INDEX notification_preferences_notification_type_idx ON notification_preferences(notification_type);
-CREATE INDEX notification_preferences_enabled_idx ON notification_preferences(enabled);
+CREATE INDEX IF NOT EXISTS notification_preferences_rider_id_idx ON notification_preferences(rider_id);
+CREATE INDEX IF NOT EXISTS notification_preferences_notification_type_idx ON notification_preferences(notification_type);
+CREATE INDEX IF NOT EXISTS notification_preferences_enabled_idx ON notification_preferences(enabled);
 
 -- ============================================================================
 -- 5. SYSTEM CONFIG
 -- ============================================================================
 
-CREATE TABLE system_config (
+CREATE TABLE IF NOT EXISTS system_config (
   id BIGSERIAL PRIMARY KEY,
   config_key TEXT NOT NULL UNIQUE, -- e.g., 'min_withdrawal_amount', 'max_order_distance_km'
   config_value JSONB NOT NULL, -- Can be string, number, boolean, or complex object
@@ -122,8 +122,8 @@ CREATE TABLE system_config (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX system_config_category_idx ON system_config(category);
-CREATE INDEX system_config_updated_at_idx ON system_config(updated_at);
+CREATE INDEX IF NOT EXISTS system_config_category_idx ON system_config(category);
+CREATE INDEX IF NOT EXISTS system_config_updated_at_idx ON system_config(updated_at);
 
 -- Insert default config values
 INSERT INTO system_config (config_key, config_value, value_type, description, category) VALUES
@@ -142,7 +142,7 @@ ON CONFLICT (config_key) DO NOTHING;
 -- 6. APP VERSIONS
 -- ============================================================================
 
-CREATE TABLE app_versions (
+CREATE TABLE IF NOT EXISTS app_versions (
   id BIGSERIAL PRIMARY KEY,
   platform TEXT NOT NULL, -- 'android', 'ios'
   version_code INTEGER NOT NULL, -- Numeric version code (e.g., 1, 2, 3)
@@ -158,9 +158,9 @@ CREATE TABLE app_versions (
   UNIQUE(platform, version_code)
 );
 
-CREATE INDEX app_versions_platform_idx ON app_versions(platform);
-CREATE INDEX app_versions_active_idx ON app_versions(active);
-CREATE INDEX app_versions_version_code_idx ON app_versions(platform, version_code DESC);
+CREATE INDEX IF NOT EXISTS app_versions_platform_idx ON app_versions(platform);
+CREATE INDEX IF NOT EXISTS app_versions_active_idx ON app_versions(active);
+CREATE INDEX IF NOT EXISTS app_versions_version_code_idx ON app_versions(platform, version_code DESC);
 
 -- ============================================================================
 -- PRIORITY 2: IMPORTANT FOR OPERATIONS
@@ -170,7 +170,7 @@ CREATE INDEX app_versions_version_code_idx ON app_versions(platform, version_cod
 -- 7. RIDER VEHICLES
 -- ============================================================================
 
-CREATE TABLE rider_vehicles (
+CREATE TABLE IF NOT EXISTS rider_vehicles (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   vehicle_type TEXT NOT NULL, -- 'bike', 'car', 'bicycle', 'scooter', 'auto'
@@ -190,18 +190,18 @@ CREATE TABLE rider_vehicles (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX rider_vehicles_rider_id_idx ON rider_vehicles(rider_id);
-CREATE INDEX rider_vehicles_vehicle_type_idx ON rider_vehicles(vehicle_type);
-CREATE INDEX rider_vehicles_registration_number_idx ON rider_vehicles(registration_number);
-CREATE INDEX rider_vehicles_verified_idx ON rider_vehicles(verified);
-CREATE INDEX rider_vehicles_is_active_idx ON rider_vehicles(is_active);
-CREATE UNIQUE INDEX rider_vehicles_rider_active_idx ON rider_vehicles(rider_id) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS rider_vehicles_rider_id_idx ON rider_vehicles(rider_id);
+CREATE INDEX IF NOT EXISTS rider_vehicles_vehicle_type_idx ON rider_vehicles(vehicle_type);
+CREATE INDEX IF NOT EXISTS rider_vehicles_registration_number_idx ON rider_vehicles(registration_number);
+CREATE INDEX IF NOT EXISTS rider_vehicles_verified_idx ON rider_vehicles(verified);
+CREATE INDEX IF NOT EXISTS rider_vehicles_is_active_idx ON rider_vehicles(is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS rider_vehicles_rider_active_idx ON rider_vehicles(rider_id) WHERE is_active = TRUE;
 
 -- ============================================================================
 -- 8. INSURANCE POLICIES
 -- ============================================================================
 
-CREATE TABLE insurance_policies (
+CREATE TABLE IF NOT EXISTS insurance_policies (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   vehicle_id BIGINT REFERENCES rider_vehicles(id) ON DELETE SET NULL,
@@ -218,19 +218,19 @@ CREATE TABLE insurance_policies (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX insurance_policies_rider_id_idx ON insurance_policies(rider_id);
-CREATE INDEX insurance_policies_vehicle_id_idx ON insurance_policies(vehicle_id) WHERE vehicle_id IS NOT NULL;
-CREATE INDEX insurance_policies_status_idx ON insurance_policies(status);
-CREATE INDEX insurance_policies_end_date_idx ON insurance_policies(end_date);
+CREATE INDEX IF NOT EXISTS insurance_policies_rider_id_idx ON insurance_policies(rider_id);
+CREATE INDEX IF NOT EXISTS insurance_policies_vehicle_id_idx ON insurance_policies(vehicle_id) WHERE vehicle_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS insurance_policies_status_idx ON insurance_policies(status);
+CREATE INDEX IF NOT EXISTS insurance_policies_end_date_idx ON insurance_policies(end_date);
 -- Note: Cannot use CURRENT_DATE in index predicate (not IMMUTABLE)
 -- Application should filter by date when querying active policies
-CREATE INDEX insurance_policies_active_end_date_idx ON insurance_policies(end_date) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS insurance_policies_active_end_date_idx ON insurance_policies(end_date) WHERE status = 'active';
 
 -- ============================================================================
 -- 9. SETTLEMENT BATCHES
 -- ============================================================================
 
-CREATE TABLE settlement_batches (
+CREATE TABLE IF NOT EXISTS settlement_batches (
   id BIGSERIAL PRIMARY KEY,
   batch_number TEXT NOT NULL UNIQUE, -- Human-readable batch number
   date_range_start DATE NOT NULL,
@@ -250,20 +250,20 @@ CREATE TABLE settlement_batches (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX settlement_batches_status_idx ON settlement_batches(status);
-CREATE INDEX settlement_batches_date_range_idx ON settlement_batches(date_range_start, date_range_end);
-CREATE INDEX settlement_batches_created_at_idx ON settlement_batches(created_at);
+CREATE INDEX IF NOT EXISTS settlement_batches_status_idx ON settlement_batches(status);
+CREATE INDEX IF NOT EXISTS settlement_batches_date_range_idx ON settlement_batches(date_range_start, date_range_end);
+CREATE INDEX IF NOT EXISTS settlement_batches_created_at_idx ON settlement_batches(created_at);
 
 -- Add foreign key to withdrawal_requests
 ALTER TABLE withdrawal_requests ADD COLUMN IF NOT EXISTS settlement_batch_id BIGINT REFERENCES settlement_batches(id);
 
-CREATE INDEX withdrawal_requests_settlement_batch_id_idx ON withdrawal_requests(settlement_batch_id) WHERE settlement_batch_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS withdrawal_requests_settlement_batch_id_idx ON withdrawal_requests(settlement_batch_id) WHERE settlement_batch_id IS NOT NULL;
 
 -- ============================================================================
 -- 10. COMMISSION HISTORY
 -- ============================================================================
 
-CREATE TABLE commission_history (
+CREATE TABLE IF NOT EXISTS commission_history (
   id BIGSERIAL PRIMARY KEY,
   order_type order_type NOT NULL,
   commission_percentage NUMERIC(5, 2), -- e.g., 15.00 for 15%
@@ -277,16 +277,16 @@ CREATE TABLE commission_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX commission_history_order_type_idx ON commission_history(order_type);
-CREATE INDEX commission_history_city_idx ON commission_history(city) WHERE city IS NOT NULL;
-CREATE INDEX commission_history_effective_from_idx ON commission_history(effective_from);
-CREATE INDEX commission_history_active_idx ON commission_history(effective_from, effective_to) WHERE effective_to IS NULL;
+CREATE INDEX IF NOT EXISTS commission_history_order_type_idx ON commission_history(order_type);
+CREATE INDEX IF NOT EXISTS commission_history_city_idx ON commission_history(city) WHERE city IS NOT NULL;
+CREATE INDEX IF NOT EXISTS commission_history_effective_from_idx ON commission_history(effective_from);
+CREATE INDEX IF NOT EXISTS commission_history_active_idx ON commission_history(effective_from, effective_to) WHERE effective_to IS NULL;
 
 -- ============================================================================
 -- 11. NOTIFICATION LOGS
 -- ============================================================================
 
-CREATE TABLE notification_logs (
+CREATE TABLE IF NOT EXISTS notification_logs (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER NOT NULL REFERENCES riders(id) ON DELETE CASCADE,
   template_id TEXT, -- Reference to notification template (if using templates)
@@ -306,18 +306,18 @@ CREATE TABLE notification_logs (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX notification_logs_rider_id_idx ON notification_logs(rider_id);
-CREATE INDEX notification_logs_notification_type_idx ON notification_logs(notification_type);
-CREATE INDEX notification_logs_channel_idx ON notification_logs(channel);
-CREATE INDEX notification_logs_status_idx ON notification_logs(status);
-CREATE INDEX notification_logs_created_at_idx ON notification_logs(created_at);
-CREATE INDEX notification_logs_provider_message_id_idx ON notification_logs(provider_message_id) WHERE provider_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS notification_logs_rider_id_idx ON notification_logs(rider_id);
+CREATE INDEX IF NOT EXISTS notification_logs_notification_type_idx ON notification_logs(notification_type);
+CREATE INDEX IF NOT EXISTS notification_logs_channel_idx ON notification_logs(channel);
+CREATE INDEX IF NOT EXISTS notification_logs_status_idx ON notification_logs(status);
+CREATE INDEX IF NOT EXISTS notification_logs_created_at_idx ON notification_logs(created_at);
+CREATE INDEX IF NOT EXISTS notification_logs_provider_message_id_idx ON notification_logs(provider_message_id) WHERE provider_message_id IS NOT NULL;
 
 -- ============================================================================
 -- 12. API RATE LIMITS
 -- ============================================================================
 
-CREATE TABLE api_rate_limits (
+CREATE TABLE IF NOT EXISTS api_rate_limits (
   id BIGSERIAL PRIMARY KEY,
   rider_id INTEGER REFERENCES riders(id) ON DELETE CASCADE,
   endpoint TEXT NOT NULL, -- e.g., '/api/orders/accept', '/api/location/ping'
@@ -330,44 +330,49 @@ CREATE TABLE api_rate_limits (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX api_rate_limits_rider_id_idx ON api_rate_limits(rider_id) WHERE rider_id IS NOT NULL;
-CREATE INDEX api_rate_limits_ip_address_idx ON api_rate_limits(ip_address) WHERE ip_address IS NOT NULL;
-CREATE INDEX api_rate_limits_endpoint_idx ON api_rate_limits(endpoint);
-CREATE INDEX api_rate_limits_window_end_idx ON api_rate_limits(window_end);
+CREATE INDEX IF NOT EXISTS api_rate_limits_rider_id_idx ON api_rate_limits(rider_id) WHERE rider_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS api_rate_limits_ip_address_idx ON api_rate_limits(ip_address) WHERE ip_address IS NOT NULL;
+CREATE INDEX IF NOT EXISTS api_rate_limits_endpoint_idx ON api_rate_limits(endpoint);
+CREATE INDEX IF NOT EXISTS api_rate_limits_window_end_idx ON api_rate_limits(window_end);
 
 -- Partial unique indexes (with WHERE clauses)
-CREATE UNIQUE INDEX api_rate_limits_rider_unique_idx ON api_rate_limits(rider_id, endpoint, window_start) WHERE rider_id IS NOT NULL;
-CREATE UNIQUE INDEX api_rate_limits_ip_unique_idx ON api_rate_limits(ip_address, endpoint, window_start) WHERE ip_address IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS api_rate_limits_rider_unique_idx ON api_rate_limits(rider_id, endpoint, window_start) WHERE rider_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS api_rate_limits_ip_unique_idx ON api_rate_limits(ip_address, endpoint, window_start) WHERE ip_address IS NOT NULL;
 
 -- ============================================================================
 -- TRIGGERS
 -- ============================================================================
 
 -- Trigger for notification_preferences updated_at
+DROP TRIGGER IF EXISTS update_notification_preferences_updated_at ON notification_preferences;
 CREATE TRIGGER update_notification_preferences_updated_at
   BEFORE UPDATE ON notification_preferences
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for system_config updated_at
+DROP TRIGGER IF EXISTS update_system_config_updated_at ON system_config;
 CREATE TRIGGER update_system_config_updated_at
   BEFORE UPDATE ON system_config
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for rider_vehicles updated_at
+DROP TRIGGER IF EXISTS update_rider_vehicles_updated_at ON rider_vehicles;
 CREATE TRIGGER update_rider_vehicles_updated_at
   BEFORE UPDATE ON rider_vehicles
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for insurance_policies updated_at
+DROP TRIGGER IF EXISTS update_insurance_policies_updated_at ON insurance_policies;
 CREATE TRIGGER update_insurance_policies_updated_at
   BEFORE UPDATE ON insurance_policies
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
 -- Trigger for settlement_batches updated_at
+DROP TRIGGER IF EXISTS update_settlement_batches_updated_at ON settlement_batches;
 CREATE TRIGGER update_settlement_batches_updated_at
   BEFORE UPDATE ON settlement_batches
   FOR EACH ROW

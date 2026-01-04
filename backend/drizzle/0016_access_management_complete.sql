@@ -12,37 +12,65 @@
 -- ENUMS
 -- ============================================================================
 
-CREATE TYPE system_user_role_type AS ENUM (
-  'SUPER_ADMIN',
-  'ADMIN',
-  'AGENT',
-  'AREA_MANAGER_MERCHANT',
-  'AREA_MANAGER_RIDER',
-  'SALES_TEAM',
-  'ADVERTISEMENT_TEAM',
-  'AUDIT_TEAM',
-  'COMPLIANCE_TEAM',
-  'SUPPORT_L1',
-  'SUPPORT_L2',
-  'SUPPORT_L3',
-  'FINANCE_TEAM',
-  'OPERATIONS_TEAM',
-  'DEVELOPER',
-  'READ_ONLY'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'system_user_role_type') THEN
+    CREATE TYPE system_user_role_type AS ENUM (
+      'SUPER_ADMIN',
+      'ADMIN',
+      'AGENT',
+      'AREA_MANAGER_MERCHANT',
+      'AREA_MANAGER_RIDER',
+      'SALES_TEAM',
+      'ADVERTISEMENT_TEAM',
+      'AUDIT_TEAM',
+      'COMPLIANCE_TEAM',
+      'SUPPORT_L1',
+      'SUPPORT_L2',
+      'SUPPORT_L3',
+      'FINANCE_TEAM',
+      'OPERATIONS_TEAM',
+      'DEVELOPER',
+      'READ_ONLY'
+    );
+  END IF;
+END $$;
 
-CREATE TYPE system_user_status AS ENUM ('ACTIVE', 'SUSPENDED', 'DISABLED', 'PENDING_ACTIVATION', 'LOCKED');
-CREATE TYPE permission_action AS ENUM ('VIEW', 'CREATE', 'UPDATE', 'DELETE', 'APPROVE', 'REJECT', 'ASSIGN', 'CANCEL', 'REFUND', 'BLOCK', 'UNBLOCK', 'EXPORT', 'IMPORT');
-CREATE TYPE access_module AS ENUM ('ORDERS', 'TICKETS', 'RIDERS', 'MERCHANTS', 'CUSTOMERS', 'PAYMENTS', 'REFUNDS', 'PAYOUTS', 'OFFERS', 'ADVERTISEMENTS', 'ANALYTICS', 'AUDIT', 'SETTINGS', 'USERS');
-CREATE TYPE area_type AS ENUM ('CITY', 'ZONE', 'REGION', 'STATE', 'COUNTRY');
-CREATE TYPE access_level AS ENUM ('NONE', 'READ', 'READ_WRITE', 'FULL', 'ADMIN');
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'system_user_status') THEN
+    CREATE TYPE system_user_status AS ENUM ('ACTIVE', 'SUSPENDED', 'DISABLED', 'PENDING_ACTIVATION', 'LOCKED');
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'permission_action') THEN
+    CREATE TYPE permission_action AS ENUM ('VIEW', 'CREATE', 'UPDATE', 'DELETE', 'APPROVE', 'REJECT', 'ASSIGN', 'CANCEL', 'REFUND', 'BLOCK', 'UNBLOCK', 'EXPORT', 'IMPORT');
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'access_module') THEN
+    CREATE TYPE access_module AS ENUM ('ORDERS', 'TICKETS', 'RIDERS', 'MERCHANTS', 'CUSTOMERS', 'PAYMENTS', 'REFUNDS', 'PAYOUTS', 'OFFERS', 'ADVERTISEMENTS', 'ANALYTICS', 'AUDIT', 'SETTINGS', 'USERS');
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'area_type') THEN
+    CREATE TYPE area_type AS ENUM ('CITY', 'ZONE', 'REGION', 'STATE', 'COUNTRY');
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'access_level') THEN
+    CREATE TYPE access_level AS ENUM ('NONE', 'READ', 'READ_WRITE', 'FULL', 'ADMIN');
+  END IF;
+END $$;
 
 -- ============================================================================
 -- PHASE 1: CORE ACCESS STRUCTURE
 -- ============================================================================
 
 -- System Users (Internal Users)
-CREATE TABLE system_users (
+CREATE TABLE IF NOT EXISTS system_users (
   id BIGSERIAL PRIMARY KEY,
   system_user_id TEXT NOT NULL UNIQUE,
   
@@ -96,15 +124,15 @@ CREATE TABLE system_users (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX system_users_system_user_id_idx ON system_users(system_user_id);
-CREATE INDEX system_users_email_idx ON system_users(email);
-CREATE INDEX system_users_mobile_idx ON system_users(mobile);
-CREATE INDEX system_users_primary_role_idx ON system_users(primary_role);
-CREATE INDEX system_users_status_idx ON system_users(status);
-CREATE INDEX system_users_reports_to_idx ON system_users(reports_to_id);
+CREATE INDEX IF NOT EXISTS system_users_system_user_id_idx ON system_users(system_user_id);
+CREATE INDEX IF NOT EXISTS system_users_email_idx ON system_users(email);
+CREATE INDEX IF NOT EXISTS system_users_mobile_idx ON system_users(mobile);
+CREATE INDEX IF NOT EXISTS system_users_primary_role_idx ON system_users(primary_role);
+CREATE INDEX IF NOT EXISTS system_users_status_idx ON system_users(status);
+CREATE INDEX IF NOT EXISTS system_users_reports_to_idx ON system_users(reports_to_id);
 
 -- System User Auth
-CREATE TABLE system_user_auth (
+CREATE TABLE IF NOT EXISTS system_user_auth (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   
@@ -136,10 +164,10 @@ CREATE TABLE system_user_auth (
   UNIQUE(system_user_id)
 );
 
-CREATE INDEX system_user_auth_system_user_id_idx ON system_user_auth(system_user_id);
+CREATE INDEX IF NOT EXISTS system_user_auth_system_user_id_idx ON system_user_auth(system_user_id);
 
 -- System User Sessions
-CREATE TABLE system_user_sessions (
+CREATE TABLE IF NOT EXISTS system_user_sessions (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   
@@ -167,12 +195,12 @@ CREATE TABLE system_user_sessions (
   logged_out_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX system_user_sessions_system_user_id_idx ON system_user_sessions(system_user_id);
-CREATE INDEX system_user_sessions_session_token_idx ON system_user_sessions(session_token);
-CREATE INDEX system_user_sessions_is_active_idx ON system_user_sessions(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS system_user_sessions_system_user_id_idx ON system_user_sessions(system_user_id);
+CREATE INDEX IF NOT EXISTS system_user_sessions_session_token_idx ON system_user_sessions(session_token);
+CREATE INDEX IF NOT EXISTS system_user_sessions_is_active_idx ON system_user_sessions(is_active) WHERE is_active = TRUE;
 
 -- System User Login History
-CREATE TABLE system_user_login_history (
+CREATE TABLE IF NOT EXISTS system_user_login_history (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   
@@ -200,12 +228,12 @@ CREATE TABLE system_user_login_history (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX system_user_login_history_user_id_idx ON system_user_login_history(system_user_id);
-CREATE INDEX system_user_login_history_login_success_idx ON system_user_login_history(login_success);
-CREATE INDEX system_user_login_history_created_at_idx ON system_user_login_history(created_at);
+CREATE INDEX IF NOT EXISTS system_user_login_history_user_id_idx ON system_user_login_history(system_user_id);
+CREATE INDEX IF NOT EXISTS system_user_login_history_login_success_idx ON system_user_login_history(login_success);
+CREATE INDEX IF NOT EXISTS system_user_login_history_created_at_idx ON system_user_login_history(created_at);
 
 -- System User API Keys
-CREATE TABLE system_user_api_keys (
+CREATE TABLE IF NOT EXISTS system_user_api_keys (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   
@@ -237,12 +265,12 @@ CREATE TABLE system_user_api_keys (
   created_by BIGINT REFERENCES system_users(id)
 );
 
-CREATE INDEX system_user_api_keys_user_id_idx ON system_user_api_keys(system_user_id);
-CREATE INDEX system_user_api_keys_api_key_hash_idx ON system_user_api_keys(api_key_hash);
-CREATE INDEX system_user_api_keys_is_active_idx ON system_user_api_keys(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS system_user_api_keys_user_id_idx ON system_user_api_keys(system_user_id);
+CREATE INDEX IF NOT EXISTS system_user_api_keys_api_key_hash_idx ON system_user_api_keys(api_key_hash);
+CREATE INDEX IF NOT EXISTS system_user_api_keys_is_active_idx ON system_user_api_keys(is_active) WHERE is_active = TRUE;
 
 -- System User IP Whitelist
-CREATE TABLE system_user_ip_whitelist (
+CREATE TABLE IF NOT EXISTS system_user_ip_whitelist (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   
@@ -264,15 +292,15 @@ CREATE TABLE system_user_ip_whitelist (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX system_user_ip_whitelist_user_id_idx ON system_user_ip_whitelist(system_user_id);
-CREATE INDEX system_user_ip_whitelist_ip_address_idx ON system_user_ip_whitelist(ip_address);
+CREATE INDEX IF NOT EXISTS system_user_ip_whitelist_user_id_idx ON system_user_ip_whitelist(system_user_id);
+CREATE INDEX IF NOT EXISTS system_user_ip_whitelist_ip_address_idx ON system_user_ip_whitelist(ip_address);
 
 -- ============================================================================
 -- PHASE 2: RBAC (ROLE-BASED ACCESS CONTROL)
 -- ============================================================================
 
 -- System Roles
-CREATE TABLE system_roles (
+CREATE TABLE IF NOT EXISTS system_roles (
   id BIGSERIAL PRIMARY KEY,
   role_id TEXT NOT NULL UNIQUE,
   
@@ -303,12 +331,12 @@ CREATE TABLE system_roles (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX system_roles_role_id_idx ON system_roles(role_id);
-CREATE INDEX system_roles_role_type_idx ON system_roles(role_type);
-CREATE INDEX system_roles_is_active_idx ON system_roles(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS system_roles_role_id_idx ON system_roles(role_id);
+CREATE INDEX IF NOT EXISTS system_roles_role_type_idx ON system_roles(role_type);
+CREATE INDEX IF NOT EXISTS system_roles_is_active_idx ON system_roles(is_active) WHERE is_active = TRUE;
 
 -- System Permissions
-CREATE TABLE system_permissions (
+CREATE TABLE IF NOT EXISTS system_permissions (
   id BIGSERIAL PRIMARY KEY,
   permission_id TEXT NOT NULL UNIQUE,
   
@@ -338,13 +366,13 @@ CREATE TABLE system_permissions (
   UNIQUE(module_name, action, resource_type)
 );
 
-CREATE INDEX system_permissions_permission_id_idx ON system_permissions(permission_id);
-CREATE INDEX system_permissions_module_idx ON system_permissions(module_name);
-CREATE INDEX system_permissions_action_idx ON system_permissions(action);
-CREATE INDEX system_permissions_risk_level_idx ON system_permissions(risk_level);
+CREATE INDEX IF NOT EXISTS system_permissions_permission_id_idx ON system_permissions(permission_id);
+CREATE INDEX IF NOT EXISTS system_permissions_module_idx ON system_permissions(module_name);
+CREATE INDEX IF NOT EXISTS system_permissions_action_idx ON system_permissions(action);
+CREATE INDEX IF NOT EXISTS system_permissions_risk_level_idx ON system_permissions(risk_level);
 
 -- Role Permissions (Mapping)
-CREATE TABLE role_permissions (
+CREATE TABLE IF NOT EXISTS role_permissions (
   id BIGSERIAL PRIMARY KEY,
   role_id BIGINT NOT NULL REFERENCES system_roles(id) ON DELETE CASCADE,
   permission_id BIGINT NOT NULL REFERENCES system_permissions(id) ON DELETE CASCADE,
@@ -368,11 +396,11 @@ CREATE TABLE role_permissions (
   UNIQUE(role_id, permission_id, service_scope)
 );
 
-CREATE INDEX role_permissions_role_id_idx ON role_permissions(role_id);
-CREATE INDEX role_permissions_permission_id_idx ON role_permissions(permission_id);
+CREATE INDEX IF NOT EXISTS role_permissions_role_id_idx ON role_permissions(role_id);
+CREATE INDEX IF NOT EXISTS role_permissions_permission_id_idx ON role_permissions(permission_id);
 
 -- User Roles (User-Role Assignment)
-CREATE TABLE user_roles (
+CREATE TABLE IF NOT EXISTS user_roles (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   role_id BIGINT NOT NULL REFERENCES system_roles(id) ON DELETE CASCADE,
@@ -400,12 +428,12 @@ CREATE TABLE user_roles (
   UNIQUE(system_user_id, role_id)
 );
 
-CREATE INDEX user_roles_user_id_idx ON user_roles(system_user_id);
-CREATE INDEX user_roles_role_id_idx ON user_roles(role_id);
-CREATE INDEX user_roles_is_active_idx ON user_roles(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS user_roles_user_id_idx ON user_roles(system_user_id);
+CREATE INDEX IF NOT EXISTS user_roles_role_id_idx ON user_roles(role_id);
+CREATE INDEX IF NOT EXISTS user_roles_is_active_idx ON user_roles(is_active) WHERE is_active = TRUE;
 
 -- User Permission Overrides (Grant/Revoke Specific Permissions)
-CREATE TABLE user_permission_overrides (
+CREATE TABLE IF NOT EXISTS user_permission_overrides (
   id BIGSERIAL PRIMARY KEY,
   system_user_id BIGINT NOT NULL REFERENCES system_users(id) ON DELETE CASCADE,
   permission_id BIGINT NOT NULL REFERENCES system_permissions(id) ON DELETE CASCADE,
@@ -438,16 +466,16 @@ CREATE TABLE user_permission_overrides (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX user_permission_overrides_user_id_idx ON user_permission_overrides(system_user_id);
-CREATE INDEX user_permission_overrides_permission_id_idx ON user_permission_overrides(permission_id);
-CREATE INDEX user_permission_overrides_is_active_idx ON user_permission_overrides(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS user_permission_overrides_user_id_idx ON user_permission_overrides(system_user_id);
+CREATE INDEX IF NOT EXISTS user_permission_overrides_permission_id_idx ON user_permission_overrides(permission_id);
+CREATE INDEX IF NOT EXISTS user_permission_overrides_is_active_idx ON user_permission_overrides(is_active) WHERE is_active = TRUE;
 
 -- ============================================================================
 -- PHASE 3: MODULE & PAGE ACCESS
 -- ============================================================================
 
 -- Access Modules
-CREATE TABLE access_modules (
+CREATE TABLE IF NOT EXISTS access_modules (
   id BIGSERIAL PRIMARY KEY,
   module_id TEXT NOT NULL UNIQUE,
   
@@ -472,11 +500,11 @@ CREATE TABLE access_modules (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX access_modules_module_id_idx ON access_modules(module_id);
-CREATE INDEX access_modules_module_type_idx ON access_modules(module_type);
+CREATE INDEX IF NOT EXISTS access_modules_module_id_idx ON access_modules(module_id);
+CREATE INDEX IF NOT EXISTS access_modules_module_type_idx ON access_modules(module_type);
 
 -- Access Pages
-CREATE TABLE access_pages (
+CREATE TABLE IF NOT EXISTS access_pages (
   id BIGSERIAL PRIMARY KEY,
   page_id TEXT NOT NULL UNIQUE,
   module_id BIGINT NOT NULL REFERENCES access_modules(id) ON DELETE CASCADE,
@@ -496,12 +524,12 @@ CREATE TABLE access_pages (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX access_pages_page_id_idx ON access_pages(page_id);
-CREATE INDEX access_pages_module_id_idx ON access_pages(module_id);
-CREATE INDEX access_pages_route_path_idx ON access_pages(route_path);
+CREATE INDEX IF NOT EXISTS access_pages_page_id_idx ON access_pages(page_id);
+CREATE INDEX IF NOT EXISTS access_pages_module_id_idx ON access_pages(module_id);
+CREATE INDEX IF NOT EXISTS access_pages_route_path_idx ON access_pages(route_path);
 
 -- Access UI Components (Button-level permissions)
-CREATE TABLE access_ui_components (
+CREATE TABLE IF NOT EXISTS access_ui_components (
   id BIGSERIAL PRIMARY KEY,
   component_id TEXT NOT NULL UNIQUE,
   page_id BIGINT REFERENCES access_pages(id) ON DELETE CASCADE,
@@ -519,11 +547,11 @@ CREATE TABLE access_ui_components (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX access_ui_components_component_id_idx ON access_ui_components(component_id);
-CREATE INDEX access_ui_components_page_id_idx ON access_ui_components(page_id);
+CREATE INDEX IF NOT EXISTS access_ui_components_component_id_idx ON access_ui_components(component_id);
+CREATE INDEX IF NOT EXISTS access_ui_components_page_id_idx ON access_ui_components(page_id);
 
 -- Access API Endpoints
-CREATE TABLE access_api_endpoints (
+CREATE TABLE IF NOT EXISTS access_api_endpoints (
   id BIGSERIAL PRIMARY KEY,
   endpoint_id TEXT NOT NULL UNIQUE,
   
@@ -549,12 +577,12 @@ CREATE TABLE access_api_endpoints (
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX access_api_endpoints_endpoint_id_idx ON access_api_endpoints(endpoint_id);
-CREATE INDEX access_api_endpoints_module_idx ON access_api_endpoints(module_name);
-CREATE INDEX access_api_endpoints_endpoint_path_idx ON access_api_endpoints(endpoint_path, http_method);
+CREATE INDEX IF NOT EXISTS access_api_endpoints_endpoint_id_idx ON access_api_endpoints(endpoint_id);
+CREATE INDEX IF NOT EXISTS access_api_endpoints_module_idx ON access_api_endpoints(module_name);
+CREATE INDEX IF NOT EXISTS access_api_endpoints_endpoint_path_idx ON access_api_endpoints(endpoint_path, http_method);
 
 -- Access Feature Flags
-CREATE TABLE access_feature_flags (
+CREATE TABLE IF NOT EXISTS access_feature_flags (
   id BIGSERIAL PRIMARY KEY,
   feature_id TEXT NOT NULL UNIQUE,
   
@@ -577,7 +605,7 @@ CREATE TABLE access_feature_flags (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX access_feature_flags_feature_id_idx ON access_feature_flags(feature_id);
-CREATE INDEX access_feature_flags_is_enabled_idx ON access_feature_flags(is_enabled);
+CREATE INDEX IF NOT EXISTS access_feature_flags_feature_id_idx ON access_feature_flags(feature_id);
+CREATE INDEX IF NOT EXISTS access_feature_flags_is_enabled_idx ON access_feature_flags(is_enabled);
 
 -- Continue in Part 2...

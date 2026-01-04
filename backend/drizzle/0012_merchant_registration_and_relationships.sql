@@ -42,9 +42,9 @@ CREATE TABLE merchant_store_registration_progress (
   UNIQUE(parent_id, store_id)
 );
 
-CREATE INDEX merchant_store_registration_progress_parent_id_idx ON merchant_store_registration_progress(parent_id);
-CREATE INDEX merchant_store_registration_progress_store_id_idx ON merchant_store_registration_progress(store_id);
-CREATE INDEX merchant_store_registration_progress_status_idx ON merchant_store_registration_progress(registration_status);
+CREATE INDEX IF NOT EXISTS merchant_store_registration_progress_parent_id_idx ON merchant_store_registration_progress(parent_id);
+CREATE INDEX IF NOT EXISTS merchant_store_registration_progress_store_id_idx ON merchant_store_registration_progress(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_registration_progress_status_idx ON merchant_store_registration_progress(registration_status);
 
 -- ============================================================================
 -- ENHANCE ORDERS TABLE - MERCHANT RELATIONSHIPS
@@ -90,12 +90,12 @@ CREATE TABLE merchant_store_orders (
   UNIQUE(store_id, order_id)
 );
 
-CREATE INDEX merchant_store_orders_merchant_id_idx ON merchant_store_orders(merchant_id);
-CREATE INDEX merchant_store_orders_store_id_idx ON merchant_store_orders(store_id);
-CREATE INDEX merchant_store_orders_order_id_idx ON merchant_store_orders(order_id);
-CREATE INDEX merchant_store_orders_order_type_idx ON merchant_store_orders(order_type);
-CREATE INDEX merchant_store_orders_service_type_idx ON merchant_store_orders(service_type);
-CREATE INDEX merchant_store_orders_order_status_idx ON merchant_store_orders(order_status);
+CREATE INDEX IF NOT EXISTS merchant_store_orders_merchant_id_idx ON merchant_store_orders(merchant_id);
+CREATE INDEX IF NOT EXISTS merchant_store_orders_store_id_idx ON merchant_store_orders(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_orders_order_id_idx ON merchant_store_orders(order_id);
+CREATE INDEX IF NOT EXISTS merchant_store_orders_order_type_idx ON merchant_store_orders(order_type);
+CREATE INDEX IF NOT EXISTS merchant_store_orders_service_type_idx ON merchant_store_orders(service_type);
+CREATE INDEX IF NOT EXISTS merchant_store_orders_order_status_idx ON merchant_store_orders(order_status);
 
 -- ============================================================================
 -- MERCHANT RATINGS & REVIEWS (From Customers)
@@ -137,11 +137,11 @@ CREATE TABLE merchant_store_ratings (
   updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX merchant_store_ratings_store_id_idx ON merchant_store_ratings(store_id);
-CREATE INDEX merchant_store_ratings_order_id_idx ON merchant_store_ratings(order_id);
-CREATE INDEX merchant_store_ratings_customer_id_idx ON merchant_store_ratings(customer_id);
-CREATE INDEX merchant_store_ratings_rating_idx ON merchant_store_ratings(rating);
-CREATE INDEX merchant_store_ratings_created_at_idx ON merchant_store_ratings(created_at);
+CREATE INDEX IF NOT EXISTS merchant_store_ratings_store_id_idx ON merchant_store_ratings(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_ratings_order_id_idx ON merchant_store_ratings(order_id);
+CREATE INDEX IF NOT EXISTS merchant_store_ratings_customer_id_idx ON merchant_store_ratings(customer_id);
+CREATE INDEX IF NOT EXISTS merchant_store_ratings_rating_idx ON merchant_store_ratings(rating);
+CREATE INDEX IF NOT EXISTS merchant_store_ratings_created_at_idx ON merchant_store_ratings(created_at);
 
 -- ============================================================================
 -- MERCHANT ANALYTICS (Daily/Monthly Aggregates)
@@ -183,8 +183,8 @@ CREATE TABLE merchant_store_daily_analytics (
   UNIQUE(store_id, analytics_date)
 );
 
-CREATE INDEX merchant_store_daily_analytics_store_id_idx ON merchant_store_daily_analytics(store_id);
-CREATE INDEX merchant_store_daily_analytics_date_idx ON merchant_store_daily_analytics(analytics_date);
+CREATE INDEX IF NOT EXISTS merchant_store_daily_analytics_store_id_idx ON merchant_store_daily_analytics(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_daily_analytics_date_idx ON merchant_store_daily_analytics(analytics_date);
 
 -- ============================================================================
 -- FUNCTIONS FOR COMMON OPERATIONS
