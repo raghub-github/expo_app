@@ -71,7 +71,7 @@ END $$;
 -- ============================================================================
 
 -- Merchant Parents (Brand/Chain Owner)
-CREATE TABLE IF NOT EXISTS IF NOT EXISTS merchant_parents (
+CREATE TABLE IF NOT EXISTS merchant_parents (
   id BIGSERIAL PRIMARY KEY,
   parent_merchant_id TEXT NOT NULL UNIQUE,
   parent_name TEXT NOT NULL,
@@ -104,13 +104,13 @@ CREATE TABLE IF NOT EXISTS IF NOT EXISTS merchant_parents (
   updated_by INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_parents_parent_merchant_id_idx ON merchant_parents(parent_merchant_id);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_parents_registered_phone_idx ON merchant_parents(registered_phone);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_parents_status_idx ON merchant_parents(status);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_parents_is_active_idx ON merchant_parents(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_parents_parent_merchant_id_idx ON merchant_parents(parent_merchant_id);
+CREATE INDEX IF NOT EXISTS merchant_parents_registered_phone_idx ON merchant_parents(registered_phone);
+CREATE INDEX IF NOT EXISTS merchant_parents_status_idx ON merchant_parents(status);
+CREATE INDEX IF NOT EXISTS merchant_parents_is_active_idx ON merchant_parents(is_active) WHERE is_active = TRUE;
 
 -- Merchant Stores (Individual Outlets)
-CREATE TABLE IF NOT EXISTS IF NOT EXISTS merchant_stores (
+CREATE TABLE IF NOT EXISTS merchant_stores (
   id BIGSERIAL PRIMARY KEY,
   store_id TEXT NOT NULL UNIQUE,
   parent_id BIGINT NOT NULL REFERENCES merchant_parents(id) ON DELETE RESTRICT,
@@ -187,17 +187,17 @@ CREATE TABLE IF NOT EXISTS IF NOT EXISTS merchant_stores (
   updated_by INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_store_id_idx ON merchant_stores(store_id);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_parent_id_idx ON merchant_stores(parent_id);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_status_idx ON merchant_stores(status);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_city_idx ON merchant_stores(city);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_postal_code_idx ON merchant_stores(postal_code);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_is_active_idx ON merchant_stores(is_active) WHERE is_active = TRUE;
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_is_accepting_orders_idx ON merchant_stores(is_accepting_orders) WHERE is_accepting_orders = TRUE;
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_stores_location_idx ON merchant_stores(latitude, longitude) WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
+CREATE INDEX IF NOT EXISTS merchant_stores_store_id_idx ON merchant_stores(store_id);
+CREATE INDEX IF NOT EXISTS merchant_stores_parent_id_idx ON merchant_stores(parent_id);
+CREATE INDEX IF NOT EXISTS merchant_stores_status_idx ON merchant_stores(status);
+CREATE INDEX IF NOT EXISTS merchant_stores_city_idx ON merchant_stores(city);
+CREATE INDEX IF NOT EXISTS merchant_stores_postal_code_idx ON merchant_stores(postal_code);
+CREATE INDEX IF NOT EXISTS merchant_stores_is_active_idx ON merchant_stores(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_stores_is_accepting_orders_idx ON merchant_stores(is_accepting_orders) WHERE is_accepting_orders = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_stores_location_idx ON merchant_stores(latitude, longitude) WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
 
 -- Merchant Store Services (Multi-Service Support)
-CREATE TABLE IF NOT EXISTS IF NOT EXISTS merchant_store_services (
+CREATE TABLE IF NOT EXISTS merchant_store_services (
   id BIGSERIAL PRIMARY KEY,
   store_id BIGINT NOT NULL REFERENCES merchant_stores(id) ON DELETE CASCADE,
   service_type service_type NOT NULL,
@@ -222,17 +222,17 @@ CREATE TABLE IF NOT EXISTS IF NOT EXISTS merchant_store_services (
   UNIQUE(store_id, service_type)
 );
 
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_store_services_store_id_idx ON merchant_store_services(store_id);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_store_services_service_type_idx ON merchant_store_services(service_type);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS merchant_store_services_is_enabled_idx ON merchant_store_services(is_enabled) WHERE is_enabled = TRUE;
+CREATE INDEX IF NOT EXISTS merchant_store_services_store_id_idx ON merchant_store_services(store_id);
+CREATE INDEX IF NOT EXISTS merchant_store_services_service_type_idx ON merchant_store_services(service_type);
+CREATE INDEX IF NOT EXISTS merchant_store_services_is_enabled_idx ON merchant_store_services(is_enabled) WHERE is_enabled = TRUE;
 
 -- Link orders to merchant stores
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS merchant_store_id BIGINT REFERENCES merchant_stores(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS merchant_parent_id BIGINT REFERENCES merchant_parents(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS orders_merchant_store_id_idx ON orders(merchant_store_id);
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS orders_merchant_parent_id_idx ON orders(merchant_parent_id);
+CREATE INDEX IF NOT EXISTS orders_merchant_store_id_idx ON orders(merchant_store_id);
+CREATE INDEX IF NOT EXISTS orders_merchant_parent_id_idx ON orders(merchant_parent_id);
 
 -- ============================================================================
 -- PHASE 2: VERIFICATION & COMPLIANCE
@@ -494,7 +494,7 @@ CREATE INDEX IF NOT EXISTS merchant_menu_items_in_stock_idx ON merchant_menu_ite
 ALTER TABLE order_items
   ADD COLUMN IF NOT EXISTS merchant_menu_item_id BIGINT REFERENCES merchant_menu_items(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS order_items_merchant_menu_item_id_idx ON order_items(merchant_menu_item_id);
+CREATE INDEX IF NOT EXISTS order_items_merchant_menu_item_id_idx ON order_items(merchant_menu_item_id);
 
 -- Menu Item Customizations
 CREATE TABLE IF NOT EXISTS merchant_menu_item_customizations (

@@ -9,16 +9,19 @@
 -- ============================================================================
 
 -- Trigger: Auto-update updated_at
+DROP TRIGGER IF EXISTS system_users_updated_at_trigger ON system_users;
 CREATE TRIGGER system_users_updated_at_trigger
   BEFORE UPDATE ON system_users
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS system_roles_updated_at_trigger ON system_roles;
 CREATE TRIGGER system_roles_updated_at_trigger
   BEFORE UPDATE ON system_roles
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS system_permissions_updated_at_trigger ON system_permissions;
 CREATE TRIGGER system_permissions_updated_at_trigger
   BEFORE UPDATE ON system_permissions
   FOR EACH ROW
@@ -47,6 +50,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS user_roles_change_log_trigger ON user_roles;
 CREATE TRIGGER user_roles_change_log_trigger
   AFTER INSERT OR UPDATE OR DELETE ON user_roles
   FOR EACH ROW
@@ -182,7 +186,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- DEFAULT ROLES & PERMISSIONS
 -- ============================================================================
 
--- Insert default roles
+-- Insert default roles (idempotent)
 INSERT INTO system_roles (role_id, role_name, role_display_name, role_type, role_level, is_system_role) VALUES
   ('SUPER_ADMIN', 'SUPER_ADMIN', 'Super Administrator', 'SUPER_ADMIN', 1, TRUE),
   ('ADMIN', 'ADMIN', 'Administrator', 'ADMIN', 2, TRUE),
@@ -199,91 +203,376 @@ INSERT INTO system_roles (role_id, role_name, role_display_name, role_type, role
   ('FINANCE', 'FINANCE_TEAM', 'Finance Team', 'FINANCE_TEAM', 3, TRUE),
   ('OPERATIONS', 'OPERATIONS_TEAM', 'Operations Team', 'OPERATIONS_TEAM', 3, TRUE),
   ('DEVELOPER', 'DEVELOPER', 'Developer', 'DEVELOPER', 4, TRUE),
-  ('READ_ONLY', 'READ_ONLY', 'Read Only Access', 'READ_ONLY', 6, TRUE);
+  ('READ_ONLY', 'READ_ONLY', 'Read Only Access', 'READ_ONLY', 6, TRUE)
+ON CONFLICT (role_id) DO UPDATE SET
+  role_display_name = EXCLUDED.role_display_name,
+  role_type = EXCLUDED.role_type,
+  role_level = EXCLUDED.role_level,
+  is_system_role = EXCLUDED.is_system_role;
 
--- Insert core permissions (Orders Module)
-INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level) VALUES
-  -- Orders - View
-  ('ORDERS_VIEW', 'orders.view', 'View Orders', 'ORDERS', 'VIEW', 'ORDER', 'LOW'),
-  ('ORDERS_VIEW_FINANCIAL', 'orders.view.financial', 'View Order Financial Details', 'ORDERS', 'VIEW', 'ORDER', 'MEDIUM'),
-  
-  -- Orders - Create/Update
-  ('ORDERS_CREATE', 'orders.create', 'Create Order', 'ORDERS', 'CREATE', 'ORDER', 'MEDIUM'),
-  ('ORDERS_UPDATE', 'orders.update', 'Update Order', 'ORDERS', 'UPDATE', 'ORDER', 'MEDIUM'),
-  ('ORDERS_CANCEL', 'orders.cancel', 'Cancel Order', 'ORDERS', 'CANCEL', 'ORDER', 'HIGH'),
-  
-  -- Orders - Assignment
-  ('ORDERS_ASSIGN_RIDER', 'orders.assign.rider', 'Assign Rider to Order', 'ORDERS', 'ASSIGN', 'ORDER', 'MEDIUM'),
-  ('ORDERS_REASSIGN_RIDER', 'orders.reassign.rider', 'Reassign Rider', 'ORDERS', 'ASSIGN', 'ORDER', 'HIGH'),
-  
-  -- Orders - Status
-  ('ORDERS_OVERRIDE_STATUS', 'orders.override.status', 'Override Order Status', 'ORDERS', 'UPDATE', 'ORDER', 'CRITICAL'),
-  
-  -- Orders - Financial
-  ('ORDERS_REFUND', 'orders.refund', 'Process Order Refund', 'ORDERS', 'REFUND', 'ORDER', 'HIGH'),
-  ('ORDERS_APPROVE_REFUND', 'orders.approve.refund', 'Approve Refund', 'ORDERS', 'APPROVE', 'ORDER', 'CRITICAL'),
-  
-  -- Tickets - View/Update
-  ('TICKETS_VIEW', 'tickets.view', 'View Tickets', 'TICKETS', 'VIEW', 'TICKET', 'LOW'),
-  ('TICKETS_CREATE', 'tickets.create', 'Create Ticket', 'TICKETS', 'CREATE', 'TICKET', 'LOW'),
-  ('TICKETS_UPDATE', 'tickets.update', 'Update Ticket', 'TICKETS', 'UPDATE', 'TICKET', 'LOW'),
-  ('TICKETS_ASSIGN', 'tickets.assign', 'Assign Ticket', 'TICKETS', 'ASSIGN', 'TICKET', 'MEDIUM'),
-  ('TICKETS_CLOSE', 'tickets.close', 'Close Ticket', 'TICKETS', 'UPDATE', 'TICKET', 'MEDIUM'),
-  
-  -- Riders - View/Manage
-  ('RIDERS_VIEW', 'riders.view', 'View Riders', 'RIDERS', 'VIEW', 'RIDER', 'LOW'),
-  ('RIDERS_VIEW_FINANCIAL', 'riders.view.financial', 'View Rider Financial', 'RIDERS', 'VIEW', 'RIDER', 'MEDIUM'),
-  ('RIDERS_UPDATE', 'riders.update', 'Update Rider Details', 'RIDERS', 'UPDATE', 'RIDER', 'MEDIUM'),
-  ('RIDERS_APPROVE', 'riders.approve', 'Approve Rider', 'RIDERS', 'APPROVE', 'RIDER', 'HIGH'),
-  ('RIDERS_REJECT', 'riders.reject', 'Reject Rider', 'RIDERS', 'REJECT', 'RIDER', 'HIGH'),
-  ('RIDERS_BLOCK', 'riders.block', 'Block Rider', 'RIDERS', 'BLOCK', 'RIDER', 'CRITICAL'),
-  ('RIDERS_UNBLOCK', 'riders.unblock', 'Unblock Rider', 'RIDERS', 'UNBLOCK', 'RIDER', 'CRITICAL'),
-  
-  -- Merchants - View/Manage
-  ('MERCHANTS_VIEW', 'merchants.view', 'View Merchants', 'MERCHANTS', 'VIEW', 'MERCHANT', 'LOW'),
-  ('MERCHANTS_VIEW_FINANCIAL', 'merchants.view.financial', 'View Merchant Financial', 'MERCHANTS', 'VIEW', 'MERCHANT', 'MEDIUM'),
-  ('MERCHANTS_UPDATE', 'merchants.update', 'Update Merchant Details', 'MERCHANTS', 'UPDATE', 'MERCHANT', 'MEDIUM'),
-  ('MERCHANTS_APPROVE', 'merchants.approve', 'Approve Merchant', 'MERCHANTS', 'APPROVE', 'MERCHANT', 'HIGH'),
-  ('MERCHANTS_REJECT', 'merchants.reject', 'Reject Merchant', 'MERCHANTS', 'REJECT', 'MERCHANT', 'HIGH'),
-  ('MERCHANTS_DELIST', 'merchants.delist', 'Delist Merchant', 'MERCHANTS', 'UPDATE', 'MERCHANT', 'CRITICAL'),
-  ('MERCHANTS_RELIST', 'merchants.relist', 'Relist Merchant', 'MERCHANTS', 'UPDATE', 'MERCHANT', 'HIGH'),
-  
-  -- Customers - View/Manage
-  ('CUSTOMERS_VIEW', 'customers.view', 'View Customers', 'CUSTOMERS', 'VIEW', 'CUSTOMER', 'LOW'),
-  ('CUSTOMERS_VIEW_PII', 'customers.view.pii', 'View Customer PII', 'CUSTOMERS', 'VIEW', 'CUSTOMER', 'HIGH'),
-  ('CUSTOMERS_UPDATE', 'customers.update', 'Update Customer Details', 'CUSTOMERS', 'UPDATE', 'CUSTOMER', 'MEDIUM'),
-  ('CUSTOMERS_BLOCK', 'customers.block', 'Block Customer', 'CUSTOMERS', 'BLOCK', 'CUSTOMER', 'CRITICAL'),
-  ('CUSTOMERS_UNBLOCK', 'customers.unblock', 'Unblock Customer', 'CUSTOMERS', 'UNBLOCK', 'CUSTOMER', 'HIGH'),
-  
-  -- Payouts
-  ('PAYOUTS_VIEW', 'payouts.view', 'View Payouts', 'PAYOUTS', 'VIEW', 'PAYOUT', 'MEDIUM'),
-  ('PAYOUTS_APPROVE', 'payouts.approve', 'Approve Payout', 'PAYOUTS', 'APPROVE', 'PAYOUT', 'CRITICAL'),
-  ('PAYOUTS_REJECT', 'payouts.reject', 'Reject Payout', 'PAYOUTS', 'REJECT', 'PAYOUT', 'HIGH'),
-  
-  -- Analytics
-  ('ANALYTICS_VIEW', 'analytics.view', 'View Analytics', 'ANALYTICS', 'VIEW', 'ANALYTICS', 'LOW'),
-  ('ANALYTICS_EXPORT', 'analytics.export', 'Export Analytics', 'ANALYTICS', 'EXPORT', 'ANALYTICS', 'MEDIUM'),
-  
-  -- Settings
-  ('SETTINGS_VIEW', 'settings.view', 'View Settings', 'SETTINGS', 'VIEW', 'SETTINGS', 'LOW'),
-  ('SETTINGS_UPDATE', 'settings.update', 'Update Settings', 'SETTINGS', 'UPDATE', 'SETTINGS', 'CRITICAL'),
-  
-  -- Users
-  ('USERS_VIEW', 'users.view', 'View System Users', 'USERS', 'VIEW', 'USER', 'LOW'),
-  ('USERS_CREATE', 'users.create', 'Create System User', 'USERS', 'CREATE', 'USER', 'CRITICAL'),
-  ('USERS_UPDATE', 'users.update', 'Update System User', 'USERS', 'UPDATE', 'USER', 'HIGH'),
-  ('USERS_DELETE', 'users.delete', 'Delete System User', 'USERS', 'DELETE', 'USER', 'CRITICAL');
+-- Insert core permissions (idempotent - using individual INSERTs to avoid duplicate conflict)
+-- Note: Some permissions share the same (module_name, action, resource_type) but have different permission_id
+-- We use WHERE NOT EXISTS to handle this properly
 
--- Assign all permissions to SUPER_ADMIN role
+-- Orders - View
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_VIEW', 'orders.view', 'View Orders', 'ORDERS', 'VIEW', 'ORDER', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'VIEW' AND resource_type = 'ORDER'
+);
+
+-- Note: ORDERS_VIEW_FINANCIAL has same (module_name, action, resource_type) as ORDERS_VIEW
+-- Skip it to avoid unique constraint violation, or update existing if needed
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'ORDERS_VIEW_FINANCIAL', 'orders.view.financial', 'View Order Financial Details', 'ORDERS', 'VIEW', 'ORDER', 'MEDIUM'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'ORDERS' AND action = 'VIEW' AND resource_type = 'ORDER'
+-- );
+
+-- Orders - Create/Update
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_CREATE', 'orders.create', 'Create Order', 'ORDERS', 'CREATE', 'ORDER', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'CREATE' AND resource_type = 'ORDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_UPDATE', 'orders.update', 'Update Order', 'ORDERS', 'UPDATE', 'ORDER', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'UPDATE' AND resource_type = 'ORDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_CANCEL', 'orders.cancel', 'Cancel Order', 'ORDERS', 'CANCEL', 'ORDER', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'CANCEL' AND resource_type = 'ORDER'
+);
+
+-- Orders - Assignment
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_ASSIGN_RIDER', 'orders.assign.rider', 'Assign Rider to Order', 'ORDERS', 'ASSIGN', 'ORDER', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'ASSIGN' AND resource_type = 'ORDER'
+);
+
+-- Note: ORDERS_REASSIGN_RIDER has same (module_name, action, resource_type) as ORDERS_ASSIGN_RIDER
+-- Skip it to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'ORDERS_REASSIGN_RIDER', 'orders.reassign.rider', 'Reassign Rider', 'ORDERS', 'ASSIGN', 'ORDER', 'HIGH'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'ORDERS' AND action = 'ASSIGN' AND resource_type = 'ORDER'
+-- );
+
+-- Note: ORDERS_OVERRIDE_STATUS has same (module_name, action, resource_type) as ORDERS_UPDATE
+-- Skip it to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'ORDERS_OVERRIDE_STATUS', 'orders.override.status', 'Override Order Status', 'ORDERS', 'UPDATE', 'ORDER', 'CRITICAL'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'ORDERS' AND action = 'UPDATE' AND resource_type = 'ORDER'
+-- );
+
+-- Orders - Financial
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_REFUND', 'orders.refund', 'Process Order Refund', 'ORDERS', 'REFUND', 'ORDER', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'REFUND' AND resource_type = 'ORDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ORDERS_APPROVE_REFUND', 'orders.approve.refund', 'Approve Refund', 'ORDERS', 'APPROVE', 'ORDER', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ORDERS' AND action = 'APPROVE' AND resource_type = 'ORDER'
+);
+
+-- Tickets - View/Update
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'TICKETS_VIEW', 'tickets.view', 'View Tickets', 'TICKETS', 'VIEW', 'TICKET', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'TICKETS' AND action = 'VIEW' AND resource_type = 'TICKET'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'TICKETS_CREATE', 'tickets.create', 'Create Ticket', 'TICKETS', 'CREATE', 'TICKET', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'TICKETS' AND action = 'CREATE' AND resource_type = 'TICKET'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'TICKETS_UPDATE', 'tickets.update', 'Update Ticket', 'TICKETS', 'UPDATE', 'TICKET', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'TICKETS' AND action = 'UPDATE' AND resource_type = 'TICKET'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'TICKETS_ASSIGN', 'tickets.assign', 'Assign Ticket', 'TICKETS', 'ASSIGN', 'TICKET', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'TICKETS' AND action = 'ASSIGN' AND resource_type = 'TICKET'
+);
+
+-- Note: TICKETS_CLOSE has same (module_name, action, resource_type) as TICKETS_UPDATE
+-- Skip it to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'TICKETS_CLOSE', 'tickets.close', 'Close Ticket', 'TICKETS', 'UPDATE', 'TICKET', 'MEDIUM'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'TICKETS' AND action = 'UPDATE' AND resource_type = 'TICKET'
+-- );
+
+-- Riders - View/Manage
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'RIDERS_VIEW', 'riders.view', 'View Riders', 'RIDERS', 'VIEW', 'RIDER', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'RIDERS' AND action = 'VIEW' AND resource_type = 'RIDER'
+);
+
+-- Note: RIDERS_VIEW_FINANCIAL has same (module_name, action, resource_type) as RIDERS_VIEW
+-- Skip it to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'RIDERS_VIEW_FINANCIAL', 'riders.view.financial', 'View Rider Financial', 'RIDERS', 'VIEW', 'RIDER', 'MEDIUM'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'RIDERS' AND action = 'VIEW' AND resource_type = 'RIDER'
+-- );
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'RIDERS_UPDATE', 'riders.update', 'Update Rider Details', 'RIDERS', 'UPDATE', 'RIDER', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'RIDERS' AND action = 'UPDATE' AND resource_type = 'RIDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'RIDERS_APPROVE', 'riders.approve', 'Approve Rider', 'RIDERS', 'APPROVE', 'RIDER', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'RIDERS' AND action = 'APPROVE' AND resource_type = 'RIDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'RIDERS_REJECT', 'riders.reject', 'Reject Rider', 'RIDERS', 'REJECT', 'RIDER', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'RIDERS' AND action = 'REJECT' AND resource_type = 'RIDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'RIDERS_BLOCK', 'riders.block', 'Block Rider', 'RIDERS', 'BLOCK', 'RIDER', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'RIDERS' AND action = 'BLOCK' AND resource_type = 'RIDER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'RIDERS_UNBLOCK', 'riders.unblock', 'Unblock Rider', 'RIDERS', 'UNBLOCK', 'RIDER', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'RIDERS' AND action = 'UNBLOCK' AND resource_type = 'RIDER'
+);
+
+-- Merchants - View/Manage
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'MERCHANTS_VIEW', 'merchants.view', 'View Merchants', 'MERCHANTS', 'VIEW', 'MERCHANT', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'MERCHANTS' AND action = 'VIEW' AND resource_type = 'MERCHANT'
+);
+
+-- Note: MERCHANTS_VIEW_FINANCIAL has same (module_name, action, resource_type) as MERCHANTS_VIEW
+-- Skip it to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'MERCHANTS_VIEW_FINANCIAL', 'merchants.view.financial', 'View Merchant Financial', 'MERCHANTS', 'VIEW', 'MERCHANT', 'MEDIUM'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'MERCHANTS' AND action = 'VIEW' AND resource_type = 'MERCHANT'
+-- );
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'MERCHANTS_UPDATE', 'merchants.update', 'Update Merchant Details', 'MERCHANTS', 'UPDATE', 'MERCHANT', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'MERCHANTS' AND action = 'UPDATE' AND resource_type = 'MERCHANT'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'MERCHANTS_APPROVE', 'merchants.approve', 'Approve Merchant', 'MERCHANTS', 'APPROVE', 'MERCHANT', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'MERCHANTS' AND action = 'APPROVE' AND resource_type = 'MERCHANT'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'MERCHANTS_REJECT', 'merchants.reject', 'Reject Merchant', 'MERCHANTS', 'REJECT', 'MERCHANT', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'MERCHANTS' AND action = 'REJECT' AND resource_type = 'MERCHANT'
+);
+
+-- Note: MERCHANTS_DELIST and MERCHANTS_RELIST have same (module_name, action, resource_type) as MERCHANTS_UPDATE
+-- Skip them to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'MERCHANTS_DELIST', 'merchants.delist', 'Delist Merchant', 'MERCHANTS', 'UPDATE', 'MERCHANT', 'CRITICAL'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'MERCHANTS' AND action = 'UPDATE' AND resource_type = 'MERCHANT'
+-- );
+
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'MERCHANTS_RELIST', 'merchants.relist', 'Relist Merchant', 'MERCHANTS', 'UPDATE', 'MERCHANT', 'HIGH'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'MERCHANTS' AND action = 'UPDATE' AND resource_type = 'MERCHANT'
+-- );
+
+-- Customers - View/Manage
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'CUSTOMERS_VIEW', 'customers.view', 'View Customers', 'CUSTOMERS', 'VIEW', 'CUSTOMER', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'CUSTOMERS' AND action = 'VIEW' AND resource_type = 'CUSTOMER'
+);
+
+-- Note: CUSTOMERS_VIEW_PII has same (module_name, action, resource_type) as CUSTOMERS_VIEW
+-- Skip it to avoid unique constraint violation
+-- INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+-- SELECT 'CUSTOMERS_VIEW_PII', 'customers.view.pii', 'View Customer PII', 'CUSTOMERS', 'VIEW', 'CUSTOMER', 'HIGH'
+-- WHERE NOT EXISTS (
+--   SELECT 1 FROM system_permissions 
+--   WHERE module_name = 'CUSTOMERS' AND action = 'VIEW' AND resource_type = 'CUSTOMER'
+-- );
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'CUSTOMERS_UPDATE', 'customers.update', 'Update Customer Details', 'CUSTOMERS', 'UPDATE', 'CUSTOMER', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'CUSTOMERS' AND action = 'UPDATE' AND resource_type = 'CUSTOMER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'CUSTOMERS_BLOCK', 'customers.block', 'Block Customer', 'CUSTOMERS', 'BLOCK', 'CUSTOMER', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'CUSTOMERS' AND action = 'BLOCK' AND resource_type = 'CUSTOMER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'CUSTOMERS_UNBLOCK', 'customers.unblock', 'Unblock Customer', 'CUSTOMERS', 'UNBLOCK', 'CUSTOMER', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'CUSTOMERS' AND action = 'UNBLOCK' AND resource_type = 'CUSTOMER'
+);
+
+-- Payouts
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'PAYOUTS_VIEW', 'payouts.view', 'View Payouts', 'PAYOUTS', 'VIEW', 'PAYOUT', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'PAYOUTS' AND action = 'VIEW' AND resource_type = 'PAYOUT'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'PAYOUTS_APPROVE', 'payouts.approve', 'Approve Payout', 'PAYOUTS', 'APPROVE', 'PAYOUT', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'PAYOUTS' AND action = 'APPROVE' AND resource_type = 'PAYOUT'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'PAYOUTS_REJECT', 'payouts.reject', 'Reject Payout', 'PAYOUTS', 'REJECT', 'PAYOUT', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'PAYOUTS' AND action = 'REJECT' AND resource_type = 'PAYOUT'
+);
+
+-- Analytics
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ANALYTICS_VIEW', 'analytics.view', 'View Analytics', 'ANALYTICS', 'VIEW', 'ANALYTICS', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ANALYTICS' AND action = 'VIEW' AND resource_type = 'ANALYTICS'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'ANALYTICS_EXPORT', 'analytics.export', 'Export Analytics', 'ANALYTICS', 'EXPORT', 'ANALYTICS', 'MEDIUM'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'ANALYTICS' AND action = 'EXPORT' AND resource_type = 'ANALYTICS'
+);
+
+-- Settings
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'SETTINGS_VIEW', 'settings.view', 'View Settings', 'SETTINGS', 'VIEW', 'SETTINGS', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'SETTINGS' AND action = 'VIEW' AND resource_type = 'SETTINGS'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'SETTINGS_UPDATE', 'settings.update', 'Update Settings', 'SETTINGS', 'UPDATE', 'SETTINGS', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'SETTINGS' AND action = 'UPDATE' AND resource_type = 'SETTINGS'
+);
+
+-- Users
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'USERS_VIEW', 'users.view', 'View System Users', 'USERS', 'VIEW', 'USER', 'LOW'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'USERS' AND action = 'VIEW' AND resource_type = 'USER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'USERS_CREATE', 'users.create', 'Create System User', 'USERS', 'CREATE', 'USER', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'USERS' AND action = 'CREATE' AND resource_type = 'USER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'USERS_UPDATE', 'users.update', 'Update System User', 'USERS', 'UPDATE', 'USER', 'HIGH'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'USERS' AND action = 'UPDATE' AND resource_type = 'USER'
+);
+
+INSERT INTO system_permissions (permission_id, permission_name, permission_display_name, module_name, action, resource_type, risk_level)
+SELECT 'USERS_DELETE', 'users.delete', 'Delete System User', 'USERS', 'DELETE', 'USER', 'CRITICAL'
+WHERE NOT EXISTS (
+  SELECT 1 FROM system_permissions 
+  WHERE module_name = 'USERS' AND action = 'DELETE' AND resource_type = 'USER'
+);
+
+-- Assign all permissions to SUPER_ADMIN role (idempotent)
 INSERT INTO role_permissions (role_id, permission_id, service_scope, granted_by)
 SELECT 
   (SELECT id FROM system_roles WHERE role_id = 'SUPER_ADMIN'),
   sp.id,
   NULL, -- ALL services
   NULL -- System default
-FROM system_permissions sp;
+FROM system_permissions sp
+WHERE NOT EXISTS (
+  SELECT 1 FROM role_permissions rp
+  WHERE rp.role_id = (SELECT id FROM system_roles WHERE role_id = 'SUPER_ADMIN')
+    AND rp.permission_id = sp.id
+    AND (rp.service_scope IS NULL)
+);
 
--- Assign read-only permissions to READ_ONLY role
+-- Assign read-only permissions to READ_ONLY role (idempotent)
 INSERT INTO role_permissions (role_id, permission_id, service_scope, granted_by)
 SELECT 
   (SELECT id FROM system_roles WHERE role_id = 'READ_ONLY'),
@@ -291,9 +580,15 @@ SELECT
   NULL,
   NULL
 FROM system_permissions sp
-WHERE sp.action = 'VIEW';
+WHERE sp.action = 'VIEW'
+  AND NOT EXISTS (
+    SELECT 1 FROM role_permissions rp
+    WHERE rp.role_id = (SELECT id FROM system_roles WHERE role_id = 'READ_ONLY')
+      AND rp.permission_id = sp.id
+      AND (rp.service_scope IS NULL)
+  );
 
--- Assign support permissions to SUPPORT_L1
+-- Assign support permissions to SUPPORT_L1 (idempotent)
 INSERT INTO role_permissions (role_id, permission_id, service_scope, granted_by)
 SELECT 
   (SELECT id FROM system_roles WHERE role_id = 'SUPPORT_L1'),
@@ -301,24 +596,61 @@ SELECT
   NULL,
   NULL
 FROM system_permissions sp
-WHERE sp.permission_id IN ('ORDERS_VIEW', 'TICKETS_VIEW', 'TICKETS_CREATE', 'TICKETS_UPDATE', 'CUSTOMERS_VIEW');
+WHERE sp.permission_id IN ('ORDERS_VIEW', 'TICKETS_VIEW', 'TICKETS_CREATE', 'TICKETS_UPDATE', 'CUSTOMERS_VIEW')
+  AND NOT EXISTS (
+    SELECT 1 FROM role_permissions rp
+    WHERE rp.role_id = (SELECT id FROM system_roles WHERE role_id = 'SUPPORT_L1')
+      AND rp.permission_id = sp.id
+      AND (rp.service_scope IS NULL)
+  );
 
 -- ============================================================================
 -- CONSTRAINTS
 -- ============================================================================
 
--- System Users
-ALTER TABLE system_users
-  ADD CONSTRAINT system_users_email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$'),
-  ADD CONSTRAINT system_users_mobile_format CHECK (mobile ~ '^\+?[0-9]{10,15}$');
+-- System Users (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE constraint_name = 'system_users_email_format' AND table_name = 'system_users'
+  ) THEN
+    ALTER TABLE system_users
+      ADD CONSTRAINT system_users_email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$');
+  END IF;
+  
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE constraint_name = 'system_users_mobile_format' AND table_name = 'system_users'
+  ) THEN
+    ALTER TABLE system_users
+      ADD CONSTRAINT system_users_mobile_format CHECK (mobile ~ '^\+?[0-9]{10,15}$');
+  END IF;
+END $$;
 
--- Role Hierarchy
-ALTER TABLE system_roles
-  ADD CONSTRAINT system_roles_level_positive CHECK (role_level > 0);
+-- Role Hierarchy (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE constraint_name = 'system_roles_level_positive' AND table_name = 'system_roles'
+  ) THEN
+    ALTER TABLE system_roles
+      ADD CONSTRAINT system_roles_level_positive CHECK (role_level > 0);
+  END IF;
+END $$;
 
--- API Keys
-ALTER TABLE system_user_api_keys
-  ADD CONSTRAINT api_keys_rate_limit_positive CHECK (rate_limit_per_minute > 0 AND rate_limit_per_hour > 0);
+-- API Keys (idempotent)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE constraint_name = 'api_keys_rate_limit_positive' AND table_name = 'system_user_api_keys'
+  ) THEN
+    ALTER TABLE system_user_api_keys
+      ADD CONSTRAINT api_keys_rate_limit_positive CHECK (rate_limit_per_minute > 0 AND rate_limit_per_hour > 0);
+  END IF;
+END $$;
 
 -- ============================================================================
 -- ENABLE RLS

@@ -359,7 +359,7 @@ CREATE INDEX IF NOT EXISTS customer_orders_summary_order_status_idx ON customer_
 ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS IF NOT EXISTS orders_customer_id_idx ON orders(customer_id);
+CREATE INDEX IF NOT EXISTS orders_customer_id_idx ON orders(customer_id);
 
 -- ============================================================================
 -- TRIGGERS

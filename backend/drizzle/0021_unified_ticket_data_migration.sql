@@ -43,7 +43,7 @@ INSERT INTO ticket_title_config (ticket_title, display_name, description, applic
 ('WALLET_WITHDRAWAL_ISSUE', 'Wallet Withdrawal Issue', 'Issue withdrawing money from wallet', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'HIGH', 'EARNINGS', 25),
 ('APP_CRASH_OR_BUG', 'App Crash or Bug', 'App is crashing or has bugs', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['RIDER', 'CUSTOMER', 'MERCHANT']::unified_ticket_source[], 'HIGH', 'TECHNICAL', 26),
 ('LOCATION_TRACKING_ISSUE', 'Location Tracking Issue', 'Issue with location tracking', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'HIGH', 'TECHNICAL', 27),
-('ORDER_NOT_RECEIVING', 'Not Receiving Orders', 'Not receiving order assignments', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'HIGH', 'TECHNICAL', 28),
+('RIDER_ORDER_NOT_RECEIVING', 'Not Receiving Orders', 'Not receiving order assignments', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'HIGH', 'TECHNICAL', 28),
 ('ONBOARDING_ISSUE', 'Onboarding Issue', 'Issue during rider onboarding', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'MEDIUM', 'VERIFICATION', 29),
 ('DOCUMENT_VERIFICATION_ISSUE', 'Document Verification Issue', 'Issue with document verification', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'MEDIUM', 'VERIFICATION', 30),
 ('DUTY_LOG_ISSUE', 'Duty Log Issue', 'Issue with duty log tracking', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['RIDER']::unified_ticket_source[], 'MEDIUM', 'TECHNICAL', 31),
@@ -56,13 +56,15 @@ INSERT INTO ticket_title_config (ticket_title, display_name, description, applic
 ('COMMISSION_DISPUTE', 'Commission Dispute', 'Dispute regarding commission charges', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'HIGH', 'EARNINGS', 36),
 ('MENU_UPDATE_ISSUE', 'Menu Update Issue', 'Issue updating menu items', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'MEDIUM', 'TECHNICAL', 37),
 ('STORE_STATUS_ISSUE', 'Store Status Issue', 'Issue with store status (open/closed)', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'MEDIUM', 'TECHNICAL', 38),
-('VERIFICATION_ISSUE', 'Verification Issue', 'Issue with store/merchant verification', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'MEDIUM', 'VERIFICATION', 39),
+('MERCHANT_ORDER_NOT_RECEIVING', 'Not Receiving Orders', 'Merchant not receiving orders', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'HIGH', 'TECHNICAL', 39),
+('MERCHANT_APP_TECHNICAL_ISSUE', 'Merchant App Technical Issue', 'Technical issue with merchant app', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'MEDIUM', 'TECHNICAL', 40),
+('VERIFICATION_ISSUE', 'Verification Issue', 'Issue with store/merchant verification', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['GENERAL']::unified_ticket_service_type[], ARRAY['MERCHANT']::unified_ticket_source[], 'MEDIUM', 'VERIFICATION', 41),
 
 -- GENERAL TITLES
-('OTHER', 'Other', 'Other issues not covered above', ARRAY['ORDER_RELATED', 'NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT', 'SYSTEM', 'EMAIL']::unified_ticket_source[], 'MEDIUM', 'OTHER', 40),
-('FEEDBACK', 'Feedback', 'General feedback', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT']::unified_ticket_source[], 'LOW', 'FEEDBACK', 41),
-('COMPLAINT', 'Complaint', 'General complaint', ARRAY['ORDER_RELATED', 'NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT']::unified_ticket_source[], 'MEDIUM', 'COMPLAINT', 42),
-('SUGGESTION', 'Suggestion', 'Suggestion for improvement', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT']::unified_ticket_source[], 'LOW', 'FEEDBACK', 43)
+('OTHER', 'Other', 'Other issues not covered above', ARRAY['ORDER_RELATED', 'NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT', 'SYSTEM', 'EMAIL']::unified_ticket_source[], 'MEDIUM', 'OTHER', 42),
+('FEEDBACK', 'Feedback', 'General feedback', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT']::unified_ticket_source[], 'LOW', 'FEEDBACK', 43),
+('COMPLAINT', 'Complaint', 'General complaint', ARRAY['ORDER_RELATED', 'NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT']::unified_ticket_source[], 'MEDIUM', 'COMPLAINT', 44),
+('SUGGESTION', 'Suggestion', 'Suggestion for improvement', ARRAY['NON_ORDER_RELATED']::unified_ticket_type[], ARRAY['FOOD', 'PARCEL', 'RIDE', 'GENERAL']::unified_ticket_service_type[], ARRAY['CUSTOMER', 'RIDER', 'MERCHANT']::unified_ticket_source[], 'LOW', 'FEEDBACK', 45)
 ON CONFLICT (ticket_title) DO NOTHING;
 
 -- ============================================================================
@@ -218,7 +220,6 @@ SELECT
     ELSE 'CUSTOMER'::unified_ticket_source
   END,
   raised_by_id,
-  raised_by_name,
   COALESCE(raised_by_name, 'Unknown'),
   issue_category || ': ' || COALESCE(issue_subcategory, ''),
   description,
@@ -248,7 +249,7 @@ SELECT
   follow_up_date,
   created_at,
   updated_at,
-  ticket_metadata
+  COALESCE(ticket_metadata, '{}'::jsonb)
 FROM order_tickets
 WHERE NOT EXISTS (
   SELECT 1 FROM unified_tickets WHERE unified_tickets.metadata->>'legacy_order_ticket_id' = order_tickets.id::TEXT
@@ -390,9 +391,18 @@ FROM customer_ticket_messages ctm
 INNER JOIN customer_tickets ct ON ctm.ticket_id = ct.id
 INNER JOIN unified_tickets ut ON ut.ticket_id = ct.ticket_id
 WHERE NOT EXISTS (
-  SELECT 1 FROM unified_ticket_messages WHERE unified_ticket_messages.metadata->>'legacy_message_id' = ctm.id::TEXT
-)
-ON CONFLICT DO NOTHING;
+  SELECT 1 FROM unified_ticket_messages utm
+  WHERE utm.ticket_id = ut.id
+    AND utm.message_text = ctm.message_text
+    AND utm.sender_type = CASE 
+      WHEN ctm.sender_type = 'CUSTOMER' THEN 'CUSTOMER'::unified_ticket_source
+      WHEN ctm.sender_type = 'AGENT' THEN 'AGENT'::unified_ticket_source
+      WHEN ctm.sender_type = 'SYSTEM' THEN 'SYSTEM'::unified_ticket_source
+      ELSE 'CUSTOMER'::unified_ticket_source
+    END
+    AND utm.sender_id = ctm.sender_id
+    AND utm.created_at = ctm.created_at
+);
 
 -- ============================================================================
 -- COMMENTS

@@ -86,7 +86,7 @@ DO $$ BEGIN
   'WALLET_WITHDRAWAL_ISSUE',
   'APP_CRASH_OR_BUG',
   'LOCATION_TRACKING_ISSUE',
-  'ORDER_NOT_RECEIVING',
+  'RIDER_ORDER_NOT_RECEIVING',
   'ONBOARDING_ISSUE',
   'DOCUMENT_VERIFICATION_ISSUE',
   'DUTY_LOG_ISSUE',
@@ -99,8 +99,8 @@ DO $$ BEGIN
   'COMMISSION_DISPUTE',
   'MENU_UPDATE_ISSUE',
   'STORE_STATUS_ISSUE',
-  'ORDER_NOT_RECEIVING',
-  'APP_TECHNICAL_ISSUE',
+  'MERCHANT_ORDER_NOT_RECEIVING',
+  'MERCHANT_APP_TECHNICAL_ISSUE',
   'VERIFICATION_ISSUE',
   
   -- GENERAL TITLES
@@ -108,45 +108,59 @@ DO $$ BEGIN
   'FEEDBACK',
   'COMPLAINT',
   'SUGGESTION'
-);
+    );
+  END IF;
+END $$;
 
 -- Ticket Status (lifecycle)
-CREATE TYPE unified_ticket_status AS ENUM (
-  'OPEN',                    -- Just created
-  'IN_PROGRESS',            -- Assigned and being worked on
-  'WAITING_FOR_USER',       -- Waiting for user response
-  'WAITING_FOR_MERCHANT',   -- Waiting for merchant response
-  'WAITING_FOR_RIDER',      -- Waiting for rider response
-  'RESOLVED',               -- Resolved but not closed
-  'CLOSED',                 -- Closed by agent/user
-  'ESCALATED',              -- Escalated to higher level
-  'REOPENED',               -- Reopened after closure
-  'CANCELLED'               -- Cancelled
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'unified_ticket_status') THEN
+    CREATE TYPE unified_ticket_status AS ENUM (
+      'OPEN',                    -- Just created
+      'IN_PROGRESS',            -- Assigned and being worked on
+      'WAITING_FOR_USER',       -- Waiting for user response
+      'WAITING_FOR_MERCHANT',   -- Waiting for merchant response
+      'WAITING_FOR_RIDER',      -- Waiting for rider response
+      'RESOLVED',               -- Resolved but not closed
+      'CLOSED',                 -- Closed by agent/user
+      'ESCALATED',              -- Escalated to higher level
+      'REOPENED',               -- Reopened after closure
+      'CANCELLED'               -- Cancelled
+    );
+  END IF;
+END $$;
 
 -- Ticket Priority
-CREATE TYPE unified_ticket_priority AS ENUM (
-  'LOW',
-  'MEDIUM',
-  'HIGH',
-  'URGENT',
-  'CRITICAL'
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'unified_ticket_priority') THEN
+    CREATE TYPE unified_ticket_priority AS ENUM (
+      'LOW',
+      'MEDIUM',
+      'HIGH',
+      'URGENT',
+      'CRITICAL'
+    );
+  END IF;
+END $$;
 
 -- Ticket Category (for better organization)
-CREATE TYPE unified_ticket_category AS ENUM (
-  'ORDER',           -- Order-related issues
-  'PAYMENT',         -- Payment issues
-  'DELIVERY',        -- Delivery issues
-  'REFUND',          -- Refund requests
-  'ACCOUNT',         -- Account issues
-  'TECHNICAL',       -- Technical/app issues
-  'EARNINGS',        -- Earnings/payout issues (rider/merchant)
-  'VERIFICATION',    -- KYC/verification issues
-  'COMPLAINT',       -- General complaints
-  'FEEDBACK',        -- Feedback/suggestions
-  'OTHER'            -- Other issues
-);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'unified_ticket_category') THEN
+    CREATE TYPE unified_ticket_category AS ENUM (
+      'ORDER',           -- Order-related issues
+      'PAYMENT',         -- Payment issues
+      'DELIVERY',        -- Delivery issues
+      'REFUND',          -- Refund requests
+      'ACCOUNT',         -- Account issues
+      'TECHNICAL',       -- Technical/app issues
+      'EARNINGS',        -- Earnings/payout issues (rider/merchant)
+      'VERIFICATION',    -- KYC/verification issues
+      'COMPLAINT',       -- General complaints
+      'FEEDBACK',        -- Feedback/suggestions
+      'OTHER'            -- Other issues
+    );
+  END IF;
+END $$;
 
 -- ============================================================================
 -- UNIFIED TICKETS TABLE (Main Table)
@@ -296,7 +310,7 @@ CREATE INDEX IF NOT EXISTS unified_tickets_assigned_agent_status_idx ON unified_
 -- TICKET MESSAGES (Conversation Thread)
 -- ============================================================================
 
-CREATE TABLE unified_ticket_messages (
+CREATE TABLE IF NOT EXISTS unified_ticket_messages (
   id BIGSERIAL PRIMARY KEY,
   ticket_id BIGINT NOT NULL REFERENCES unified_tickets(id) ON DELETE CASCADE,
   
@@ -343,7 +357,7 @@ CREATE INDEX IF NOT EXISTS unified_ticket_messages_is_internal_note_idx ON unifi
 -- TICKET ACTIVITY LOG (Audit Trail)
 -- ============================================================================
 
-CREATE TABLE unified_ticket_activities (
+CREATE TABLE IF NOT EXISTS unified_ticket_activities (
   id BIGSERIAL PRIMARY KEY,
   ticket_id BIGINT NOT NULL REFERENCES unified_tickets(id) ON DELETE CASCADE,
   
@@ -374,7 +388,7 @@ CREATE INDEX IF NOT EXISTS unified_ticket_activities_created_at_idx ON unified_t
 -- TICKET TITLE CONFIGURATION (Reference Table for Fixed Titles)
 -- ============================================================================
 
-CREATE TABLE ticket_title_config (
+CREATE TABLE IF NOT EXISTS ticket_title_config (
   id BIGSERIAL PRIMARY KEY,
   ticket_title unified_ticket_title NOT NULL UNIQUE,
   
@@ -413,7 +427,7 @@ CREATE INDEX IF NOT EXISTS ticket_title_config_display_order_idx ON ticket_title
 -- AUTO-GENERATION RULES (For System-Generated Tickets)
 -- ============================================================================
 
-CREATE TABLE ticket_auto_generation_rules (
+CREATE TABLE IF NOT EXISTS ticket_auto_generation_rules (
   id BIGSERIAL PRIMARY KEY,
   rule_name TEXT NOT NULL UNIQUE,
   rule_description TEXT,
@@ -455,21 +469,25 @@ CREATE INDEX IF NOT EXISTS ticket_auto_generation_rules_is_enabled_idx ON ticket
 -- ============================================================================
 
 -- Update updated_at timestamp
+DROP TRIGGER IF EXISTS unified_tickets_updated_at_trigger ON unified_tickets;
 CREATE TRIGGER unified_tickets_updated_at_trigger
   BEFORE UPDATE ON unified_tickets
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS unified_ticket_messages_updated_at_trigger ON unified_ticket_messages;
 CREATE TRIGGER unified_ticket_messages_updated_at_trigger
   BEFORE UPDATE ON unified_ticket_messages
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS ticket_title_config_updated_at_trigger ON ticket_title_config;
 CREATE TRIGGER ticket_title_config_updated_at_trigger
   BEFORE UPDATE ON ticket_title_config
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS ticket_auto_generation_rules_updated_at_trigger ON ticket_auto_generation_rules;
 CREATE TRIGGER ticket_auto_generation_rules_updated_at_trigger
   BEFORE UPDATE ON ticket_auto_generation_rules
   FOR EACH ROW
@@ -498,6 +516,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS unified_tickets_generate_id_trigger ON unified_tickets;
 CREATE TRIGGER unified_tickets_generate_id_trigger
   BEFORE INSERT ON unified_tickets
   FOR EACH ROW
@@ -560,6 +579,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS unified_tickets_activity_log_trigger ON unified_tickets;
 CREATE TRIGGER unified_tickets_activity_log_trigger
   AFTER UPDATE ON unified_tickets
   FOR EACH ROW
@@ -589,6 +609,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS unified_tickets_response_times_trigger ON unified_tickets;
 CREATE TRIGGER unified_tickets_response_times_trigger
   BEFORE UPDATE ON unified_tickets
   FOR EACH ROW
