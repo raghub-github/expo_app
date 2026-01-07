@@ -39,12 +39,18 @@ export async function requestNotificationPermissions() {
     });
     
     // Request permissions with sound and vibration enabled
+    // Android automatically includes sound and vibration when permission is granted
+    // iOS requires explicit permission for sound
     const result = await requestPermissionsAsync({
       ios: {
         allowAlert: true,
         allowBadge: true,
-        allowSound: true,
+        allowSound: true, // Enable sound on iOS
         allowAnnouncements: false,
+      },
+      android: {
+        // Android notification permissions include sound and vibration by default
+        // User can configure these in settings after granting permission
       },
     });
     

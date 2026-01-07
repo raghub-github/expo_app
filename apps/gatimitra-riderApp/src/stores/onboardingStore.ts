@@ -11,26 +11,38 @@ export type OnboardingStep =
   | "review";
 
 export type OnboardingData = {
-  // Step 1: Aadhaar + Name
+  // Onboarding method
+  onboardingMethod?: "manual" | "karza" | "digilocker";
+  
+  // Step 1: Aadhaar + Name + DOB + Photo
   aadhaarNumber?: string;
   fullName?: string;
+  dob?: string; // ISO date string
+  aadhaarPhotoUri?: string; // local URI before upload
+  aadhaarPhotoSignedUrl?: string; // after R2 upload
   
-  // Step 2: DL + RC
+  // Step 2: PAN + PAN Photo + Selfie
+  panNumber?: string;
+  panPhotoUri?: string; // local URI before upload
+  panPhotoSignedUrl?: string; // after R2 upload
+  selfieUri?: string; // local URI before upload
+  selfieSignedUrl?: string; // after R2 upload
+  
+  // Step 3: DL + RC
   dlNumber?: string;
+  dlPhotoUri?: string; // local URI before upload
+  dlPhotoSignedUrl?: string; // after R2 upload
   rcNumber?: string;
+  rcPhotoUri?: string; // local URI before upload
+  rcPhotoSignedUrl?: string; // after R2 upload
   hasOwnVehicle?: boolean; // false = rental/EV
   
-  // Step 2b: Rental/EV alternative
+  // Step 3b: Rental/EV alternative
   rentalProofUri?: string; // local URI before upload
   rentalProofSignedUrl?: string; // after R2 upload
   evProofUri?: string;
   evProofSignedUrl?: string;
   maxSpeedDeclaration?: number;
-  
-  // Step 3: PAN + Selfie
-  panNumber?: string;
-  selfieUri?: string; // local URI before upload
-  selfieSignedUrl?: string; // after R2 upload
   
   // Metadata
   currentStep?: OnboardingStep;

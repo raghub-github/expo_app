@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Alert, Linking } from "react-native";
+import { View, Text, ScrollView, Alert, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
@@ -9,13 +9,9 @@ import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 import { useCreatePaymentOrder, useVerifyPayment } from "@/src/hooks/usePayment";
 
-// Razorpay Checkout (for web, you'd use Razorpay SDK)
-// For React Native, we'll use WebView or deep linking
-declare global {
-  interface Window {
-    Razorpay?: any;
-  }
-}
+// TODO: Install Razorpay React Native SDK for production:
+// npm install react-native-razorpay
+// Then import: import RazorpayCheckout from 'react-native-razorpay';
 
 export default function PaymentScreen() {
   const { t } = useTranslation();
@@ -38,6 +34,11 @@ export default function PaymentScreen() {
       return;
     }
 
+    if (!session?.accessToken) {
+      setError("Not authenticated. Please login again.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
 
@@ -45,36 +46,75 @@ export default function PaymentScreen() {
       const order = await createOrder.mutateAsync({ riderId: data.riderId });
       setOrderId(order.orderId);
 
-      // For React Native, you would:
-      // 1. Open Razorpay Checkout in WebView
-      // 2. Or use Razorpay React Native SDK
-      // 3. Or deep link to Razorpay app
+      // TODO: Replace with Razorpay React Native SDK integration
+      // Example code (after installing react-native-razorpay):
+      /*
+      import RazorpayCheckout from 'react-native-razorpay';
+      
+      const options = {
+        description: 'Onboarding Fee',
+        image: 'https://your-logo-url.com/logo.png',
+        currency: order.currency,
+        key: order.key,
+        amount: order.amount,
+        name: 'GatiMitra',
+        order_id: order.orderId,
+        prefill: {
+          email: '',
+          contact: phoneNumber,
+          name: riderName,
+        },
+        theme: { color: '#14b8a6' },
+      };
 
-      // For now, we'll show instructions
-      Alert.alert(
-        "Payment Required",
-        `Please pay ₹49 for onboarding fee.\n\nOrder ID: ${order.orderId}\n\nIn production, this will open Razorpay checkout.`,
-        [
-          {
-            text: "Cancel",
-            style: "cancel",
-          },
-          {
-            text: "Simulate Payment",
-            onPress: () => handleSimulatePayment(order.orderId),
-          },
-        ]
-      );
+      RazorpayCheckout.open(options)
+        .then(async (data) => {
+          // Payment successful
+          await handleVerifyPayment(order.orderId, data.razorpay_payment_id, data.razorpay_signature);
+        })
+        .catch((error) => {
+          // Payment failed or cancelled
+          if (error.code !== 'BAD_REQUEST_ERROR') {
+            setError(error.description || 'Payment cancelled');
+          }
+        });
+      */
+
+      // For development: Show simulation option
+      if (__DEV__) {
+        Alert.alert(
+          "Payment Required",
+          `Please pay ₹49 for onboarding fee.\n\nOrder ID: ${order.orderId}\n\nIn production, this will open Razorpay checkout.`,
+          [
+            {
+              text: "Cancel",
+              style: "cancel",
+              onPress: () => setLoading(false),
+            },
+            {
+              text: "Simulate Payment",
+              onPress: () => handleSimulatePayment(order.orderId),
+            },
+          ]
+        );
+      } else {
+        setError("Razorpay SDK not configured. Please contact support.");
+        setLoading(false);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create payment order");
-    } finally {
       setLoading(false);
     }
   };
 
   const handleSimulatePayment = async (razorpayOrderId: string) => {
     // In production, this would be called after Razorpay payment success
-    // For now, we simulate with fake payment ID
+    // For now, we simulate with fake payment ID (development only)
+    if (!__DEV__) {
+      setError("Simulation only available in development");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -90,6 +130,45 @@ export default function PaymentScreen() {
         razorpayOrderId,
         razorpayPaymentId: `pay_${Date.now()}`,
         razorpaySignature: "simulated_signature",
+      });
+
+      if (result.success) {
+        Alert.alert("Payment Successful", "Your onboarding fee has been paid. Waiting for admin approval.", [
+          {
+            text: "OK",
+            onPress: () => {
+              router.replace("/(onboarding)/pending");
+            },
+          },
+        ]);
+      } else {
+        setError("Payment verification failed");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Payment verification failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyPayment = async (
+    razorpayOrderId: string,
+    razorpayPaymentId: string,
+    razorpaySignature: string
+  ) => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (!data.riderId) {
+        throw new Error("Rider ID not found");
+      }
+
+      const result = await verifyPayment.mutateAsync({
+        riderId: data.riderId,
+        razorpayOrderId,
+        razorpayPaymentId,
+        razorpaySignature,
       });
 
       if (result.success) {

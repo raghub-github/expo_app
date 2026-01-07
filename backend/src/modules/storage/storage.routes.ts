@@ -3,6 +3,7 @@ import { z } from "zod";
 import multipart from "@fastify/multipart";
 import { auth } from "../../plugins/auth.js";
 import { uploadToR2, getR2SignedUrl } from "../../services/r2/r2Service.js";
+import { getEnv } from "../../config/env.js";
 
 /**
  * Cloudflare R2 Storage Routes
@@ -55,6 +56,11 @@ export async function storageRoutes(app: FastifyInstance) {
 
         const buffer = await fileData.toBuffer();
 
+        // Validate file size (10MB limit)
+        if (buffer.length > 10 * 1024 * 1024) {
+          return reply.code(400).send({ error: "File size exceeds 10MB limit" });
+        }
+
         // Upload to R2 using service
         const result = await uploadToR2(buffer, key, fileData.mimetype || "image/jpeg");
 
@@ -95,6 +101,52 @@ export async function storageRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.code(500).send({
           error: "Failed to get signed URL",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+
+  // Test R2 connection (for debugging)
+  app.post(
+    "/test",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            message: z.string(),
+            config: z.object({
+              bucket: z.string(),
+              endpoint: z.string(),
+              region: z.string(),
+            }).optional(),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const { getEnv } = await import("../../config/env.js");
+        const env = getEnv();
+        
+        // Test if we can create the client (this validates credentials)
+        const { getR2Client, getBucketName } = await import("../../services/r2/r2Service.js");
+        const client = getR2Client();
+        const bucket = getBucketName();
+
+        return reply.send({
+          success: true,
+          message: "R2 connection test successful",
+          config: {
+            bucket,
+            endpoint: env.R2_ENDPOINT || "not configured",
+            region: env.R2_REGION || "auto",
+          },
+        });
+      } catch (error) {
+        return reply.code(500).send({
+          success: false,
           message: error instanceof Error ? error.message : String(error),
         });
       }

@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { View, Text, Pressable, Modal, ScrollView } from "react-native";
+import { View, Text, Pressable, Modal, ScrollView, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { colors } from "@/src/theme";
-import { Logo } from "./Logo";
+import { DutyToggle } from "./DutyToggle";
 import { SUPPORTED_LANGUAGES } from "@/src/stores/languageStore";
 
 export function GlobalTopBar() {
@@ -31,21 +32,40 @@ export function GlobalTopBar() {
           <Text style={{ fontSize: 14, fontWeight: '500', color: '#374151' }} className="text-sm font-medium text-gray-700">{currentLang.code.toUpperCase()}</Text>
         </Pressable>
 
-        {/* App Logo */}
+        {/* Duty Toggle - Compact version for navbar */}
+        <View style={{ marginHorizontal: 4 }}>
+          <DutyToggle compact />
+        </View>
+
+        {/* App Logo (onlylogo.png) */}
         <View style={{ flex: 1, alignItems: 'center' }} className="flex-1 items-center">
-          <Logo size="small" />
+          <Image
+            source={require('../../assets/images/onlylogo.png')}
+            style={{ width: 50, height: 50, resizeMode: 'contain' }}
+          />
         </View>
 
         {/* Notifications */}
         <Pressable
           onPress={() => setShowNotifModal(true)}
-          style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}
+          style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center', marginRight: 8 }}
           className="w-10 h-10 items-center justify-center"
         >
           <View style={{ position: 'relative' }}>
-            <Text style={{ fontSize: 24 }}>🔔</Text>
+            <Ionicons name="notifications-outline" size={24} color={colors.gray[700]} />
             <View style={{ position: 'absolute', top: 0, right: 0, width: 12, height: 12, backgroundColor: colors.error[500], borderRadius: 6, borderWidth: 2, borderColor: '#FFFFFF' }} />
           </View>
+        </Pressable>
+
+        {/* Help / Ticket */}
+        <Pressable
+          onPress={() => {
+            router.push("/(onboarding)/help");
+          }}
+          style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}
+          className="w-10 h-10 items-center justify-center"
+        >
+          <Ionicons name="help-circle-outline" size={24} color={colors.gray[700]} />
         </Pressable>
       </View>
 

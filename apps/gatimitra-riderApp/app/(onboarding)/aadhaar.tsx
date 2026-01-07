@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform, Image, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
+import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
+import { uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import { useSaveDocument, useUpdateRiderStage } from "@/src/hooks/useDocuments";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 
@@ -24,9 +27,14 @@ export default function AadhaarScreen() {
   const session = useSessionStore((s) => s.session);
   const { data, setData, setStep, hydrate } = useOnboardingStore();
   const saveStep = useSaveOnboardingStep();
+  const saveDocument = useSaveDocument();
+  const updateStage = useUpdateRiderStage();
 
   const [aadhaarNumber, setAadhaarNumber] = useState(data.aadhaarNumber || "");
   const [fullName, setFullName] = useState(data.fullName || "");
+  const [dob, setDob] = useState(data.dob || "");
+  const [aadhaarPhotoUri, setAadhaarPhotoUri] = useState<string | null>(data.aadhaarPhotoUri || null);
+  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,6 +45,56 @@ export default function AadhaarScreen() {
   const handleAadhaarChange = (text: string) => {
     const formatted = formatAadhaar(text);
     setAadhaarNumber(formatted);
+  };
+
+  const requestCameraPermission = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission Required", "Camera permission is required to capture Aadhaar photo");
+      return false;
+    }
+    return true;
+  };
+
+  const handleCaptureAadhaarPhoto = async () => {
+    const hasPermission = await requestCameraPermission();
+    if (!hasPermission) return;
+
+    setError(null);
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 2], // Aadhaar card aspect ratio
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setAadhaarPhotoUri(result.assets[0].uri);
+      }
+    } catch (e) {
+      setError("Failed to capture photo. Please try again.");
+    }
+  };
+
+  const handlePickAadhaarPhoto = async () => {
+    setError(null);
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 2],
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setAadhaarPhotoUri(result.assets[0].uri);
+      }
+    } catch (e) {
+      setError("Failed to pick photo. Please try again.");
+    }
   };
 
   const handleContinue = async () => {
@@ -50,36 +108,82 @@ export default function AadhaarScreen() {
       return;
     }
 
+    if (!dob) {
+      setError("Please enter your date of birth");
+      return;
+    }
+
+    if (!aadhaarPhotoUri) {
+      setError("Please capture or upload your Aadhaar photo");
+      return;
+    }
+
+    if (!data.riderId) {
+      setError("Rider ID not found. Please try again.");
+      return;
+    }
+
+    if (!session?.accessToken) {
+      setError("Not authenticated. Please login again.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
+    setUploading(true);
 
     try {
+      // Upload Aadhaar photo to R2
+      const uploadResult = await uploadToR2(
+        aadhaarPhotoUri,
+        "documents",
+        session.accessToken,
+        `aadhaar/${data.riderId}-${Date.now()}.jpg`
+      );
+
+      // Save document to database
+      await saveDocument.mutateAsync({
+        riderId: parseInt(data.riderId),
+        docType: "aadhaar",
+        fileUrl: uploadResult.signedUrl,
+        extractedName: fullName.trim(),
+        extractedDob: dob, // ISO date string
+      });
+
+      // Update rider table with Aadhaar details
+      await saveStep.mutateAsync({
+        riderId: data.riderId,
+        step: "aadhaar_name",
+        data: {
+          aadhaarNumber: aadhaarNumber.replace(/\D/g, ""),
+          fullName: fullName.trim(),
+        },
+      });
+
+      // Update onboarding stage to KYC
+      await updateStage.mutateAsync({
+        riderId: parseInt(data.riderId),
+        stage: "KYC",
+      });
+
       // Save to local store
       await setData({
         aadhaarNumber: aadhaarNumber.replace(/\D/g, ""),
         fullName: fullName.trim(),
+        dob: dob,
+        aadhaarPhotoUri,
+        aadhaarPhotoSignedUrl: uploadResult.signedUrl,
         currentStep: "aadhaar_name",
       });
 
-      // Save to backend if riderId exists
-      if (data.riderId && session?.accessToken) {
-        await saveStep.mutateAsync({
-          riderId: data.riderId,
-          step: "aadhaar_name",
-          data: {
-            aadhaarNumber: aadhaarNumber.replace(/\D/g, ""),
-            fullName: fullName.trim(),
-          },
-        });
-      }
-
-      // Move to next step
-      await setStep("dl_rc");
-      router.push("/(onboarding)/dl-rc");
+      // Move to next step (PAN-Selfie)
+      await setStep("pan_selfie");
+      router.push("/(onboarding)/pan-selfie");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save. Please try again.");
+      setError(e instanceof Error ? e.message : "Failed to upload. Please try again.");
     } finally {
       setLoading(false);
+      setUploading(false);
     }
   };
 
@@ -160,6 +264,65 @@ export default function AadhaarScreen() {
                     color: "#111827",
                   }}
                 />
+              </View>
+
+              <View style={{ marginBottom: 24 }}>
+                <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 8 }}>
+                  Date of Birth (as per Aadhaar)
+                </Text>
+                <TextInput
+                  value={dob}
+                  onChangeText={setDob}
+                  placeholder="YYYY-MM-DD (e.g., 1990-01-15)"
+                  placeholderTextColor={colors.gray[400]}
+                  keyboardType="default"
+                  style={{
+                    backgroundColor: "#F9FAFB",
+                    borderWidth: 1,
+                    borderColor: "#E5E7EB",
+                    borderRadius: 12,
+                    paddingHorizontal: 16,
+                    paddingVertical: 16,
+                    fontSize: 16,
+                    color: "#111827",
+                  }}
+                />
+                <Text style={{ fontSize: 12, color: "#6B7280", marginTop: 4 }}>
+                  Format: YYYY-MM-DD
+                </Text>
+              </View>
+
+              <View style={{ marginBottom: 24 }}>
+                <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 8 }}>
+                  Aadhaar Photo
+                </Text>
+                <View style={{ flexDirection: "row", gap: 12, marginBottom: 12 }}>
+                  <Button
+                    variant="outline"
+                    onPress={handleCaptureAadhaarPhoto}
+                    disabled={uploading}
+                    style={{ flex: 1 }}
+                  >
+                    📷 Capture
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onPress={handlePickAadhaarPhoto}
+                    disabled={uploading}
+                    style={{ flex: 1 }}
+                  >
+                    🖼️ Upload
+                  </Button>
+                </View>
+                {aadhaarPhotoUri && (
+                  <View style={{ marginTop: 12 }}>
+                    <Image
+                      source={{ uri: aadhaarPhotoUri }}
+                      style={{ width: "100%", height: 200, borderRadius: 12 }}
+                      resizeMode="contain"
+                    />
+                  </View>
+                )}
               </View>
 
               {error && (

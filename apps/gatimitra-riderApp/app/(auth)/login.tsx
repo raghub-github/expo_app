@@ -104,8 +104,8 @@ export default function LoginScreen() {
           // Pending approval - go to pending screen
           router.replace("/(onboarding)/pending");
         } else {
-          // In progress or not started - continue onboarding
-          router.replace("/(onboarding)/aadhaar");
+          // In progress or not started - go to onboarding method selection
+          router.replace("/(onboarding)/method-selection");
         }
       } else {
         // New rider - create rider record and start onboarding
@@ -117,8 +117,8 @@ export default function LoginScreen() {
         // Save riderId to onboarding store
         await setOnboardingData({ riderId: createResult.riderId });
         
-        // Start onboarding flow
-        router.replace("/(onboarding)/aadhaar");
+        // Start onboarding flow - go to method selection
+        router.replace("/(onboarding)/method-selection");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : t("login.failedVerify"));

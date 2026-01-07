@@ -16,23 +16,33 @@ export interface R2UploadResult {
  * Upload image to Cloudflare R2
  * 
  * @param fileUri - Local file URI (from camera or image picker)
- * @param folder - Folder path in R2 bucket (e.g., "selfies", "documents")
+ * @param folder - Folder path in R2 bucket (e.g., "selfies", "documents", or custom path like "documents/aadhaar")
  * @param accessToken - Session access token for authorization
- * @param fileName - Optional custom filename, otherwise generates UUID
+ * @param fileName - Optional custom filename. If includes path (e.g., "aadhaar/rider-123.jpg"), use it directly
  * @returns Signed URL and key
  */
 export async function uploadToR2(
   fileUri: string,
-  folder: "selfies" | "documents",
+  folder: "selfies" | "documents" | string,
   accessToken: string,
   fileName?: string
 ): Promise<R2UploadResult> {
   const config = getRiderAppConfig();
   const apiBaseUrl = config.apiBaseUrl;
   
-  // Generate filename if not provided
-  const finalFileName = fileName || `${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
-  const key = `${folder}/${finalFileName}`;
+  // Determine the key
+  let key: string;
+  if (fileName?.includes('/')) {
+    // If fileName includes path (e.g., "aadhaar/rider-123.jpg"), use it directly
+    key = fileName;
+  } else {
+    // Generate filename if not provided
+    const finalFileName = fileName || `${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
+    key = `${folder}/${finalFileName}`;
+  }
+  
+  // Extract just the filename for FormData
+  const finalFileName = key.split('/').pop() || `${Date.now()}.jpg`;
   
   // Create FormData for React Native
   const formData = new FormData();

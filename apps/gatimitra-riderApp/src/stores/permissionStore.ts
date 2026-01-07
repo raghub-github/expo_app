@@ -1,15 +1,20 @@
 import { create } from "zustand";
 import type { PermissionState, PermissionType } from "@/src/services/permissions/permissionManager";
+import type { PermissionStepKey } from "@/src/services/permissions/smartPermissionHandler";
 import { getItem, setItem } from "@/src/utils/storage";
 
 const PERMISSION_STORE_KEY = "rider_permissions_state";
+const GRANTED_PERMISSIONS_KEY = "rider_granted_permission_steps";
 
 interface PermissionStoreState {
   permissions: PermissionState | null;
   hasRequestedPermissions: boolean;
   hydrated: boolean;
+  grantedPermissionSteps: Set<PermissionStepKey>;
   setPermissions: (permissions: PermissionState) => void;
   setHasRequestedPermissions: (value: boolean) => void;
+  setPermissionStepGranted: (stepKey: PermissionStepKey, granted: boolean) => void;
+  isPermissionStepGranted: (stepKey: PermissionStepKey) => boolean;
   refreshPermissions: () => Promise<void>;
   hydrate: () => Promise<void>;
 }
@@ -18,6 +23,7 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
   permissions: null,
   hasRequestedPermissions: false,
   hydrated: false,
+  grantedPermissionSteps: new Set<PermissionStepKey>(),
 
   setPermissions: (permissions) => {
     set({ permissions });
@@ -28,6 +34,26 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
   setHasRequestedPermissions: (value) => {
     set({ hasRequestedPermissions: value });
     void setItem("rider_has_requested_permissions", JSON.stringify(value));
+  },
+
+  setPermissionStepGranted: (stepKey, granted) => {
+    const current = get().grantedPermissionSteps;
+    const updated = new Set(current);
+    
+    if (granted) {
+      updated.add(stepKey);
+    } else {
+      updated.delete(stepKey);
+    }
+    
+    set({ grantedPermissionSteps: updated });
+    
+    // Persist to storage
+    void setItem(GRANTED_PERMISSIONS_KEY, JSON.stringify(Array.from(updated)));
+  },
+
+  isPermissionStepGranted: (stepKey) => {
+    return get().grantedPermissionSteps.has(stepKey);
   },
 
   refreshPermissions: async () => {
@@ -64,9 +90,10 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
       fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissionStore.ts:57',message:'PermissionStore set hydrated to true',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
       // #endregion
       
-      const [permissionsJson, hasRequestedJson] = await Promise.all([
+      const [permissionsJson, hasRequestedJson, grantedStepsJson] = await Promise.all([
         getItem(PERMISSION_STORE_KEY),
         getItem("rider_has_requested_permissions"),
+        getItem(GRANTED_PERMISSIONS_KEY),
       ]);
 
       console.log('[PermissionStore] Retrieved data', { 
@@ -91,6 +118,16 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
           console.log('[PermissionStore] HasRequestedPermissions set to', hasRequested);
         } catch (parseError) {
           console.warn("[PermissionStore] Failed to parse hasRequestedPermissions JSON:", parseError);
+        }
+      }
+
+      if (grantedStepsJson) {
+        try {
+          const grantedSteps = JSON.parse(grantedStepsJson) as string[];
+          set({ grantedPermissionSteps: new Set(grantedSteps as PermissionStepKey[]) });
+          console.log('[PermissionStore] Granted permission steps restored:', grantedSteps);
+        } catch (parseError) {
+          console.warn("[PermissionStore] Failed to parse granted permission steps JSON:", parseError);
         }
       }
 

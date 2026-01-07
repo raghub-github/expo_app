@@ -9,17 +9,18 @@ module.exports = {
     slug: "gatimitra-riderapp",
     version: "1.0.0",
     orientation: "portrait",
-    icon: "./assets/images/icon.png",
+    icon: "./assets/images/onlylogo.png",
     scheme: "gatimitra-rider",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     splash: {
-      image: "./assets/images/splash-icon.png",
+      image: "./assets/images/logo.png",
       resizeMode: "contain",
-      backgroundColor: "#ffffff"
+      backgroundColor: "#14b8a6"
     },
     ios: {
       supportsTablet: true,
+      icon: "./assets/images/onlylogo.png",
       infoPlist: {
         NSLocationWhenInUseUsageDescription: "GatiMitra needs your location to show nearby orders, enable navigation, and verify deliveries. Location is mandatory for receiving orders.",
         NSLocationAlwaysAndWhenInUseUsageDescription: "GatiMitra needs your location in the background during active duties for safety and accurate order tracking.",
@@ -30,9 +31,10 @@ module.exports = {
     android: {
       package: "com.raghubhunia.gatimitrariderapp",
       adaptiveIcon: {
-        foregroundImage: "./assets/images/adaptive-icon.png",
-        backgroundColor: "#ffffff"
+        foregroundImage: "./assets/images/onlylogo.png",
+        backgroundColor: "#14b8a6"
       },
+      icon: "./assets/images/onlylogo.png",
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       permissions: [
@@ -44,12 +46,19 @@ module.exports = {
         "CAMERA",
         "READ_MEDIA_IMAGES",
         "READ_MEDIA_VIDEO"
-      ]
+      ],
+      // Bundle size optimization
+      enableProguardInReleaseBuilds: true,
+      enableShrinkResourcesInReleaseBuilds: true,
+      // Optimize APK size
+      buildType: "apk",
+      // Enable code splitting and minification
+      jsEngine: "hermes"
     },
     web: {
       bundler: "metro",
       output: "static",
-      favicon: "./assets/images/favicon.png"
+      favicon: "./assets/images/logo.png"
     },
     plugins: [
       "expo-router",
@@ -67,7 +76,7 @@ module.exports = {
       [
         "expo-notifications",
         {
-          icon: "./assets/images/icon.png",
+          icon: "./assets/images/onlylogo.png",
           color: "#14b8a6",
           sounds: []
         }

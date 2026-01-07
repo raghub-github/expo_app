@@ -15,6 +15,14 @@ export default function Index() {
   const hasRequestedPermissions = usePermissionStore((s) => s.hasRequestedPermissions);
   const session = useSessionStore((s) => s.session);
   const languageSelected = useLanguageStore((s) => s.languageSelected);
+  const hydrateLanguage = useLanguageStore((s) => s.hydrate);
+
+  // Ensure language store is hydrated
+  useEffect(() => {
+    hydrateLanguage().catch((err) => {
+      console.warn('[Index] Language hydration failed:', err);
+    });
+  }, [hydrateLanguage]);
 
   // #region agent log
   fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.tsx:15',message:'Index component state',data:{hydrated,hasRequestedPermissions,hasSession:!!session,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});

@@ -17,9 +17,10 @@ function getR2Client(): S3Client {
   const env = getEnv();
 
   if (!env.R2_ACCESS_KEY || !env.R2_SECRET_KEY || !env.R2_ENDPOINT || !env.R2_BUCKET_NAME) {
-    throw new Error("R2 credentials not configured");
+    throw new Error("R2 credentials not configured. Required: R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_BUCKET_NAME");
   }
 
+  // Cloudflare R2 requires forcePathStyle: true for custom endpoints
   r2Client = new S3Client({
     region: env.R2_REGION || "auto",
     endpoint: env.R2_ENDPOINT,
@@ -27,10 +28,13 @@ function getR2Client(): S3Client {
       accessKeyId: env.R2_ACCESS_KEY,
       secretAccessKey: env.R2_SECRET_KEY,
     },
-    forcePathStyle: false,
+    forcePathStyle: true, // Required for R2 custom endpoints
   });
 
   bucketName = env.R2_BUCKET_NAME;
+  
+  console.log(`[R2] Client initialized - Bucket: ${bucketName}, Endpoint: ${env.R2_ENDPOINT}`);
+  
   return r2Client;
 }
 
@@ -62,6 +66,8 @@ export async function uploadToR2(
   const bucket = getBucketName();
 
   try {
+    console.log(`[R2] Uploading to bucket: ${bucket}, key: ${key}, size: ${buffer.length} bytes`);
+    
     // Upload to R2
     await client.send(
       new PutObjectCommand({
@@ -72,19 +78,26 @@ export async function uploadToR2(
       })
     );
 
-    // Generate signed URL (valid for 1 year)
+    console.log(`[R2] Upload successful for key: ${key}`);
+
+    // Generate signed URL with maximum expiration (no practical limit)
+    // Using maximum 32-bit signed integer value for expiration
     const signedUrl = await getSignedUrl(
       client,
       new GetObjectCommand({
         Bucket: bucket,
         Key: key,
       }),
-      { expiresIn: 31536000 } // 1 year
+      { expiresIn: 2147483647 } // Maximum 32-bit signed integer (~68 years, effectively no expiration)
     );
 
+    console.log(`[R2] Generated signed URL for key: ${key}`);
+    
     return { key, signedUrl };
   } catch (error) {
-    throw new Error(`R2 upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[R2] Upload failed for key: ${key}`, errorMessage);
+    throw new Error(`R2 upload failed: ${errorMessage}`);
   }
 }
 
@@ -109,8 +122,9 @@ export async function deleteFromR2(key: string): Promise<void> {
 
 /**
  * Get signed URL for existing object
+ * @param expiresIn - Expiration time in seconds (default: maximum value for no expiration)
  */
-export async function getR2SignedUrl(key: string, expiresIn: number = 3600): Promise<string> {
+export async function getR2SignedUrl(key: string, expiresIn: number = 2147483647): Promise<string> {
   const client = getR2Client();
   const bucket = getBucketName();
 

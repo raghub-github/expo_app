@@ -17,16 +17,35 @@ export default function LanguageScreen() {
 
   useEffect(() => {
     const initLanguage = async () => {
-      await hydrate();
-      // After hydration, check if a language was previously selected
-      const storedLang = await getItem("gm_selected_language_v1");
-      if (storedLang) {
-        setSelected(storedLang);
-        i18n.changeLanguage(storedLang);
-      } else {
-        // No language selected yet, ensure we start with "en" but don't mark as selected
+      try {
+        await hydrate();
+        // After hydration, check if a language was previously selected
+        const storedLang = await getItem("gm_selected_language_v1");
+        if (storedLang) {
+          setSelected(storedLang);
+          try {
+            await i18n.changeLanguage(storedLang);
+          } catch (i18nError) {
+            console.warn("[LanguageScreen] Error changing i18n language:", i18nError);
+          }
+        } else {
+          // No language selected yet, ensure we start with "en" but don't mark as selected
+          setSelected("en");
+          try {
+            await i18n.changeLanguage("en");
+          } catch (i18nError) {
+            console.warn("[LanguageScreen] Error setting default i18n language:", i18nError);
+          }
+        }
+      } catch (error) {
+        console.error("[LanguageScreen] Error initializing language:", error);
+        // Fallback to English on error
         setSelected("en");
-        i18n.changeLanguage("en");
+        try {
+          await i18n.changeLanguage("en");
+        } catch (i18nError) {
+          console.warn("[LanguageScreen] Error setting fallback language:", i18nError);
+        }
       }
     };
     initLanguage();
@@ -52,15 +71,31 @@ export default function LanguageScreen() {
   };
 
   const handleProceed = async () => {
+    if (loading) return; // Prevent double submission
+    
     setLoading(true);
     try {
-      await setSelectedLanguage(selected);
+      // Ensure a language is selected
+      const langToSave = selected || "en";
+      
+      // Save language selection
+      await setSelectedLanguage(langToSave);
+      
+      // Small delay to ensure state is saved
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       // Navigate to permissions
       router.replace("/(permissions)/request");
     } catch (error) {
-      console.warn("Error saving language:", error);
-      // Continue anyway
-      router.replace("/(permissions)/request");
+      console.error("[LanguageScreen] Error saving language:", error);
+      // Continue anyway - don't block user
+      try {
+        router.replace("/(permissions)/request");
+      } catch (navError) {
+        console.error("[LanguageScreen] Navigation error:", navError);
+        // Last resort - try push instead of replace
+        router.push("/(permissions)/request");
+      }
     } finally {
       setLoading(false);
     }

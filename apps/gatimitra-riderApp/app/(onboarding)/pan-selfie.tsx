@@ -8,6 +8,7 @@ import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import { useSaveDocument } from "@/src/hooks/useDocuments";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 
@@ -24,8 +25,10 @@ export default function PanSelfieScreen() {
   const session = useSessionStore((s) => s.session);
   const { data, setData, setStep, hydrate } = useOnboardingStore();
   const saveStep = useSaveOnboardingStep();
+  const saveDocument = useSaveDocument();
 
   const [panNumber, setPanNumber] = useState(data.panNumber || "");
+  const [panPhotoUri, setPanPhotoUri] = useState<string | null>(data.panPhotoUri || null);
   const [selfieUri, setSelfieUri] = useState<string | null>(data.selfieUri || null);
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -42,6 +45,47 @@ export default function PanSelfieScreen() {
       return false;
     }
     return true;
+  };
+
+  const handleCapturePanPhoto = async () => {
+    const hasPermission = await requestCameraPermission();
+    if (!hasPermission) return;
+
+    setError(null);
+
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 2], // PAN card aspect ratio
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setPanPhotoUri(result.assets[0].uri);
+      }
+    } catch (e) {
+      setError("Failed to capture PAN photo. Please try again.");
+    }
+  };
+
+  const handlePickPanPhoto = async () => {
+    setError(null);
+
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [3, 2],
+        quality: 0.9,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setPanPhotoUri(result.assets[0].uri);
+      }
+    } catch (e) {
+      setError("Failed to pick PAN photo. Please try again.");
+    }
   };
 
   const handleCaptureSelfie = async () => {
@@ -72,8 +116,23 @@ export default function PanSelfieScreen() {
       return;
     }
 
+    if (!panPhotoUri) {
+      setError("Please capture or upload your PAN photo");
+      return;
+    }
+
     if (!selfieUri) {
       setError("Please capture your selfie");
+      return;
+    }
+
+    if (!data.riderId) {
+      setError("Rider ID not found. Please try again.");
+      return;
+    }
+
+    if (!session?.accessToken) {
+      setError("Not authenticated. Please login again.");
       return;
     }
 
@@ -82,43 +141,63 @@ export default function PanSelfieScreen() {
     setUploading(true);
 
     try {
-      if (!session?.accessToken) {
-        throw new Error("Not authenticated");
-      }
+      const riderId = parseInt(data.riderId);
+
+      // Upload PAN photo to R2
+      const panUploadResult = await uploadToR2(
+        panPhotoUri,
+        "documents",
+        session.accessToken,
+        `pan/${riderId}-${Date.now()}.jpg`
+      );
 
       // Upload selfie to R2
-      const uploadResult = await uploadToR2(
+      const selfieUploadResult = await uploadToR2(
         selfieUri,
         "selfies",
         session.accessToken,
-        `selfie-${Date.now()}.jpg`
+        `${riderId}-${Date.now()}.jpg`
       );
+
+      // Save PAN document to database
+      await saveDocument.mutateAsync({
+        riderId,
+        docType: "pan",
+        fileUrl: panUploadResult.signedUrl,
+      });
+
+      // Save selfie document to database
+      await saveDocument.mutateAsync({
+        riderId,
+        docType: "selfie",
+        fileUrl: selfieUploadResult.signedUrl,
+      });
+
+      // Update rider table with PAN number and selfie URL
+      await saveStep.mutateAsync({
+        riderId: data.riderId,
+        step: "pan_selfie",
+        data: {
+          panNumber: panNumber.toUpperCase(),
+          selfieSignedUrl: selfieUploadResult.signedUrl,
+        },
+      });
 
       // Save to local store
       await setData({
         panNumber: panNumber.toUpperCase(),
+        panPhotoUri,
+        panPhotoSignedUrl: panUploadResult.signedUrl,
         selfieUri,
-        selfieSignedUrl: uploadResult.signedUrl,
+        selfieSignedUrl: selfieUploadResult.signedUrl,
         currentStep: "pan_selfie",
       });
 
-      // Save to backend if riderId exists
-      if (data.riderId) {
-        await saveStep.mutateAsync({
-          riderId: data.riderId,
-          step: "pan_selfie",
-          data: {
-            panNumber: panNumber.toUpperCase(),
-            selfieSignedUrl: uploadResult.signedUrl,
-          },
-        });
-      }
-
-      // Move to review step
-      await setStep("review");
-      router.push("/(onboarding)/review");
+      // Move to DL-RC step
+      await setStep("dl_rc");
+      router.push("/(onboarding)/dl-rc");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to upload selfie. Please try again.");
+      setError(e instanceof Error ? e.message : "Failed to upload. Please try again.");
     } finally {
       setLoading(false);
       setUploading(false);
@@ -180,6 +259,39 @@ export default function PanSelfieScreen() {
                   <Text style={{ fontSize: 12, color: "#6B7280", marginTop: 4 }}>
                     Masked: {maskedPan}
                   </Text>
+                )}
+              </View>
+
+              <View style={{ marginBottom: 24 }}>
+                <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 8 }}>
+                  PAN Photo
+                </Text>
+                <View style={{ flexDirection: "row", gap: 12, marginBottom: 12 }}>
+                  <Button
+                    variant="outline"
+                    onPress={handleCapturePanPhoto}
+                    disabled={uploading}
+                    style={{ flex: 1 }}
+                  >
+                    📷 Capture
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onPress={handlePickPanPhoto}
+                    disabled={uploading}
+                    style={{ flex: 1 }}
+                  >
+                    🖼️ Upload
+                  </Button>
+                </View>
+                {panPhotoUri && (
+                  <View style={{ marginTop: 12 }}>
+                    <Image
+                      source={{ uri: panPhotoUri }}
+                      style={{ width: "100%", height: 200, borderRadius: 12 }}
+                      resizeMode="contain"
+                    />
+                  </View>
                 )}
               </View>
 

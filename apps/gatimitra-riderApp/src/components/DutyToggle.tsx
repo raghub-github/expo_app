@@ -6,7 +6,11 @@ import { useMutation } from "@tanstack/react-query";
 import { riderApi } from "@/src/services/api/riderApi";
 import { colors } from "@/src/theme";
 
-export function DutyToggle() {
+interface DutyToggleProps {
+  compact?: boolean;
+}
+
+export function DutyToggle({ compact = false }: DutyToggleProps) {
   const { t } = useTranslation();
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const toggleDuty = useDutyStore((s) => s.toggleDuty);
@@ -25,10 +29,41 @@ export function DutyToggle() {
 
   const handleToggle = async () => {
     const newStatus = !isOnDuty;
+    // Update local state first for immediate UI feedback
     await toggleDuty();
+    // Then sync with backend
     updateDutyMutation.mutate(newStatus);
   };
 
+  if (compact) {
+    // Compact version for navbar - just the toggle switch
+    return (
+      <Pressable
+        onPress={handleToggle}
+        disabled={updateDutyMutation.isPending}
+        style={{
+          width: 48,
+          height: 28,
+          borderRadius: 14,
+          backgroundColor: isOnDuty ? colors.success[500] : colors.gray[300],
+          justifyContent: 'center',
+          paddingHorizontal: 3,
+        }}
+      >
+        <View
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            backgroundColor: '#FFFFFF',
+            transform: [{ translateX: isOnDuty ? 20 : 0 }],
+          }}
+        />
+      </Pressable>
+    );
+  }
+
+  // Full version with text label
   return (
     <View className="flex-row items-center gap-3">
       <Text className="text-sm font-medium text-gray-700">

@@ -6,8 +6,9 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { View, ActivityIndicator, Text } from 'react-native';
+import * as Asset from 'expo-asset';
 import 'react-native-reanimated';
 // CSS imports are not supported in React Native - only for web
 // import '../global.css';
@@ -17,7 +18,9 @@ import { AppProviders } from '@/src/providers/AppProviders';
 import { usePermissionStore } from '@/src/stores/permissionStore';
 import { useSessionStore } from '@/src/stores/sessionStore';
 import { colors } from '@/src/theme';
-import { Platform } from 'react-native';
+import { Platform, AppState } from 'react-native';
+import { router } from 'expo-router';
+import { smartPermissionHandler } from '@/src/services/permissions/smartPermissionHandler';
 
 // Initialize Mapbox early for faster map loading
 if (Platform.OS !== 'web') {
@@ -52,6 +55,28 @@ export default function RootLayout() {
     ...FontAwesome.font,
   });
 
+  const [assetsLoaded, setAssetsLoaded] = useState(false);
+
+  // Load critical assets (logo, onlylogo) before hiding splash
+  useEffect(() => {
+    async function loadAssets() {
+      try {
+        // Load brand logo assets
+        await Asset.loadAsync([
+          require('../assets/images/logo.png'),
+          require('../assets/images/onlylogo.png'),
+        ]);
+        setAssetsLoaded(true);
+        console.log('[RootLayout] Critical assets loaded');
+      } catch (error) {
+        console.warn('[RootLayout] Asset loading error (non-critical):', error);
+        // Continue even if asset loading fails
+        setAssetsLoaded(true);
+      }
+    }
+    loadAssets();
+  }, []);
+
   // #region agent log
   fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'_layout.tsx:35',message:'Font loading state',data:{loaded,hasError:!!error,errorMessage:error?.message,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
   // #endregion
@@ -66,25 +91,28 @@ export default function RootLayout() {
     }
   }, [error]);
 
+  // Hide splash only when fonts AND assets are loaded
   useEffect(() => {
-    if (loaded) {
-      SplashScreen.hideAsync().catch(() => {
-        // Ignore splash screen errors
-      });
+    if (loaded && assetsLoaded) {
+      // Small delay to ensure splash is visible briefly
+      const timer = setTimeout(() => {
+        SplashScreen.hideAsync().catch(() => {
+          // Ignore splash screen errors
+        });
+        console.log('[RootLayout] Splash screen hidden - all assets loaded');
+      }, 100);
+      return () => clearTimeout(timer);
     }
-  }, [loaded]);
+  }, [loaded, assetsLoaded]);
 
-  // Always show something, even if fonts aren't loaded
-  if (!loaded) {
+  // Always show something, even if fonts/assets aren't loaded
+  // Return null to keep splash screen visible
+  if (!loaded || !assetsLoaded) {
     // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'_layout.tsx:52',message:'Showing font loading screen',data:{loaded,hasError:!!error,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'_layout.tsx:52',message:'Waiting for assets to load',data:{loaded,assetsLoaded,hasError:!!error,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
     // #endregion
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF' }}>
-        <ActivityIndicator size="large" color={colors.primary[500]} />
-        <Text style={{ marginTop: 16, color: '#000000' }}>Loading fonts...</Text>
-      </View>
-    );
+    // Return null to keep native splash visible
+    return null;
   }
 
   // #region agent log
@@ -161,6 +189,38 @@ function RootLayoutNav() {
       clearInterval(checkInterval);
     };
   }, [permissionHydrated]);
+
+  // Re-check mandatory permissions on app resume
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const subscription = AppState.addEventListener('change', async (nextAppState) => {
+      if (nextAppState === 'active') {
+        // Wait a bit for app to fully resume
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        try {
+          // Check if location is still enabled (mandatory)
+          const locationStatus = await smartPermissionHandler.isLocationFullyEnabled();
+          
+          if (!locationStatus.enabled) {
+            // Location is missing - redirect to permissions
+            const hasRequestedPermissions = usePermissionStore.getState().hasRequestedPermissions;
+            if (hasRequestedPermissions) {
+              // User has been through permissions before, but location was revoked
+              // Reset the flag so they go through permissions again
+              usePermissionStore.getState().setHasRequestedPermissions(false);
+              router.replace('/(permissions)/request');
+            }
+          }
+        } catch (error) {
+          console.warn('[RootLayoutNav] Error checking permissions on resume:', error);
+        }
+      }
+    });
+
+    return () => subscription.remove();
+  }, []);
 
   // Show loading screen while initializing - but with very short timeout
   if (!permissionHydrated || isInitializing) {

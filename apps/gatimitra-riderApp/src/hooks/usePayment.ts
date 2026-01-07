@@ -43,7 +43,7 @@ export function useCreatePaymentOrder() {
       return postJson<CreatePaymentOrderResponse>(
         `${API_BASE()}/v1/payment/onboarding/create-order`,
         data,
-        { Authorization: `Bearer ${session.accessToken}` }
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
       );
     },
   });
@@ -64,7 +64,7 @@ export function useVerifyPayment() {
       return postJson<VerifyPaymentResponse>(
         `${API_BASE()}/v1/payment/onboarding/verify`,
         data,
-        { Authorization: `Bearer ${session.accessToken}` }
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
       );
     },
   });

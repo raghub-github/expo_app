@@ -132,3 +132,42 @@ export async function openBackgroundRunningSettings(): Promise<void> {
   }
 }
 
+export async function openLocationServicesSettings(): Promise<void> {
+  if (Platform.OS !== "android") {
+    await Linking.openURL("app-settings:");
+    return;
+  }
+
+  try {
+    // Open location services/GPS settings
+    await IntentLauncher.startActivityAsync(
+      IntentLauncher.ActivityAction.LOCATION_SOURCE_SETTINGS,
+      {}
+    );
+  } catch (error) {
+    console.warn("Failed to open location services settings:", error);
+    // Fallback to general settings
+    await Linking.openSettings();
+  }
+}
+
+export async function openDisplayOverOtherAppsSettings(): Promise<void> {
+  if (Platform.OS !== "android") {
+    await Linking.openURL("app-settings:");
+    return;
+  }
+
+  try {
+    // Open app info where user can enable "Display over other apps"
+    const packageName = getAndroidPackageName();
+    await IntentLauncher.startActivityAsync(
+      IntentLauncher.ActivityAction.APPLICATION_DETAILS_SETTINGS,
+      {
+        data: `package:${packageName}`,
+      }
+    );
+  } catch (error) {
+    console.warn("Failed to open display over other apps settings:", error);
+    await Linking.openSettings();
+  }
+}
