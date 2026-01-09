@@ -104,3 +104,27 @@ export async function getR2SignedUrl(
   return signedUrl;
 }
 
+/**
+ * Delete file from R2 (for rollback operations)
+ */
+export async function deleteFromR2(
+  key: string,
+  accessToken: string
+): Promise<void> {
+  const config = getRiderAppConfig();
+  const apiBaseUrl = config.apiBaseUrl;
+  
+  const response = await fetch(`${apiBaseUrl}/v1/storage/delete`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ key }),
+  });
+  
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: "Delete failed" }));
+    throw new Error(error.message || "Failed to delete from R2");
+  }
+}

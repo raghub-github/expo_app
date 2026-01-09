@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { Button } from "@/src/components/ui/Button";
+import { Logo } from "@/src/components/Logo";
 
 export default function WelcomeScreen() {
   const { t } = useTranslation();
@@ -14,9 +15,7 @@ export default function WelcomeScreen() {
         <View className="flex-1 px-6 pt-12 pb-8 justify-between">
           <View>
             <View className="items-center mb-12">
-              <View className="w-24 h-24 rounded-3xl bg-primary-500 items-center justify-center mb-6">
-                <Text className="text-white text-4xl font-bold">GM</Text>
-              </View>
+              <Logo size="large" vertical style={{ marginBottom: 24 }} />
               <Text className="text-4xl font-bold text-gray-900 mb-4 text-center">
                 {t("onboarding.welcome.title")}
               </Text>

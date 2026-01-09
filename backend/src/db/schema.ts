@@ -213,6 +213,7 @@ export const riderDocuments = pgTable(
       .references(() => riders.id, { onDelete: "cascade" }),
     docType: documentTypeEnum("doc_type").notNull(),
     fileUrl: text("file_url").notNull(),
+    r2Key: text("r2_key"), // R2 storage key - allows URL regeneration if signed URL expires
     extractedName: text("extracted_name"),
     extractedDob: date("extracted_dob"),
     verified: boolean("verified").notNull().default(false),

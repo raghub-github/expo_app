@@ -12,6 +12,7 @@ import { auth } from "../../plugins/auth.js";
 import { getDb } from "../../db/client.js";
 import { riderLocationEvents, riders, riderDocuments } from "../../db/schema.js";
 import { scoreLocationPing, type LocationPoint } from "./fraud.js";
+import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 
 export async function riderRoutes(app: FastifyInstance) {
   // All rider endpoints require rider auth (later: enforce role claim).
@@ -182,6 +183,7 @@ export async function riderRoutes(app: FastifyInstance) {
           riderId: z.number(),
           docType: z.enum(["aadhaar", "pan", "dl", "rc", "selfie"]),
           fileUrl: z.string(), // Signed URL from R2
+          r2Key: z.string().optional(), // R2 storage key - allows URL regeneration
           extractedName: z.string().optional(),
           extractedDob: z.string().optional(), // ISO date string
           metadata: z.record(z.any()).optional(),
@@ -195,73 +197,90 @@ export async function riderRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const { riderId, docType, fileUrl, extractedName, extractedDob, metadata } = req.body;
+      const { riderId, docType, fileUrl, r2Key, extractedName, extractedDob, metadata } = req.body;
       const db = getDb();
 
-      // Verify rider exists
-      const riderRows = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
-      if (riderRows.length === 0) {
-        throw new Error("Rider not found");
+      // Extract R2 key for rollback if needed
+      const keyForRollback = r2Key || extractKeyFromSignedUrl(fileUrl);
+
+      try {
+        // Verify rider exists
+        const riderRows = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
+        if (riderRows.length === 0) {
+          throw new Error("Rider not found");
+        }
+
+        // Check if document already exists for this rider and type
+        const existing = await db
+          .select()
+          .from(riderDocuments)
+          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType)))
+          .limit(1);
+
+        let documentId: number;
+
+        if (existing.length > 0) {
+          // Update existing document
+          await db
+            .update(riderDocuments)
+            .set({
+              fileUrl,
+              r2Key: r2Key || null,
+              extractedName: extractedName || null,
+              extractedDob: extractedDob || null,
+              metadata: metadata || null,
+            })
+            .where(eq(riderDocuments.id, existing[0]!.id));
+          documentId = existing[0]!.id;
+        } else {
+          // Insert new document
+          const [newDoc] = await db
+            .insert(riderDocuments)
+            .values({
+              riderId,
+              docType,
+              fileUrl,
+              r2Key: r2Key || null,
+              extractedName: extractedName || null,
+              extractedDob: extractedDob || null,
+              metadata: metadata || null,
+            })
+            .returning({ id: riderDocuments.id });
+          documentId = newDoc!.id;
+        }
+
+        // If Aadhaar document, update rider table with name and DOB
+        if (docType === "aadhaar" && (extractedName || extractedDob)) {
+          const updateData: { name?: string; dob?: Date } = {};
+          if (extractedName) updateData.name = extractedName;
+          if (extractedDob) updateData.dob = new Date(extractedDob);
+          
+          await db
+            .update(riders)
+            .set({
+              ...updateData,
+              updatedAt: new Date(),
+            })
+            .where(eq(riders.id, riderId));
+        }
+
+        return {
+          documentId,
+          success: true,
+        };
+      } catch (error) {
+        // Rollback: Delete from R2 if DB save failed
+        if (keyForRollback) {
+          try {
+            await deleteFromR2(keyForRollback);
+            console.log(`[Rollback] Deleted R2 file: ${keyForRollback}`);
+          } catch (rollbackError) {
+            console.error(`[Rollback] Failed to delete R2 file ${keyForRollback}:`, rollbackError);
+            // Don't throw - we want the original error to be returned
+          }
+        }
+        throw error;
       }
-
-      // Check if document already exists for this rider and type
-      const existing = await db
-        .select()
-        .from(riderDocuments)
-        .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType)))
-        .limit(1);
-
-      let documentId: number;
-
-      if (existing.length > 0) {
-        // Update existing document
-        await db
-          .update(riderDocuments)
-          .set({
-            fileUrl,
-            extractedName: extractedName || null,
-            extractedDob: extractedDob || null,
-            metadata: metadata || null,
-            updatedAt: new Date(),
-          })
-          .where(eq(riderDocuments.id, existing[0]!.id));
-        documentId = existing[0]!.id;
-      } else {
-        // Insert new document
-        const [newDoc] = await db
-          .insert(riderDocuments)
-          .values({
-            riderId,
-            docType,
-            fileUrl,
-            extractedName: extractedName || null,
-            extractedDob: extractedDob || null,
-            metadata: metadata || null,
-            verificationStatus: "PENDING",
-          })
-          .returning({ id: riderDocuments.id });
-        documentId = newDoc!.id;
-      }
-
-      // If Aadhaar document, update rider table with name and DOB
-      if (docType === "aadhaar" && (extractedName || extractedDob)) {
-        const updateData: { name?: string; dob?: Date } = {};
-        if (extractedName) updateData.name = extractedName;
-        if (extractedDob) updateData.dob = new Date(extractedDob);
-        
-        await db
-          .update(riders)
-          .set({
-            ...updateData,
-            updatedAt: new Date(),
-          })
-          .where(eq(riders.id, riderId));
-      }
-
-      return {
-        documentId,
-        success: true,
-      };
     },
   );
 
@@ -301,6 +320,62 @@ export async function riderRoutes(app: FastifyInstance) {
         .where(eq(riders.id, riderId));
 
       return {
+        success: true,
+      };
+    },
+  );
+
+  // Regenerate signed URL for a document (if URL expired)
+  app.post(
+    "/onboarding/regenerate-url",
+    {
+      schema: {
+        body: z.object({
+          documentId: z.number(),
+        }),
+        response: {
+          200: z.object({
+            fileUrl: z.string(),
+            success: z.boolean(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { documentId } = req.body;
+      const db = getDb();
+
+      // Get document
+      const docs = await db
+        .select()
+        .from(riderDocuments)
+        .where(eq(riderDocuments.id, documentId))
+        .limit(1);
+
+      if (docs.length === 0) {
+        throw new Error("Document not found");
+      }
+
+      const doc = docs[0]!;
+
+      // Check if we have the R2 key
+      if (!doc.r2Key) {
+        throw new Error("R2 key not found. Cannot regenerate URL. Please re-upload the document.");
+      }
+
+      // Regenerate signed URL with maximum expiration
+      const newSignedUrl = await getR2SignedUrl(doc.r2Key);
+
+      // Update document with new signed URL
+      await db
+        .update(riderDocuments)
+        .set({
+          fileUrl: newSignedUrl,
+        })
+        .where(eq(riderDocuments.id, documentId));
+
+      return {
+        fileUrl: newSignedUrl,
         success: true,
       };
     },

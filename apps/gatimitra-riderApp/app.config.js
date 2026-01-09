@@ -32,7 +32,7 @@ module.exports = {
       package: "com.raghubhunia.gatimitrariderapp",
       adaptiveIcon: {
         foregroundImage: "./assets/images/onlylogo.png",
-        backgroundColor: "#14b8a6"
+        backgroundColor: "#FFFFFF"
       },
       icon: "./assets/images/onlylogo.png",
       edgeToEdgeEnabled: true,
@@ -77,7 +77,7 @@ module.exports = {
         "expo-notifications",
         {
           icon: "./assets/images/onlylogo.png",
-          color: "#14b8a6",
+          color: "#FFFFFF",
           sounds: []
         }
       ]

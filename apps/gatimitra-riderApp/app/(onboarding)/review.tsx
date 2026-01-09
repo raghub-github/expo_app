@@ -71,6 +71,12 @@ export default function ReviewScreen() {
           maxSpeedDeclaration: data.maxSpeedDeclaration,
           panNumber: data.panNumber,
           selfieSignedUrl: data.selfieSignedUrl,
+          lat: data.lat,
+          lon: data.lon,
+          city: data.city,
+          state: data.state,
+          pincode: data.pincode,
+          address: data.address,
         },
       });
 
@@ -224,6 +230,64 @@ export default function ReviewScreen() {
               )}
             </View>
           </View>
+
+          {/* Location Information */}
+          {(data.city || data.state || data.address) && (
+            <View
+              style={{
+                backgroundColor: "#F9FAFB",
+                borderRadius: 12,
+                padding: 16,
+                marginBottom: 16,
+              }}
+            >
+              <Text style={{ fontSize: 16, fontWeight: "600", color: "#111827", marginBottom: 12 }}>
+                Location
+              </Text>
+              {data.address && (
+                <View style={{ marginBottom: 8 }}>
+                  <Text style={{ fontSize: 14, color: "#6B7280" }}>Address</Text>
+                  <Text style={{ fontSize: 16, fontWeight: "500", color: "#111827" }}>
+                    {data.address}
+                  </Text>
+                </View>
+              )}
+              <View style={{ flexDirection: "row", marginBottom: 8 }}>
+                {data.city && (
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <Text style={{ fontSize: 14, color: "#6B7280" }}>City</Text>
+                    <Text style={{ fontSize: 16, fontWeight: "500", color: "#111827" }}>
+                      {data.city}
+                    </Text>
+                  </View>
+                )}
+                {data.state && (
+                  <View style={{ flex: 1, marginLeft: 8 }}>
+                    <Text style={{ fontSize: 14, color: "#6B7280" }}>State</Text>
+                    <Text style={{ fontSize: 16, fontWeight: "500", color: "#111827" }}>
+                      {data.state}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              {data.pincode && (
+                <View style={{ marginBottom: 8 }}>
+                  <Text style={{ fontSize: 14, color: "#6B7280" }}>Pincode</Text>
+                  <Text style={{ fontSize: 16, fontWeight: "500", color: "#111827" }}>
+                    {data.pincode}
+                  </Text>
+                </View>
+              )}
+              {(data.lat || data.lon) && (
+                <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: "#E5E7EB" }}>
+                  <Text style={{ fontSize: 12, color: "#9CA3AF" }}>Coordinates</Text>
+                  <Text style={{ fontSize: 12, color: "#6B7280", fontFamily: "monospace" }}>
+                    {data.lat?.toFixed(8) || "N/A"}, {data.lon?.toFixed(8) || "N/A"}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
 
           {error && (
             <View

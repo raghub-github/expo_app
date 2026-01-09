@@ -23,7 +23,7 @@ export interface CreateRiderResponse {
 
 export interface SaveOnboardingStepRequest {
   riderId: string;
-  step: "aadhaar_name" | "dl_rc" | "rental_ev" | "pan_selfie";
+  step: "aadhaar_name" | "dl_rc" | "rental_ev" | "pan_selfie" | "location";
   data: {
     aadhaarNumber?: string;
     fullName?: string;
@@ -35,6 +35,12 @@ export interface SaveOnboardingStepRequest {
     maxSpeedDeclaration?: number;
     panNumber?: string;
     selfieSignedUrl?: string;
+    lat?: number;
+    lon?: number;
+    city?: string;
+    state?: string;
+    pincode?: string;
+    address?: string;
   };
 }
 
@@ -51,6 +57,12 @@ export interface SubmitOnboardingRequest {
     maxSpeedDeclaration?: number;
     panNumber: string;
     selfieSignedUrl: string;
+    lat?: number;
+    lon?: number;
+    city?: string;
+    state?: string;
+    pincode?: string;
+    address?: string;
   };
 }
 

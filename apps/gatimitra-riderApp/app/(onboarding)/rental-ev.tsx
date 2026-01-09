@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import { uploadToR2, deleteFromR2 } from "@/src/services/storage/cloudflareR2";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
 
@@ -86,6 +86,8 @@ export default function RentalEvScreen() {
     setLoading(true);
     setUploading(true);
 
+    const uploadedKeys: string[] = [];
+
     try {
       if (!session?.accessToken) {
         throw new Error("Not authenticated");
@@ -98,6 +100,7 @@ export default function RentalEvScreen() {
         session.accessToken,
         `${documentType}-${Date.now()}.jpg`
       );
+      uploadedKeys.push(uploadResult.key);
 
       // Save to local store
       const updateData: any = {
@@ -132,6 +135,15 @@ export default function RentalEvScreen() {
       await setStep("pan_selfie");
       router.push("/(onboarding)/pan-selfie");
     } catch (e) {
+      // Rollback: Delete uploaded files from R2 if save failed
+      for (const key of uploadedKeys) {
+        try {
+          await deleteFromR2(key, session.accessToken);
+        } catch (rollbackError) {
+          console.error(`[Rollback] Failed to delete R2 file ${key}:`, rollbackError);
+          // Don't throw - we want the original error to be shown
+        }
+      }
       setError(e instanceof Error ? e.message : "Failed to upload document. Please try again.");
     } finally {
       setLoading(false);

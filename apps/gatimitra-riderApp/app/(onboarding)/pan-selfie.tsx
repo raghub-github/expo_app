@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import { uploadToR2, deleteFromR2 } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument } from "@/src/hooks/useDocuments";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
@@ -140,6 +140,8 @@ export default function PanSelfieScreen() {
     setLoading(true);
     setUploading(true);
 
+    const uploadedKeys: string[] = [];
+
     try {
       const riderId = parseInt(data.riderId);
 
@@ -150,6 +152,7 @@ export default function PanSelfieScreen() {
         session.accessToken,
         `pan/${riderId}-${Date.now()}.jpg`
       );
+      uploadedKeys.push(panUploadResult.key);
 
       // Upload selfie to R2
       const selfieUploadResult = await uploadToR2(
@@ -158,12 +161,15 @@ export default function PanSelfieScreen() {
         session.accessToken,
         `${riderId}-${Date.now()}.jpg`
       );
+      uploadedKeys.push(selfieUploadResult.key);
 
       // Save PAN document to database
       await saveDocument.mutateAsync({
         riderId,
         docType: "pan",
         fileUrl: panUploadResult.signedUrl,
+        r2Key: panUploadResult.key, // Store R2 key for URL regeneration
+        metadata: { panNumber: panNumber.toUpperCase() },
       });
 
       // Save selfie document to database
@@ -171,6 +177,7 @@ export default function PanSelfieScreen() {
         riderId,
         docType: "selfie",
         fileUrl: selfieUploadResult.signedUrl,
+        r2Key: selfieUploadResult.key, // Store R2 key for URL regeneration
       });
 
       // Update rider table with PAN number and selfie URL
@@ -197,6 +204,15 @@ export default function PanSelfieScreen() {
       await setStep("dl_rc");
       router.push("/(onboarding)/dl-rc");
     } catch (e) {
+      // Rollback: Delete uploaded files from R2 if DB save failed
+      for (const key of uploadedKeys) {
+        try {
+          await deleteFromR2(key, session.accessToken);
+        } catch (rollbackError) {
+          console.error(`[Rollback] Failed to delete R2 file ${key}:`, rollbackError);
+          // Don't throw - we want the original error to be shown
+        }
+      }
       setError(e instanceof Error ? e.message : "Failed to upload. Please try again.");
     } finally {
       setLoading(false);

@@ -23,3 +23,31 @@ logs/
 *.keystore
 .DS_Store
 Thumbs.db
+
+# Documentation files (not needed for build)
+*.md
+!README.md
+
+# Build artifacts and scripts
+eas-build-pre-install.sh
+eas-hooks.sh
+
+# Environment files
+.env*
+!env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+__tests__/
+*.test.*
+*.spec.*
+
+# Coverage reports
+coverage/
+.nyc_output/

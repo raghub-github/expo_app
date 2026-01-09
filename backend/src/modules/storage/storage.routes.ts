@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import multipart from "@fastify/multipart";
 import { auth } from "../../plugins/auth.js";
-import { uploadToR2, getR2SignedUrl } from "../../services/r2/r2Service.js";
+import { uploadToR2, getR2SignedUrl, deleteFromR2 } from "../../services/r2/r2Service.js";
 import { getEnv } from "../../config/env.js";
 
 /**
@@ -101,6 +101,39 @@ export async function storageRoutes(app: FastifyInstance) {
       } catch (error) {
         return reply.code(500).send({
           error: "Failed to get signed URL",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+
+  // Delete file from R2
+  app.delete(
+    "/delete",
+    {
+      schema: {
+        body: z.object({
+          key: z.string(),
+        }),
+        response: {
+          200: z.object({
+            success: z.boolean(),
+            message: z.string(),
+          }),
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const { key } = req.body as { key: string };
+        await deleteFromR2(key);
+        return reply.send({
+          success: true,
+          message: "File deleted successfully",
+        });
+      } catch (error) {
+        return reply.code(500).send({
+          error: "Delete failed",
           message: error instanceof Error ? error.message : String(error),
         });
       }

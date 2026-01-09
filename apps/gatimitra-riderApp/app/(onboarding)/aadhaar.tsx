@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform, Image, Alert } from "react-native";
+import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform, Image, Alert, Pressable } from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
@@ -7,7 +8,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import { uploadToR2, deleteFromR2 } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument, useUpdateRiderStage } from "@/src/hooks/useDocuments";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
@@ -33,6 +34,8 @@ export default function AadhaarScreen() {
   const [aadhaarNumber, setAadhaarNumber] = useState(data.aadhaarNumber || "");
   const [fullName, setFullName] = useState(data.fullName || "");
   const [dob, setDob] = useState(data.dob || "");
+  const [dobDate, setDobDate] = useState<Date | null>(data.dob ? new Date(data.dob) : null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
   const [aadhaarPhotoUri, setAadhaarPhotoUri] = useState<string | null>(data.aadhaarPhotoUri || null);
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -132,6 +135,8 @@ export default function AadhaarScreen() {
     setLoading(true);
     setUploading(true);
 
+    const uploadedKeys: string[] = [];
+
     try {
       // Upload Aadhaar photo to R2
       const uploadResult = await uploadToR2(
@@ -140,14 +145,19 @@ export default function AadhaarScreen() {
         session.accessToken,
         `aadhaar/${data.riderId}-${Date.now()}.jpg`
       );
+      uploadedKeys.push(uploadResult.key);
 
       // Save document to database
       await saveDocument.mutateAsync({
         riderId: parseInt(data.riderId),
         docType: "aadhaar",
         fileUrl: uploadResult.signedUrl,
+        r2Key: uploadResult.key, // Store R2 key for URL regeneration
         extractedName: fullName.trim(),
         extractedDob: dob, // ISO date string
+        metadata: {
+          aadhaarNumber: aadhaarNumber.replace(/\D/g, ""),
+        },
       });
 
       // Update rider table with Aadhaar details
@@ -180,6 +190,15 @@ export default function AadhaarScreen() {
       await setStep("pan_selfie");
       router.push("/(onboarding)/pan-selfie");
     } catch (e) {
+      // Rollback: Delete uploaded files from R2 if DB save failed
+      for (const key of uploadedKeys) {
+        try {
+          await deleteFromR2(key, session.accessToken);
+        } catch (rollbackError) {
+          console.error(`[Rollback] Failed to delete R2 file ${key}:`, rollbackError);
+          // Don't throw - we want the original error to be shown
+        }
+      }
       setError(e instanceof Error ? e.message : "Failed to upload. Please try again.");
     } finally {
       setLoading(false);
@@ -270,12 +289,8 @@ export default function AadhaarScreen() {
                 <Text style={{ fontSize: 14, fontWeight: "500", color: "#374151", marginBottom: 8 }}>
                   Date of Birth (as per Aadhaar)
                 </Text>
-                <TextInput
-                  value={dob}
-                  onChangeText={setDob}
-                  placeholder="YYYY-MM-DD (e.g., 1990-01-15)"
-                  placeholderTextColor={colors.gray[400]}
-                  keyboardType="default"
+                <Pressable
+                  onPress={() => setShowDatePicker(true)}
                   style={{
                     backgroundColor: "#F9FAFB",
                     borderWidth: 1,
@@ -283,13 +298,49 @@ export default function AadhaarScreen() {
                     borderRadius: 12,
                     paddingHorizontal: 16,
                     paddingVertical: 16,
-                    fontSize: 16,
-                    color: "#111827",
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "center",
                   }}
-                />
-                <Text style={{ fontSize: 12, color: "#6B7280", marginTop: 4 }}>
-                  Format: YYYY-MM-DD
-                </Text>
+                >
+                  <Text style={{ fontSize: 16, color: dob ? "#111827" : colors.gray[400] }}>
+                    {dob || "Select date of birth"}
+                  </Text>
+                  <Text style={{ fontSize: 16, color: colors.gray[600] }}>📅</Text>
+                </Pressable>
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={dobDate || new Date()}
+                    mode="date"
+                    display={Platform.OS === "ios" ? "spinner" : "default"}
+                    onChange={(event, selectedDate) => {
+                      setShowDatePicker(Platform.OS === "ios");
+                      if (selectedDate) {
+                        setDobDate(selectedDate);
+                        // Format as YYYY-MM-DD
+                        const year = selectedDate.getFullYear();
+                        const month = String(selectedDate.getMonth() + 1).padStart(2, "0");
+                        const day = String(selectedDate.getDate()).padStart(2, "0");
+                        setDob(`${year}-${month}-${day}`);
+                      }
+                    }}
+                    maximumDate={new Date()}
+                    minimumDate={new Date(new Date().setFullYear(new Date().getFullYear() - 100))}
+                  />
+                )}
+                {Platform.OS === "ios" && showDatePicker && (
+                  <View style={{ flexDirection: "row", gap: 12, marginTop: 12 }}>
+                    <Button
+                      variant="outline"
+                      onPress={() => {
+                        setShowDatePicker(false);
+                      }}
+                      style={{ flex: 1 }}
+                    >
+                      Done
+                    </Button>
+                  </View>
+                )}
               </View>
 
               <View style={{ marginBottom: 24 }}>

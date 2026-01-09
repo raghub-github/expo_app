@@ -9,6 +9,7 @@ export interface SaveDocumentRequest {
   riderId: number;
   docType: "aadhaar" | "pan" | "dl" | "rc" | "selfie";
   fileUrl: string; // Signed URL from R2
+  r2Key?: string; // R2 storage key - allows URL regeneration if signed URL expires
   extractedName?: string;
   extractedDob?: string; // ISO date string
   metadata?: Record<string, any>;

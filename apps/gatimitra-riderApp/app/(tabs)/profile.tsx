@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, ScrollView, Pressable } from "react-native";
+import { View, Text, ScrollView, Pressable, Image } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
@@ -24,8 +24,11 @@ export default function ProfileScreen() {
         <View style={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 32 }} className="px-6 pt-6 pb-8">
           {/* Header */}
           <View style={{ alignItems: 'center', marginBottom: 32 }} className="items-center mb-8">
-            <View style={{ width: 96, height: 96, borderRadius: 48, backgroundColor: colors.primary[500], alignItems: 'center', justifyContent: 'center', marginBottom: 16 }} className="w-24 h-24 rounded-full bg-primary-500 items-center justify-center mb-4">
-              <Text style={{ color: '#FFFFFF', fontSize: 30, fontWeight: 'bold' }} className="text-white text-3xl font-bold">GM</Text>
+            <View style={{ width: 96, height: 96, borderRadius: 48, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', marginBottom: 16, overflow: 'hidden', borderWidth: 2, borderColor: colors.primary[200] }} className="w-24 h-24 rounded-full bg-white items-center justify-center mb-4">
+              <Image
+                source={require('../../assets/images/onlylogo.png')}
+                style={{ width: 80, height: 80, resizeMode: 'contain' }}
+              />
             </View>
             <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#111827', marginBottom: 4 }} className="text-2xl font-bold text-gray-900 mb-1">{t("profile.riderName")}</Text>
             <Text style={{ fontSize: 14, color: '#4B5563' }} className="text-sm text-gray-600">

@@ -3,7 +3,7 @@ import { View, Text, ScrollView, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { useLanguageStore, SUPPORTED_LANGUAGES } from "@/src/stores/languageStore";
+import { useLanguageStore, SUPPORTED_LANGUAGES, type LanguageCode } from "@/src/stores/languageStore";
 import { getItem } from "@/src/utils/storage";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
@@ -59,7 +59,7 @@ export default function LanguageScreen() {
     }
   }, [selectedLanguage, languageSelected, i18n]);
 
-  const handleLanguageSelect = async (code: string) => {
+  const handleLanguageSelect = async (code: LanguageCode) => {
     setSelected(code);
     i18n.changeLanguage(code);
     // Immediately save the language selection
@@ -75,8 +75,10 @@ export default function LanguageScreen() {
     
     setLoading(true);
     try {
-      // Ensure a language is selected
-      const langToSave = selected || "en";
+      // Ensure a language is selected and validate it's a supported language code
+      const langToSave: LanguageCode = (selected && SUPPORTED_LANGUAGES.some(l => l.code === selected)) 
+        ? (selected as LanguageCode) 
+        : "en";
       
       // Save language selection
       await setSelectedLanguage(langToSave);
@@ -117,12 +119,15 @@ export default function LanguageScreen() {
           <Text style={{ fontSize: 28, fontWeight: "bold", color: "#111827", marginBottom: 8, textAlign: "center" }}>
             Welcome to GatiMitra
           </Text>
+          <Text style={{ fontSize: 16, fontWeight: "500", color: colors.primary[600], marginBottom: 16, textAlign: "center", fontStyle: "italic" }}>
+            Moving India Forward
+          </Text>
           <Text style={{ fontSize: 18, fontWeight: "600", color: "#374151", marginBottom: 16, textAlign: "center" }}>
             Select Language
           </Text>
-          <Text style={{ fontSize: 14, color: "#6B7280", textAlign: "center" }}>
+          {/* <Text style={{ fontSize: 14, color: "#6B7280", textAlign: "center" }}>
             Select one from below
-          </Text>
+          </Text> */}
         </View>
 
         {/* Language Grid */}

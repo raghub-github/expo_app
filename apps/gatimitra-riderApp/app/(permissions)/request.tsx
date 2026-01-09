@@ -288,19 +288,21 @@ export default function PermissionRequestScreen() {
       await setPermissions(states);
       await setHasRequestedPermissions(true);
       if (session) {
-        router.replace("/(tabs)/orders");
+        // If user is logged in, go to location capture then orders
+        router.replace("/(onboarding)/location");
       } else {
-        // After permissions, redirect to mobile/OTP verification
-        router.replace("/(auth)/login");
+        // After permissions, go to location capture then login
+        router.replace("/(onboarding)/location");
       }
     } catch (error) {
       console.warn("Error completing permissions:", error);
       await setHasRequestedPermissions(true);
       if (session) {
-        router.replace("/(tabs)/orders");
+        // If user is logged in, go to location capture then orders
+        router.replace("/(onboarding)/location");
       } else {
-        // After permissions, redirect to mobile/OTP verification
-        router.replace("/(auth)/login");
+        // After permissions, go to location capture then login
+        router.replace("/(onboarding)/location");
       }
     }
   }, [session, setPermissions, setHasRequestedPermissions]);

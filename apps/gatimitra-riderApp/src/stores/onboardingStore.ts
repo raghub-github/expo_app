@@ -44,6 +44,14 @@ export type OnboardingData = {
   evProofSignedUrl?: string;
   maxSpeedDeclaration?: number;
   
+  // Location data
+  lat?: number;
+  lon?: number;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  address?: string;
+  
   // Metadata
   currentStep?: OnboardingStep;
   riderId?: string; // set after backend creates rider

@@ -80,15 +80,15 @@ export async function uploadToR2(
 
     console.log(`[R2] Upload successful for key: ${key}`);
 
-    // Generate signed URL with maximum expiration (no practical limit)
-    // Using maximum 32-bit signed integer value for expiration
+    // Generate signed URL with 7-day expiration (Cloudflare R2 requirement)
+    // Signed URLs can be regenerated using the stored r2Key if they expire
     const signedUrl = await getSignedUrl(
       client,
       new GetObjectCommand({
         Bucket: bucket,
         Key: key,
       }),
-      { expiresIn: 2147483647 } // Maximum 32-bit signed integer (~68 years, effectively no expiration)
+      { expiresIn: 604800 } // 7 days (604800 seconds) - R2 maximum allowed
     );
 
     console.log(`[R2] Generated signed URL for key: ${key}`);
@@ -122,9 +122,9 @@ export async function deleteFromR2(key: string): Promise<void> {
 
 /**
  * Get signed URL for existing object
- * @param expiresIn - Expiration time in seconds (default: maximum value for no expiration)
+ * @param expiresIn - Expiration time in seconds (default: 7 days - R2 maximum allowed)
  */
-export async function getR2SignedUrl(key: string, expiresIn: number = 2147483647): Promise<string> {
+export async function getR2SignedUrl(key: string, expiresIn: number = 604800): Promise<string> {
   const client = getR2Client();
   const bucket = getBucketName();
 

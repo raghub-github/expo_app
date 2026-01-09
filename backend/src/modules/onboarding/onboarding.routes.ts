@@ -17,7 +17,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
       schema: {
         body: z.object({
           riderId: z.string(),
-          step: z.enum(["aadhaar_name", "dl_rc", "rental_ev", "pan_selfie"]),
+          step: z.enum(["aadhaar_name", "dl_rc", "rental_ev", "pan_selfie", "location"]),
           data: z.object({
             aadhaarNumber: z.string().optional(),
             fullName: z.string().optional(),
@@ -30,6 +30,12 @@ export async function onboardingRoutes(app: FastifyInstance) {
             maxSpeedDeclaration: z.number().optional(),
             panNumber: z.string().optional(),
             selfieSignedUrl: z.string().optional(),
+            lat: z.number().optional(),
+            lon: z.number().optional(),
+            city: z.string().optional(),
+            state: z.string().optional(),
+            pincode: z.string().optional(),
+            address: z.string().optional(),
           }),
         }),
         response: { 200: z.object({ success: z.boolean() }) },
@@ -334,6 +340,43 @@ export async function onboardingRoutes(app: FastifyInstance) {
             throw dbError;
           }
         }
+      } else if (step === "location") {
+        // Update rider location data
+        const updateData: {
+          lat?: number;
+          lon?: number;
+          city?: string;
+          state?: string;
+          pincode?: string;
+          address?: string;
+          updatedAt: Date;
+        } = {
+          updatedAt: new Date(),
+        };
+
+        if (stepData.lat !== undefined && stepData.lat !== null) {
+          updateData.lat = parseFloat(Number(stepData.lat).toFixed(8));
+        }
+        if (stepData.lon !== undefined && stepData.lon !== null) {
+          updateData.lon = parseFloat(Number(stepData.lon).toFixed(8));
+        }
+        if (stepData.city !== undefined) {
+          updateData.city = stepData.city as string;
+        }
+        if (stepData.state !== undefined) {
+          updateData.state = stepData.state as string;
+        }
+        if (stepData.pincode !== undefined) {
+          updateData.pincode = stepData.pincode as string;
+        }
+        if (stepData.address !== undefined) {
+          updateData.address = stepData.address as string;
+        }
+
+        await db
+          .update(riders)
+          .set(updateData)
+          .where(eq(riders.id, riderIdInt));
       }
 
       return { success: true };
@@ -358,6 +401,12 @@ export async function onboardingRoutes(app: FastifyInstance) {
             maxSpeedDeclaration: z.number().optional(),
             panNumber: z.string(),
             selfieSignedUrl: z.string(),
+            lat: z.number().optional(),
+            lon: z.number().optional(),
+            city: z.string().optional(),
+            state: z.string().optional(),
+            pincode: z.string().optional(),
+            address: z.string().optional(),
           }),
         }),
         response: {
@@ -390,13 +439,45 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
       // Update rider with name and set status to in_progress (awaiting payment)
       // After payment, it will move to pending_approval
+      const updateData: {
+        name: string;
+        onboardingStage: "KYC";
+        lat?: number;
+        lon?: number;
+        city?: string;
+        state?: string;
+        pincode?: string;
+        address?: string;
+        updatedAt: Date;
+      } = {
+        name: data.fullName as string,
+        onboardingStage: "KYC",
+        updatedAt: new Date(),
+      };
+
+      // Include location data if provided
+      if (data.lat !== undefined && data.lat !== null) {
+        updateData.lat = parseFloat(Number(data.lat).toFixed(8));
+      }
+      if (data.lon !== undefined && data.lon !== null) {
+        updateData.lon = parseFloat(Number(data.lon).toFixed(8));
+      }
+      if (data.city !== undefined) {
+        updateData.city = data.city as string;
+      }
+      if (data.state !== undefined) {
+        updateData.state = data.state as string;
+      }
+      if (data.pincode !== undefined) {
+        updateData.pincode = data.pincode as string;
+      }
+      if (data.address !== undefined) {
+        updateData.address = data.address as string;
+      }
+
       await db
         .update(riders)
-        .set({
-          name: data.fullName as string,
-          onboardingStage: "KYC",
-          updatedAt: new Date(),
-        })
+        .set(updateData)
         .where(eq(riders.id, riderIdInt));
 
       // All documents should already be saved via save-step endpoints

@@ -5,6 +5,7 @@ export default function OnboardingLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="language" />
       <Stack.Screen name="help" />
+      <Stack.Screen name="location" />
       <Stack.Screen name="welcome" />
       <Stack.Screen name="aadhaar" />
       <Stack.Screen name="dl-rc" />

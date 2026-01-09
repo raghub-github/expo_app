@@ -7,7 +7,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useSaveOnboardingStep } from "@/src/hooks/useOnboarding";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { uploadToR2 } from "@/src/services/storage/cloudflareR2";
+import { uploadToR2, deleteFromR2 } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument } from "@/src/hooks/useDocuments";
 import { Button } from "@/src/components/ui/Button";
 import { colors } from "@/src/theme";
@@ -164,6 +164,8 @@ export default function DlRcScreen() {
     setLoading(true);
     setUploading(true);
 
+    const uploadedKeys: string[] = [];
+
     try {
       const riderId = parseInt(data.riderId);
 
@@ -175,6 +177,7 @@ export default function DlRcScreen() {
           session.accessToken,
           `dl/${riderId}-${Date.now()}.jpg`
         );
+        uploadedKeys.push(dlUploadResult.key);
 
         // Upload RC photo to R2
         const rcUploadResult = await uploadToR2(
@@ -183,12 +186,15 @@ export default function DlRcScreen() {
           session.accessToken,
           `rc/${riderId}-${Date.now()}.jpg`
         );
+        uploadedKeys.push(rcUploadResult.key);
 
         // Save DL document to database
         await saveDocument.mutateAsync({
           riderId,
           docType: "dl",
           fileUrl: dlUploadResult.signedUrl,
+          r2Key: dlUploadResult.key, // Store R2 key for URL regeneration
+          metadata: { dlNumber: dlNumber.trim() },
         });
 
         // Save RC document to database
@@ -196,6 +202,8 @@ export default function DlRcScreen() {
           riderId,
           docType: "rc",
           fileUrl: rcUploadResult.signedUrl,
+          r2Key: rcUploadResult.key, // Store R2 key for URL regeneration
+          metadata: { rcNumber: rcNumber.trim() },
         });
 
         // Save to local store
@@ -234,6 +242,15 @@ export default function DlRcScreen() {
         router.push("/(onboarding)/rental-ev");
       }
     } catch (e) {
+      // Rollback: Delete uploaded files from R2 if DB save failed
+      for (const key of uploadedKeys) {
+        try {
+          await deleteFromR2(key, session.accessToken);
+        } catch (rollbackError) {
+          console.error(`[Rollback] Failed to delete R2 file ${key}:`, rollbackError);
+          // Don't throw - we want the original error to be shown
+        }
+      }
       setError(e instanceof Error ? e.message : "Failed to upload. Please try again.");
     } finally {
       setLoading(false);
