@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
-import path from "path";
 
 const nextConfig: NextConfig = {
   /* config options here */
+  // Mapbox is loaded from CDN, no webpack config needed
 };
 
 export default nextConfig;

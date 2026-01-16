@@ -50,3 +50,18 @@ body {
 .overflow-x-scroll::-webkit-scrollbar {
   display: none; /* Chrome, Safari, Opera */
 }
+
+/* Mapbox Popup Custom Styling */
+.mapboxgl-popup-content {
+  padding: 0 !important;
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+.mapboxgl-popup-tip {
+  border-top-color: white !important;
+}
+
+.mapboxgl-popup-close-button {
+  display: none;
+}

@@ -191,7 +191,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
 
     return (
       <span
-        className={`px-3 py-1 text-xs font-semibold rounded-full ${statusConfig.bg} ${statusConfig.text}`}
+        className={`px-2 sm:px-3 py-0.5 sm:py-1 text-xs font-semibold rounded-full ${statusConfig.bg} ${statusConfig.text}`}
       >
         {statusConfig.label}
       </span>
@@ -255,14 +255,14 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6 px-2 sm:px-0">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-gray-900">Users</h2>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Users</h2>
         {showActions && (
           <Link
             href="/dashboard/users/new"
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md"
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md w-full sm:w-auto text-sm sm:text-base"
           >
             <Plus className="h-4 w-4" />
             <span>Add User</span>
@@ -271,25 +271,25 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       </div>
 
       {/* Search and Filters */}
-      <div className="flex flex-col sm:flex-row gap-4">
-        <div className="flex-1 relative">
+      <div className="flex flex-col gap-3 sm:gap-4">
+        <div className="relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
           <input
             type="text"
             placeholder="Search users..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder-gray-400 shadow-sm"
+            className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder-gray-400 shadow-sm text-sm sm:text-base"
           />
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <select
             value={filters.status}
             onChange={(e) => {
               setFilters({ ...filters, status: e.target.value });
               setPagination(prev => ({ ...prev, page: 1 }));
             }}
-            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white shadow-sm"
+            className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white shadow-sm text-sm sm:text-base"
           >
             <option value="">All Status</option>
             <option value="ACTIVE">Active</option>
@@ -304,7 +304,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
               setFilters({ ...filters, role: e.target.value });
               setPagination(prev => ({ ...prev, page: 1 }));
             }}
-            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white shadow-sm"
+            className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white shadow-sm text-sm sm:text-base"
           >
             <option value="">All Roles</option>
             <option value="SUPER_ADMIN">Super Admin</option>
@@ -328,30 +328,30 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  User
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Email
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Role
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Department
-                </th>
-                {showActions && (
-                  <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                    Actions
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                    User
                   </th>
-                )}
-              </tr>
-            </thead>
+                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                    Email
+                  </th>
+                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                    Role
+                  </th>
+                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                    Status
+                  </th>
+                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap hidden md:table-cell">
+                    Department
+                  </th>
+                  {showActions && (
+                    <th className="px-3 sm:px-6 py-3 sm:py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                      Actions
+                    </th>
+                  )}
+                </tr>
+              </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {users.length === 0 ? (
                 <tr>
@@ -372,38 +372,38 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
 
                   return (
                     <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          <div className="flex-shrink-0 h-10 w-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shadow-sm">
-                            <User className="h-6 w-6 text-white" />
+                          <div className="flex-shrink-0 h-8 w-8 sm:h-10 sm:w-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shadow-sm">
+                            <User className="h-4 w-4 sm:h-6 sm:w-6 text-white" />
                           </div>
-                          <div className="ml-4">
-                            <div className="text-sm font-semibold text-gray-900">{user.fullName}</div>
-                            <div className="text-sm text-gray-500 font-mono">{user.systemUserId}</div>
+                          <div className="ml-2 sm:ml-4 min-w-0">
+                            <div className="text-xs sm:text-sm font-semibold text-gray-900 truncate">{user.fullName}</div>
+                            <div className="text-xs sm:text-sm text-gray-500 font-mono truncate">{user.systemUserId}</div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">{user.email}</div>
-                        <div className="text-sm text-gray-500">{user.mobile}</div>
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
+                        <div className="text-xs sm:text-sm text-gray-900 truncate max-w-[200px] sm:max-w-none">{user.email}</div>
+                        <div className="text-xs sm:text-sm text-gray-500">{user.mobile}</div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-blue-50 text-blue-700">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
+                        <span className="inline-flex items-center px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-md text-xs font-medium bg-blue-50 text-blue-700">
                           {user.primaryRole.replace(/_/g, " ")}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
                         {getStatusBadge(user.status)}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-500 hidden md:table-cell">
                         {user.department || "-"}
                       </td>
                       {showActions && (
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                          <div className="flex items-center justify-end gap-2">
+                        <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-right text-xs sm:text-sm font-medium">
+                          <div className="flex items-center justify-end gap-1.5 sm:gap-2">
                             <Link
                               href={`/dashboard/users/${user.id}`}
-                              className={`text-blue-600 hover:text-blue-900 p-2 rounded-md hover:bg-blue-50 transition-colors ${
+                              className={`text-blue-600 hover:text-blue-900 p-1.5 sm:p-2 rounded-md hover:bg-blue-50 transition-colors flex-shrink-0 ${
                                 permissionsLoading || !canEdit ? "opacity-50 cursor-not-allowed pointer-events-none" : ""
                               }`}
                               title={
@@ -424,7 +424,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                 }
                               }}
                             >
-                              <Edit className="h-4 w-4" />
+                              <Edit className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
                             </Link>
                             <div 
                               ref={(el) => {
@@ -441,7 +441,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   }
                                 }}
                                 disabled={permissionsLoading || !canChangeStatus}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(user.status)} ${
+                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(user.status)} ${
                                   permissionsLoading || !canChangeStatus 
                                     ? "opacity-50 cursor-not-allowed" 
                                     : ""
@@ -456,11 +456,14 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                     : "Change Status"
                                 }
                               >
-                                <span className="capitalize">
+                                <span className="capitalize hidden sm:inline">
                                   {STATUS_OPTIONS.find(s => s.value === user.status)?.label || user.status.replace(/_/g, " ").toLowerCase()}
                                 </span>
+                                <span className="capitalize sm:hidden text-[10px]">
+                                  {STATUS_OPTIONS.find(s => s.value === user.status)?.label.substring(0, 4) || user.status.substring(0, 4)}
+                                </span>
                                 <ChevronDown 
-                                  className={`h-3.5 w-3.5 transition-transform duration-200 ${
+                                  className={`h-3 w-3 sm:h-3.5 sm:w-3.5 transition-transform duration-200 flex-shrink-0 ${
                                     isDropdownOpen ? 'rotate-180' : ''
                                   }`} 
                                 />
@@ -513,26 +516,26 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
 
       {/* Pagination */}
       {pagination.totalPages > 0 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white px-6 py-4 rounded-lg border border-gray-200 shadow-sm">
-          <div className="text-sm text-gray-700">
-            Showing <span className="font-semibold">{((pagination.page - 1) * pagination.limit) + 1}</span> to{" "}
-            <span className="font-semibold">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of{" "}
-            <span className="font-semibold">{pagination.total}</span> users
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white px-4 sm:px-6 py-4 rounded-lg border border-gray-200 shadow-sm">
+          <div className="text-xs sm:text-sm text-gray-700 text-center sm:text-left">
+            Showing <span className="font-semibold text-gray-900">{((pagination.page - 1) * pagination.limit) + 1}</span> to{" "}
+            <span className="font-semibold text-gray-900">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of{" "}
+            <span className="font-semibold text-gray-900">{pagination.total}</span> users
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5 flex-wrap justify-center">
             <button
               onClick={() => setPagination({ ...pagination, page: pagination.page - 1 })}
               disabled={pagination.page === 1}
-              className="px-3 py-2 border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 transition-colors flex items-center gap-1"
+              className="px-3 py-2 bg-white border-2 border-gray-300 text-gray-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100 transition-all flex items-center gap-1.5 text-sm font-medium shadow-sm"
             >
               <ChevronLeft className="h-4 w-4" />
-              <span>Previous</span>
+              <span className="hidden sm:inline">Previous</span>
             </button>
             <div className="flex items-center gap-1">
               {generatePageNumbers().map((page, index) => {
                 if (page === "...") {
                   return (
-                    <span key={`ellipsis-${index}`} className="px-2 text-gray-400">
+                    <span key={`ellipsis-${index}`} className="px-2 text-gray-500 font-medium">
                       ...
                     </span>
                   );
@@ -543,10 +546,10 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                   <button
                     key={pageNum}
                     onClick={() => setPagination({ ...pagination, page: pageNum })}
-                    className={`px-3 py-2 min-w-[40px] text-sm font-medium rounded-lg transition-colors ${
+                    className={`px-3 py-2 min-w-[40px] text-sm font-semibold rounded-lg transition-all ${
                       isActive
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "border border-gray-300 text-gray-700 hover:bg-gray-50"
+                        ? "bg-blue-600 text-white shadow-md ring-2 ring-blue-200"
+                        : "bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100 shadow-sm"
                     }`}
                   >
                     {pageNum}
@@ -557,9 +560,9 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
             <button
               onClick={() => setPagination({ ...pagination, page: pagination.page + 1 })}
               disabled={pagination.page >= pagination.totalPages}
-              className="px-3 py-2 border border-gray-300 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50 transition-colors flex items-center gap-1"
+              className="px-3 py-2 bg-white border-2 border-gray-300 text-gray-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100 transition-all flex items-center gap-1.5 text-sm font-medium shadow-sm"
             >
-              <span>Next</span>
+              <span className="hidden sm:inline">Next</span>
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>

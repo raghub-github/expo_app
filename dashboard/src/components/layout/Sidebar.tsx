@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -50,35 +51,39 @@ export function Sidebar() {
   const { dashboards, loading: accessLoading } = useDashboardAccess();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
 
-  // Create a set of accessible dashboard types
-  const accessibleDashboards = new Set(
-    dashboards.filter((d) => d.isActive).map((d) => d.dashboardType)
-  );
+  // Create a set of accessible dashboard types - memoized for performance
+  const accessibleDashboards = useMemo(() => {
+    return new Set(
+      dashboards.filter((d) => d.isActive).map((d) => d.dashboardType)
+    );
+  }, [dashboards]);
 
-  // Filter navigation items based on access
-  const filteredNavigation = navigation.filter((item) => {
-    // Always show Home
-    if (item.href === "/dashboard") {
-      return true;
-    }
-
-    // Check super admin requirement
-    if (item.requiresSuperAdmin) {
-      return isSuperAdmin;
-    }
-
-    // Check dashboard access
-    if (item.dashboardType) {
-      // Super admin has access to all dashboards
-      if (isSuperAdmin) {
+  // Filter navigation items based on access - memoized to prevent unnecessary re-renders
+  const filteredNavigation = useMemo(() => {
+    return navigation.filter((item) => {
+      // Always show Home
+      if (item.href === "/dashboard") {
         return true;
       }
-      return accessibleDashboards.has(item.dashboardType);
-    }
 
-    // Default: show if no specific requirements
-    return true;
-  });
+      // Check super admin requirement
+      if (item.requiresSuperAdmin) {
+        return isSuperAdmin;
+      }
+
+      // Check dashboard access
+      if (item.dashboardType) {
+        // Super admin has access to all dashboards
+        if (isSuperAdmin) {
+          return true;
+        }
+        return accessibleDashboards.has(item.dashboardType);
+      }
+
+      // Default: show if no specific requirements
+      return true;
+    });
+  }, [isSuperAdmin, accessibleDashboards]);
 
   // Don't render navigation while loading (to prevent flash)
   if (accessLoading || permissionsLoading) {

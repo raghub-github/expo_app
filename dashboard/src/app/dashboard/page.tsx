@@ -1,109 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import {
-  Users,
-  Package,
-  Store,
-  ShoppingCart,
-  UserCog,
-  MapPin,
-  Ticket,
-  CreditCard,
-  Gift,
-  Settings,
-  BarChart3,
-  AlertCircle,
-} from "lucide-react";
-
-interface DashboardCard {
-  name: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  description: string;
-  color: string;
-}
-
-const dashboards: DashboardCard[] = [
-  {
-    name: "Super Admin",
-    href: "/dashboard/super-admin",
-    icon: UserCog,
-    description: "Manage users, roles, and permissions",
-    color: "bg-red-500",
-  },
-  {
-    name: "Customers",
-    href: "/dashboard/customers",
-    icon: Users,
-    description: "View and manage customer data",
-    color: "bg-blue-500",
-  },
-  {
-    name: "Riders",
-    href: "/dashboard/riders",
-    icon: Package,
-    description: "Manage riders and their activities",
-    color: "bg-green-500",
-  },
-  {
-    name: "Merchants",
-    href: "/dashboard/merchants",
-    icon: Store,
-    description: "Manage merchants and stores",
-    color: "bg-purple-500",
-  },
-  {
-    name: "Orders",
-    href: "/dashboard/orders",
-    icon: ShoppingCart,
-    description: "View and manage all orders",
-    color: "bg-orange-500",
-  },
-  {
-    name: "Area Managers",
-    href: "/dashboard/area-managers",
-    icon: MapPin,
-    description: "Manage area managers and zones",
-    color: "bg-pink-500",
-  },
-  {
-    name: "Tickets",
-    href: "/dashboard/tickets",
-    icon: Ticket,
-    description: "Resolve support tickets",
-    color: "bg-yellow-500",
-  },
-  {
-    name: "Payments",
-    href: "/dashboard/payments",
-    icon: CreditCard,
-    description: "Manage payments and withdrawals",
-    color: "bg-indigo-500",
-  },
-  {
-    name: "Offers",
-    href: "/dashboard/offers",
-    icon: Gift,
-    description: "Manage offers and banners",
-    color: "bg-teal-500",
-  },
-  {
-    name: "System",
-    href: "/dashboard/system",
-    icon: Settings,
-    description: "System configuration",
-    color: "bg-gray-500",
-  },
-  {
-    name: "Analytics",
-    href: "/dashboard/analytics",
-    icon: BarChart3,
-    description: "View analytics and reports",
-    color: "bg-cyan-500",
-  },
-];
+import { AlertCircle, MapPin } from "lucide-react";
+import { ServicePointsMap } from "@/components/map/ServicePointsMap";
+import { ServicePointForm } from "@/components/map/ServicePointForm";
+import { usePermissions } from "@/hooks/usePermissions";
 
 interface UserPermissions {
   exists: boolean;
@@ -113,96 +14,55 @@ interface UserPermissions {
 }
 
 export default function DashboardHome() {
-  const [accessibleDashboards, setAccessibleDashboards] = useState<
-    DashboardCard[]
-  >([]);
   const [loading, setLoading] = useState(true);
   const [userPerms, setUserPerms] = useState<UserPermissions | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const { isSuperAdmin } = usePermissions();
 
   useEffect(() => {
-    const fetchDashboardAccess = async () => {
+    const fetchPermissions = async () => {
       try {
         setLoading(true);
+        const response = await fetch("/api/auth/permissions");
         
-        // First check user permissions to see if they exist and are super admin
-        const permResponse = await fetch("/api/auth/permissions");
-        const permResult = await permResponse.json();
-
-        if (permResult.success) {
-          setUserPerms(permResult.data);
-          
-          // If user doesn't exist in system_users, show warning and no dashboards
-          if (!permResult.data.exists) {
-            setAccessibleDashboards([]);
-            return;
-          }
-
-          // If user is super admin, show all dashboards
-          if (permResult.data.isSuperAdmin) {
-            setAccessibleDashboards(dashboards);
-            return;
-          }
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
         }
+        
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("Response is not JSON");
+        }
+        
+        const result = await response.json();
 
-        // For regular users, get dashboard access from dashboard-access API
-        const accessResponse = await fetch("/api/auth/dashboard-access");
-        const accessResult = await accessResponse.json();
-
-        if (accessResult.success) {
-          const userDashboards = accessResult.data.dashboards || [];
-          const dashboardTypes = new Set(
-            userDashboards.map((d: any) => d.dashboardType)
-          );
-
-          // Filter dashboards based on user's access
-          const accessible: DashboardCard[] = dashboards.filter((dashboard) => {
-            // Map dashboard href to dashboard type
-            const hrefToType: Record<string, string> = {
-              "/dashboard/super-admin": "SYSTEM",
-              "/dashboard/customers": "CUSTOMER",
-              "/dashboard/riders": "RIDER",
-              "/dashboard/merchants": "MERCHANT",
-              "/dashboard/orders": "ORDER",
-              "/dashboard/area-managers": "AREA_MANAGER",
-              "/dashboard/tickets": "TICKET",
-              "/dashboard/payments": "PAYMENT",
-              "/dashboard/offers": "OFFER",
-              "/dashboard/system": "SYSTEM",
-              "/dashboard/analytics": "ANALYTICS",
-            };
-
-            const dashboardType = hrefToType[dashboard.href];
-            // Payment dashboard is super admin only, already handled above
-            if (dashboard.href === "/dashboard/payments") {
-              return false;
-            }
-            return dashboardType ? dashboardTypes.has(dashboardType) : false;
-          });
-
-          setAccessibleDashboards(accessible);
+        if (result.success) {
+          setUserPerms(result.data);
         } else {
-          setError(accessResult.error || "Failed to fetch dashboard access");
-          setAccessibleDashboards([]);
+          setError(result.error || "Failed to fetch permissions");
         }
       } catch (err) {
-        console.error("Error fetching dashboard access:", err);
+        console.error("Error fetching permissions:", err);
         setError(err instanceof Error ? err.message : "Unknown error");
-        setAccessibleDashboards([]);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchDashboardAccess();
+    fetchPermissions();
   }, []);
+
+  const handleServicePointCreated = () => {
+    setRefreshKey((prev) => prev + 1);
+  };
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Control Dashboard</h1>
+        <h1 className="text-3xl font-bold text-gray-900">Service Points Map</h1>
         <p className="mt-2 text-gray-600">
-          Select a dashboard to manage different aspects of the platform
+          View and manage GatiMitra service points across India
         </p>
       </div>
 
@@ -239,59 +99,48 @@ export default function DashboardHome() {
         </div>
       )}
 
-      {/* Loading state */}
-      {loading && (
-        <div className="text-center py-8">
-          <p className="text-gray-500">Loading dashboard...</p>
+      {/* Map Layout - Responsive */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Map - Takes 2/3 on desktop, full width on mobile */}
+        <div className="lg:col-span-2">
+          <div className="h-[400px] sm:h-[500px] md:h-[600px] lg:h-[700px]">
+            <ServicePointsMap key={refreshKey} className="h-full w-full" />
+          </div>
         </div>
-      )}
 
-      {/* Dashboard cards */}
-      {!loading && accessibleDashboards.length > 0 && (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {accessibleDashboards.map((dashboard) => {
-            const Icon = dashboard.icon;
-            return (
-              <Link
-                key={dashboard.name}
-                href={dashboard.href}
-                className="group rounded-lg border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md"
-              >
-                <div className="flex items-center space-x-4">
-                  <div
-                    className={`flex h-12 w-12 items-center justify-center rounded-lg ${dashboard.color} text-white`}
-                  >
-                    <Icon className="h-6 w-6" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-lg font-semibold text-gray-900 group-hover:text-blue-600">
-                      {dashboard.name}
-                    </h3>
-                    <p className="mt-1 text-sm text-gray-500">
-                      {dashboard.description}
-                    </p>
-                  </div>
-                </div>
-              </Link>
-            );
-          })}
-        </div>
-      )}
+        {/* Sidebar - Stats or Info */}
+        <div className="space-y-4">
+          <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-blue-100 rounded-lg">
+                <MapPin className="h-5 w-5 text-blue-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900">Service Points</h3>
+                <p className="text-sm text-gray-500">Active locations</p>
+              </div>
+            </div>
+            <p className="text-2xl font-bold text-gray-900">India</p>
+            <p className="text-sm text-gray-600 mt-1">
+              GatiMitra service coverage
+            </p>
+          </div>
 
-      {/* No accessible dashboards message */}
-      {!loading && accessibleDashboards.length === 0 && !error && (
-        <div className="rounded-lg border border-gray-200 bg-white p-8 text-center">
-          <AlertCircle className="mx-auto h-12 w-12 text-gray-400" />
-          <h3 className="mt-4 text-lg font-medium text-gray-900">
-            No Dashboards Available
-          </h3>
-          <p className="mt-2 text-sm text-gray-500">
-            {userPerms && !userPerms.exists
-              ? "Your account is not yet set up in the system. Please contact an administrator to gain access."
-              : "You don't have permission to access any dashboards. Please contact an administrator to request access."}
-          </p>
+          {/* Instructions for super admin */}
+          {isSuperAdmin && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <h4 className="font-medium text-blue-900 mb-2">Super Admin</h4>
+              <p className="text-sm text-blue-700">
+                Click the "Add Service Point" button to add new service locations.
+                You can use city name or coordinates.
+              </p>
+            </div>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* Service Point Form - Only visible to super admin */}
+      {isSuperAdmin && <ServicePointForm onSuccess={handleServicePointCreated} />}
     </div>
   );
 }
