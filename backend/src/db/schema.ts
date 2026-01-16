@@ -157,7 +157,7 @@ export const ticketStatusEnum = pgEnum("ticket_status", [
  * Core rider table with INTEGER primary key
  * Stores essential rider identity and status information
  */
-export const riders = pgTable(
+const ridersTable = pgTable(
   "riders",
   {
     id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -180,7 +180,8 @@ export const riders = pgTable(
     lat: doublePrecision("lat"),
     lon: doublePrecision("lon"),
     referralCode: text("referral_code").unique(),
-    referredBy: integer("referred_by").references(() => riders.id),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    referredBy: integer("referred_by").references((): any => (ridersTable as any).id),
     defaultLanguage: text("default_language").notNull().default("en"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -199,6 +200,8 @@ export const riders = pgTable(
     kycStatusIdx: index("riders_kyc_status_idx").on(table.kycStatus),
   })
 );
+
+export const riders = ridersTable;
 
 /**
  * Rider documents with history support (allows reupload)

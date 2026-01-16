@@ -4,11 +4,13 @@
   "workspaces": [
     "apps/*",
     "backend",
-    "packages/*"
+    "packages/*",
+    "dashboard"
   ],
   "scripts": {
     "dev:rider": "npm --workspace apps/gatimitra-riderApp run start",
     "dev:backend": "npm --workspace backend run dev",
+    "dev:dashboard": "npm --workspace dashboard run dev",
     "build": "npm -ws run build",
     "lint": "npm -ws run lint",
     "typecheck": "npm -ws run typecheck"

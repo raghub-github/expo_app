@@ -27,6 +27,9 @@ Thumbs.db
 # Documentation files (not needed for build)
 *.md
 !README.md
+# Explicitly exclude deleted documentation files
+MAPBOX_FIX.md
+MAPBOX_TOKEN_FIX.md
 
 # Build artifacts and scripts
 eas-build-pre-install.sh

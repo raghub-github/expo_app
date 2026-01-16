@@ -14,9 +14,9 @@ module.exports = {
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     splash: {
-      image: "./assets/images/logo.png",
+      image: "./assets/images/onlylogo.png",
       resizeMode: "contain",
-      backgroundColor: "#14b8a6"
+      backgroundColor: "#FFFFFF"
     },
     ios: {
       supportsTablet: true,
@@ -80,7 +80,8 @@ module.exports = {
           color: "#FFFFFF",
           sounds: []
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     experiments: {
       typedRoutes: true

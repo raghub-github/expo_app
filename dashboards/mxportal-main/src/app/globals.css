@@ -1,0 +1,77 @@
+/* Phone input custom styles for LoginModal */
+.phone-input-row {
+  display: flex;
+  align-items: center;
+  border: 1.5px solid #d0d7e2;
+  border-radius: 8px;
+  background: #f8fafd;
+  margin-bottom: 0.2rem;
+  padding: 0.2rem 0.5rem;
+}
+.country-code {
+  padding: 0.5rem 0.7rem;
+  background: #f3f6fa;
+  color: #374151;
+  font-weight: 500;
+  border-right: 1.5px solid #d0d7e2;
+  font-size: 1.08rem;
+}
+.phone-input-box {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 1.08rem;
+  padding: 0.5rem 0.7rem;
+}
+.phone-input-box:focus {
+  background: #fff;
+}
+.helper-msg {
+  color: #888;
+  font-size: 0.97rem;
+  margin-bottom: 0.2rem;
+  margin-left: 2px;
+}
+input:not([disabled]), textarea:not([disabled]), select:not([disabled]) {
+  color: #171717 !important;
+  background: #fff;
+}
+/* Hide scrollbars but keep scroll functionality */
+.hide-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE 10+ */
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Webkit */
+}
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+
+html, body {
+  background: #fff !important;
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  /* Hide scrollbars but keep scroll functionality */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE 10+ */
+}
+html::-webkit-scrollbar, body::-webkit-scrollbar {
+  display: none;
+}
