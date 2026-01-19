@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback, memo } from "react";
 import { ServicePointMarker } from "./ServicePointMarker";
 import { X } from "lucide-react";
+import { mapCache } from "@/lib/map-cache";
 
 // #region agent log
 const LOG_ENDPOINT = 'http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f';
@@ -42,9 +43,10 @@ interface MapComponentProps {
   className?: string;
   isSuperAdmin?: boolean;
   onDeletePoint?: (pointId: number) => Promise<void>;
+  deletingPointId?: number | null;
 }
 
-export function MapComponent({
+function MapComponentInner({
   servicePoints,
   onPointClick,
   selectedPoint,
@@ -53,7 +55,13 @@ export function MapComponent({
   className = "",
   isSuperAdmin = false,
   onDeletePoint,
+  deletingPointId = null,
 }: MapComponentProps) {
+  // #region agent log
+  const componentMountTime = Date.now();
+  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:47',message:'MapComponent mounted',data:{componentMountTime,servicePointsCount:servicePoints.length,hasToken:!!mapboxToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
+  
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -102,13 +110,9 @@ export function MapComponent({
 
   useEffect(() => {
     // #region agent log
-    log('MapComponent.tsx:76', 'Main useEffect started', { 
-      hasContainer: !!mapContainer.current, 
-      hasToken: !!mapboxToken,
-      tokenLength: mapboxToken?.length || 0,
-      tokenPrefix: mapboxToken?.substring(0, 5) || 'none',
-      initAttempted: initAttemptedRef.current
-    }, 'A');
+    const effectStartTime = Date.now();
+    const timeSinceMount = effectStartTime - componentMountTime;
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:103',message:'Map init useEffect started',data:{timeSinceMount,hasContainer:!!mapContainer.current,hasToken:!!mapboxToken,initAttempted:initAttemptedRef.current,mapboxAlreadyLoaded:!!(window as any).mapboxgl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
     // #endregion
 
     if (!mapboxToken) {
@@ -121,7 +125,7 @@ export function MapComponent({
 
     if (initAttemptedRef.current) {
       // #region agent log
-      log('MapComponent.tsx:93', 'Init already attempted, skipping', {}, 'A');
+      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:122',message:'Init already attempted, skipping',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
       // #endregion
       return;
     }
@@ -160,8 +164,8 @@ export function MapComponent({
       loadMapbox();
     };
 
-    // Load mapbox-gl from CDN to bypass module resolution
-    const loadMapbox = () => {
+    // Initialize map using global cache
+    const loadMapbox = async () => {
       try {
         // #region agent log
         log('MapComponent.tsx:117', 'loadMapbox called', { 
@@ -171,77 +175,18 @@ export function MapComponent({
         // #endregion
 
         // Check if mapbox-gl is already loaded
-        if ((window as any).mapboxgl) {
+        if (mapCache.isScriptLoaded()) {
           // #region agent log
-          log('MapComponent.tsx:125', 'Mapbox already available', {}, 'A');
+          const scriptReuseTime = Date.now();
+          fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:174',message:'Mapbox script reused (not reloaded)',data:{timeSinceMount:scriptReuseTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
           // #endregion
-          initializeMap();
+          await initializeMap();
           return;
         }
 
-        if (scriptLoadedRef.current) {
-          // #region agent log
-          log('MapComponent.tsx:132', 'Script already loading, waiting...', {}, 'A');
-          // #endregion
-          // Wait for script to load
-          const checkScript = setInterval(() => {
-            if ((window as any).mapboxgl) {
-              clearInterval(checkScript);
-              initializeMap();
-            }
-          }, 100);
-          return;
-        }
-
-        scriptLoadedRef.current = true;
-
-        // Load CSS (only if not already loaded)
-        if (!document.querySelector('link[href*="mapbox-gl.css"]')) {
-          const cssLink = document.createElement('link');
-          cssLink.rel = 'stylesheet';
-          cssLink.href = 'https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css';
-          document.head.appendChild(cssLink);
-          // #region agent log
-          log('MapComponent.tsx:152', 'CSS link added', {}, 'A');
-          // #endregion
-        }
-
-        // Load mapbox-gl script
-        const script = document.createElement('script');
-        script.src = 'https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js';
-        script.async = true;
-        
-        script.onload = () => {
-          // #region agent log
-          log('MapComponent.tsx:162', 'Script onload fired', { 
-            mapboxgl: !!(window as any).mapboxgl,
-            hasContainer: !!mapContainer.current 
-          }, 'A');
-          // #endregion
-          if ((window as any).mapboxgl) {
-            (window as any).mapboxgl.accessToken = mapboxToken;
-            initializeMap();
-          } else {
-            // #region agent log
-            log('MapComponent.tsx:171', 'Mapbox not available after load', {}, 'A');
-            // #endregion
-            scriptLoadedRef.current = false;
-            setError('Mapbox library failed to initialize');
-          }
-        };
-
-        script.onerror = (err) => {
-          // #region agent log
-          log('MapComponent.tsx:179', 'Script onerror fired', { error: String(err) }, 'A');
-          // #endregion
-          scriptLoadedRef.current = false;
-          setError('Failed to load Mapbox library from CDN');
-        };
-
-        document.head.appendChild(script);
-        // #region agent log
-        log('MapComponent.tsx:187', 'Script element appended', { src: script.src }, 'A');
-        // #endregion
+        // Load script via cache manager
+        await mapCache.loadMapboxScript();
+        await initializeMap();
       } catch (err) {
         // #region agent log
         log('MapComponent.tsx:191', 'loadMapbox exception', { error: String(err) }, 'A');
@@ -251,7 +196,7 @@ export function MapComponent({
       }
     };
 
-    const initializeMap = () => {
+    const initializeMap = async () => {
       try {
         // #region agent log
         log('MapComponent.tsx:201', 'initializeMap called', { 
@@ -262,15 +207,6 @@ export function MapComponent({
         }, 'A');
         // #endregion
 
-        const mapboxgl = (window as any).mapboxgl;
-        if (!mapboxgl) {
-          // #region agent log
-          log('MapComponent.tsx:211', 'No mapboxgl object', {}, 'A');
-          // #endregion
-          setError('Mapbox library not available');
-          return;
-        }
-
         if (!mapContainer.current) {
           // #region agent log
           log('MapComponent.tsx:219', 'No container element', {}, 'A');
@@ -279,12 +215,42 @@ export function MapComponent({
           return;
         }
 
-        // Check if map already exists
-        if (mapRef.current) {
+        // Check for cached map first
+        const cachedMap = mapCache.getCachedMap(mapboxToken);
+        if (cachedMap) {
+          // Reuse cached map
+          mapRef.current = cachedMap;
+          // Update container reference if it changed
+          if (cachedMap.getContainer() !== mapContainer.current) {
+            // Map container changed, need to recreate
+            // But for now, just update the reference
+            mapRef.current = cachedMap;
+          }
+          
+          // If map is already loaded, update markers immediately
+          if (cachedMap.loaded()) {
+            setIsLoaded(true);
+            updateMarkers();
+          } else {
+            // Wait for map to load
+            cachedMap.once('load', () => {
+              setIsLoaded(true);
+              updateMarkers();
+            });
+          }
+          return;
+        }
+
+        // Load Mapbox script if needed
+        await mapCache.loadMapboxScript();
+
+        const mapboxgl = (window as any).mapboxgl;
+        if (!mapboxgl) {
           // #region agent log
-          log('MapComponent.tsx:228', 'Map already exists, removing', {}, 'A');
+          log('MapComponent.tsx:211', 'No mapboxgl object', {}, 'A');
           // #endregion
-          mapRef.current.remove();
+          setError('Mapbox library not available');
+          return;
         }
 
         // #region agent log
@@ -310,13 +276,16 @@ export function MapComponent({
         }, 'F');
         // #endregion
 
-        const map = new mapboxgl.Map({
-          container: mapContainer.current,
-          style: 'mapbox://styles/mapbox/streets-v12',
-          center: [viewState.longitude, viewState.latitude],
-          zoom: viewState.zoom,
-          accessToken: mapboxToken,
-        });
+        // Use map cache to get or create map instance
+        const map = await mapCache.getOrCreateMap(
+          mapContainer.current,
+          mapboxToken,
+          {
+            center: [viewState.longitude, viewState.latitude],
+            zoom: viewState.zoom,
+            style: 'mapbox://styles/mapbox/streets-v12',
+          }
+        );
 
         mapRef.current = map;
         // #region agent log
@@ -330,6 +299,9 @@ export function MapComponent({
 
         map.on('load', () => {
           // #region agent log
+          const mapLoadTime = Date.now();
+          const totalInitTime = mapLoadTime - componentMountTime;
+          fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:331',message:'Map loaded successfully',data:{totalInitTime,timeSinceMount:totalInitTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
           const container = mapContainer.current;
           const parent = container?.parentElement;
           const grandParent = parent?.parentElement;
@@ -496,13 +468,18 @@ export function MapComponent({
     }
 
     return () => {
+      // #region agent log
+      const cleanupTime = Date.now();
+      const componentLifetime = cleanupTime - componentMountTime;
+      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:498',message:'MapComponent cleanup (unmounting)',data:{componentLifetime,wasLoaded:isLoaded,initAttempted:initAttemptedRef.current},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      
       if (timer) clearTimeout(timer);
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
-      }
+      // Don't remove map instance - let it be cached for reuse
+      // Only clear markers and refs
       markersRef.current.forEach(marker => marker.remove());
       markersRef.current = [];
+      mapRef.current = null;
       initAttemptedRef.current = false;
     };
   }, [mapboxToken, containerReady]);
@@ -630,6 +607,7 @@ export function MapComponent({
     const deleteButtonId = `delete-btn-${selectedPoint.id}-${Date.now()}`;
     const pointId = selectedPoint.id;
     const pointName = selectedPoint.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const isDeleting = deletingPointId === pointId;
     
     const popup = new mapboxgl.Popup({ closeOnClick: false })
       .setLngLat([selectedPoint.longitude, selectedPoint.latitude])
@@ -647,11 +625,12 @@ export function MapComponent({
             <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
               <button 
                 id="${deleteButtonId}" 
-                style="width: 100%; padding: 8px 12px; background: #ef4444; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: background 0.2s;"
-                onmouseover="this.style.background='#dc2626'"
-                onmouseout="this.style.background='#ef4444'"
+                style="width: 100%; padding: 8px 12px; background: ${isDeleting ? '#9ca3af' : '#ef4444'}; color: white; border: none; border-radius: 6px; cursor: ${isDeleting ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 500; transition: background 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px;"
+                ${isDeleting ? 'disabled' : ''}
+                onmouseover="${isDeleting ? '' : "this.style.background='#dc2626'"} "
+                onmouseout="${isDeleting ? '' : "this.style.background='#ef4444'"} "
               >
-                🗑️ Delete Service Point
+                ${isDeleting ? '<svg style="width: 14px; height: 14px; animation: spin 1s linear infinite;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill-opacity="0.75"></path></svg><style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>' : '🗑️'} ${isDeleting ? 'Deleting...' : 'Delete Service Point'}
               </button>
             </div>
           ` : ''}
@@ -696,7 +675,7 @@ export function MapComponent({
         popupRef.current = null;
       }
     };
-  }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup]);
+  }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup, deletingPointId]);
 
   return (
     <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '380px', maxWidth: '500px' }}>
@@ -725,3 +704,20 @@ export function MapComponent({
     </div>
   );
 }
+
+// Memoize MapComponent to prevent unnecessary re-renders
+export const MapComponent = memo(MapComponentInner, (prevProps: MapComponentProps, nextProps: MapComponentProps) => {
+  // Only re-render if these props change
+  return (
+    prevProps.servicePoints.length === nextProps.servicePoints.length &&
+    prevProps.servicePoints.every((p: ServicePoint, i: number) => 
+      p.id === nextProps.servicePoints[i]?.id &&
+      p.latitude === nextProps.servicePoints[i]?.latitude &&
+      p.longitude === nextProps.servicePoints[i]?.longitude
+    ) &&
+    prevProps.selectedPoint?.id === nextProps.selectedPoint?.id &&
+    prevProps.mapboxToken === nextProps.mapboxToken &&
+    prevProps.isSuperAdmin === nextProps.isSuperAdmin &&
+    prevProps.className === nextProps.className
+  );
+});

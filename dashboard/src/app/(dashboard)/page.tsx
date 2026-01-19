@@ -1,60 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { AlertCircle, MapPin } from "lucide-react";
 import { ServicePointsMap } from "@/components/map/ServicePointsMap";
 import { ServicePointForm } from "@/components/map/ServicePointForm";
-import { usePermissions } from "@/hooks/usePermissions";
-
-interface UserPermissions {
-  exists: boolean;
-  systemUserId?: number;
-  isSuperAdmin?: boolean;
-  message?: string;
-}
+import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 
 export default function DashboardHome() {
-  const [loading, setLoading] = useState(true);
-  const [userPerms, setUserPerms] = useState<UserPermissions | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const { isSuperAdmin } = usePermissions();
-
-  useEffect(() => {
-    const fetchPermissions = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch("/api/auth/permissions");
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const contentType = response.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-          throw new Error("Response is not JSON");
-        }
-        
-        const result = await response.json();
-
-        if (result.success) {
-          setUserPerms(result.data);
-        } else {
-          setError(result.error || "Failed to fetch permissions");
-        }
-      } catch (err) {
-        console.error("Error fetching permissions:", err);
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPermissions();
-  }, []);
+  const { data: userPerms, isLoading, error } = usePermissionsQuery();
+  const { isSuperAdmin } = usePermissionsQuery();
+  const queryClient = useQueryClient();
 
   const handleServicePointCreated = () => {
-    setRefreshKey((prev) => prev + 1);
+    // Invalidate service points query to refetch the list
+    queryClient.invalidateQueries({ queryKey: queryKeys.servicePoints.list() });
   };
 
   return (
@@ -93,7 +54,9 @@ export default function DashboardHome() {
               <h3 className="text-sm font-medium text-red-800">
                 Error Loading Permissions
               </h3>
-              <p className="mt-1 text-sm text-red-700">{error}</p>
+              <p className="mt-1 text-sm text-red-700">
+                {error instanceof Error ? error.message : "Failed to load permissions"}
+              </p>
             </div>
           </div>
         </div>
@@ -104,7 +67,7 @@ export default function DashboardHome() {
         {/* Map - Takes less space on desktop, full width on mobile */}
         <div className="lg:col-span-3">
           <div className="h-[180px] sm:h-[200px] md:h-[220px] lg:h-[240px] xl:h-[300px] max-h-[380px] max-w-[500px] overflow-hidden">
-            <ServicePointsMap key={refreshKey} className="h-full w-full" />
+            <ServicePointsMap className="h-full w-full" />
           </div>
         </div>
 

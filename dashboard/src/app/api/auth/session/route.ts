@@ -19,7 +19,10 @@ export async function GET(request: NextRequest) {
     }
 
     // Get user permissions
-    const permissions = await getUserPermissions(session.user.id);
+    const permissions = await getUserPermissions(
+      session.user.id,
+      session.user.email || ""
+    );
 
     return NextResponse.json({
       success: true,

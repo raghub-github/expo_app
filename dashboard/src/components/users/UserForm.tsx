@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Save, X } from "lucide-react";
+import { LoadingButton } from "@/components/ui/LoadingButton";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { normalizeMobileNumber, formatMobileForDisplay } from "@/lib/utils/mobile-normalizer";
 import { DashboardAccessSelector, DASHBOARD_DEFINITIONS } from "./DashboardAccessSelector";
 import { SubroleSelector } from "./SubroleSelector";
@@ -168,6 +170,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
                 if (!accessPoints[ap.dashboardType]) {
                   accessPoints[ap.dashboardType] = [];
                 }
+                // Include access point group (order_type is handled by the backend)
                 accessPoints[ap.dashboardType].push(ap.accessPointGroup);
               });
               
@@ -247,12 +250,27 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           dashboardType,
           accessLevel: "FULL_ACCESS", // Default to full access, can be customized later
         }));
+        // Helper function to extract service type from access point group
+        const getServiceType = (accessPointGroup: string): string | null => {
+          // Service-specific access points end with _FOOD, _PARCEL, or _PERSON_RIDE
+          if (accessPointGroup.endsWith('_FOOD')) return 'food';
+          if (accessPointGroup.endsWith('_PARCEL')) return 'parcel';
+          if (accessPointGroup.endsWith('_PERSON_RIDE')) return 'person_ride';
+          // For ORDER dashboards, order_type is already set in dashboardAccess
+          // For view access points (RIDER_VIEW, CUSTOMER_VIEW), order_type is NULL
+          return null;
+        };
+
         (payload as any).accessPoints = Object.entries(selectedAccessPoints).flatMap(
           ([dashboardType, accessPointGroups]) =>
-            accessPointGroups.map(accessPointGroup => ({
-              dashboardType,
-              accessPointGroup,
-            }))
+            accessPointGroups.map(accessPointGroup => {
+              const orderType = getServiceType(accessPointGroup);
+              return {
+                dashboardType,
+                accessPointGroup,
+                orderType, // Add service_type (order_type) for service-specific access points
+              };
+            })
         );
       }
 
@@ -292,7 +310,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
   if (loading && mode === "edit") {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-gray-500">Loading user...</div>
+        <LoadingSpinner size="lg" text="Loading user..." />
       </div>
     );
   }
@@ -627,14 +645,16 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
             Cancel
           </button>
         )}
-        <button
+        <LoadingButton
           type="submit"
-          disabled={loading}
-          className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          loading={loading}
+          loadingText="Saving..."
+          variant="primary"
+          size="md"
         >
           <Save className="h-4 w-4 inline mr-2" />
-          {loading ? "Saving..." : mode === "create" ? "Create User" : "Update User"}
-        </button>
+          {mode === "create" ? "Create User" : "Update User"}
+        </LoadingButton>
       </div>
     </form>
   );

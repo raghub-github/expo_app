@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { UserForm } from "@/components/users/UserForm";
 import { Edit, ArrowLeft, CheckCircle, XCircle } from "lucide-react";
+import { LoadingButton } from "@/components/ui/LoadingButton";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/usePermissions";
 import { DASHBOARD_DEFINITIONS } from "@/components/users/DashboardAccessSelector";
@@ -57,6 +58,7 @@ export default function UserDetailsPage() {
   const [editMode, setEditMode] = useState(false);
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
+  const [activating, setActivating] = useState(false);
   const [accessData, setAccessData] = useState<{
     dashboards: UserAccessDashboard[];
     accessPoints: UserAccessPoint[];
@@ -261,9 +263,10 @@ export default function UserDetailsPage() {
             </button>
           )}
           {user.status === "PENDING_ACTIVATION" && !permissionsLoading && isSuperAdmin && (
-            <button
+            <LoadingButton
               onClick={async () => {
                 if (confirm("Approve and activate this user?")) {
+                  setActivating(true);
                   try {
                     const response = await fetch(`/api/users/${user.id}/activate`, {
                       method: "POST",
@@ -276,14 +279,20 @@ export default function UserDetailsPage() {
                     }
                   } catch (err) {
                     alert("Error activating user");
+                  } finally {
+                    setActivating(false);
                   }
                 }
               }}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+              loading={activating}
+              loadingText="Activating..."
+              variant="primary"
+              size="md"
+              className="bg-green-600 hover:bg-green-700"
             >
               <CheckCircle className="h-4 w-4" />
               Approve & Activate
-            </button>
+            </LoadingButton>
           )}
         </div>
       </div>

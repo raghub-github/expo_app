@@ -167,32 +167,36 @@ export async function middleware(request: NextRequest) {
 
         const dashboardType = resolveDashboardType(pathname);
 
-        try {
-          void fetch(new URL("/api/audit/track", request.url), {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              cookie: request.headers.get("cookie") || "",
-              "x-forwarded-for": request.headers.get("x-forwarded-for") || "",
-              "user-agent": request.headers.get("user-agent") || "",
+        // Fire-and-forget audit tracking
+        // Don't block the request if audit tracking fails or times out
+        fetch(new URL("/api/audit/track", request.url), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie: request.headers.get("cookie") || "",
+            "x-forwarded-for": request.headers.get("x-forwarded-for") || "",
+            "user-agent": request.headers.get("user-agent") || "",
+          },
+          body: JSON.stringify({
+            eventType: isApiRequest ? "API_CALL" : "PAGE_VIEW",
+            dashboardType,
+            actionType,
+            resourceType: isApiRequest ? "API" : "PAGE",
+            resourceId: pathname,
+            actionDetails: {
+              path: pathname,
+              method: request.method,
             },
-            body: JSON.stringify({
-              eventType: isApiRequest ? "API_CALL" : "PAGE_VIEW",
-              dashboardType,
-              actionType,
-              resourceType: isApiRequest ? "API" : "PAGE",
-              resourceId: pathname,
-              actionDetails: {
-                path: pathname,
-                method: request.method,
-              },
-              requestPath: pathname,
-              requestMethod: request.method,
-            }),
-          });
-        } catch (logError) {
-          console.error("[middleware] Audit tracking failed:", logError);
-        }
+            requestPath: pathname,
+            requestMethod: request.method,
+          }),
+        }).catch((error) => {
+          // Silently ignore timeout and network errors - audit tracking should never block requests
+          // Only log unexpected errors
+          if (error.name !== 'HeadersTimeoutError' && !error.message?.includes('timeout')) {
+            console.error("[middleware] Audit tracking failed:", error);
+          }
+        });
       }
     }
 

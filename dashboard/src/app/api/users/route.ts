@@ -271,9 +271,25 @@ export async function POST(request: NextRequest) {
     if (dashboardAccessData && Array.isArray(dashboardAccessData)) {
       const db = getDb();
       for (const access of dashboardAccessData) {
+        // Determine orderType for order, customer, and ticket dashboards
+        let orderType: string | undefined = undefined;
+        if (access.dashboardType === "ORDER_FOOD" || access.dashboardType === "CUSTOMER_FOOD" || 
+            access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("FOOD")) {
+          orderType = "food";
+        } else if (access.dashboardType === "ORDER_PERSON_RIDE" || access.dashboardType === "CUSTOMER_PERSON_RIDE" || 
+                   access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("PERSON_RIDE")) {
+          orderType = "person_ride";
+        } else if (access.dashboardType === "ORDER_PARCEL" || access.dashboardType === "CUSTOMER_PARCEL" || 
+                   access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("PARCEL")) {
+          orderType = "parcel";
+        } else if (access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("GENERAL")) {
+          orderType = null; // General tickets are not order-specific
+        }
+        
         await db.insert(dashboardAccess).values({
           systemUserId: newUser.id,
           dashboardType: access.dashboardType,
+          orderType: orderType || access.orderType, // Use provided orderType or derived one
           accessLevel: access.accessLevel || "FULL_ACCESS",
           isActive: true,
           grantedBy: systemUser.id,
@@ -290,6 +306,32 @@ export async function POST(request: NextRequest) {
       const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
 
       for (const accessPoint of accessPointsData) {
+        // Determine orderType (service_type) from access point group name or provided value
+        // Service-specific access points end with _FOOD, _PARCEL, or _PERSON_RIDE
+        let orderType: string | undefined = undefined;
+        
+        // First, use provided orderType if available
+        if (accessPoint.orderType) {
+          orderType = accessPoint.orderType;
+        } else {
+          // Derive from access point group name for service-specific access points
+          const group = accessPoint.accessPointGroup;
+          if (group.endsWith('_FOOD')) {
+            orderType = 'food';
+          } else if (group.endsWith('_PARCEL')) {
+            orderType = 'parcel';
+          } else if (group.endsWith('_PERSON_RIDE')) {
+            orderType = 'person_ride';
+          } else if (accessPoint.dashboardType === "ORDER_FOOD") {
+            orderType = "food";
+          } else if (accessPoint.dashboardType === "ORDER_PARCEL") {
+            orderType = "parcel";
+          } else if (accessPoint.dashboardType === "ORDER_PERSON_RIDE") {
+            orderType = "person_ride";
+          }
+          // For RIDER_VIEW, CUSTOMER_VIEW, and other global access points, orderType remains undefined (NULL)
+        }
+        
         // Find the access point definition
         let accessPointName = accessPoint.accessPointGroup;
         let accessPointDescription = "";
@@ -329,6 +371,7 @@ export async function POST(request: NextRequest) {
         await db.insert(dashboardAccessPoints).values({
           systemUserId: newUser.id,
           dashboardType: accessPoint.dashboardType,
+          orderType: orderType || accessPoint.orderType, // Use provided orderType or derived one
           accessPointGroup: accessPoint.accessPointGroup,
           accessPointName,
           accessPointDescription,

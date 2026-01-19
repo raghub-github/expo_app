@@ -31,17 +31,13 @@ interface NavItem {
 
 const navigation: NavItem[] = [
   { name: "Home", href: "/dashboard", icon: LayoutDashboard },
-  { name: "Users", href: "/dashboard/users", icon: Users, requiresSuperAdmin: true },
   { name: "Super Admin", href: "/dashboard/super-admin", icon: UserCog, requiresSuperAdmin: true },
   { name: "Customers", href: "/dashboard/customers", icon: Users, dashboardType: "CUSTOMER" },
   { name: "Riders", href: "/dashboard/riders", icon: Package, dashboardType: "RIDER" },
   { name: "Merchants", href: "/dashboard/merchants", icon: Store, dashboardType: "MERCHANT" },
-  { name: "Orders", href: "/dashboard/orders", icon: ShoppingCart, dashboardType: "ORDER" },
+  { name: "Orders", href: "/dashboard/orders", icon: ShoppingCart, dashboardType: "ORDER_FOOD" }, // Check for any order type access
   { name: "Area Managers", href: "/dashboard/area-managers", icon: MapPin, dashboardType: "AREA_MANAGER" },
   { name: "Tickets", href: "/dashboard/tickets", icon: Ticket, dashboardType: "TICKET" },
-  { name: "Agents", href: "/dashboard/agents", icon: Users, requiresSuperAdmin: true },
-  { name: "Payments", href: "/dashboard/payments", icon: CreditCard, dashboardType: "PAYMENT", requiresSuperAdmin: true },
-  { name: "Offers", href: "/dashboard/offers", icon: Gift, dashboardType: "OFFER" },
   { name: "System", href: "/dashboard/system", icon: Settings, dashboardType: "SYSTEM" },
   { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3, dashboardType: "ANALYTICS" },
 ];
@@ -77,6 +73,17 @@ export function Sidebar() {
         if (isSuperAdmin) {
           return true;
         }
+        
+        // Special handling for Orders - show if user has access to any order type
+        if (item.dashboardType === "ORDER_FOOD") {
+          return accessibleDashboards.has("ORDER_FOOD") || 
+                 accessibleDashboards.has("ORDER_PERSON_RIDE") || 
+                 accessibleDashboards.has("ORDER_PARCEL");
+        }
+        
+        // Check dashboard access directly (CUSTOMER and TICKET are now consolidated)
+        return accessibleDashboards.has(item.dashboardType);
+        
         return accessibleDashboards.has(item.dashboardType);
       }
 

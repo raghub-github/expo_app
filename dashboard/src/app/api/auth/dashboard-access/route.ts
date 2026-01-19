@@ -38,7 +38,9 @@ export async function GET(request: NextRequest) {
     if (userIsSuperAdmin) {
       // Super admin has access to all dashboards
       const allDashboards = [
-        "RIDER", "MERCHANT", "CUSTOMER", "ORDER", "TICKET", 
+        "RIDER", "MERCHANT", "CUSTOMER",
+        "ORDER_FOOD", "ORDER_PERSON_RIDE", "ORDER_PARCEL",
+        "TICKET",
         "OFFER", "AREA_MANAGER", "PAYMENT", "SYSTEM", "ANALYTICS"
       ];
       

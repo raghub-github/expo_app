@@ -1,7 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, X, Loader2 } from "lucide-react";
+import { Plus, X } from "lucide-react";
+import { LoadingButton } from "@/components/ui/LoadingButton";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { useCreateServicePoint } from "@/hooks/queries/useServicePointsQuery";
 
 interface ServicePointFormProps {
   onSuccess?: () => void;
@@ -9,9 +12,10 @@ interface ServicePointFormProps {
 
 export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [geocodeLoading, setGeocodeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const createServicePoint = useCreateServicePoint();
   
   const [formData, setFormData] = useState({
     name: "",
@@ -29,7 +33,7 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
       return;
     }
 
-    setLoading(true);
+    setGeocodeLoading(true);
     setError(null);
 
     try {
@@ -54,13 +58,12 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to geocode city");
     } finally {
-      setLoading(false);
+      setGeocodeLoading(false);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
     setSuccess(false);
 
@@ -74,7 +77,6 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
 
       if (!formData.name || !formData.latitude || !formData.longitude) {
         setError("Name, latitude, and longitude are required");
-        setLoading(false);
         return;
       }
 
@@ -86,35 +88,23 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
         address: formData.address || null,
       };
 
-      const response = await fetch("/api/service-points", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      await createServicePoint.mutateAsync(payload);
+      
+      setSuccess(true);
+      setFormData({
+        name: "",
+        city: "",
+        latitude: "",
+        longitude: "",
+        address: "",
       });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setSuccess(true);
-        setFormData({
-          name: "",
-          city: "",
-          latitude: "",
-          longitude: "",
-          address: "",
-        });
-        setTimeout(() => {
-          setIsOpen(false);
-          setSuccess(false);
-          if (onSuccess) onSuccess();
-        }, 1500);
-      } else {
-        setError(result.error || "Failed to create service point");
-      }
+      setTimeout(() => {
+        setIsOpen(false);
+        setSuccess(false);
+        if (onSuccess) onSuccess();
+      }, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create service point");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -238,18 +228,18 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
                   className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all text-sm sm:text-base text-gray-900 bg-white placeholder:text-gray-400"
                   placeholder="e.g., Mumbai"
                 />
-                <button
+                <LoadingButton
                   type="button"
                   onClick={handleGeocode}
-                  disabled={loading || !formData.city.trim()}
-                  className="px-5 sm:px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium text-sm sm:text-base whitespace-nowrap shadow-sm hover:shadow"
+                  loading={geocodeLoading}
+                  loadingText="Finding..."
+                  disabled={!formData.city.trim()}
+                  variant="primary"
+                  size="md"
+                  className="whitespace-nowrap"
                 >
-                  {loading ? (
-                    <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
-                  ) : (
-                    "Find"
-                  )}
-                </button>
+                  Find
+                </LoadingButton>
               </div>
               {formData.latitude && formData.longitude && (
                 <p className="mt-2.5 text-xs sm:text-sm text-gray-600 bg-gray-50 px-3 py-2 rounded-lg">
@@ -317,20 +307,16 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
             >
               Cancel
             </button>
-            <button
+            <LoadingButton
               type="submit"
-              disabled={loading}
-              className="flex-1 px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all font-medium text-sm sm:text-base shadow-sm hover:shadow"
+              loading={createServicePoint.isPending || geocodeLoading}
+              loadingText="Creating..."
+              variant="primary"
+              size="md"
+              className="flex-1"
             >
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
-                  <span>Creating...</span>
-                </>
-              ) : (
-                "Create Service Point"
-              )}
-            </button>
+              Create Service Point
+            </LoadingButton>
           </div>
         </form>
       </div>

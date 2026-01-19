@@ -199,6 +199,29 @@ CREATE TABLE public.access_ui_components (
   CONSTRAINT access_ui_components_page_id_fkey FOREIGN KEY (page_id) REFERENCES public.access_pages(id),
   CONSTRAINT access_ui_components_required_permission_id_fkey FOREIGN KEY (required_permission_id) REFERENCES public.system_permissions(id)
 );
+CREATE TABLE public.action_audit_log (
+  id bigint NOT NULL DEFAULT nextval('action_audit_log_id_seq'::regclass),
+  agent_id bigint NOT NULL,
+  agent_email text NOT NULL,
+  agent_name text,
+  agent_role text,
+  dashboard_type text NOT NULL,
+  action_type text NOT NULL,
+  resource_type text,
+  resource_id text,
+  action_details jsonb DEFAULT '{}'::jsonb,
+  previous_values jsonb,
+  new_values jsonb,
+  ip_address text,
+  user_agent text,
+  request_path text,
+  request_method text,
+  action_status text DEFAULT 'SUCCESS'::text,
+  error_message text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT action_audit_log_pkey PRIMARY KEY (id),
+  CONSTRAINT action_audit_log_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.system_users(id)
+);
 CREATE TABLE public.admin_action_logs (
   id bigint NOT NULL DEFAULT nextval('admin_action_logs_id_seq'::regclass),
   admin_user_id integer NOT NULL,
@@ -1285,6 +1308,48 @@ CREATE TABLE public.customers (
   CONSTRAINT customers_pkey PRIMARY KEY (id),
   CONSTRAINT customers_referrer_customer_id_fkey FOREIGN KEY (referrer_customer_id) REFERENCES public.customers(id)
 );
+CREATE TABLE public.dashboard_access (
+  id bigint NOT NULL DEFAULT nextval('dashboard_access_id_seq'::regclass),
+  system_user_id bigint NOT NULL,
+  dashboard_type text NOT NULL,
+  access_level text NOT NULL DEFAULT 'VIEW_ONLY'::text,
+  is_active boolean DEFAULT true,
+  granted_by bigint NOT NULL,
+  granted_by_name text,
+  granted_at timestamp with time zone NOT NULL DEFAULT now(),
+  revoked_at timestamp with time zone,
+  revoked_by bigint,
+  revoke_reason text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT dashboard_access_pkey PRIMARY KEY (id),
+  CONSTRAINT dashboard_access_system_user_id_fkey FOREIGN KEY (system_user_id) REFERENCES public.system_users(id),
+  CONSTRAINT dashboard_access_granted_by_fkey FOREIGN KEY (granted_by) REFERENCES public.system_users(id),
+  CONSTRAINT dashboard_access_revoked_by_fkey FOREIGN KEY (revoked_by) REFERENCES public.system_users(id)
+);
+CREATE TABLE public.dashboard_access_points (
+  id bigint NOT NULL DEFAULT nextval('dashboard_access_points_id_seq'::regclass),
+  system_user_id bigint NOT NULL,
+  dashboard_type text NOT NULL,
+  access_point_group text NOT NULL,
+  access_point_name text NOT NULL,
+  access_point_description text,
+  allowed_actions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  context jsonb DEFAULT '{}'::jsonb,
+  is_active boolean DEFAULT true,
+  granted_by bigint NOT NULL,
+  granted_by_name text,
+  granted_at timestamp with time zone NOT NULL DEFAULT now(),
+  revoked_at timestamp with time zone,
+  revoked_by bigint,
+  revoke_reason text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT dashboard_access_points_pkey PRIMARY KEY (id),
+  CONSTRAINT dashboard_access_points_system_user_id_fkey FOREIGN KEY (system_user_id) REFERENCES public.system_users(id),
+  CONSTRAINT dashboard_access_points_granted_by_fkey FOREIGN KEY (granted_by) REFERENCES public.system_users(id),
+  CONSTRAINT dashboard_access_points_revoked_by_fkey FOREIGN KEY (revoked_by) REFERENCES public.system_users(id)
+);
 CREATE TABLE public.duty_logs (
   id bigint NOT NULL DEFAULT nextval('duty_logs_id_seq'::regclass),
   rider_id integer NOT NULL,
@@ -1327,6 +1392,30 @@ CREATE TABLE public.fraud_logs (
   CONSTRAINT fraud_logs_pkey PRIMARY KEY (id),
   CONSTRAINT fraud_logs_rider_id_fkey FOREIGN KEY (rider_id) REFERENCES public.riders(id),
   CONSTRAINT fraud_logs_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+);
+CREATE TABLE public.gatimitra_registrations (
+  id integer NOT NULL DEFAULT nextval('gatimitra_registrations_id_seq'::regclass),
+  rider_name character varying NOT NULL,
+  phone character varying NOT NULL,
+  email character varying NOT NULL,
+  location character varying NOT NULL,
+  message text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  status character varying NOT NULL DEFAULT 'pending'::character varying,
+  city character varying DEFAULT '255'::character varying,
+  CONSTRAINT gatimitra_registrations_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.gatimitra_reviews (
+  id integer NOT NULL DEFAULT nextval('gatimitra_reviews_id_seq'::regclass),
+  name character varying NOT NULL,
+  email character varying NOT NULL,
+  stars integer NOT NULL CHECK (stars >= 1 AND stars <= 5),
+  review character varying NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  response_by character varying,
+  response_message character varying,
+  is_read boolean DEFAULT false,
+  CONSTRAINT gatimitra_reviews_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.insurance_policies (
   id bigint NOT NULL DEFAULT nextval('insurance_policies_id_seq'::regclass),
@@ -3899,6 +3988,20 @@ CREATE TABLE public.security_events (
   CONSTRAINT security_events_system_user_id_fkey FOREIGN KEY (system_user_id) REFERENCES public.system_users(id),
   CONSTRAINT security_events_action_taken_by_fkey FOREIGN KEY (action_taken_by) REFERENCES public.system_users(id)
 );
+CREATE TABLE public.service_points (
+  id bigint NOT NULL DEFAULT nextval('service_points_id_seq'::regclass),
+  name text NOT NULL,
+  city text NOT NULL,
+  latitude numeric NOT NULL CHECK (latitude >= 6::numeric AND latitude <= 37::numeric),
+  longitude numeric NOT NULL CHECK (longitude >= 68::numeric AND longitude <= 98::numeric),
+  address text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_by bigint,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT service_points_pkey PRIMARY KEY (id),
+  CONSTRAINT service_points_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.system_users(id)
+);
 CREATE TABLE public.service_scope_assignments (
   id bigint NOT NULL DEFAULT nextval('service_scope_assignments_id_seq'::regclass),
   system_user_id bigint NOT NULL,
@@ -4155,6 +4258,8 @@ CREATE TABLE public.system_users (
   deleted_by bigint,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  subrole text,
+  subrole_other text,
   CONSTRAINT system_users_pkey PRIMARY KEY (id),
   CONSTRAINT system_users_reports_to_id_fkey FOREIGN KEY (reports_to_id) REFERENCES public.system_users(id),
   CONSTRAINT system_users_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.system_users(id),
@@ -4352,6 +4457,18 @@ CREATE TABLE public.unified_tickets (
   CONSTRAINT unified_tickets_resolved_by_fkey FOREIGN KEY (resolved_by) REFERENCES public.system_users(id),
   CONSTRAINT unified_tickets_escalated_to_fkey FOREIGN KEY (escalated_to) REFERENCES public.system_users(id),
   CONSTRAINT unified_tickets_parent_ticket_id_fkey FOREIGN KEY (parent_ticket_id) REFERENCES public.unified_tickets(id)
+);
+CREATE TABLE public.user_data (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  email text NOT NULL UNIQUE,
+  otp text,
+  system_details jsonb,
+  login_time timestamp without time zone,
+  logout_time timestamp without time zone,
+  created_at timestamp without time zone DEFAULT now(),
+  updated_at timestamp without time zone DEFAULT now(),
+  expires_at_ms bigint,
+  CONSTRAINT user_data_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.user_permission_overrides (
   id bigint NOT NULL DEFAULT nextval('user_permission_overrides_id_seq'::regclass),

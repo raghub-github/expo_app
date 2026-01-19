@@ -43,9 +43,15 @@ export async function getSystemUserByAuthId(
  * This is the primary mapping method
  */
 export async function getSystemUserByEmail(
-  email: string
+  email: string | null | undefined
 ): Promise<SystemUser | null> {
   try {
+    // Validate email parameter
+    if (!email || typeof email !== 'string' || email.trim() === '') {
+      console.log("[getSystemUserByEmail] ===== INVALID ===== Email is missing or empty:", email);
+      return null;
+    }
+
     console.log("[getSystemUserByEmail] ===== START ===== Email:", email);
     const db = getDb();
     console.log("[getSystemUserByEmail] Database connection obtained");

@@ -99,13 +99,13 @@ export interface AccessPoint {
  */
 async function getSystemUserIdFromAuthUser(
   supabaseAuthId: string,
-  email: string
+  email: string | null | undefined
 ): Promise<number | null> {
   // Try by auth ID first (if column exists)
   let systemUser = await getSystemUserByAuthId(supabaseAuthId);
   
-  // Fallback to email
-  if (!systemUser) {
+  // Fallback to email (only if email is provided)
+  if (!systemUser && email) {
     systemUser = await getSystemUserByEmail(email);
   }
   
@@ -192,19 +192,25 @@ async function getUserPermissionsFromDb(systemUserId: number): Promise<Permissio
  */
 export async function getUserPermissions(
   supabaseAuthId: string,
-  email: string
+  email?: string | null
 ): Promise<UserPermissions | null> {
   try {
     console.log("[getUserPermissions] Checking permissions for:", { supabaseAuthId, email });
     
+    // Validate that we have at least one identifier
+    if (!email && !supabaseAuthId) {
+      console.log("[getUserPermissions] No email or auth ID provided");
+      return null;
+    }
+    
     // 1. Get system user ID
-    const systemUserId = await getSystemUserIdFromAuthUser(supabaseAuthId, email);
+    const systemUserId = await getSystemUserIdFromAuthUser(supabaseAuthId, email || null);
     console.log("[getUserPermissions] System user ID:", systemUserId);
     
     if (!systemUserId) {
       // User doesn't exist in system_users - might be customer/rider/merchant
       // They should use their respective apps, not the dashboard
-      console.log("[getUserPermissions] No system user found for email:", email);
+      console.log("[getUserPermissions] No system user found for email:", email || "N/A");
       return null;
     }
     
@@ -294,9 +300,12 @@ export function getDashboardTypeFromPath(pagePath: string): DashboardType | null
   const pathToDashboardMap: Record<string, DashboardType> = {
     "/dashboard/riders": "RIDER",
     "/dashboard/merchants": "MERCHANT",
-    "/dashboard/customers": "CUSTOMER",
-    "/dashboard/orders": "ORDER",
-    "/dashboard/tickets": "TICKET",
+    "/dashboard/customers": "CUSTOMER", // All customer paths map to CUSTOMER dashboard
+    "/dashboard/orders": "ORDER_FOOD", // Default to food, but check specific paths
+    "/dashboard/orders/food": "ORDER_FOOD",
+    "/dashboard/orders/person-ride": "ORDER_PERSON_RIDE",
+    "/dashboard/orders/parcel": "ORDER_PARCEL",
+    "/dashboard/tickets": "TICKET", // All ticket paths map to TICKET dashboard
     "/dashboard/offers": "OFFER",
     "/dashboard/area-managers": "AREA_MANAGER",
     "/dashboard/payments": "PAYMENT",

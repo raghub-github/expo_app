@@ -16,6 +16,7 @@ export interface ActionAuditData {
   agentName?: string;
   agentRole?: string;
   dashboardType: DashboardType;
+  orderType?: string; // Order type for order-related actions (food, person_ride, parcel)
   actionType: ActionType;
   resourceType?: string;
   resourceId?: string;
@@ -49,6 +50,7 @@ export async function logAction(data: ActionAuditData): Promise<number | null> {
         agentName: data.agentName,
         agentRole: data.agentRole,
         dashboardType: data.dashboardType,
+        orderType: data.orderType,
         actionType: data.actionType,
         resourceType: data.resourceType,
         resourceId: data.resourceId,
@@ -87,6 +89,7 @@ export async function logActionFromRequest(
   dashboardType: DashboardType,
   actionType: ActionType,
   options: {
+    orderType?: string; // Order type for order-related actions
     resourceType?: string;
     resourceId?: string;
     actionDetails?: Record<string, any>;
@@ -114,6 +117,7 @@ export async function logActionFromRequest(
       agentName: agent.fullName,
       agentRole: agent.primaryRole,
       dashboardType,
+      orderType: options.orderType,
       actionType,
       resourceType: options.resourceType,
       resourceId: options.resourceId,

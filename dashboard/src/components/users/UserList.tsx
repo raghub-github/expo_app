@@ -2,8 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import Link from "next/link";
-import { usePermissions } from "@/hooks/usePermissions";
+import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
+import { useUsersQuery, useUpdateUser } from "@/hooks/queries/useUsersQuery";
 
 interface SystemUser {
   id: number;
@@ -32,10 +34,8 @@ const STATUS_OPTIONS = [
 
 export function UserList({ onUserSelect, showActions = true }: UserListProps) {
   const { isSuperAdmin, systemUserId, loading: permissionsLoading } = usePermissions();
-  const [users, setUsers] = useState<SystemUser[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [filters, setFilters] = useState({
     role: "",
     status: "",
@@ -49,44 +49,10 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
   });
   const [openDropdownId, setOpenDropdownId] = useState<number | null>(null);
   const dropdownRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  
+  // Use React Query mutation for updates
+  const updateUser = useUpdateUser();
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const fetchUsers = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const params = new URLSearchParams({
-        page: pagination.page.toString(),
-        limit: pagination.limit.toString(),
-        ...(search && { search }),
-        ...(filters.role && { role: filters.role }),
-        ...(filters.status && { status: filters.status }),
-        ...(filters.department && { department: filters.department }),
-      });
-
-      const response = await fetch(`/api/users?${params}`);
-      const result = await response.json();
-
-      if (result.success) {
-        setUsers(result.data);
-        setPagination(prev => ({
-          ...prev,
-          ...result.pagination,
-        }));
-      } else {
-        setError(result.error || "Failed to fetch users");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchUsers();
-  }, [pagination.page, filters.role, filters.status, filters.department]);
 
   // Debounced search
   useEffect(() => {
@@ -95,8 +61,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     }
     
     searchTimeoutRef.current = setTimeout(() => {
+      setDebouncedSearch(search);
       setPagination(prev => ({ ...prev, page: 1 }));
-      fetchUsers();
     }, 500);
 
     return () => {
@@ -105,6 +71,34 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       }
     };
   }, [search]);
+
+  // Use React Query for data fetching
+  const { data, isLoading, error } = useUsersQuery({
+    page: pagination.page,
+    limit: pagination.limit,
+    search: debouncedSearch || undefined,
+    role: filters.role || undefined,
+    status: filters.status || undefined,
+    department: filters.department || undefined,
+  });
+
+  const users = data?.users || [];
+  const paginationData = data?.pagination || {
+    page: 1,
+    limit: 20,
+    total: 0,
+    totalPages: 0,
+  };
+
+  // Update local pagination state when query data changes
+  useEffect(() => {
+    if (data?.pagination) {
+      setPagination(prev => ({
+        ...prev,
+        ...data.pagination,
+      }));
+    }
+  }, [data?.pagination]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -141,33 +135,13 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     }
 
     try {
-      const response = await fetch(`/api/users/${userId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+      await updateUser.mutateAsync({
+        id: userId,
+        status: newStatus,
       });
       
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = "Failed to update user status";
-        try {
-          const errorData = JSON.parse(errorText);
-          errorMessage = errorData.error || errorMessage;
-        } catch {
-          errorMessage = errorText || errorMessage;
-        }
-        alert(errorMessage);
-        return;
-      }
-
-      const result = await response.json();
-
-      if (result.success) {
-        setOpenDropdownId(null);
-        fetchUsers(); // Refresh list
-      } else {
-        alert(result.error || "Failed to update user status");
-      }
+      setOpenDropdownId(null);
+      // React Query will automatically refetch the users list due to invalidation
     } catch (err) {
       console.error("Error updating user status:", err);
       alert(err instanceof Error ? err.message : "Error updating user status");
@@ -246,10 +220,10 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     return pages;
   };
 
-  if (loading && users.length === 0) {
+  if (isLoading && users.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-gray-500">Loading users...</div>
+        <LoadingSpinner size="lg" text="Loading users..." />
       </div>
     );
   }
@@ -320,7 +294,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       {/* Error Message */}
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
-          {error}
+          {error instanceof Error ? error.message : "Failed to load users"}
         </div>
       )}
 
@@ -473,6 +447,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   <div className="py-1">
                                     {STATUS_OPTIONS.map((status) => {
                                       const isCurrentStatus = user.status === status.value;
+                                      const isUpdating = updateUser.isPending && updateUser.variables?.id === user.id && updateUser.variables?.status === status.value;
                                       return (
                                         <button
                                           key={status.value}
@@ -480,19 +455,24 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                             e.stopPropagation();
                                             handleStatusChange(user.id, status.value);
                                           }}
-                                          disabled={isCurrentStatus}
+                                          disabled={isCurrentStatus || isUpdating}
                                           className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${
                                             isCurrentStatus
                                               ? "bg-blue-50 text-gray-500 cursor-not-allowed"
+                                              : isUpdating
+                                              ? "bg-gray-50 text-gray-500 cursor-wait"
                                               : "text-gray-700 hover:bg-gray-50 hover:text-gray-900"
                                           }`}
                                         >
                                           <div className="flex items-center gap-3">
+                                            {isUpdating && (
+                                              <LoadingSpinner variant="button" size="sm" />
+                                            )}
                                             <span className={`px-2.5 py-1 rounded-md text-xs font-semibold ${status.color}`}>
                                               {status.label}
                                             </span>
                                           </div>
-                                          {isCurrentStatus && (
+                                          {isCurrentStatus && !isUpdating && (
                                             <CheckCircle className="h-4 w-4 text-blue-600" />
                                           )}
                                         </button>

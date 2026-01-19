@@ -263,109 +263,55 @@ export async function canAccessTicket(
  */
 
 /**
- * Check if user can cancel a ride (requires ORDER_CANCEL_ASSIGN access point)
+ * Check if user can cancel an order (requires ORDER_CANCEL access point)
  */
-export async function canCancelRide(
+export async function canCancelOrder(
   supabaseAuthId: string,
-  email: string
+  email: string,
+  dashboardType: "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" = "ORDER_FOOD"
 ): Promise<boolean> {
   return canPerformActionByAuth(
     supabaseAuthId,
     email,
-    "ORDER",
+    dashboardType,
     "CANCEL",
-    "RIDE",
-    undefined,
-    { access_point_group: "ORDER_CANCEL_ASSIGN" }
+    "ORDER",
+    { access_point_group: "ORDER_CANCEL" }
   );
 }
 
 /**
- * Check if user can assign a rider to an order (requires ORDER_CANCEL_ASSIGN access point)
+ * Check if user can assign a rider to an order (requires ORDER_ASSIGN access point)
  */
 export async function canAssignRider(
   supabaseAuthId: string,
-  email: string
+  email: string,
+  dashboardType: "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" = "ORDER_FOOD"
 ): Promise<boolean> {
   return canPerformActionByAuth(
     supabaseAuthId,
     email,
-    "ORDER",
+    dashboardType,
     "ASSIGN",
     "RIDER",
-    undefined,
-    { access_point_group: "ORDER_CANCEL_ASSIGN" }
+    { access_point_group: "ORDER_ASSIGN" }
   );
 }
 
 /**
- * Check if user can add remark to an order (requires ORDER_CANCEL_ASSIGN access point)
- */
-export async function canAddOrderRemark(
-  supabaseAuthId: string,
-  email: string
-): Promise<boolean> {
-  return canPerformActionByAuth(
-    supabaseAuthId,
-    email,
-    "ORDER",
-    "UPDATE",
-    "ORDER",
-    undefined,
-    { access_point_group: "ORDER_CANCEL_ASSIGN" }
-  );
-}
-
-/**
- * Check if user can refund an order (requires ORDER_REFUND_DELIVER access point)
+ * Check if user can refund an order (requires ORDER_REFUND access point)
  */
 export async function canRefundOrder(
   supabaseAuthId: string,
-  email: string
+  email: string,
+  dashboardType: "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" = "ORDER_FOOD"
 ): Promise<boolean> {
   return canPerformActionByAuth(
     supabaseAuthId,
     email,
-    "ORDER",
+    dashboardType,
     "REFUND",
     "ORDER",
-    undefined,
-    { access_point_group: "ORDER_REFUND_DELIVER" }
-  );
-}
-
-/**
- * Check if user can update deliver status (requires ORDER_REFUND_DELIVER access point)
- */
-export async function canUpdateDeliver(
-  supabaseAuthId: string,
-  email: string
-): Promise<boolean> {
-  return canPerformActionByAuth(
-    supabaseAuthId,
-    email,
-    "ORDER",
-    "UPDATE",
-    "ORDER",
-    undefined,
-    { access_point_group: "ORDER_REFUND_DELIVER" }
-  );
-}
-
-/**
- * Check if user can cancel order with refund (requires ORDER_REFUND_DELIVER access point)
- */
-export async function canCancelOrderWithRefund(
-  supabaseAuthId: string,
-  email: string
-): Promise<boolean> {
-  return canPerformActionByAuth(
-    supabaseAuthId,
-    email,
-    "ORDER",
-    "CANCEL",
-    "ORDER",
-    undefined,
-    { access_point_group: "ORDER_REFUND_DELIVER" }
+    { access_point_group: "ORDER_REFUND" }
   );
 }

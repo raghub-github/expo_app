@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useMemo, memo } from "react";
 import dynamic from "next/dynamic";
-import { usePermissions } from "@/hooks/usePermissions";
+import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
+import { 
+  useServicePointsQuery, 
+  useDeleteServicePoint,
+  type ServicePoint 
+} from "@/hooks/queries/useServicePointsQuery";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 // Dynamically import the map component with no SSR - use function to make it truly lazy
 const DynamicMapComponent = dynamic(
@@ -17,76 +23,62 @@ const DynamicMapComponent = dynamic(
   }
 );
 
-interface ServicePoint {
-  id: number;
-  name: string;
-  city: string;
-  latitude: number;
-  longitude: number;
-  address?: string;
-  is_active: boolean;
-}
-
 interface ServicePointsMapProps {
   className?: string;
 }
 
-export function ServicePointsMap({ className = "" }: ServicePointsMapProps) {
-  const [servicePoints, setServicePoints] = useState<ServicePoint[]>([]);
-  const [loading, setLoading] = useState(true);
+function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
+  // #region agent log
+  const componentMountTime = Date.now();
+  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServicePointsMap.tsx:29',message:'ServicePointsMap mounted',data:{componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
+  
   const [selectedPoint, setSelectedPoint] = useState<ServicePoint | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [deletingPointId, setDeletingPointId] = useState<number | null>(null);
   const { isSuperAdmin } = usePermissions();
+  const { data: servicePoints = [], isLoading, error, dataUpdatedAt, isFetching } = useServicePointsQuery();
+  const deleteServicePoint = useDeleteServicePoint();
+  
+  // #region agent log
+  useEffect(() => {
+    const queryCheckTime = Date.now();
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServicePointsMap.tsx:32',message:'ServicePoints query state',data:{isLoading,isFetching,dataUpdatedAt,hasData:!!servicePoints.length,timeSinceMount:queryCheckTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+  }, [isLoading, isFetching, servicePoints.length]);
+  // #endregion
 
   // Support both env variable names
   const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN;
 
-  const fetchServicePoints = useCallback(async () => {
-    try {
-      setLoading(true);
-      const response = await fetch("/api/service-points");
-      const result = await response.json();
+  // ALL HOOKS MUST BE CALLED BEFORE ANY EARLY RETURNS
+  // Memoize service points to prevent unnecessary re-renders
+  const memoizedServicePoints = useMemo(() => servicePoints, [
+    servicePoints.length,
+    servicePoints.map((p: ServicePoint) => `${p.id}-${p.latitude}-${p.longitude}`).join(',')
+  ]);
 
-      if (result.success) {
-        setServicePoints(result.data);
-        setError(null);
-      } else {
-        setError(result.error || "Failed to fetch service points");
-      }
-    } catch (err) {
-      console.error("Error fetching service points:", err);
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
+  // Memoize callbacks
+  const handlePointClick = useCallback((point: ServicePoint) => {
+    setSelectedPoint(point);
   }, []);
 
-  useEffect(() => {
-    fetchServicePoints();
-  }, [fetchServicePoints]);
+  const handleClosePopup = useCallback(() => {
+    setSelectedPoint(null);
+  }, []);
 
   const handleDeletePoint = useCallback(async (pointId: number) => {
+    setDeletingPointId(pointId);
     try {
-      const response = await fetch(`/api/service-points?id=${pointId}`, {
-        method: "DELETE",
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        // Remove the point from local state
-        setServicePoints((prev) => prev.filter((p) => p.id !== pointId));
-        setSelectedPoint(null);
-        // Optionally show success message
-      } else {
-        throw new Error(result.error || "Failed to delete service point");
-      }
+      await deleteServicePoint.mutateAsync(pointId);
+      setSelectedPoint(null);
     } catch (err) {
       console.error("Error deleting service point:", err);
       throw err;
+    } finally {
+      setDeletingPointId(null);
     }
-  }, []);
+  }, [deleteServicePoint]);
 
+  // Early returns AFTER all hooks
   if (!mapboxToken) {
     return (
       <div className={`rounded-lg border border-red-200 bg-red-50 p-8 text-center ${className}`}>
@@ -95,13 +87,10 @@ export function ServicePointsMap({ className = "" }: ServicePointsMapProps) {
     );
   }
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className={`rounded-lg border border-gray-200 bg-white p-4 text-center ${className}`} style={{ height: '100%', maxHeight: '240px' }}>
-        <div className="animate-pulse">
-          <div className="h-full bg-gray-200 rounded-lg"></div>
-          <p className="mt-2 text-sm text-gray-500">Loading service points...</p>
-        </div>
+        <LoadingSpinner size="lg" text="Loading service points..." />
       </div>
     );
   }
@@ -109,9 +98,9 @@ export function ServicePointsMap({ className = "" }: ServicePointsMapProps) {
   if (error) {
     return (
       <div className={`rounded-lg border border-red-200 bg-red-50 p-8 text-center ${className}`}>
-        <p className="text-red-600">Error: {error}</p>
+        <p className="text-red-600">Error: {error instanceof Error ? error.message : "Failed to load service points"}</p>
         <button
-          onClick={fetchServicePoints}
+          onClick={() => window.location.reload()}
           className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
         >
           Retry
@@ -123,15 +112,19 @@ export function ServicePointsMap({ className = "" }: ServicePointsMapProps) {
   return (
     <div className={className}>
       <DynamicMapComponent
-        servicePoints={servicePoints}
-        onPointClick={setSelectedPoint}
+        servicePoints={memoizedServicePoints}
+        onPointClick={handlePointClick}
         selectedPoint={selectedPoint}
-        onClosePopup={() => setSelectedPoint(null)}
+        onClosePopup={handleClosePopup}
         mapboxToken={mapboxToken}
         className="h-full w-full"
         isSuperAdmin={isSuperAdmin}
         onDeletePoint={isSuperAdmin ? handleDeletePoint : undefined}
+        deletingPointId={deletingPointId}
       />
     </div>
   );
 }
+
+// Memoize ServicePointsMap to prevent unnecessary re-renders
+export const ServicePointsMap = memo(ServicePointsMapInner);

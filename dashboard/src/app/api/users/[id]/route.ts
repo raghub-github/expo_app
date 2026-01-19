@@ -348,19 +348,37 @@ export async function PUT(
           .from(dashboardAccessPoints)
           .where(eq(dashboardAccessPoints.systemUserId, userId));
 
-        // Create a map of current points by dashboard and group
+        // Create a map of current points by dashboard, group, and orderType
+        // Include orderType in key for service-specific access points
         const currentPointsMap = new Map(
-          currentPoints.map(p => [`${p.dashboardType}:${p.accessPointGroup}`, p])
+          currentPoints.map(p => [
+            `${p.dashboardType}:${p.accessPointGroup}:${p.orderType || ''}`, 
+            p
+          ])
         );
 
         // Get access point definitions
         const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
 
+        // Helper function to extract orderType from access point group
+        const getOrderType = (accessPoint: any): string | undefined => {
+          if (accessPoint.orderType) return accessPoint.orderType;
+          const group = accessPoint.accessPointGroup;
+          if (group.endsWith('_FOOD')) return 'food';
+          if (group.endsWith('_PARCEL')) return 'parcel';
+          if (group.endsWith('_PERSON_RIDE')) return 'person_ride';
+          if (accessPoint.dashboardType === "ORDER_FOOD") return "food";
+          if (accessPoint.dashboardType === "ORDER_PARCEL") return "parcel";
+          if (accessPoint.dashboardType === "ORDER_PERSON_RIDE") return "person_ride";
+          return undefined;
+        };
+
         // Process new access points
         const newPointsMap = new Map<string, any>();
         for (const accessPoint of accessPointsData) {
-          const key = `${accessPoint.dashboardType}:${accessPoint.accessPointGroup}`;
-          newPointsMap.set(key, accessPoint);
+          const orderType = getOrderType(accessPoint);
+          const key = `${accessPoint.dashboardType}:${accessPoint.accessPointGroup}:${orderType || ''}`;
+          newPointsMap.set(key, { ...accessPoint, orderType });
         }
 
         // Remove access points not in new list
@@ -419,9 +437,11 @@ export async function PUT(
           }
 
           if (existing) {
+            const orderType = getOrderType(accessPoint);
             await db
               .update(dashboardAccessPoints)
               .set({
+                orderType: orderType || undefined,
                 accessPointName,
                 accessPointDescription,
                 allowedActions,
@@ -434,9 +454,11 @@ export async function PUT(
               })
               .where(eq(dashboardAccessPoints.id, existing.id));
           } else {
+            const orderType = getOrderType(accessPoint);
             await db.insert(dashboardAccessPoints).values({
               systemUserId: userId,
               dashboardType: accessPoint.dashboardType,
+              orderType: orderType || undefined,
               accessPointGroup: accessPoint.accessPointGroup,
               accessPointName,
               accessPointDescription,

@@ -78,8 +78,7 @@ export const dutyStatusEnum = pgEnum("duty_status", [
 export const orderTypeEnum = pgEnum("order_type", [
   "food",
   "parcel",
-  "ride",
-  "3pl",
+  "person_ride",
 ]);
 
 export const orderStatusEnum = pgEnum("order_status", [
@@ -265,6 +264,7 @@ export const dashboardAccess = pgTable(
       .notNull()
       .references((): any => systemUsers.id, { onDelete: "cascade" }),
     dashboardType: text("dashboard_type").notNull(),
+    orderType: text("order_type"), // NULL = access to all order types, specific value = access to that type only
     accessLevel: text("access_level").notNull().default("VIEW_ONLY"),
     isActive: boolean("is_active").default(true),
     grantedBy: integer("granted_by")
@@ -309,6 +309,7 @@ export const dashboardAccessPoints = pgTable(
       .notNull()
       .references((): any => systemUsers.id, { onDelete: "cascade" }),
     dashboardType: text("dashboard_type").notNull(),
+    orderType: text("order_type"), // NULL = access to all order types, specific value = access to that type only
     accessPointGroup: text("access_point_group").notNull(),
     accessPointName: text("access_point_name").notNull(),
     accessPointDescription: text("access_point_description"),
@@ -365,6 +366,7 @@ export const actionAuditLog = pgTable(
     agentName: text("agent_name"),
     agentRole: text("agent_role"),
     dashboardType: text("dashboard_type").notNull(),
+    orderType: text("order_type"), // Order type for order-related actions
     actionType: text("action_type").notNull(),
     resourceType: text("resource_type"),
     resourceId: text("resource_id"),
@@ -403,9 +405,11 @@ export const actionAuditLog = pgTable(
 export type DashboardType =
   | "RIDER"
   | "MERCHANT"
-  | "CUSTOMER"
-  | "ORDER"
-  | "TICKET"
+  | "CUSTOMER" // Customer dashboard (all customers with granular access control)
+  | "ORDER_FOOD"
+  | "ORDER_PERSON_RIDE"
+  | "ORDER_PARCEL"
+  | "TICKET" // Ticket dashboard (all tickets with granular access control)
   | "OFFER"
   | "AREA_MANAGER"
   | "PAYMENT"
@@ -416,23 +420,28 @@ export type AccessLevel = "VIEW_ONLY" | "FULL_ACCESS" | "RESTRICTED";
 
 export type AccessPointGroup =
   | "RIDER_VIEW"
-  | "RIDER_ACTIONS"
+  | "RIDER_ACTIONS_FOOD"
+  | "RIDER_ACTIONS_PARCEL"
+  | "RIDER_ACTIONS_PERSON_RIDE"
   | "MERCHANT_VIEW"
   | "MERCHANT_ONBOARDING"
   | "MERCHANT_OPERATIONS"
   | "MERCHANT_STORE_MANAGEMENT"
   | "MERCHANT_WALLET"
   | "CUSTOMER_VIEW"
-  | "CUSTOMER_ACTIONS"
+  | "CUSTOMER_ACTIONS_FOOD"
+  | "CUSTOMER_ACTIONS_PARCEL"
+  | "CUSTOMER_ACTIONS_PERSON_RIDE"
   | "ORDER_VIEW"
-  | "ORDER_CANCEL_ASSIGN"
-  | "ORDER_REFUND_DELIVER"
-  | "TICKET_VIEW"
-  | "TICKET_MERCHANT"
-  | "TICKET_CUSTOMER"
-  | "TICKET_RIDER"
-  | "TICKET_OTHER"
-  | "TICKET_ACTIONS"
+  | "ORDER_ASSIGN"
+  | "ORDER_CANCEL"
+  | "ORDER_REFUND"
+  | "TICKET_VIEW_FOOD"
+  | "TICKET_VIEW_PARCEL"
+  | "TICKET_VIEW_PERSON_RIDE"
+  | "TICKET_ACTIONS_FOOD"
+  | "TICKET_ACTIONS_PARCEL"
+  | "TICKET_ACTIONS_PERSON_RIDE"
   | "OFFER_RIDER"
   | "OFFER_CUSTOMER"
   | "OFFER_MERCHANT"
