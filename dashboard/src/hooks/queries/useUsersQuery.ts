@@ -24,6 +24,7 @@ export interface SystemUser {
   isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
+  suspensionExpiresAt?: string | null;
 }
 
 interface UsersResponse {
@@ -93,7 +94,7 @@ async function fetchUsers(params: UsersQueryParams = {}): Promise<{
  */
 export function useUsersQuery(params: UsersQueryParams = {}) {
   return useQuery({
-    queryKey: queryKeys.users.list(params),
+    queryKey: queryKeys.users.list(params as Record<string, unknown>),
     queryFn: () => fetchUsers(params),
     ...getCacheConfig(CacheTier.MEDIUM), // Users list is medium frequency
   });
@@ -163,6 +164,8 @@ export function useCreateUser() {
 interface UpdateUserInput {
   id: number;
   status?: string;
+  status_reason?: string | null;
+  suspension_expires_at?: string | null;
   full_name?: string;
   first_name?: string;
   last_name?: string;

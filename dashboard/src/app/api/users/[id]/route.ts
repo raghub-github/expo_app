@@ -81,9 +81,29 @@ export async function GET(
       );
     }
 
+    // Fetch reportsTo user details if reportsToId exists
+    let reportsToUser = null;
+    if (user.reportsToId) {
+      reportsToUser = await getSystemUserById(user.reportsToId);
+      if (reportsToUser) {
+        reportsToUser = {
+          id: reportsToUser.id,
+          systemUserId: reportsToUser.systemUserId,
+          fullName: reportsToUser.fullName,
+          primaryRole: reportsToUser.primaryRole,
+        };
+      }
+    }
+
+    // Include reportsTo user in response
+    const userData: any = { ...user };
+    if (reportsToUser) {
+      userData.reportsTo = reportsToUser;
+    }
+
     return NextResponse.json({
       success: true,
-      data: user,
+      data: userData,
     });
   } catch (error) {
     console.error("[GET /api/users/[id]] Error:", error);
@@ -116,21 +136,21 @@ export async function PUT(
       );
     }
 
-    // Get system user for super admin check
-    const systemUser = await getSystemUserByEmail(session.user.email!);
-    if (!systemUser) {
+    // Get user permissions (this includes system user and super admin check in one call)
+    const { getUserPermissions } = await import("@/lib/permissions/engine");
+    const userPerms = await getUserPermissions(session.user.id, session.user.email!);
+    if (!userPerms) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },
         { status: 404 }
       );
     }
+    const systemUser = { id: userPerms.systemUserId };
+    const userIsSuperAdmin = userPerms.isSuperAdmin;
 
-    // Check if user is super admin for role/status updates
-    const { isSuperAdmin } = await import("@/lib/permissions/engine");
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-
-    // Check permission
-    const hasPermission = await checkPermission(
+    // Check permission (use cached userPerms if available, otherwise call checkPermission)
+    // For super admin, they have all permissions
+    const hasPermission = userIsSuperAdmin || await checkPermission(
       session.user.id,
       session.user.email!,
       "USERS",
@@ -169,8 +189,16 @@ export async function PUT(
       accessPoints: accessPointsData,
       subrole,
       subrole_other,
+      suspension_expires_at,
       ...updates 
     } = body;
+    
+    // Handle suspension_expires_at separately
+    if (suspension_expires_at !== undefined) {
+      updates.suspension_expires_at = suspension_expires_at 
+        ? (typeof suspension_expires_at === 'string' ? new Date(suspension_expires_at) : suspension_expires_at)
+        : null;
+    }
     
     // Handle subrole fields separately
     if (subrole !== undefined) {
@@ -216,6 +244,22 @@ export async function PUT(
           { status: 403 }
         );
       }
+    }
+
+    // Prevent any user (including other super admins) from changing a SUPER_ADMIN user's
+    // role or status via the dashboard UI. These accounts are locked for safety.
+    if (
+      (updates.primary_role !== undefined || updates.status !== undefined) &&
+      oldUser.primaryRole === "SUPER_ADMIN" &&
+      userId !== systemUser.id
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Super admin accounts cannot be modified from the dashboard. Contact the platform owner for changes.",
+        },
+        { status: 403 }
+      );
     }
 
     // If updating role or status, require super admin

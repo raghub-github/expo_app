@@ -220,6 +220,7 @@ export const systemUsers = pgTable(
     managerName: text("manager_name"),
     status: systemUserStatusEnum("status").notNull().default("PENDING_ACTIVATION"),
     statusReason: text("status_reason"),
+    suspensionExpiresAt: timestamp("suspension_expires_at", { withTimezone: true }),
     isEmailVerified: boolean("is_email_verified").default(false),
     isMobileVerified: boolean("is_mobile_verified").default(false),
     twoFactorEnabled: boolean("two_factor_enabled").default(false),

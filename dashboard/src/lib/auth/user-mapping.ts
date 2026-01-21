@@ -42,25 +42,32 @@ export async function getSystemUserByAuthId(
  * Find system user by email
  * This is the primary mapping method
  */
+// Request-level cache to avoid duplicate queries within the same request
+const requestCache = new Map<string, { data: SystemUser | null; timestamp: number }>();
+const CACHE_TTL = 1000; // 1 second cache per request
+
 export async function getSystemUserByEmail(
   email: string | null | undefined
 ): Promise<SystemUser | null> {
   try {
     // Validate email parameter
     if (!email || typeof email !== 'string' || email.trim() === '') {
-      console.log("[getSystemUserByEmail] ===== INVALID ===== Email is missing or empty:", email);
       return null;
     }
 
-    console.log("[getSystemUserByEmail] ===== START ===== Email:", email);
-    const db = getDb();
-    console.log("[getSystemUserByEmail] Database connection obtained");
-
     const normalizedEmail = email.toLowerCase().trim();
-    console.log("[getSystemUserByEmail] Normalized email:", normalizedEmail);
+    
+    // Check request-level cache (only for same request cycle)
+    const cacheKey = `email:${normalizedEmail}`;
+    const cached = requestCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < CACHE_TTL) {
+      return cached.data;
+    }
+
+    const db = getDb();
     
     // Try exact match first (emails in DB should be lowercase)
-    console.log("[getSystemUserByEmail] Attempting exact match query...");
     let result = await db
       .select({
         id: systemUsers.id,
@@ -75,11 +82,8 @@ export async function getSystemUserByEmail(
       .where(eq(systemUsers.email, normalizedEmail))
       .limit(1);
     
-    console.log("[getSystemUserByEmail] Exact match result count:", result.length);
-    
     // If no result, try case-insensitive match
     if (result.length === 0) {
-      console.log("[getSystemUserByEmail] Exact match failed, trying case-insensitive SQL query...");
       result = await db
         .select({
           id: systemUsers.id,
@@ -93,18 +97,12 @@ export async function getSystemUserByEmail(
         .from(systemUsers)
         .where(sql`LOWER(TRIM(${systemUsers.email})) = LOWER(TRIM(${normalizedEmail}))`)
         .limit(1);
-      console.log("[getSystemUserByEmail] Case-insensitive result count:", result.length);
     }
 
+    let userData: SystemUser | null = null;
     if (result.length > 0) {
       const user = result[0];
-      console.log("[getSystemUserByEmail] ===== SUCCESS ===== Found user:", { 
-        id: user.id, 
-        email: user.email, 
-        role: user.primary_role, 
-        status: user.status 
-      });
-      return {
+      userData = {
         id: user.id,
         system_user_id: user.system_user_id,
         email: user.email,
@@ -113,17 +111,24 @@ export async function getSystemUserByEmail(
         primary_role: user.primary_role,
         status: user.status,
       };
-    } else {
-      console.log("[getSystemUserByEmail] ===== NOT FOUND ===== No user found for email:", normalizedEmail);
-      return null;
     }
+
+    // Cache result for this request cycle
+    requestCache.set(cacheKey, { data: userData, timestamp: now });
+    
+    // Clean up old cache entries periodically
+    if (requestCache.size > 100) {
+      for (const [key, value] of requestCache.entries()) {
+        if ((now - value.timestamp) > CACHE_TTL) {
+          requestCache.delete(key);
+        }
+      }
+    }
+
+    return userData;
   } catch (error) {
-    console.error("[getSystemUserByEmail] ===== ERROR ===== Error fetching system user by email:", error);
+    // Only log actual errors, not normal "not found" cases
     if (error instanceof Error) {
-      console.error("[getSystemUserByEmail] Error message:", error.message);
-      console.error("[getSystemUserByEmail] Error stack:", error.stack);
-      
-      // Check if it's a database connection error
       const isConnectionError = 
         error.message.includes('CONNECT_TIMEOUT') ||
         error.message.includes('ECONNREFUSED') ||
@@ -132,11 +137,9 @@ export async function getSystemUserByEmail(
         error.message.includes('Failed query');
       
       if (isConnectionError) {
-        // Re-throw connection errors so they can be handled differently
         throw new Error(`Database connection error: ${error.message}`);
       }
     }
-    // For other errors, return null (user not found)
     return null;
   }
 }

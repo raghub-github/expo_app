@@ -112,6 +112,27 @@ async function getSystemUserIdFromAuthUser(
   return systemUser?.id || null;
 }
 
+// Helper to get system user with caching (used when we need the full user object)
+async function getSystemUserWithCache(
+  supabaseAuthId: string,
+  email: string | null | undefined
+): Promise<{ id: number; primary_role: string } | null> {
+  // Try by auth ID first
+  let systemUser = await getSystemUserByAuthId(supabaseAuthId);
+  
+  // Fallback to email
+  if (!systemUser && email) {
+    systemUser = await getSystemUserByEmail(email);
+  }
+  
+  if (!systemUser) return null;
+  
+  return {
+    id: systemUser.id,
+    primary_role: systemUser.primary_role,
+  };
+}
+
 /**
  * Get all roles for a system user
  */
@@ -190,47 +211,51 @@ async function getUserPermissionsFromDb(systemUserId: number): Promise<Permissio
  * Get complete user permissions including roles, permissions, and domain access
  * This is the main function called by middleware and API routes
  */
+// Request-level cache for permissions
+const permissionsCache = new Map<string, { data: UserPermissions | null; timestamp: number }>();
+const PERMISSIONS_CACHE_TTL = 2000; // 2 seconds cache per request
+
 export async function getUserPermissions(
   supabaseAuthId: string,
   email?: string | null
 ): Promise<UserPermissions | null> {
   try {
-    console.log("[getUserPermissions] Checking permissions for:", { supabaseAuthId, email });
-    
     // Validate that we have at least one identifier
     if (!email && !supabaseAuthId) {
-      console.log("[getUserPermissions] No email or auth ID provided");
       return null;
     }
     
-    // 1. Get system user ID
-    const systemUserId = await getSystemUserIdFromAuthUser(supabaseAuthId, email || null);
-    console.log("[getUserPermissions] System user ID:", systemUserId);
+    // Check request-level cache
+    const cacheKey = `perms:${supabaseAuthId}:${email || ''}`;
+    const cached = permissionsCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < PERMISSIONS_CACHE_TTL) {
+      return cached.data;
+    }
     
-    if (!systemUserId) {
+    // 1. Get system user (this already calls getSystemUserByEmail)
+    const systemUser = await getSystemUserByEmail(email || null);
+    if (!systemUser) {
       // User doesn't exist in system_users - might be customer/rider/merchant
-      // They should use their respective apps, not the dashboard
-      console.log("[getUserPermissions] No system user found for email:", email || "N/A");
+      permissionsCache.set(cacheKey, { data: null, timestamp: now });
       return null;
     }
+    
+    const systemUserId = systemUser.id;
     
     // 2. Check if account is active
     const isActive = await isUserAccountActive(systemUserId);
-    console.log("[getUserPermissions] Account active:", isActive);
     if (!isActive) {
-      console.log("[getUserPermissions] Account is not active");
+      permissionsCache.set(cacheKey, { data: null, timestamp: now });
       return null; // Account is suspended, deleted, or locked
     }
     
     // 3. Get roles
     const roles = await getUserRolesFromDb(systemUserId);
     
-    // 4. Check if super admin (check primary_role from system_users)
-    // For now, check primary_role directly since roles table might not be set up
-    const systemUser = await getSystemUserByEmail(email);
-    const isSuperAdmin = systemUser?.primary_role === "SUPER_ADMIN" || 
+    // 4. Check if super admin (use systemUser we already fetched, no need to call getSystemUserByEmail again)
+    const isSuperAdmin = systemUser.primary_role === "SUPER_ADMIN" || 
       roles.some(r => r.roleType === "SUPER_ADMIN" || r.roleId === "SUPER_ADMIN");
-    console.log("[getUserPermissions] Is super admin:", isSuperAdmin, "Primary role:", systemUser?.primary_role);
     
     // 5. Get permissions
     const permissions = await getUserPermissionsFromDb(systemUserId);
@@ -238,18 +263,32 @@ export async function getUserPermissions(
     // 6. Get domain access (from area_assignments, service_scope_assignments, etc.)
     const domainAccess: string[] = []; // Will be implemented
     
-    const result = {
+    const result: UserPermissions = {
       systemUserId,
       roles,
       permissions,
       domainAccess,
       isSuperAdmin,
     };
-    console.log("[getUserPermissions] Returning permissions:", { systemUserId, isSuperAdmin, rolesCount: roles.length });
+    
+    // Cache result for this request cycle
+    permissionsCache.set(cacheKey, { data: result, timestamp: now });
+    
+    // Clean up old cache entries periodically
+    if (permissionsCache.size > 100) {
+      for (const [key, value] of permissionsCache.entries()) {
+        if ((now - value.timestamp) > PERMISSIONS_CACHE_TTL) {
+          permissionsCache.delete(key);
+        }
+      }
+    }
     
     return result;
   } catch (error) {
-    console.error("[getUserPermissions] Error getting user permissions:", error);
+    // Only log actual errors in development
+    if (process.env.NODE_ENV === 'development') {
+      console.error("[getUserPermissions] Error:", error);
+    }
     return null;
   }
 }

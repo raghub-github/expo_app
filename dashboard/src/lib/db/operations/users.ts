@@ -45,6 +45,7 @@ export interface UpdateUserData {
   manager_name?: string;
   status?: string;
   status_reason?: string;
+  suspension_expires_at?: string | Date | null;
   is_email_verified?: boolean;
   is_mobile_verified?: boolean;
   two_factor_enabled?: boolean;
@@ -177,6 +178,11 @@ export async function updateSystemUser(id: number, updates: UpdateUserData) {
   if (updates.manager_name !== undefined) updateData.managerName = updates.manager_name;
   if (updates.status !== undefined) updateData.status = updates.status as any;
   if (updates.status_reason !== undefined) updateData.statusReason = updates.status_reason;
+  if (updates.suspension_expires_at !== undefined) {
+    updateData.suspensionExpiresAt = updates.suspension_expires_at 
+      ? (typeof updates.suspension_expires_at === 'string' ? new Date(updates.suspension_expires_at) : updates.suspension_expires_at)
+      : null;
+  }
   if (updates.is_email_verified !== undefined) updateData.isEmailVerified = updates.is_email_verified;
   if (updates.is_mobile_verified !== undefined) updateData.isMobileVerified = updates.is_mobile_verified;
   if (updates.two_factor_enabled !== undefined) updateData.twoFactorEnabled = updates.two_factor_enabled;
@@ -438,4 +444,32 @@ export async function resetFailedLoginAttempts(id: number) {
       updatedAt: new Date(),
     })
     .where(eq(systemUsers.id, id));
+}
+
+/**
+ * Get unique roles from system users
+ * Returns a sorted array of unique primary roles that exist in the database
+ */
+export async function getUniqueRoles(): Promise<string[]> {
+  const db = getDb();
+  
+  try {
+    // Use SQL to get distinct roles
+    const result = await db.execute(
+      sql`SELECT DISTINCT primary_role as role FROM system_users WHERE deleted_at IS NULL ORDER BY role`
+    );
+    
+    // Extract roles
+    const roles = result.rows.map((row: any) => row.role as string).filter(Boolean);
+    
+    // Sort roles alphabetically, but put SUPER_ADMIN first if it exists
+    return roles.sort((a, b) => {
+      if (a === "SUPER_ADMIN") return -1;
+      if (b === "SUPER_ADMIN") return 1;
+      return a.localeCompare(b);
+    });
+  } catch (error) {
+    console.error("[getUniqueRoles] Error:", error);
+    return [];
+  }
 }

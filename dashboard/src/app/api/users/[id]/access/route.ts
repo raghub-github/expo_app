@@ -122,9 +122,10 @@ export async function PUT(
       );
     }
 
-    // Check if user is super admin
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    if (!userIsSuperAdmin) {
+    // Get user permissions (includes super admin check and system user)
+    const { getUserPermissions } = await import("@/lib/permissions/engine");
+    const userPerms = await getUserPermissions(session.user.id, session.user.email!);
+    if (!userPerms || !userPerms.isSuperAdmin) {
       return NextResponse.json(
         { success: false, error: "Super admin access required" },
         { status: 403 }
@@ -153,6 +154,7 @@ export async function PUT(
     const dashboardAccessData = Array.isArray(body.dashboardAccess) ? body.dashboardAccess : [];
     const accessPointsData = Array.isArray(body.accessPoints) ? body.accessPoints : [];
 
+    // Get actor details (use cached getSystemUserByEmail which is already called in getUserPermissions)
     const actor = await getSystemUserByEmail(session.user.email!);
     if (!actor) {
       return NextResponse.json(

@@ -10,7 +10,7 @@ import { queryKeys } from "@/lib/queryKeys";
 
 export default function DashboardHome() {
   const { data: userPerms, isLoading, error } = usePermissionsQuery();
-  const { isSuperAdmin } = usePermissionsQuery();
+  const isSuperAdmin = userPerms?.isSuperAdmin ?? false;
   const queryClient = useQueryClient();
 
   const handleServicePointCreated = () => {

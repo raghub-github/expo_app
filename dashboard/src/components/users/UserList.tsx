@@ -1,11 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight, Clock } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { useUsersQuery, useUpdateUser } from "@/hooks/queries/useUsersQuery";
+import { StatusChangeModal } from "./StatusChangeModal";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface SystemUser {
   id: number;
@@ -17,6 +20,7 @@ interface SystemUser {
   status: string;
   department?: string;
   createdAt: string;
+  suspensionExpiresAt?: string | null;
 }
 
 interface UserListProps {
@@ -49,10 +53,100 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
   });
   const [openDropdownId, setOpenDropdownId] = useState<number | null>(null);
   const dropdownRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const [statusChangeModal, setStatusChangeModal] = useState<{
+    isOpen: boolean;
+    userId: number | null;
+    currentStatus: string;
+    newStatus: string;
+    userName: string;
+  }>({
+    isOpen: false,
+    userId: null,
+    currentStatus: "",
+    newStatus: "",
+    userName: "",
+  });
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(true);
   
   // Use React Query mutation for updates
   const updateUser = useUpdateUser();
+  const queryClient = useQueryClient();
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch unique roles from API
+  useEffect(() => {
+    const fetchRoles = async () => {
+      try {
+        setRolesLoading(true);
+        const response = await fetch("/api/users/roles");
+        const result = await response.json();
+        
+        if (result.success && Array.isArray(result.data)) {
+          setAvailableRoles(result.data);
+        }
+      } catch (error) {
+        console.error("Error fetching roles:", error);
+      } finally {
+        setRolesLoading(false);
+      }
+    };
+
+    fetchRoles();
+  }, []);
+
+  // Format role name for display (e.g., "SUPER_ADMIN" -> "Super Admin")
+  const formatRoleName = (role: string): string => {
+    return role
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(" ");
+  };
+
+  // Update current time and check for expired suspensions
+  useEffect(() => {
+    const checkAndReactivate = async () => {
+      const now = new Date();
+      // Check if any users have expired suspensions
+      const hasExpiredSuspensions = users.some(
+        (user) =>
+          user.status === "SUSPENDED" &&
+          user.suspensionExpiresAt &&
+          new Date(user.suspensionExpiresAt) <= now
+      );
+
+      if (hasExpiredSuspensions) {
+        try {
+          // Call auto-reactivate endpoint
+          const response = await fetch("/api/users/auto-reactivate");
+          const result = await response.json();
+
+          if (result.success && result.reactivated > 0) {
+            // Refetch users list to update UI immediately
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.users.lists(),
+            });
+          }
+        } catch (error) {
+          console.error("Error auto-reactivating users:", error);
+        }
+      }
+    };
+
+    // Update time every 10 seconds for responsive countdown
+    // Check for expired suspensions more frequently when close to expiry
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+      checkAndReactivate();
+    }, 10000); // Check every 10 seconds
+
+    // Also check immediately on mount
+    checkAndReactivate();
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient]); // Only depend on queryClient, check users inside the function
 
   // Debounced search
   useEffect(() => {
@@ -119,7 +213,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     }
   }, [openDropdownId]);
 
-  const handleStatusChange = async (userId: number, newStatus: string) => {
+  const handleStatusChangeClick = (userId: number, newStatus: string, currentStatus: string, userName: string) => {
     // Prevent super admin from changing their own status
     if (systemUserId && userId === systemUserId) {
       alert("You cannot change your own status. Contact another super admin if needed.");
@@ -127,20 +221,39 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       return;
     }
 
-    const statusOption = STATUS_OPTIONS.find(s => s.value === newStatus);
-    const statusLabel = statusOption?.label || newStatus;
-
-    if (!confirm(`Are you sure you want to change this user's status to "${statusLabel}"?`)) {
+    // If status isn't actually changing, do nothing
+    if (newStatus === currentStatus) {
+      setOpenDropdownId(null);
       return;
     }
 
+    // Open the modal
+    setStatusChangeModal({
+      isOpen: true,
+      userId,
+      currentStatus,
+      newStatus,
+      userName,
+    });
+    setOpenDropdownId(null);
+  };
+
+  const handleStatusChangeConfirm = async (data: {
+    reason: string;
+    isTemporary?: boolean;
+    expiresAt?: Date;
+  }) => {
+    if (!statusChangeModal.userId) return;
+
     try {
       await updateUser.mutateAsync({
-        id: userId,
-        status: newStatus,
+        id: statusChangeModal.userId,
+        status: statusChangeModal.newStatus,
+        status_reason: data.reason || null,
+        suspension_expires_at: data.isTemporary && data.expiresAt ? data.expiresAt.toISOString() : null,
       });
       
-      setOpenDropdownId(null);
+      setStatusChangeModal({ isOpen: false, userId: null, currentStatus: "", newStatus: "", userName: "" });
       // React Query will automatically refetch the users list due to invalidation
     } catch (err) {
       console.error("Error updating user status:", err);
@@ -152,7 +265,45 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     setOpenDropdownId(prevId => prevId === userId ? null : userId);
   }, []);
 
-  const getStatusBadge = (status: string) => {
+  const formatTimeRemaining = (expiresAt: string | null | undefined): string | null => {
+    if (!expiresAt) return null;
+    
+    const expiry = new Date(expiresAt);
+    const diff = expiry.getTime() - currentTime.getTime();
+    
+    if (diff <= 0) {
+      // Expired - trigger immediate reactivation check
+      setTimeout(async () => {
+        try {
+          await fetch("/api/users/auto-reactivate");
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.users.lists(),
+          });
+        } catch (error) {
+          console.error("Error auto-reactivating expired user:", error);
+        }
+      }, 100);
+      return "0m"; // Show 0m while reactivating
+    }
+    
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+    
+    // Show seconds when less than 1 minute remaining for more accurate countdown
+    if (days > 0) {
+      return `${days}d ${hours}h`;
+    } else if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+      return `${minutes}m`;
+    } else {
+      return `${seconds}s`;
+    }
+  };
+
+  const getStatusBadge = (status: string, suspensionExpiresAt?: string | null) => {
     const statusColors: Record<string, { bg: string; text: string; label: string }> = {
       ACTIVE: { bg: "bg-green-100", text: "text-green-800", label: "Active" },
       SUSPENDED: { bg: "bg-yellow-100", text: "text-yellow-800", label: "Suspend" },
@@ -162,13 +313,22 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     };
 
     const statusConfig = statusColors[status] || statusColors.PENDING_ACTIVATION;
+    const timeRemaining = status === "SUSPENDED" ? formatTimeRemaining(suspensionExpiresAt) : null;
 
     return (
-      <span
-        className={`px-2 sm:px-3 py-0.5 sm:py-1 text-xs font-semibold rounded-full ${statusConfig.bg} ${statusConfig.text}`}
-      >
-        {statusConfig.label}
-      </span>
+      <div className="flex items-center gap-2">
+        <span
+          className={`px-2 sm:px-3 py-0.5 sm:py-1 text-xs font-semibold rounded-full ${statusConfig.bg} ${statusConfig.text}`}
+        >
+          {statusConfig.label}
+        </span>
+        {timeRemaining && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 text-xs font-medium rounded-md border border-blue-200 whitespace-nowrap">
+            <Clock className="h-3 w-3" />
+            {timeRemaining}
+          </span>
+        )}
+      </div>
     );
   };
 
@@ -245,49 +405,62 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       </div>
 
       {/* Search and Filters */}
-      <div className="flex flex-col gap-3 sm:gap-4">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search users..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder-gray-400 shadow-sm text-sm sm:text-base"
-          />
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <select
-            value={filters.status}
-            onChange={(e) => {
-              setFilters({ ...filters, status: e.target.value });
-              setPagination(prev => ({ ...prev, page: 1 }));
-            }}
-            className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white shadow-sm text-sm sm:text-base"
-          >
-            <option value="">All Status</option>
-            <option value="ACTIVE">Active</option>
-            <option value="SUSPENDED">Suspended</option>
-            <option value="DISABLED">Disabled</option>
-            <option value="PENDING_ACTIVATION">Pending</option>
-            <option value="LOCKED">Locked</option>
-          </select>
-          <select
-            value={filters.role}
-            onChange={(e) => {
-              setFilters({ ...filters, role: e.target.value });
-              setPagination(prev => ({ ...prev, page: 1 }));
-            }}
-            className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white shadow-sm text-sm sm:text-base"
-          >
-            <option value="">All Roles</option>
-            <option value="SUPER_ADMIN">Super Admin</option>
-            <option value="ADMIN">Admin</option>
-            <option value="AGENT">Agent</option>
-            <option value="SUPPORT_L1">Support L1</option>
-            <option value="SUPPORT_L2">Support L2</option>
-            <option value="SUPPORT_L3">Support L3</option>
-          </select>
+      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+        <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center">
+          {/* Search Input */}
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search users..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder-gray-400 bg-white transition-all text-sm sm:text-base"
+            />
+          </div>
+
+          {/* Status Filter */}
+          <div className="relative flex-shrink-0 lg:w-48">
+            <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none z-10" />
+            <select
+              value={filters.status}
+              onChange={(e) => {
+                setFilters({ ...filters, status: e.target.value });
+                setPagination(prev => ({ ...prev, page: 1 }));
+              }}
+              className="w-full pl-10 pr-8 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white appearance-none cursor-pointer transition-all text-sm sm:text-base hover:border-gray-400"
+            >
+              <option value="">All Status</option>
+              <option value="ACTIVE">Active</option>
+              <option value="SUSPENDED">Suspended</option>
+              <option value="DISABLED">Disabled</option>
+              <option value="PENDING_ACTIVATION">Pending</option>
+              <option value="LOCKED">Locked</option>
+            </select>
+            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+          </div>
+
+          {/* Role Filter */}
+          <div className="relative flex-shrink-0 lg:w-48">
+            <User className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none z-10" />
+            <select
+              value={filters.role}
+              onChange={(e) => {
+                setFilters({ ...filters, role: e.target.value });
+                setPagination(prev => ({ ...prev, page: 1 }));
+              }}
+              disabled={rolesLoading}
+              className="w-full pl-10 pr-8 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white appearance-none cursor-pointer transition-all text-sm sm:text-base hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <option value="">All Roles</option>
+              {availableRoles.map((role) => (
+                <option key={role} value={role}>
+                  {formatRoleName(role)}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+          </div>
         </div>
       </div>
 
@@ -338,10 +511,11 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                   </td>
                 </tr>
               ) : (
-                users.map((user) => {
-                  const isEditingSelf = systemUserId && user.id === systemUserId;
-                  const canEdit = isSuperAdmin && !isEditingSelf;
-                  const canChangeStatus = isSuperAdmin && !isEditingSelf;
+              users.map((user) => {
+                const isEditingSelf = systemUserId && user.id === systemUserId;
+                const isSuperAdminUser = user.primaryRole === "SUPER_ADMIN";
+                const canEdit = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
+                const canChangeStatus = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
                   const isDropdownOpen = openDropdownId === user.id;
 
                   return (
@@ -367,7 +541,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                         </span>
                       </td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
-                        {getStatusBadge(user.status)}
+                        {getStatusBadge(user.status, user.suspensionExpiresAt)}
                       </td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-500 hidden md:table-cell">
                         {user.department || "-"}
@@ -385,6 +559,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   ? "Loading..." 
                                   : isEditingSelf 
                                   ? "Cannot edit your own profile" 
+                                  : isSuperAdminUser
+                                  ? "Super admin accounts cannot be edited from the dashboard"
                                   : !isSuperAdmin 
                                   ? "Super admin only" 
                                   : "Edit User"
@@ -394,6 +570,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   e.preventDefault();
                                   if (isEditingSelf && !permissionsLoading) {
                                     alert("You cannot edit your own profile. Contact another super admin if needed.");
+                                  } else if (isSuperAdminUser && !permissionsLoading) {
+                                    alert("Super admin accounts cannot be edited directly from the dashboard. Contact the platform owner or backend team for changes.");
                                   }
                                 }
                               }}
@@ -412,6 +590,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                     toggleStatusDropdown(user.id);
                                   } else if (isEditingSelf) {
                                     alert("You cannot change your own status. Contact another super admin if needed.");
+                                  } else if (isSuperAdminUser && !permissionsLoading) {
+                                    alert("Super admin account status cannot be changed directly from the dashboard. Contact the platform owner or backend team for changes.");
                                   }
                                 }}
                                 disabled={permissionsLoading || !canChangeStatus}
@@ -425,6 +605,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                     ? "Loading permissions..." 
                                     : isEditingSelf 
                                     ? "Cannot change your own status" 
+                                    : isSuperAdminUser
+                                    ? "Super admin account status is locked and cannot be changed here"
                                     : !isSuperAdmin 
                                     ? "Super admin only" 
                                     : "Change Status"
@@ -453,7 +635,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                           key={status.value}
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            handleStatusChange(user.id, status.value);
+                                            handleStatusChangeClick(user.id, status.value, user.status, user.fullName);
                                           }}
                                           disabled={isCurrentStatus || isUpdating}
                                           className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${
@@ -548,6 +730,17 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
           </div>
         </div>
       )}
+
+      {/* Status Change Modal */}
+      <StatusChangeModal
+        isOpen={statusChangeModal.isOpen}
+        onClose={() => setStatusChangeModal({ isOpen: false, userId: null, currentStatus: "", newStatus: "", userName: "" })}
+        onConfirm={handleStatusChangeConfirm}
+        currentStatus={statusChangeModal.currentStatus}
+        newStatus={statusChangeModal.newStatus}
+        userName={statusChangeModal.userName}
+        isLoading={updateUser.isPending}
+      />
     </div>
   );
 }

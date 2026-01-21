@@ -74,9 +74,8 @@ export async function POST(request: NextRequest) {
       errorMessage: body.errorMessage,
     });
 
-    const systemUser =
-      (await getSystemUserByAuthId(session.user.id)) ||
-      (await getSystemUserByEmail(session.user.email));
+    // Use getSystemUserByEmail with caching (getSystemUserByAuthId returns null currently)
+    const systemUser = await getSystemUserByEmail(session.user.email);
 
     if (systemUser) {
       await logActivity({

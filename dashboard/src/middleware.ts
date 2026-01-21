@@ -12,7 +12,10 @@ import {
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  console.log("[middleware] ===== START ===== Path:", pathname);
+  // Only log in development to reduce noise
+  if (process.env.NODE_ENV === 'development' && !pathname.startsWith('/_next') && !pathname.startsWith('/api/audit')) {
+    console.log("[middleware] Path:", pathname);
+  }
   
   const response = NextResponse.next();
 
@@ -127,8 +130,6 @@ export async function middleware(request: NextRequest) {
       };
       updateActivity(cookieManager);
 
-      console.log("[middleware] Session valid, time remaining:", validity.timeRemaining, "ms");
-
       const shouldTrack =
         pathname !== "/api/audit/track" &&
         !pathname.startsWith("/api/audit/track") &&
@@ -200,7 +201,6 @@ export async function middleware(request: NextRequest) {
       }
     }
 
-    console.log("[middleware] ===== END ===== Returning response for:", pathname);
     return response;
   } catch (error) {
     console.error("[middleware] FATAL ERROR:", error);
