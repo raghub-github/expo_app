@@ -1,14 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { usePathname } from "next/navigation";
 import { LogOut, User, Bell } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
 import Link from "next/link";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
+import { getCurrentPageName } from "@/lib/navigation/dashboard-routes";
+import { DashboardSearch } from "./DashboardSearch";
 
 export function Header() {
+  const pathname = usePathname();
+  const pageName = useMemo(() => getCurrentPageName(pathname), [pathname]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
@@ -69,49 +74,98 @@ export function Header() {
         }
       }
 
-      if (urlToTry) {
-        // Verify the image exists by trying to load it
-        const img = new Image();
-        img.crossOrigin = "anonymous"; // Allow CORS for external images
-        img.onload = () => {
-          if (process.env.NODE_ENV === "development") {
-            console.log("[Header] Avatar loaded successfully:", urlToTry);
-          }
-          setAvatarUrl(urlToTry);
-          setAvatarError(false);
-        };
-        img.onerror = () => {
-          if (process.env.NODE_ENV === "development") {
-            console.log("[Header] Avatar failed to load, trying Gravatar fallback");
-          }
-          // If first source fails, try Gravatar as fallback
-          if (possibleAvatarSources.length > 0) {
-            const gravatarUrl = getUserAvatarUrl(userEmail, userMetadata, 40);
-            if (gravatarUrl && gravatarUrl !== urlToTry) {
-              const gravatarImg = new Image();
-              gravatarImg.crossOrigin = "anonymous";
-              gravatarImg.onload = () => {
-                setAvatarUrl(gravatarUrl);
-                setAvatarError(false);
-              };
-              gravatarImg.onerror = () => {
-                setAvatarError(true);
-                setAvatarUrl(null);
-              };
-              gravatarImg.src = gravatarUrl;
-            } else {
+      // Helper function to try Gravatar fallback
+      const tryGravatarFallback = (email: string, metadata: any, failedUrl: string | null) => {
+        // Ensure we're in the browser before using Image constructor
+        if (typeof window === "undefined" || typeof Image === "undefined") {
+          setAvatarError(true);
+          setAvatarUrl(null);
+          return;
+        }
+
+        const gravatarUrl = getUserAvatarUrl(email, metadata, 40);
+        if (gravatarUrl && gravatarUrl !== failedUrl) {
+          try {
+            const gravatarImg = new window.Image();
+            gravatarImg.crossOrigin = "anonymous";
+            
+            const gravatarTimeout = setTimeout(() => {
+              gravatarImg.onload = null;
+              gravatarImg.onerror = null;
               setAvatarError(true);
               setAvatarUrl(null);
-            }
-          } else {
+            }, 3000);
+            
+            gravatarImg.onload = () => {
+              clearTimeout(gravatarTimeout);
+              setAvatarUrl(gravatarUrl);
+              setAvatarError(false);
+            };
+            
+            gravatarImg.onerror = () => {
+              clearTimeout(gravatarTimeout);
+              setAvatarError(true);
+              setAvatarUrl(null);
+            };
+            
+            gravatarImg.src = gravatarUrl;
+          } catch (error) {
+            console.error("[Header] Error creating Image for Gravatar:", error);
             setAvatarError(true);
             setAvatarUrl(null);
           }
-        };
-        img.src = urlToTry;
+        } else {
+          setAvatarError(true);
+          setAvatarUrl(null);
+        }
+      };
+
+      if (urlToTry) {
+        // Ensure we're in the browser before using Image constructor
+        if (typeof window === "undefined" || typeof Image === "undefined") {
+          setAvatarError(true);
+          setAvatarUrl(null);
+          return;
+        }
+
+        try {
+          // Verify the image exists by trying to load it with timeout
+          const img = new window.Image();
+          img.crossOrigin = "anonymous"; // Allow CORS for external images
+          
+          // Set a timeout to prevent hanging on slow/failed requests (like 429 errors)
+          const timeoutId = setTimeout(() => {
+            img.onload = null;
+            img.onerror = null;
+            // Timeout reached (likely 429 or network issue), try Gravatar fallback silently
+            tryGravatarFallback(userEmail, userMetadata, urlToTry);
+          }, 3000); // 3 second timeout for faster fallback
+          
+          img.onload = () => {
+            clearTimeout(timeoutId);
+            if (process.env.NODE_ENV === "development") {
+              console.log("[Header] Avatar loaded successfully:", urlToTry);
+            }
+            setAvatarUrl(urlToTry);
+            setAvatarError(false);
+          };
+          
+          img.onerror = () => {
+            clearTimeout(timeoutId);
+            // Image failed to load (could be 429, 404, CORS, etc.)
+            // Silently try Gravatar fallback without logging to reduce console noise
+            tryGravatarFallback(userEmail, userMetadata, urlToTry);
+          };
+          
+          img.src = urlToTry;
+        } catch (error) {
+          console.error("[Header] Error creating Image:", error);
+          // Fallback to Gravatar on error
+          tryGravatarFallback(userEmail, userMetadata, urlToTry);
+        }
       } else {
-        setAvatarUrl(null);
-        setAvatarError(true);
+        // No URL found, try Gravatar directly
+        tryGravatarFallback(userEmail, userMetadata, null);
       }
     }
   }, [userEmail, userMetadata, sessionData]);
@@ -122,17 +176,22 @@ export function Header() {
   };
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-white px-4 sm:px-6">
-      {/* Mobile: Logo + Dashboard text, Desktop: Just Dashboard text */}
-      <div className="flex items-center space-x-3 sm:space-x-4">
+    <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-30 relative gap-2 sm:gap-4">
+      {/* Mobile: Logo + Page name, Desktop: Just Page name */}
+      <div className="flex items-center space-x-3 sm:space-x-4 min-w-0 flex-shrink">
         {/* Mobile logo - icon only */}
-        <Link href="/dashboard" className="sm:hidden">
+        <Link href="/dashboard" className="sm:hidden flex-shrink-0">
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
-        <h2 className="text-base font-semibold text-gray-900 sm:text-lg">Dashboard</h2>
+        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
       </div>
 
-      <div className="flex items-center space-x-4">
+      {/* Dashboard Search - Center (Desktop only for now) */}
+      <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+        <DashboardSearch compact={true} />
+      </div>
+
+      <div className="flex items-center space-x-2 sm:space-x-4 flex-shrink-0">
         <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100">
           <Bell className="h-5 w-5" />
         </button>
@@ -143,7 +202,12 @@ export function Header() {
             className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 min-w-0"
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
-              {userName ? (
+              {isLoading ? (
+                <>
+                  <div className="h-4 w-24 bg-gray-200 rounded animate-pulse mb-1" />
+                  <div className="h-3 w-32 bg-gray-200 rounded animate-pulse" />
+                </>
+              ) : userName ? (
                 <>
                   <span className="text-sm font-medium text-gray-900 truncate w-full">{userName}</span>
                   {userEmail && (
@@ -156,8 +220,10 @@ export function Header() {
                 <span className="text-sm font-medium">User</span>
               )}
             </div>
-            {/* Avatar or Fallback - moved to right side */}
-            {avatarUrl && !avatarError ? (
+            {/* Avatar or Fallback - moved to right side - always reserve space */}
+            {isLoading ? (
+              <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gray-200 animate-pulse" />
+            ) : avatarUrl && !avatarError ? (
               <img
                 src={avatarUrl}
                 alt={userName || userEmail || "User"}

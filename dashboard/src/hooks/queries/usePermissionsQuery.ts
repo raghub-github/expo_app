@@ -20,7 +20,23 @@ interface PermissionsResponse {
 }
 
 async function fetchPermissions(): Promise<PermissionsData> {
-  const response = await fetch("/api/auth/permissions");
+  const response = await fetch("/api/auth/permissions", {
+    credentials: "include", // Include cookies for session
+    cache: "no-store", // Always fetch fresh data
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    let errorMessage = `Failed to fetch permissions: ${response.status}`;
+    try {
+      const errorData = JSON.parse(errorText);
+      errorMessage = errorData.error || errorMessage;
+    } catch {
+      errorMessage = errorText || errorMessage;
+    }
+    throw new Error(errorMessage);
+  }
+
   const result: PermissionsResponse = await response.json();
 
   if (!result.success || !result.data) {

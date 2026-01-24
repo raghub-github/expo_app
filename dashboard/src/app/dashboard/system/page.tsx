@@ -3,10 +3,9 @@ import { requireDashboardAccess } from "@/lib/permissions/page-protection";
 export default async function SystemPage() {
   await requireDashboardAccess("SYSTEM");
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">System Configuration</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Configure cities, zones, rules, and system settings
         </p>
       </div>

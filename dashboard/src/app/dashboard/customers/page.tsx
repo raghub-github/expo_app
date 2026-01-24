@@ -12,10 +12,9 @@ export default async function CustomersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Customer Management</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Manage all customers with granular access control. Use filters to view customers by order type (food, parcel, person_ride).
         </p>
       </div>

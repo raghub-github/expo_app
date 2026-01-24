@@ -322,6 +322,8 @@ function MapComponentInner({
           }, 'E');
           // #endregion
           setIsLoaded(true);
+          // Clear any previous errors when map loads successfully
+          setError(null);
           updateMarkers();
         });
 
@@ -332,7 +334,43 @@ function MapComponentInner({
             errorType: e.error?.type || 'unknown'
           }, 'A');
           // #endregion
-          setError(`Map error: ${e.error?.message || String(e)}`);
+          
+          // Filter out non-critical errors that shouldn't be shown to users
+          // Tile loading errors during zoom/pan are temporary and shouldn't be displayed
+          const errorMessage = String(e.error?.message || e || '');
+          const errorType = e.error?.type || '';
+          
+          // Ignore tile loading errors, network errors during zoom, and other non-critical errors
+          // These are common during zoom operations and don't indicate a real problem
+          const isTileError = errorMessage.includes('tile') || 
+                             errorMessage.includes('vector.pbf') ||
+                             errorMessage.includes('api.mapbox.com/v4') ||
+                             errorMessage.includes('api.mapbox.com/v4/') ||
+                             errorType === 'TileLoadError' ||
+                             errorType === 'StyleImageMissing';
+          
+          // Only show critical errors that prevent the map from working
+          // Filter out tile errors which are temporary and common during zoom/pan
+          if (!isTileError && errorMessage) {
+            // Sanitize error message to avoid showing tokens or URLs
+            const sanitizedError = errorMessage
+              .replace(/pk\.[a-zA-Z0-9_-]+/g, 'pk.***') // Hide Mapbox tokens
+              .replace(/https?:\/\/[^\s]+/g, '[URL]') // Hide URLs
+              .substring(0, 200); // Limit length
+            
+            // Show errors for critical issues (authentication, initialization, etc.)
+            // but not for temporary tile loading issues
+            if (errorMessage.includes('token') || 
+                errorMessage.includes('authentication') ||
+                errorMessage.includes('unauthorized') ||
+                errorMessage.includes('forbidden') ||
+                errorMessage.includes('invalid') ||
+                errorMessage.includes('not found') ||
+                errorMessage.includes('failed to load')) {
+              setError(`Map error: ${sanitizedError}`);
+            }
+            // For other non-critical errors, just log them but don't show to user
+          }
         });
 
         map.on('move', () => {
@@ -388,8 +426,8 @@ function MapComponentInner({
         const el = document.createElement('div');
         el.className = 'map-marker-container';
         el.style.cursor = 'pointer';
-        el.style.width = '40px';
-        el.style.height = '40px';
+        el.style.width = '24px';
+        el.style.height = '24px';
         el.style.display = 'flex';
         el.style.alignItems = 'center';
         el.style.justifyContent = 'center';
@@ -400,11 +438,11 @@ function MapComponentInner({
           elementHeight: el.style.height,
           pointId: point.id,
           pointName: point.name,
-          expectedSize: '52px'
+          expectedSize: '24px'
         }, 'C');
         // #endregion
         
-        // Create marker with logo - 40px size, no border
+        // Create marker with logo - 24px size, no border
         const marker = new mapboxgl.Marker({
           element: el,
           anchor: 'center'
@@ -412,12 +450,12 @@ function MapComponentInner({
           .setLngLat([point.longitude, point.latitude])
           .addTo(mapRef.current);
 
-        // Render ServicePointMarker into the element - 40px size, no border
+        // Render ServicePointMarker into the element - 24px size, no border
         const img = document.createElement('img');
         img.src = '/onlylogo.png';
         img.alt = 'GatiMitra';
-        img.style.width = '40px';
-        img.style.height = '40px';
+        img.style.width = '24px';
+        img.style.height = '24px';
         img.style.objectFit = 'contain';
         img.style.filter = 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))';
         
@@ -432,7 +470,7 @@ function MapComponentInner({
             computedHeight: window.getComputedStyle(img).height,
             elementWidth: el.offsetWidth,
             elementHeight: el.offsetHeight,
-            expectedSize: '52px'
+            expectedSize: '24px'
           }, 'C');
         };
         img.onerror = () => {
@@ -531,8 +569,8 @@ function MapComponentInner({
         const el = document.createElement('div');
         el.className = 'map-marker-container';
         el.style.cursor = 'pointer';
-        el.style.width = '52px';
-        el.style.height = '52px';
+        el.style.width = '24px';
+        el.style.height = '24px';
         el.style.display = 'flex';
         el.style.alignItems = 'center';
         el.style.justifyContent = 'center';
@@ -556,8 +594,8 @@ function MapComponentInner({
         const img = document.createElement('img');
         img.src = '/onlylogo.png';
         img.alt = 'GatiMitra';
-        img.style.width = '52px';
-        img.style.height = '52px';
+        img.style.width = '24px';
+        img.style.height = '24px';
         img.style.objectFit = 'contain';
         img.style.filter = 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))';
         
@@ -678,9 +716,9 @@ function MapComponentInner({
   }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup, deletingPointId]);
 
   return (
-    <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '380px', maxWidth: '500px' }}>
+    <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '380px', maxWidth: '380px' }}>
       {/* Always render container div so ref can attach */}
-      <div ref={containerRefCallback} style={{ width: '100%', height: '100%', position: 'relative', maxHeight: '100%', maxWidth: '100%' }} />
+      <div ref={containerRefCallback} style={{ width: '100%', height: '100%', position: 'relative' }} />
       
       {/* Show loading overlay */}
       {!isLoaded && !error && (
@@ -697,7 +735,9 @@ function MapComponentInner({
         <div className="absolute inset-0 flex items-center justify-center bg-red-50 bg-opacity-90 z-10">
           <div className="text-center p-4">
             <p className="text-red-600 font-semibold">Error: {error}</p>
-            <p className="text-red-500 text-sm mt-2">Token: {mapboxToken ? `${mapboxToken.substring(0, 10)}...` : 'Not set'}</p>
+            <p className="text-red-500 text-sm mt-2">
+              {mapboxToken ? 'Mapbox token is configured' : 'Mapbox token not configured'}
+            </p>
           </div>
         </div>
       )}

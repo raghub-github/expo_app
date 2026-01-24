@@ -84,7 +84,6 @@ export default function SuperAdminPage() {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Super Admin Console</h1>
           <p className="mt-2 text-gray-600">Loading...</p>
         </div>
       </div>
@@ -97,10 +96,9 @@ export default function SuperAdminPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Super Admin Console</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Manage users, roles, permissions, access control, and system settings
         </p>
       </div>

@@ -4,10 +4,9 @@ export default async function CustomerFoodTicketsPage() {
   await requireDashboardAccess("TICKET_CUSTOMER_FOOD");
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Customer Food Tickets</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Manage customer tickets related to food orders and food service (both order-related and non-order-related)
         </p>
       </div>

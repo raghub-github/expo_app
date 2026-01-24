@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight, Clock } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { useUsersQuery, useUpdateUser } from "@/hooks/queries/useUsersQuery";
 import { StatusChangeModal } from "./StatusChangeModal";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 
 interface SystemUser {
@@ -67,42 +67,81 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     userName: "",
   });
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
-  const [rolesLoading, setRolesLoading] = useState(true);
   
   // Use React Query mutation for updates
   const updateUser = useUpdateUser();
   const queryClient = useQueryClient();
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch unique roles from API
-  useEffect(() => {
-    const fetchRoles = async () => {
+  // Fetch unique roles using React Query
+  const { data: rolesData, isLoading: rolesLoading, error: rolesError } = useQuery({
+    queryKey: ["users", "roles"],
+    queryFn: async () => {
       try {
-        setRolesLoading(true);
         const response = await fetch("/api/users/roles");
-        const result = await response.json();
-        
-        if (result.success && Array.isArray(result.data)) {
-          setAvailableRoles(result.data);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch roles: ${response.statusText}`);
         }
+        const result = await response.json();
+        if (!result.success) {
+          throw new Error(result.error || "Failed to fetch roles");
+        }
+        return result.data as string[];
       } catch (error) {
-        console.error("Error fetching roles:", error);
-      } finally {
-        setRolesLoading(false);
+        console.error("[UserList] Error fetching roles:", error);
+        // Return empty array on error to prevent component crash
+        return [];
       }
-    };
+    },
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    retry: 2,
+    retryOnMount: false, // Don't retry on mount if it failed
+    refetchOnWindowFocus: false, // Don't refetch on window focus
+  });
 
-    fetchRoles();
-  }, []);
+  // Safely get available roles with fallback - ensure it's always an array
+  const availableRoles = useMemo(() => {
+    try {
+      if (rolesError) {
+        console.warn("[UserList] Error loading roles, using empty array:", rolesError);
+        return [];
+      }
+      if (Array.isArray(rolesData)) {
+        return rolesData;
+      }
+      return [];
+    } catch (error) {
+      console.error("[UserList] Error processing roles data:", error);
+      return [];
+    }
+  }, [rolesData, rolesError]);
 
   // Format role name for display (e.g., "SUPER_ADMIN" -> "Super Admin")
-  const formatRoleName = (role: string): string => {
+  const formatRoleName = useCallback((role: string): string => {
     return role
       .split("_")
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join(" ");
-  };
+  }, []);
+
+  // Use React Query for data fetching
+  const { data, isLoading, error } = useUsersQuery({
+    page: pagination.page,
+    limit: pagination.limit,
+    search: debouncedSearch || undefined,
+    role: filters.role || undefined,
+    status: filters.status || undefined,
+    department: filters.department || undefined,
+  });
+
+  // Memoize users and pagination data to prevent unnecessary re-renders
+  const users = useMemo(() => data?.users || [], [data?.users]);
+  const paginationData = useMemo(() => data?.pagination || {
+    page: 1,
+    limit: 20,
+    total: 0,
+    totalPages: 0,
+  }, [data?.pagination]);
 
   // Update current time and check for expired suspensions
   useEffect(() => {
@@ -145,8 +184,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     checkAndReactivate();
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryClient]); // Only depend on queryClient, check users inside the function
+  }, [users, queryClient]); // Now properly include users in dependencies
 
   // Debounced search
   useEffect(() => {
@@ -165,24 +203,6 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       }
     };
   }, [search]);
-
-  // Use React Query for data fetching
-  const { data, isLoading, error } = useUsersQuery({
-    page: pagination.page,
-    limit: pagination.limit,
-    search: debouncedSearch || undefined,
-    role: filters.role || undefined,
-    status: filters.status || undefined,
-    department: filters.department || undefined,
-  });
-
-  const users = data?.users || [];
-  const paginationData = data?.pagination || {
-    page: 1,
-    limit: 20,
-    total: 0,
-    totalPages: 0,
-  };
 
   // Update local pagination state when query data changes
   useEffect(() => {
@@ -453,11 +473,13 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
               className="w-full pl-10 pr-8 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white appearance-none cursor-pointer transition-all text-sm sm:text-base hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="">All Roles</option>
-              {availableRoles.map((role) => (
-                <option key={role} value={role}>
-                  {formatRoleName(role)}
-                </option>
-              ))}
+              {Array.isArray(availableRoles) && availableRoles.length > 0 ? (
+                availableRoles.map((role) => (
+                  <option key={role} value={role}>
+                    {formatRoleName(role)}
+                  </option>
+                ))
+              ) : null}
             </select>
             <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
           </div>

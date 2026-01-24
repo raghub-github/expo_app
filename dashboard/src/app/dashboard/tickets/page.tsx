@@ -12,10 +12,9 @@ export default async function TicketsPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Ticket Management</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Manage all tickets with granular access control. Use filters to view tickets by order type, section, and category.
         </p>
       </div>

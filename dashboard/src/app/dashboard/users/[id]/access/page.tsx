@@ -153,10 +153,7 @@ export default function UserAccessPage() {
           <ArrowLeft className="h-4 w-4" />
           Back to User Details
         </button>
-        <h1 className="text-2xl font-bold text-gray-900">
-          Manage Dashboard Access
-        </h1>
-        <p className="text-gray-600 mt-1">
+        <p className="text-sm sm:text-base text-gray-600 mt-1">
           {user?.fullName} ({user?.email})
         </p>
       </div>

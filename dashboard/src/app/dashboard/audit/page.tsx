@@ -134,10 +134,9 @@ export default function AuditLogPage() {
   }
 
   return (
-    <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Action Audit Log</h1>
-        <p className="text-gray-600 mt-1">
+    <div className="p-6 w-full max-w-full overflow-x-hidden">
+      <div className="mb-6 w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           View all actions performed by agents in the system
         </p>
       </div>

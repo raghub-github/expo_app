@@ -4,10 +4,9 @@ export default async function PersonRideCustomersPage() {
   await requireDashboardAccess("CUSTOMER_PERSON_RIDE");
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Person Ride Customers</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Manage customers who have booked person ride services, view their ride history, and handle ride-related customer operations
         </p>
       </div>

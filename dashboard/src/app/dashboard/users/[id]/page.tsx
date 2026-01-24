@@ -230,8 +230,7 @@ export default function UserDetailsPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Edit User</h1>
-            <p className="mt-2 text-gray-600">Update user information</p>
+            <p className="mt-2 text-sm sm:text-base text-gray-600">Update user information</p>
           </div>
           <button
             onClick={() => setEditMode(false)}
@@ -274,8 +273,8 @@ export default function UserDetailsPage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Users
           </Link>
-          <h1 className="text-3xl font-bold text-gray-900">{user.fullName}</h1>
-          <p className="mt-1 text-gray-600">{user.email}</p>
+          <p className="text-lg sm:text-xl font-semibold text-gray-900">{user.fullName}</p>
+          <p className="mt-1 text-sm text-gray-600">{user.email}</p>
         </div>
         <div className="flex items-center gap-3">
           {getStatusBadge(user.status)}

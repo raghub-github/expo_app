@@ -1,0 +1,41 @@
+/* Hide all scrollbars everywhere, hydration-safe */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+*::-webkit-scrollbar {
+  display: none !important;
+}
+html, body {
+  overflow: hidden !important;
+}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+:root {
+  --background: #F6F7F9;
+  --background-alt: #F4F6FA;
+  --card-bg: #FAFAFC;
+  --border-color: #E5E7EB;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-background-alt: var(--background-alt);
+  --color-card-bg: var(--card-bg);
+  --color-border: var(--border-color);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* Dark mode disabled: always use light theme */
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}

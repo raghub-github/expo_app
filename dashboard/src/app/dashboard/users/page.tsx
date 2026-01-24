@@ -39,14 +39,15 @@ export default function UsersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           Manage system users, agents, and administrators
         </p>
       </div>
-      <UserList showActions={true} />
+      <div className="w-full max-w-full overflow-x-auto">
+        <UserList showActions={true} />
+      </div>
     </div>
   );
 }

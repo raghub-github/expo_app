@@ -31,7 +31,23 @@ interface DashboardAccessResponse {
 }
 
 async function fetchDashboardAccess(): Promise<DashboardAccessData> {
-  const response = await fetch("/api/auth/dashboard-access");
+  const response = await fetch("/api/auth/dashboard-access", {
+    credentials: "include", // Include cookies for session
+    cache: "no-store", // Always fetch fresh data
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    let errorMessage = `Failed to fetch dashboard access: ${response.status}`;
+    try {
+      const errorData = JSON.parse(errorText);
+      errorMessage = errorData.error || errorMessage;
+    } catch {
+      errorMessage = errorText || errorMessage;
+    }
+    throw new Error(errorMessage);
+  }
+
   const result: DashboardAccessResponse = await response.json();
 
   if (!result.success || !result.data) {
@@ -52,7 +68,17 @@ export function useDashboardAccessQuery() {
     queryKey: queryKeys.dashboardAccess(),
     queryFn: fetchDashboardAccess,
     ...staticConfig,
-    retry: 1,
+    retry: (failureCount, error) => {
+      // Don't retry on 401 (unauthorized) or 404 (user not found)
+      if (error instanceof Error) {
+        if (error.message.includes("401") || error.message.includes("404")) {
+          return false;
+        }
+      }
+      // Retry up to 2 times for other errors
+      return failureCount < 2;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
   });
 }
 

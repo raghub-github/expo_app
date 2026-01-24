@@ -58,52 +58,54 @@ export default function DashboardHome() {
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Service Points Map</h1>
-        <p className="mt-2 text-gray-600">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="w-full">
+        <p className="text-sm sm:text-base text-gray-600">
           View and manage GatiMitra service points across India
         </p>
       </div>
 
-      {/* User not in system_users warning */}
-      {userPerms && !userPerms.exists && (
-        <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
-          <div className="flex items-start">
-            <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />
-            <div className="ml-3">
-              <h3 className="text-sm font-medium text-yellow-800">
-                Account Setup Required
-              </h3>
-              <p className="mt-1 text-sm text-yellow-700">
-                Your account is authenticated but not yet added to the system. 
-                Please contact an administrator to complete your account setup.
-              </p>
+      {/* Reserve space for warnings to prevent layout shift */}
+      <div className="min-h-[80px]">
+        {/* User not in system_users warning */}
+        {userPerms && !userPerms.exists && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
+            <div className="flex items-start">
+              <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-yellow-800">
+                  Account Setup Required
+                </h3>
+                <p className="mt-1 text-sm text-yellow-700">
+                  Your account is authenticated but not yet added to the system. 
+                  Please contact an administrator to complete your account setup.
+                </p>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Error message */}
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-          <div className="flex items-start">
-            <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
-            <div className="ml-3">
-              <h3 className="text-sm font-medium text-red-800">
-                Error Loading Permissions
-              </h3>
-              <p className="mt-1 text-sm text-red-700">{error}</p>
+        {/* Error message */}
+        {error && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+            <div className="flex items-start">
+              <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-red-800">
+                  Error Loading Permissions
+                </h3>
+                <p className="mt-1 text-sm text-red-700">{error}</p>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Map Layout - Responsive */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Map - Takes 2/3 on desktop, full width on mobile */}
+        {/* Map - Square size, takes 2/3 on desktop, full width on mobile */}
         <div className="lg:col-span-2">
-          <div className="h-[400px] sm:h-[500px] md:h-[600px] lg:h-[700px]">
+          <div className="w-full max-w-[380px] aspect-square">
             <ServicePointsMap key={refreshKey} className="h-full w-full" />
           </div>
         </div>
@@ -112,7 +114,7 @@ export default function DashboardHome() {
         <div className="space-y-4">
           <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
             <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-blue-100 rounded-lg">
+              <div className="p-2 bg-blue-100 rounded-lg flex-shrink-0">
                 <MapPin className="h-5 w-5 text-blue-600" />
               </div>
               <div>
@@ -126,20 +128,22 @@ export default function DashboardHome() {
             </p>
           </div>
 
-          {/* Instructions for super admin */}
-          {isSuperAdmin && (
-            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-              <h4 className="font-medium text-blue-900 mb-2">Super Admin</h4>
-              <p className="text-sm text-blue-700">
-                Click the "Add Service Point" button to add new service locations.
-                You can use city name or coordinates.
-              </p>
-            </div>
-          )}
+          {/* Instructions for super admin - reserve space to prevent shift */}
+          <div className="min-h-[100px]">
+            {isSuperAdmin && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <h4 className="font-medium text-blue-900 mb-2">Super Admin</h4>
+                <p className="text-sm text-blue-700">
+                  Click the "Add Service Point" button to add new service locations.
+                  You can use city name or coordinates.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Service Point Form - Only visible to super admin */}
+      {/* Service Point Form - Always show button, form only for super admin */}
       {isSuperAdmin && <ServicePointForm onSuccess={handleServicePointCreated} />}
     </div>
   );

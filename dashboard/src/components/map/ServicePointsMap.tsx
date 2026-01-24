@@ -16,8 +16,13 @@ const DynamicMapComponent = dynamic(
   { 
     ssr: false,
     loading: () => (
-      <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg">
-        <p className="text-gray-500">Loading map...</p>
+      <div className="relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm h-full w-full">
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+          <div className="text-center">
+            <p className="text-gray-500">Loading map...</p>
+            <p className="text-gray-400 text-xs mt-2">Initializing Mapbox</p>
+          </div>
+        </div>
       </div>
     ),
   }
@@ -89,8 +94,10 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
 
   if (isLoading) {
     return (
-      <div className={`rounded-lg border border-gray-200 bg-white p-4 text-center ${className}`} style={{ height: '100%', maxHeight: '240px' }}>
-        <LoadingSpinner size="lg" text="Loading service points..." />
+      <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%' }}>
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+          <LoadingSpinner size="lg" text="Loading service points..." />
+        </div>
       </div>
     );
   }
