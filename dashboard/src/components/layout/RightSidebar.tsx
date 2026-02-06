@@ -2,12 +2,13 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
 } from "@/lib/navigation/dashboard-routes";
+import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -16,6 +17,8 @@ interface RightSidebarProps {
 
 export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const riderCtx = useRiderDashboardOptional();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -39,6 +42,16 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   if (!isInSpecificDashboard || !currentSubRoutes.length) {
     return null;
   }
+
+  // Keep selected rider across rider dashboard sub-routes
+  const isRiderDashboard = cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
+  const selectedRiderSearch = (searchParams.get("search") || "").trim();
+  const selectedRiderId = selectedRiderSearch || (riderCtx?.currentRiderId != null ? String(riderCtx.currentRiderId) : "");
+  const appendRiderSearch = (href: string) => {
+    if (!isRiderDashboard) return href;
+    if (!selectedRiderId) return href;
+    return `${href}?search=${encodeURIComponent(selectedRiderId)}`;
+  };
 
   return (
     <>
@@ -84,7 +97,7 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
             return (
               <Link
                 key={route.href}
-                href={route.href}
+                href={appendRiderSearch(route.href)}
                 className={`group relative flex items-center rounded-lg transition-all duration-200 ${
                   isOpen 
                     ? `space-x-2 px-2.5 py-2 text-xs font-medium ${

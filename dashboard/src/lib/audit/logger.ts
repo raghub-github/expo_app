@@ -98,6 +98,12 @@ export async function logActionByAuth(
       return;
     }
 
+    const agentId = Number(systemUser.id);
+    if (!Number.isFinite(agentId)) {
+      console.warn("Cannot log action: invalid agent id", { email, systemUserId: systemUser.id });
+      return;
+    }
+
     const agentName =
       (systemUser as any).fullName ??
       (systemUser as any).full_name ??
@@ -108,7 +114,7 @@ export async function logActionByAuth(
       (systemUser as any).primaryRole;
 
     await logAction({
-      agentId: systemUser.id,
+      agentId,
       agentEmail: email,
       agentName,
       agentRole,

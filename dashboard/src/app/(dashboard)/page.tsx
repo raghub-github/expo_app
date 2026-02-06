@@ -45,19 +45,26 @@ export default function DashboardHome() {
         </div>
       )}
 
-      {/* Error message */}
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-          <div className="flex items-start">
-            <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
-            <div className="ml-3">
-              <h3 className="text-sm font-medium text-red-800">
-                Error Loading Permissions
-              </h3>
-              <p className="mt-1 text-sm text-red-700">
-                {error instanceof Error ? error.message : "Failed to load permissions"}
-              </p>
+      {/* Only show error when we have no cached data (avoids "signal aborted" on nav/timeout) */}
+      {error && !userPerms && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start">
+              <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5" />
+              <div className="ml-3">
+                <h3 className="text-sm font-medium text-amber-800">Could not load permissions</h3>
+                <p className="mt-1 text-sm text-amber-700">
+                  {error instanceof Error ? error.message : "Failed to load permissions"}
+                </p>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => queryClient.invalidateQueries({ queryKey: queryKeys.permissions() })}
+              className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+            >
+              Retry
+            </button>
           </div>
         </div>
       )}

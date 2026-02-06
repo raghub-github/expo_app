@@ -315,3 +315,52 @@ export async function canRefundOrder(
     { access_point_group: "ORDER_REFUND" }
   );
 }
+
+// ---------------------------------------------------------------------------
+// RIDER DASHBOARD – service-scoped action checks (RIDER_ACTIONS_FOOD/PARCEL/PERSON_RIDE)
+// ---------------------------------------------------------------------------
+
+const RIDER_SERVICE_GROUPS = {
+  food: "RIDER_ACTIONS_FOOD",
+  parcel: "RIDER_ACTIONS_PARCEL",
+  person_ride: "RIDER_ACTIONS_PERSON_RIDE",
+} as const;
+
+export type RiderServiceType = keyof typeof RIDER_SERVICE_GROUPS;
+
+/**
+ * Check if user can perform an action for a specific rider service (food/parcel/person_ride).
+ * Used for: add/revert penalty, blacklist, whitelist (service-specific).
+ */
+export async function canPerformRiderServiceAction(
+  supabaseAuthId: string,
+  email: string,
+  serviceType: RiderServiceType,
+  actionType: ActionType
+): Promise<boolean> {
+  return canPerformActionByAuth(
+    supabaseAuthId,
+    email,
+    "RIDER",
+    actionType,
+    "RIDER",
+    { access_point_group: RIDER_SERVICE_GROUPS[serviceType] }
+  );
+}
+
+/**
+ * Check if user can perform an action for at least one rider service (food, parcel, or person_ride).
+ * Used for: wallet freeze (same as “refund/penalty” access – UPDATE on any RIDER_ACTIONS_*).
+ */
+export async function canPerformRiderActionAnyService(
+  supabaseAuthId: string,
+  email: string,
+  actionType: ActionType
+): Promise<boolean> {
+  const food = await canPerformRiderServiceAction(supabaseAuthId, email, "food", actionType);
+  if (food) return true;
+  const parcel = await canPerformRiderServiceAction(supabaseAuthId, email, "parcel", actionType);
+  if (parcel) return true;
+  const personRide = await canPerformRiderServiceAction(supabaseAuthId, email, "person_ride", actionType);
+  return personRide;
+}

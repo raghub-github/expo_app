@@ -63,8 +63,20 @@ export async function logActivity(data: ActivityLog) {
         ${data.ip_address || null},
         ${data.device_info || null},
         ${data.session_id || null},
-        ${data.request_params ? JSON.stringify(data.request_params) : null},
-        ${data.response_data ? JSON.stringify(data.response_data) : null},
+        ${(() => {
+          try {
+            return data.request_params != null ? JSON.stringify(data.request_params) : null;
+          } catch {
+            return null;
+          }
+        })()},
+        ${(() => {
+          try {
+            return data.response_data != null ? JSON.stringify(data.response_data) : null;
+          } catch {
+            return null;
+          }
+        })()},
         ${data.entity_type || null},
         ${data.entity_id || null},
         NOW()

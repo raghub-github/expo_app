@@ -2,10 +2,30 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
 import { Header } from "@/components/layout/Header";
+import { AuthProvider } from "@/providers/AuthProvider";
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
+import { queryKeys } from "@/lib/queryKeys";
+import { fetchPermissions, usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
+import { fetchDashboardAccess, useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
+
+function DashboardLayoutSkeleton() {
+  return (
+    <div className="animate-pulse space-y-4 p-4">
+      <div className="h-8 w-48 rounded bg-gray-200" />
+      <div className="h-4 w-full max-w-xl rounded bg-gray-100" />
+      <div className="h-4 w-full max-w-lg rounded bg-gray-100" />
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="h-24 rounded-lg bg-gray-100" />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function DashboardLayout({
   children,
@@ -13,6 +33,15 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const { isLoading: permissionsLoading } = usePermissionsQuery();
+  const { isLoading: dashboardAccessLoading } = useDashboardAccessQuery();
+  const showSkeleton = permissionsLoading || dashboardAccessLoading;
+
+  useEffect(() => {
+    queryClient.prefetchQuery({ queryKey: queryKeys.permissions(), queryFn: fetchPermissions });
+    queryClient.prefetchQuery({ queryKey: queryKeys.dashboardAccess(), queryFn: fetchDashboardAccess });
+  }, [queryClient]);
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
@@ -56,6 +85,7 @@ export default function DashboardLayout({
   };
 
   return (
+    <AuthProvider>
     <div className="flex h-screen overflow-hidden bg-gray-50">
       <HierarchicalSidebar 
         isOpen={isLeftSidebarOpen}
@@ -83,10 +113,10 @@ export default function DashboardLayout({
         <Header />
         <div className="flex flex-1 overflow-hidden relative w-full">
           <main 
-            className="flex-1 overflow-y-auto bg-gray-50 p-4 sm:p-6 transition-all duration-300 w-full"
+            className="flex-1 overflow-y-auto bg-gray-50 p-3 sm:p-4 transition-all duration-300 w-full"
           >
             <div className="w-full max-w-full min-w-0">
-              {children}
+              {showSkeleton ? <DashboardLayoutSkeleton /> : children}
             </div>
           </main>
           <RightSidebar 
@@ -96,5 +126,6 @@ export default function DashboardLayout({
         </div>
       </div>
     </div>
+    </AuthProvider>
   );
 }

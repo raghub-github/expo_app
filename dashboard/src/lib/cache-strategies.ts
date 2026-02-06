@@ -55,13 +55,15 @@ export const cacheStrategies: Record<CacheTier, CacheConfig> = {
 
 /**
  * Authentication-specific cache config
- * Session data: Cache but verify on critical operations
+ * Session data: Cache but verify on critical operations.
+ * Refetch every 24h to keep session alive (Supabase refresh token rolling expiry up to 7 days).
  */
 export const authCacheConfig: CacheConfig = {
-  staleTime: 2 * 60 * 1000, // 2 minutes
-  gcTime: 5 * 60 * 1000, // 5 minutes
+  staleTime: 5 * 60 * 1000, // 5 minutes
+  gcTime: 24 * 60 * 60 * 1000, // 24 hours
   refetchOnMount: false,
   refetchOnWindowFocus: true, // Refetch on focus to catch logout in other tabs
+  refetchInterval: 24 * 60 * 60 * 1000, // Refetch every 24h to renew session
   persist: false, // Don't persist session data (security)
 };
 

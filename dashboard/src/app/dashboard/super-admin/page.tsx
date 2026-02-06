@@ -97,11 +97,6 @@ export default function SuperAdminPage() {
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full">
-        <p className="text-sm sm:text-base text-gray-600">
-          Manage users, roles, permissions, access control, and system settings
-        </p>
-      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {adminOptions.map((option) => {

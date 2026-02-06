@@ -26,7 +26,13 @@ export function GlobalErrorHandler() {
       
       if (isJsonParseError) {
         event.preventDefault();
-        // Silently suppress - these are from agent logging or failed fetch responses
+        // Log once so we can find the source: stack trace and the promise
+        if (process.env.NODE_ENV === "development" && typeof console !== "undefined") {
+          console.warn(
+            "[GlobalErrorHandler] JSON parse error suppressed. Source (fix this call site):",
+            error?.stack || (error && (error as Error).message) || event.reason
+          );
+        }
         return;
       }
       

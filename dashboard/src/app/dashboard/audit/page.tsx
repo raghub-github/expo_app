@@ -135,11 +135,6 @@ export default function AuditLogPage() {
 
   return (
     <div className="p-6 w-full max-w-full overflow-x-hidden">
-      <div className="mb-6 w-full">
-        <p className="text-sm sm:text-base text-gray-600">
-          View all actions performed by agents in the system
-        </p>
-      </div>
 
       {/* Filters */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">

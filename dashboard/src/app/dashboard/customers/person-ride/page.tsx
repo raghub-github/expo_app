@@ -5,11 +5,6 @@ export default async function PersonRideCustomersPage() {
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full">
-        <p className="text-sm sm:text-base text-gray-600">
-          Manage customers who have booked person ride services, view their ride history, and handle ride-related customer operations
-        </p>
-      </div>
 
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <div className="space-y-4">

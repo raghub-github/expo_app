@@ -5,11 +5,6 @@ export default async function FoodTicketsPage() {
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full">
-        <p className="text-sm sm:text-base text-gray-600">
-          Manage all food-related tickets from customers, riders, and merchants (both order-related and non-order-related)
-        </p>
-      </div>
 
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <div className="space-y-4">

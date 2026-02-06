@@ -30,10 +30,17 @@ interface HierarchicalSidebarProps {
 
 export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard }: HierarchicalSidebarProps) {
   const pathname = usePathname();
-  const { dashboards, loading: accessLoading } = useDashboardAccess();
-  const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
+  const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
+  const { isSuperAdmin, loading: permissionsLoading, error: permissionsError } = usePermissions();
   const [isMainMenuOpen, setIsMainMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [skeletonExpired, setSkeletonExpired] = useState(false);
+
+  // Short skeleton (0.5s) so sidebar appears fast; then show real nav
+  useEffect(() => {
+    const t = setTimeout(() => setSkeletonExpired(true), 500);
+    return () => clearTimeout(t);
+  }, []);
 
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -46,22 +53,8 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
 
   // Get sub-routes for current dashboard
   const currentSubRoutes = useMemo(
-    () => {
-      const routes = getCurrentDashboardSubRoutes(cleanPathname);
-      // Debug logging
-      if (process.env.NODE_ENV === "development") {
-        console.log("[Sidebar Debug]", {
-          pathname,
-          cleanPathname,
-          currentDashboard: currentDashboard?.name,
-          hasSubRoutes: !!currentDashboard?.subRoutes,
-          subRoutesCount: routes.length,
-          isInSpecificDashboard: currentDashboard && cleanPathname !== "/dashboard"
-        });
-      }
-      return routes;
-    },
-    [cleanPathname, pathname, currentDashboard]
+    () => getCurrentDashboardSubRoutes(cleanPathname),
+    [cleanPathname]
   );
 
   // Check if we're in a specific dashboard (not on home)
@@ -74,34 +67,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     }
   }, [cleanPathname, currentDashboard]);
 
-  // Create accessible dashboards set
+  const isLoading = accessLoading || permissionsLoading;
+  const hasError = Boolean(accessError || permissionsError);
+  const useFallback = isLoading && skeletonExpired;
+
+  // null = show all items; Set = filter by access. While loading (useFallback) show all so sidebar isn't empty.
   const accessibleDashboards = useMemo(() => {
+    if (hasError) return null;
+    if (useFallback) return null; // Still loading: show full nav so options appear; filter once data loads
+    if (dashboards.length === 0) return null;
     return new Set(
       dashboards.filter((d) => d.isActive).map((d) => d.dashboardType)
     );
-  }, [dashboards]);
+  }, [dashboards, useFallback, hasError]);
 
-  // Filter navigation items based on access
+  const effectiveSuperAdmin = hasError || useFallback ? true : isSuperAdmin;
+
   const filteredNavigation = useMemo(() => {
     return mainNavigation.filter((item) => {
-      // Always show Home
-      if (item.href === "/dashboard") {
-        return true;
-      }
-
-      // Check super admin requirement
-      if (item.requiresSuperAdmin) {
-        return isSuperAdmin;
-      }
-
-      // Check dashboard access
+      if (item.href === "/dashboard") return true;
+      if (accessibleDashboards === null) return true;
+      if (item.requiresSuperAdmin) return effectiveSuperAdmin;
       if (item.dashboardType) {
-        // Super admin has access to all dashboards
-        if (isSuperAdmin) {
-          return true;
-        }
-
-        // Special handling for Orders - show if user has access to any order type
+        if (effectiveSuperAdmin) return true;
         if (item.dashboardType === "ORDER_FOOD") {
           return (
             accessibleDashboards.has("ORDER_FOOD") ||
@@ -109,23 +97,19 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
             accessibleDashboards.has("ORDER_PARCEL")
           );
         }
-
-        // Check dashboard access directly
         return accessibleDashboards.has(item.dashboardType);
       }
-
-      // Default: show if no specific requirements
       return true;
     });
-  }, [isSuperAdmin, accessibleDashboards]);
+  }, [effectiveSuperAdmin, accessibleDashboards]);
 
   // Close mobile menu when pathname changes
   useEffect(() => {
     setIsMobileMenuOpen(false);
   }, [pathname]);
 
-  // Loading state - maintain exact dimensions to prevent layout shift
-  if (accessLoading || permissionsLoading) {
+  const showSkeleton = isLoading && !skeletonExpired;
+  if (showSkeleton) {
     return (
       <aside className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 shadow-2xl transition-all duration-300 ease-in-out ${
         isOpen ? "w-56" : "w-16"

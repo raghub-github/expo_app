@@ -1,3 +1,15 @@
+/**
+ * POST /api/auth/set-cookie
+ *
+ * Single source of dashboard session cookies:
+ * - Supabase auth cookies (set via setSession) for identity.
+ * - Custom session metadata: session_start_time, last_activity_time, session_id.
+ *   These drive 24h inactivity and 7-day max lifetime (see session-manager).
+ *
+ * Call after any successful auth (OTP verify, OAuth callback). Middleware only
+ * reads these cookies and updates last_activity_time on each request; it never
+ * sets session_start_time or initial cookies. Logout and expireSession clear them.
+ */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
@@ -7,19 +19,23 @@ import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
 
 export async function POST(request: NextRequest) {
-  // #region agent log - DISABLED: Agent log service not available
-  // Agent log calls disabled to prevent JSON parsing errors
-  // #endregion
-
   try {
-    const { access_token, refresh_token } = await request.json();
-
-    // #region agent log - DISABLED: Agent log service not available
-    // Agent log calls disabled to prevent JSON parsing errors
-    // #endregion
+    let body: { access_token?: string; refresh_token?: string };
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, error: "Invalid request body", code: "INVALID_BODY" },
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    const { access_token, refresh_token } = body ?? {};
 
     if (!access_token || !refresh_token) {
-      return NextResponse.json({ success: false, error: "Missing tokens" }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "Missing tokens", code: "MISSING_TOKENS" },
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const cookieStore = await cookies();
@@ -108,10 +124,11 @@ export async function POST(request: NextRequest) {
     }
 
     return response;
-  } catch (e: any) {
-    // #region agent log - DISABLED: Agent log service not available
-    // Agent log calls disabled to prevent JSON parsing errors
-    // #endregion
-    return NextResponse.json({ success: false, error: "set-cookie error" }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "set-cookie error";
+    return NextResponse.json(
+      { success: false, error: message, code: "SET_COOKIE_ERROR" },
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 }

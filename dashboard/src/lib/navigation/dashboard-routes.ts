@@ -72,6 +72,12 @@ export const riderDashboardRoutes: DashboardSubRoute[] = [
     description: "Wallet history, balance, and earnings",
   },
   {
+    name: "Pending Actions",
+    href: "/dashboard/riders/pending-actions",
+    icon: CheckCircle,
+    description: "Wallet credit requests to approve or reject",
+  },
+  {
     name: "Blacklist/Whitelist Status",
     href: "/dashboard/riders/blacklist",
     icon: Ban,

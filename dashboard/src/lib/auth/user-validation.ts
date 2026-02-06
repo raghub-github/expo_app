@@ -32,9 +32,8 @@ export async function validateUserForLogin(
     let systemUser: Awaited<ReturnType<typeof getSystemUserByEmail>>;
     try {
       systemUser = await getSystemUserByEmail(email);
-    } catch (dbError: any) {
-      // Handle database connection errors separately
-      if (dbError instanceof Error && dbError.message.includes('Database connection error')) {
+    } catch (dbError: unknown) {
+      if (dbError instanceof Error && dbError.message.includes("Database connection error")) {
         console.error("[validateUserForLogin] ===== DATABASE ERROR ===== Database connection failed:", dbError.message);
         return {
           isValid: false,

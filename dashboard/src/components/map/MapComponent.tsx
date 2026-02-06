@@ -73,9 +73,9 @@ function MapComponentInner({
   const [containerReady, setContainerReady] = useState(false);
 
   const [viewState, setViewState] = useState({
-    longitude: 78.0, // Adjusted center for better visual centering of India
+    longitude: 81.0, // Adjusted center for better visual centering of India
     latitude: 22.0, // Adjusted center for better visual centering of India
-    zoom: 3.0, // Better zoom level to show all of India
+    zoom: 3.45, // Better zoom level to show all of India
   });
 
   // Callback ref to detect when container is mounted
@@ -691,12 +691,19 @@ function MapComponentInner({
               if (confirm(`Are you sure you want to delete "${selectedPoint.name}"? This action cannot be undone.`)) {
                 try {
                   await onDeletePoint(pointId);
+                  // Clean up popup after successful deletion
                   if (popupRef.current) {
                     popupRef.current.remove();
+                    popupRef.current = null;
                   }
                   onClosePopup();
                 } catch (error) {
-                  alert(`Failed to delete service point: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                  // Show user-friendly error message
+                  const errorMessage = error instanceof Error 
+                    ? error.message 
+                    : 'Unknown error occurred';
+                  alert(`Failed to delete service point: ${errorMessage}\n\nPlease try again or check your internet connection.`);
+                  console.error("Delete error details:", error);
                 }
               }
             });
@@ -716,7 +723,7 @@ function MapComponentInner({
   }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup, deletingPointId]);
 
   return (
-    <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '380px', maxWidth: '380px' }}>
+    <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '500px', maxWidth: '500px' }}>
       {/* Always render container div so ref can attach */}
       <div ref={containerRefCallback} style={{ width: '100%', height: '100%', position: 'relative' }} />
       

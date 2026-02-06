@@ -54,4 +54,35 @@ export const queryKeys = {
     dashboard: () => ["analytics", "dashboard"] as const,
     reports: (type: string) => ["analytics", "reports", type] as const,
   },
+
+  // Rider Dashboard
+  rider: {
+    summary: (riderId: number | null, params: RiderSummaryParams) =>
+      ["rider", "summary", riderId, params] as const,
+    access: () => ["rider", "access"] as const,
+  },
 } as const;
+
+export interface RiderSummaryParams {
+  ordersLimit: number;
+  ordersFrom: string;
+  ordersTo: string;
+  ordersOrderType: string; // 'all' | 'food' | 'parcel' | 'person_ride'
+  ordersStatus: string;
+  ordersOrderId: string;
+  withdrawalsLimit: number;
+  withdrawalsFrom: string;
+  withdrawalsTo: string;
+  ticketsLimit: number;
+  ticketsFrom: string;
+  ticketsTo: string;
+  ticketsStatus: string; // 'all' | 'open' | 'in_progress' | 'resolved' | 'closed'
+  ticketsCategory: string;
+  ticketsPriority: string; // 'all' | 'low' | 'medium' | 'high' | 'urgent'
+  penaltiesLimit: number;
+  penaltiesFrom: string;
+  penaltiesTo: string;
+  penaltiesStatus: string; // 'all' | 'reverted' | 'not'
+  penaltiesServiceType: string; // 'all' | 'food' | 'parcel' | 'person_ride'
+  penaltiesOrderId: string; // search by order id
+}

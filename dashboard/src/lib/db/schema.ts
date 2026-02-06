@@ -24,12 +24,14 @@ import {
   doublePrecision,
   smallint,
   date,
+  bigint,
   bigserial,
   serial,
   index,
   uniqueIndex,
   primaryKey,
   foreignKey,
+  uuid,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -69,6 +71,11 @@ export const documentTypeEnum = pgEnum("document_type", [
   "ev_proof",
 ]);
 
+export const verificationMethodEnum = pgEnum("verification_method", [
+  "APP_VERIFIED",
+  "MANUAL_UPLOAD",
+]);
+
 export const dutyStatusEnum = pgEnum("duty_status", [
   "ON",
   "OFF",
@@ -81,7 +88,80 @@ export const orderTypeEnum = pgEnum("order_type", [
   "person_ride",
 ]);
 
+// Service Type Enum (for blacklist and service-specific operations)
+export const serviceTypeEnum = pgEnum("service_type", [
+  "food",
+  "parcel",
+  "person_ride",
+  "all",
+]);
+
+// Penalty Status Enum
+export const penaltyStatusEnum = pgEnum("penalty_status", [
+  "active",
+  "reversed",
+  "paid",
+]);
+
+// Penalty Type Enum
+export const penaltyTypeEnum = pgEnum("penalty_type", [
+  "late_delivery",
+  "customer_complaint",
+  "fraud",
+  "cancellation",
+  "damage",
+  "wrong_delivery",
+  "no_show",
+  "behavior",
+  "other",
+]);
+
+// Vehicle Type Enum
+export const vehicleTypeEnum = pgEnum("vehicle_type", [
+  "bike",
+  "car",
+  "bicycle",
+  "scooter",
+  "auto",
+]);
+
+// Fuel Type Enum
+export const fuelTypeEnum = pgEnum("fuel_type", [
+  "EV",
+  "Petrol",
+  "Diesel",
+  "CNG",
+]);
+
+// Vehicle Category Enum
+export const vehicleCategoryEnum = pgEnum("vehicle_category", [
+  "Auto",
+  "Bike",
+  "Cab",
+  "Taxi",
+  "Bicycle",
+  "Scooter",
+]);
+
+// AC Type Enum (for person_ride service)
+export const acTypeEnum = pgEnum("ac_type", [
+  "AC",
+  "Non-AC",
+]);
+
 export const orderStatusEnum = pgEnum("order_status", [
+  "assigned",
+  "accepted",
+  "reached_store",
+  "picked_up",
+  "in_transit",
+  "delivered",
+  "cancelled",
+  "failed",
+]);
+
+// DB enum name order_status_type (used by orders_core in migrations)
+export const orderStatusTypeEnum = pgEnum("order_status_type", [
   "assigned",
   "accepted",
   "reached_store",
@@ -99,6 +179,49 @@ export const orderActionEnum = pgEnum("order_action", [
   "timeout",
 ]);
 
+// Order source (internal, swiggy, zomato, etc.) - for hybrid orders_core
+export const orderSourceTypeEnum = pgEnum("order_source_type", [
+  "internal",
+  "swiggy",
+  "zomato",
+  "rapido",
+  "ondc",
+  "shiprocket",
+  "other",
+]);
+
+// Payment status/mode for orders_core (extended)
+export const paymentStatusTypeEnum = pgEnum("payment_status_type", [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+  "refunded",
+  "partially_refunded",
+  "cancelled",
+]);
+export const paymentModeTypeEnum = pgEnum("payment_mode_type", [
+  "cash",
+  "online",
+  "wallet",
+  "upi",
+  "card",
+  "netbanking",
+  "cod",
+  "other",
+]);
+export const vegNonVegTypeEnum = pgEnum("veg_non_veg_type", [
+  "veg",
+  "non_veg",
+  "mixed",
+  "na",
+]);
+export const orderOtpTypeEnum = pgEnum("order_otp_type", [
+  "pickup",
+  "delivery",
+  "rto",
+]);
+
 export const walletEntryTypeEnum = pgEnum("wallet_entry_type", [
   "earning",
   "penalty",
@@ -107,6 +230,18 @@ export const walletEntryTypeEnum = pgEnum("wallet_entry_type", [
   "refund",
   "bonus",
   "referral_bonus",
+  "withdrawal",
+  "subscription_fee",
+  "purchase",
+  "cod_order",
+  "other",
+  "incentive",
+  "surge",
+  "failed_withdrawal_revert",
+  "penalty_reversal",
+  "cancellation_payout",
+  "manual_add",
+  "manual_deduct",
 ]);
 
 export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
@@ -146,6 +281,13 @@ export const ticketStatusEnum = pgEnum("ticket_status", [
   "in_progress",
   "resolved",
   "closed",
+]);
+
+export const vehicleFuelTypeEnum = pgEnum("vehicle_fuel_type", [
+  "EV",
+  "Petrol",
+  "Diesel",
+  "CNG",
 ]);
 
 // ============================================================================
@@ -424,6 +566,7 @@ export type AccessPointGroup =
   | "RIDER_ACTIONS_FOOD"
   | "RIDER_ACTIONS_PARCEL"
   | "RIDER_ACTIONS_PERSON_RIDE"
+  | "RIDER_WALLET_CREDITS"
   | "MERCHANT_VIEW"
   | "MERCHANT_ONBOARDING"
   | "MERCHANT_OPERATIONS"
@@ -454,6 +597,31 @@ export type ActionType =
   | "VIEW"
   | "CREATE"
   | "UPDATE"
+  | "DELETE"
+  | "APPROVE"
+  | "REJECT"
+  | "ASSIGN"
+  | "CANCEL"
+  | "REFUND"
+  | "BLOCK"
+  | "UNBLOCK"
+  | "RIDER_DOCUMENT_APPROVED"
+  | "RIDER_DOCUMENT_REJECTED"
+  | "RIDER_DOCUMENT_UPDATED"
+  | "RIDER_DOCUMENT_NUMBER_UPDATED"
+  | "RIDER_DOCUMENT_IMAGE_UPDATED"
+  | "RIDER_STATUS_UPDATED"
+  | "RIDER_ONBOARDING_STAGE_UPDATED"
+  | "RIDER_KYC_STATUS_UPDATED"
+  | "RIDER_WALLET_ADJUSTED"
+  | "RIDER_PENALTY_ADDED"
+  | "RIDER_PENALTY_REVERTED"
+  | "RIDER_BLACKLISTED"
+  | "RIDER_WHITELISTED"
+  | "RIDER_RIDE_CANCELLED"
+  | "REQUEST_CREATE"
+  | "REQUEST_APPROVE"
+  | "REQUEST_REJECT"
   | "DELETE"
   | "APPROVE"
   | "REJECT"
@@ -501,6 +669,10 @@ const ridersTable = pgTable(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     referredBy: integer("referred_by").references((): any => (ridersTable as any).id),
     defaultLanguage: text("default_language").notNull().default("en"),
+    // Vehicle choice during onboarding (temporary, will be moved to rider_vehicles)
+    vehicleChoice: text("vehicle_choice"), // 'EV' or 'Petrol'
+    // Preferred service types (array stored as JSONB)
+    preferredServiceTypes: jsonb("preferred_service_types").default([]), // ['food', 'parcel', 'person_ride']
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -533,13 +705,16 @@ export const riderDocuments = pgTable(
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
     docType: documentTypeEnum("doc_type").notNull(),
-    fileUrl: text("file_url").notNull(),
-    r2Key: text("r2_key"), // R2 storage key - allows URL regeneration if signed URL expires
+    fileUrl: text("file_url").notNull(), // For APP_VERIFIED, use placeholder URL (e.g., empty string or special URL)
+    r2Key: text("r2_key"), // R2 storage key - allows URL regeneration if signed URL expires. NULL for APP_VERIFIED documents
+    docNumber: text("doc_number"), // Document identification number (DL number, RC number, etc.) - REQUIRED for RC and DL
+    verificationMethod: verificationMethodEnum("verification_method").notNull().default("MANUAL_UPLOAD"), // APP_VERIFIED or MANUAL_UPLOAD
     extractedName: text("extracted_name"),
     extractedDob: date("extracted_dob"),
     verified: boolean("verified").notNull().default(false),
     verifierUserId: integer("verifier_user_id"),
     rejectedReason: text("rejected_reason"),
+    vehicleId: integer("vehicle_id"), // Link RC document to vehicle (optional, for future use)
     metadata: jsonb("metadata").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -549,6 +724,9 @@ export const riderDocuments = pgTable(
     riderIdIdx: index("rider_documents_rider_id_idx").on(table.riderId),
     docTypeIdx: index("rider_documents_doc_type_idx").on(table.docType),
     verifiedIdx: index("rider_documents_verified_idx").on(table.verified),
+    docNumberIdx: index("rider_documents_doc_number_idx").on(table.docNumber),
+    verificationMethodIdx: index("rider_documents_verification_method_idx").on(table.verificationMethod),
+    vehicleIdIdx: index("rider_documents_vehicle_id_idx").on(table.vehicleId),
   })
 );
 
@@ -589,6 +767,7 @@ export const riderDevices = pgTable(
 
 /**
  * Blacklist history for audit trail
+ * Enhanced with service-specific blacklist support
  */
 export const blacklistHistory = pgTable(
   "blacklist_history",
@@ -597,9 +776,15 @@ export const blacklistHistory = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
+    serviceType: serviceTypeEnum("service_type").notNull().default("all"), // 'food', 'parcel', 'person_ride', 'all'
     reason: text("reason").notNull(),
     banned: boolean("banned").notNull().default(true),
+    isPermanent: boolean("is_permanent").notNull().default(false),
+    expiresAt: timestamp("expires_at", { withTimezone: true }), // For temporary blacklists
     adminUserId: integer("admin_user_id"),
+    /** Email of agent who performed the action (when source=agent); stored at insert for reliable display. */
+    actorEmail: text("actor_email"),
+    source: text("source").notNull().default("agent"), // 'agent' | 'system' | 'automated'
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -607,6 +792,107 @@ export const blacklistHistory = pgTable(
   (table) => ({
     riderIdIdx: index("blacklist_history_rider_id_idx").on(table.riderId),
     bannedIdx: index("blacklist_history_banned_idx").on(table.banned),
+    serviceTypeIdx: index("blacklist_history_service_type_idx").on(table.serviceType),
+    riderServiceIdx: index("blacklist_history_rider_service_idx").on(
+      table.riderId,
+      table.serviceType
+    ),
+    sourceIdx: index("blacklist_history_source_idx").on(table.source),
+  })
+);
+
+// ============================================================================
+// PENALTIES
+// ============================================================================
+
+/**
+ * Rider penalties - tracks penalties per service type
+ */
+export const riderPenalties = pgTable(
+  "rider_penalties",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    serviceType: orderTypeEnum("service_type").notNull(), // 'food', 'parcel', 'person_ride'
+    penaltyType: text("penalty_type").notNull(), // 'late_delivery', 'customer_complaint', 'fraud', 'cancellation', etc.
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("active"), // 'active', 'reversed', 'paid'
+    orderId: integer("order_id").references(() => orders.id, { onDelete: "set null" }),
+    imposedBy: integer("imposed_by").references(() => systemUsers.id, { onDelete: "set null" }),
+    source: text("source").default("agent"), // 'agent' = manual/dashboard, 'system' = automatic
+    imposedAt: timestamp("imposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolutionNotes: text("resolution_notes"),
+    reversedBy: integer("reversed_by").references(() => systemUsers.id, { onDelete: "set null" }),
+    metadata: jsonb("metadata").default({}),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_penalties_rider_id_idx").on(table.riderId),
+    serviceTypeIdx: index("rider_penalties_service_type_idx").on(table.serviceType),
+    statusIdx: index("rider_penalties_status_idx").on(table.status),
+    orderIdIdx: index("rider_penalties_order_id_idx").on(table.orderId),
+    imposedAtIdx: index("rider_penalties_imposed_at_idx").on(table.imposedAt),
+    riderServiceIdx: index("rider_penalties_rider_service_idx").on(
+      table.riderId,
+      table.serviceType
+    ),
+  })
+);
+
+// ============================================================================
+// VEHICLES
+// ============================================================================
+
+/**
+ * Rider vehicles - stores vehicle information for each rider
+ * Enhanced with fuel type, category, AC type, and service types
+ */
+export const riderVehicles = pgTable(
+  "rider_vehicles",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    vehicleType: vehicleTypeEnum("vehicle_type").notNull(), // 'bike', 'car', 'bicycle', 'scooter', 'auto'
+    registrationNumber: text("registration_number").notNull(), // Official RC number - use consistently, NOT "bike_number" or "vehicle_number"
+    make: text("make"), // e.g., 'Honda', 'Hero'
+    model: text("model"), // e.g., 'Activa', 'Splendor'
+    year: integer("year"),
+    color: text("color"),
+    fuelType: fuelTypeEnum("fuel_type"), // 'EV', 'Petrol', 'Diesel', 'CNG'
+    vehicleCategory: vehicleCategoryEnum("vehicle_category"), // 'Auto', 'Bike', 'Cab', 'Taxi', 'Bicycle', 'Scooter'
+    acType: acTypeEnum("ac_type"), // 'AC', 'Non-AC' (for person_ride)
+    serviceTypes: jsonb("service_types").default([]), // Array: ['food', 'parcel', 'person_ride']
+    insuranceExpiry: date("insurance_expiry"),
+    rcDocumentUrl: text("rc_document_url"),
+    insuranceDocumentUrl: text("insurance_document_url"),
+    verified: boolean("verified").notNull().default(false),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifiedBy: integer("verified_by"), // Admin user ID
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_vehicles_rider_id_idx").on(table.riderId),
+    vehicleTypeIdx: index("rider_vehicles_vehicle_type_idx").on(table.vehicleType),
+    registrationNumberIdx: index("rider_vehicles_registration_number_idx").on(table.registrationNumber),
+    verifiedIdx: index("rider_vehicles_verified_idx").on(table.verified),
+    isActiveIdx: index("rider_vehicles_is_active_idx").on(table.isActive),
+    fuelTypeIdx: index("rider_vehicles_fuel_type_idx").on(table.fuelType),
+    vehicleCategoryIdx: index("rider_vehicles_vehicle_category_idx").on(table.vehicleCategory),
+    // Note: Unique constraint for one active vehicle per rider handled at application level
+    // or via database trigger (not directly supported in Drizzle uniqueIndex with WHERE)
   })
 );
 
@@ -615,7 +901,9 @@ export const blacklistHistory = pgTable(
 // ============================================================================
 
 /**
- * Duty logs - tracks rider ON/OFF duty status changes
+ * Duty logs - tracks rider ON/OFF duty status changes with service-specific tracking
+ * When rider goes online, service_types array contains which services they are available for
+ * Every ON/OFF transition must create a new entry to enable accurate duty time calculations
  */
 export const dutyLogs = pgTable(
   "duty_logs",
@@ -624,7 +912,14 @@ export const dutyLogs = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
-    status: dutyStatusEnum("status").notNull(),
+    status: dutyStatusEnum("status").notNull(), // 'ON', 'OFF', 'AUTO_OFF'
+    serviceTypes: jsonb("service_types").default([]), // Array of services: ['food', 'parcel', 'person_ride'] - which services rider is online for. Empty when offline.
+    vehicleId: integer("vehicle_id").references(() => riderVehicles.id, { onDelete: "set null" }), // Which vehicle rider is using
+    lat: doublePrecision("lat"), // Latitude when going online/offline
+    lon: doublePrecision("lon"), // Longitude when going online/offline
+    sessionId: text("session_id"), // Unique session ID to track duty sessions (ON -> OFF cycle)
+    deviceId: text("device_id"), // Device ID from which rider went online/offline
+    metadata: jsonb("metadata").default({}), // Additional metadata (battery level, network type, app version, etc.)
     timestamp: timestamp("timestamp", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -635,6 +930,18 @@ export const dutyLogs = pgTable(
     riderStatusIdx: index("duty_logs_rider_status_idx").on(
       table.riderId,
       table.status
+    ),
+    riderTimestampIdx: index("duty_logs_rider_timestamp_idx").on(
+      table.riderId,
+      table.timestamp
+    ),
+    serviceTypesIdx: index("duty_logs_service_types_idx").on(table.serviceTypes),
+    vehicleIdIdx: index("duty_logs_vehicle_id_idx").on(table.vehicleId),
+    sessionIdIdx: index("duty_logs_session_id_idx").on(table.sessionId),
+    riderStatusServiceIdx: index("duty_logs_rider_status_service_idx").on(
+      table.riderId,
+      table.status,
+      table.timestamp
     ),
   })
 );
@@ -757,6 +1064,353 @@ export const orders = pgTable(
   })
 );
 
+// ============================================================================
+// HYBRID ORDER TABLES (orders_core + service-specific + provider mapping)
+// ============================================================================
+
+export const orderProviders = pgTable(
+  "order_providers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull().unique(),
+    name: text("name").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    codeIdx: index("order_providers_code_idx").on(table.code),
+    isActiveIdx: index("order_providers_is_active_idx").on(table.isActive),
+  })
+);
+
+export const ordersCore = pgTable(
+  "orders_core",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderUuid: uuid("order_uuid").notNull().unique().defaultRandom(),
+    orderType: orderTypeEnum("order_type").notNull(),
+    orderSource: orderSourceTypeEnum("order_source").notNull().default("internal"),
+    externalRef: text("external_ref"),
+    riderId: integer("rider_id").references(() => riders.id, { onDelete: "set null" }),
+    customerId: bigint("customer_id", { mode: "number" }),
+    merchantStoreId: bigint("merchant_store_id", { mode: "number" }),
+    merchantParentId: bigint("merchant_parent_id", { mode: "number" }),
+    pickupAddressRaw: text("pickup_address_raw").notNull(),
+    pickupAddressNormalized: text("pickup_address_normalized"),
+    pickupAddressGeocoded: text("pickup_address_geocoded"),
+    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }).notNull(),
+    pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }).notNull(),
+    dropAddressRaw: text("drop_address_raw").notNull(),
+    dropAddressNormalized: text("drop_address_normalized"),
+    dropAddressGeocoded: text("drop_address_geocoded"),
+    dropLat: numeric("drop_lat", { precision: 9, scale: 6 }).notNull(),
+    dropLon: numeric("drop_lon", { precision: 9, scale: 6 }).notNull(),
+    distanceKm: numeric("distance_km", { precision: 10, scale: 2 }),
+    etaSeconds: integer("eta_seconds"),
+    pickupAddressDeviationMeters: numeric("pickup_address_deviation_meters", {
+      precision: 8,
+      scale: 2,
+    }),
+    dropAddressDeviationMeters: numeric("drop_address_deviation_meters", {
+      precision: 8,
+      scale: 2,
+    }),
+    distanceMismatchFlagged: boolean("distance_mismatch_flagged").notNull().default(false),
+    fareAmount: numeric("fare_amount", { precision: 10, scale: 2 }),
+    commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
+    riderEarning: numeric("rider_earning", { precision: 10, scale: 2 }),
+    status: orderStatusTypeEnum("status").notNull().default("assigned"),
+    currentStatus: text("current_status"),
+    paymentStatus: paymentStatusTypeEnum("payment_status"),
+    paymentMethod: paymentModeTypeEnum("payment_method"),
+    riskFlagged: boolean("risk_flagged").notNull().default(false),
+    riskReason: text("risk_reason"),
+    isBulkOrder: boolean("is_bulk_order").notNull().default(false),
+    bulkOrderGroupId: text("bulk_order_group_id"),
+    cancellationReasonId: bigint("cancellation_reason_id", { mode: "number" }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    cancelledBy: text("cancelled_by"),
+    cancelledById: bigint("cancelled_by_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    estimatedPickupTime: timestamp("estimated_pickup_time", { withTimezone: true }),
+    estimatedDeliveryTime: timestamp("estimated_delivery_time", { withTimezone: true }),
+    actualPickupTime: timestamp("actual_pickup_time", { withTimezone: true }),
+    actualDeliveryTime: timestamp("actual_delivery_time", { withTimezone: true }),
+  },
+  (table) => ({
+    riderIdIdx: index("orders_core_rider_id_idx").on(table.riderId),
+    statusIdx: index("orders_core_status_idx").on(table.status),
+    orderTypeIdx: index("orders_core_order_type_idx").on(table.orderType),
+    createdAtIdx: index("orders_core_created_at_idx").on(table.createdAt),
+    customerIdIdx: index("orders_core_customer_id_idx").on(table.customerId),
+    orderSourceIdx: index("orders_core_order_source_idx").on(table.orderSource),
+    orderUuidIdx: index("orders_core_order_uuid_idx").on(table.orderUuid),
+    riderStatusIdx: index("orders_core_rider_status_idx").on(
+      table.riderId,
+      table.status
+    ),
+    typeStatusCreatedIdx: index("orders_core_type_status_created_idx").on(
+      table.orderType,
+      table.status,
+      table.createdAt
+    ),
+    activeRiderIdx: index("orders_core_active_rider_idx").on(
+      table.riderId,
+      table.orderType,
+      table.createdAt
+    ),
+    riskFlaggedIdx: index("orders_core_risk_flagged_idx").on(table.riskFlagged),
+    distanceMismatchIdx: index("orders_core_distance_mismatch_idx").on(
+      table.distanceMismatchFlagged
+    ),
+  })
+);
+
+export const ordersFood = pgTable(
+  "orders_food",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .unique()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    merchantStoreId: bigint("merchant_store_id", { mode: "number" }),
+    merchantParentId: bigint("merchant_parent_id", { mode: "number" }),
+    restaurantName: text("restaurant_name"),
+    restaurantPhone: text("restaurant_phone"),
+    preparationTimeMinutes: integer("preparation_time_minutes"),
+    foodItemsCount: integer("food_items_count"),
+    foodItemsTotalValue: numeric("food_items_total_value", {
+      precision: 12,
+      scale: 2,
+    }),
+    requiresUtensils: boolean("requires_utensils").default(false),
+    isFragile: boolean("is_fragile").notNull().default(false),
+    isHighValue: boolean("is_high_value").notNull().default(false),
+    vegNonVeg: vegNonVegTypeEnum("veg_non_veg"),
+    deliveryInstructions: text("delivery_instructions"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("orders_food_order_id_idx").on(table.orderId),
+    merchantStoreIdIdx: index("orders_food_merchant_store_id_idx").on(
+      table.merchantStoreId
+    ),
+  })
+);
+
+export const ordersParcel = pgTable(
+  "orders_parcel",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .unique()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    weightKg: numeric("weight_kg", { precision: 10, scale: 2 }),
+    lengthCm: numeric("length_cm", { precision: 5, scale: 2 }),
+    widthCm: numeric("width_cm", { precision: 5, scale: 2 }),
+    heightCm: numeric("height_cm", { precision: 5, scale: 2 }),
+    parcelType: text("parcel_type"),
+    declaredValue: numeric("declared_value", { precision: 12, scale: 2 }),
+    insuranceRequired: boolean("insurance_required").notNull().default(false),
+    insuranceAmount: numeric("insurance_amount", { precision: 10, scale: 2 }),
+    isCod: boolean("is_cod").default(false),
+    codAmount: numeric("cod_amount", { precision: 10, scale: 2 }),
+    requiresSignature: boolean("requires_signature").default(false),
+    requiresOtpVerification: boolean("requires_otp_verification").default(false),
+    instructions: text("instructions"),
+    scheduledPickupTime: timestamp("scheduled_pickup_time", { withTimezone: true }),
+    scheduledDeliveryTime: timestamp("scheduled_delivery_time", {
+      withTimezone: true,
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("orders_parcel_order_id_idx").on(table.orderId),
+  })
+);
+
+export const ordersRide = pgTable(
+  "orders_ride",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigserial("order_id", { mode: "number" })
+      .notNull()
+      .unique()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    passengerName: text("passenger_name"),
+    passengerPhone: text("passenger_phone"),
+    passengerCount: integer("passenger_count").default(1),
+    rideType: text("ride_type"),
+    vehicleTypeRequired: text("vehicle_type_required"),
+    waitingCharges: numeric("waiting_charges", { precision: 10, scale: 2 }).default("0"),
+    tollCharges: numeric("toll_charges", { precision: 10, scale: 2 }).default("0"),
+    parkingCharges: numeric("parking_charges", { precision: 10, scale: 2 }).default("0"),
+    scheduledRide: boolean("scheduled_ride").default(false),
+    scheduledPickupTime: timestamp("scheduled_pickup_time", { withTimezone: true }),
+    returnTrip: boolean("return_trip").default(false),
+    returnPickupAddress: text("return_pickup_address"),
+    returnPickupLat: numeric("return_pickup_lat", { precision: 9, scale: 6 }),
+    returnPickupLon: numeric("return_pickup_lon", { precision: 9, scale: 6 }),
+    returnPickupTime: timestamp("return_pickup_time", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("orders_ride_order_id_idx").on(table.orderId),
+    scheduledIdx: index("orders_ride_scheduled_idx").on(
+      table.scheduledRide,
+      table.scheduledPickupTime
+    ),
+  })
+);
+
+export const orderProviderMapping = pgTable(
+  "order_provider_mapping",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    providerId: bigint("provider_id", { mode: "number" })
+      .notNull()
+      .references(() => orderProviders.id, { onDelete: "restrict" }),
+    providerOrderId: text("provider_order_id").notNull(),
+    providerReference: text("provider_reference"),
+    providerStatus: text("provider_status"),
+    providerStatusUpdatedAt: timestamp("provider_status_updated_at", {
+      withTimezone: true,
+    }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }),
+    syncStatus: text("sync_status"),
+    syncError: text("sync_error"),
+    providerMetadata: jsonb("provider_metadata").default({}),
+    providerFare: numeric("provider_fare", { precision: 12, scale: 2 }),
+    providerCommission: numeric("provider_commission", { precision: 12, scale: 2 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_provider_mapping_order_id_idx").on(table.orderId),
+    providerOrderIdx: uniqueIndex("order_provider_mapping_provider_order_idx").on(
+      table.providerId,
+      table.providerOrderId
+    ),
+  })
+);
+
+export const orderOtps = pgTable(
+  "order_otps",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    otpType: orderOtpTypeEnum("otp_type").notNull(),
+    code: text("code").notNull(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    bypassReason: text("bypass_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_otps_order_id_idx").on(table.orderId),
+    otpTypeIdx: index("order_otps_otp_type_idx").on(table.otpType),
+    uniqueOrderOtp: uniqueIndex("order_otps_order_id_otp_type_unique").on(
+      table.orderId,
+      table.otpType
+    ),
+  })
+);
+
+export const orderDeliveryImages = pgTable(
+  "order_delivery_images",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigserial("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    riderAssignmentId: bigserial("rider_assignment_id", { mode: "number" }),
+    imageType: text("image_type").notNull(),
+    url: text("url").notNull(),
+    takenAt: timestamp("taken_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_delivery_images_order_id_idx").on(table.orderId),
+    imageTypeIdx: index("order_delivery_images_image_type_idx").on(table.imageType),
+    takenAtIdx: index("order_delivery_images_taken_at_idx").on(table.takenAt),
+  })
+);
+
+export const orderRouteSnapshots = pgTable(
+  "order_route_snapshots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    snapshotType: text("snapshot_type").notNull(),
+    distanceKm: numeric("distance_km", { precision: 10, scale: 2 }),
+    durationSeconds: integer("duration_seconds"),
+    polyline: text("polyline"),
+    mapboxResponse: jsonb("mapbox_response"),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_route_snapshots_order_id_idx").on(table.orderId),
+    recordedAtIdx: index("order_route_snapshots_recorded_at_idx").on(
+      table.recordedAt
+    ),
+  })
+);
+
+// ============================================================================
+// ORDER ACTIONS & EVENTS (legacy orders table)
+// ============================================================================
+
 /**
  * Order actions - tracks accept/reject decisions
  */
@@ -817,8 +1471,135 @@ export const orderEvents = pgTable(
 // ============================================================================
 
 /**
+ * Rider wallet - unified wallet with service-specific earnings tracking
+ * Total balance is sum of all service earnings minus penalties minus withdrawals
+ */
+export const riderWallet = pgTable(
+  "rider_wallet",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .unique()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    totalBalance: numeric("total_balance", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"), // Total balance (sum of all services)
+    // Service-specific earnings
+    earningsFood: numeric("earnings_food", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    earningsParcel: numeric("earnings_parcel", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    earningsPersonRide: numeric("earnings_person_ride", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    // Service-specific penalties
+    penaltiesFood: numeric("penalties_food", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    penaltiesParcel: numeric("penalties_parcel", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    penaltiesPersonRide: numeric("penalties_person_ride", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    // FIFO unblock: generic credit allocated per service for block logic (effective_net = earnings - penalties + unblock_alloc)
+    unblockAllocFood: numeric("unblock_alloc_food", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    unblockAllocParcel: numeric("unblock_alloc_parcel", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    unblockAllocPersonRide: numeric("unblock_alloc_person_ride", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    // Withdrawals (from total balance, not per service)
+    totalWithdrawn: numeric("total_withdrawn", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    // Wallet freeze: when true rider cannot withdraw; track who froze and when
+    isFrozen: boolean("is_frozen").notNull().default(false),
+    frozenAt: timestamp("frozen_at", { withTimezone: true }),
+    frozenBySystemUserId: integer("frozen_by_system_user_id").references(
+      () => systemUsers.id,
+      { onDelete: "set null" }
+    ),
+    lastUpdatedAt: timestamp("last_updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: uniqueIndex("rider_wallet_rider_id_idx").on(table.riderId),
+    totalBalanceIdx: index("rider_wallet_total_balance_idx").on(table.totalBalance),
+    isFrozenIdx: index("rider_wallet_is_frozen_idx").on(table.isFrozen),
+  })
+);
+
+/**
+ * Rider wallet freeze history - audit log of freeze/unfreeze actions with agent tracking
+ */
+export const riderWalletFreezeHistory = pgTable(
+  "rider_wallet_freeze_history",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    action: text("action").notNull(), // 'freeze' | 'unfreeze'
+    performedBySystemUserId: integer("performed_by_system_user_id")
+      .notNull()
+      .references(() => systemUsers.id, { onDelete: "set null" }),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_wallet_freeze_history_rider_id_idx").on(table.riderId),
+    createdAtIdx: index("rider_wallet_freeze_history_created_at_idx").on(table.createdAt),
+    performedByIdx: index("rider_wallet_freeze_history_performed_by_idx").on(
+      table.performedBySystemUserId
+    ),
+  })
+);
+
+/**
+ * Rider temporary block due to negative wallet (per service).
+ * When net balance (earnings - penalties) for a service <= -50, rider is blocked for that service.
+ * Auto-removed when balance recovers to >= 0 (adjustment or penalty revert). Not time-based.
+ */
+export const riderNegativeWalletBlocks = pgTable(
+  "rider_negative_wallet_blocks",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(), // 'food' | 'parcel' | 'person_ride'
+    reason: text("reason").notNull().default("negative_wallet"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_negative_wallet_blocks_rider_id_idx").on(table.riderId),
+    serviceTypeIdx: index("rider_negative_wallet_blocks_service_type_idx").on(table.serviceType),
+    riderServiceIdx: uniqueIndex("rider_negative_wallet_blocks_rider_service_idx").on(
+      table.riderId,
+      table.serviceType
+    ),
+  })
+);
+
+/**
  * Wallet ledger - immutable transaction log
  * RECOMMENDED: Partition by rider_id for high-volume scenarios
+ * Enhanced with service_type for service-specific tracking
  */
 export const walletLedger = pgTable(
   "wallet_ledger",
@@ -830,10 +1611,13 @@ export const walletLedger = pgTable(
     entryType: walletEntryTypeEnum("entry_type").notNull(),
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
     balance: numeric("balance", { precision: 10, scale: 2 }), // Running balance
-    ref: text("ref"), // Reference to order_id, withdrawal_id, etc.
+    serviceType: text("service_type"), // 'food', 'parcel', 'person_ride', or NULL for non-service-specific
+    ref: text("ref"), // Reference to order_id, withdrawal_id, penalty_id, etc.
     refType: text("ref_type"), // "order", "withdrawal", "penalty", etc.
     description: text("description"),
     metadata: jsonb("metadata").default({}),
+    performedByType: text("performed_by_type").default("system"), // 'agent' | 'system' | 'rider' | 'automated'
+    performedById: integer("performed_by_id"), // system_users.id when performed_by_type = 'agent'
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -842,12 +1626,19 @@ export const walletLedger = pgTable(
     pk: primaryKey({ columns: [table.id, table.riderId] }),
     riderIdIdx: index("wallet_ledger_rider_id_idx").on(table.riderId),
     entryTypeIdx: index("wallet_ledger_entry_type_idx").on(table.entryType),
+    serviceTypeIdx: index("wallet_ledger_service_type_idx").on(table.serviceType),
     createdAtIdx: index("wallet_ledger_created_at_idx").on(table.createdAt),
     riderCreatedIdx: index("wallet_ledger_rider_created_idx").on(
       table.riderId,
       table.createdAt
     ),
+    riderServiceIdx: index("wallet_ledger_rider_service_idx").on(
+      table.riderId,
+      table.serviceType
+    ),
     refIdx: index("wallet_ledger_ref_idx").on(table.ref),
+    performedByTypeIdx: index("wallet_ledger_performed_by_type_idx").on(table.performedByType),
+    performedByIdIdx: index("wallet_ledger_performed_by_id_idx").on(table.performedById),
   })
 );
 
@@ -884,6 +1675,52 @@ export const withdrawalRequests = pgTable(
     createdAtIdx: index("withdrawal_requests_created_at_idx").on(
       table.createdAt
     ),
+  })
+);
+
+/**
+ * Wallet credit requests - agents request credits; approvers approve/reject.
+ * On approval: wallet_ledger entry + rider_wallet update (FIFO/block sync).
+ */
+export const walletCreditRequests = pgTable(
+  "wallet_credit_requests",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    orderId: bigint("order_id", { mode: "number" }).references(() => orders.id, {
+      onDelete: "set null",
+    }),
+    serviceType: text("service_type"), // 'food' | 'parcel' | 'person_ride'
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("pending"), // 'pending' | 'approved' | 'rejected'
+    idempotencyKey: text("idempotency_key"),
+    requestedBySystemUserId: integer("requested_by_system_user_id")
+      .notNull()
+      .references((): any => systemUsers.id, { onDelete: "cascade" }),
+    requestedByEmail: text("requested_by_email"),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    reviewedBySystemUserId: integer("reviewed_by_system_user_id").references(
+      (): any => systemUsers.id,
+      { onDelete: "set null" }
+    ),
+    reviewedByEmail: text("reviewed_by_email"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewNote: text("review_note"),
+    approvedLedgerRef: text("approved_ledger_ref").unique(),
+    metadata: jsonb("metadata").notNull().default({}),
+  },
+  (table) => ({
+    riderStatusRequestedIdx: index(
+      "wallet_credit_requests_rider_status_requested_idx"
+    ).on(table.riderId, table.status, table.requestedAt),
+    statusRequestedIdx: index(
+      "wallet_credit_requests_status_requested_idx"
+    ).on(table.status, table.requestedAt),
   })
 );
 
@@ -1053,9 +1890,11 @@ export const tickets = pgTable(
       .notNull()
       .defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: integer("resolved_by").references(() => systemUsers.id, { onDelete: "set null" }),
   },
   (table) => ({
     riderIdIdx: index("tickets_rider_id_idx").on(table.riderId),
+    resolvedByIdx: index("tickets_resolved_by_idx").on(table.resolvedBy),
     statusIdx: index("tickets_status_idx").on(table.status),
     categoryIdx: index("tickets_category_idx").on(table.category),
     createdAtIdx: index("tickets_created_at_idx").on(table.createdAt),
@@ -1233,13 +2072,22 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
   referredRiders: many(riders),
   documents: many(riderDocuments),
   devices: many(riderDevices),
+  vehicles: many(riderVehicles),
+  penalties: many(riderPenalties),
+  wallet: one(riderWallet, {
+    fields: [riders.id],
+    references: [riderWallet.riderId],
+  }),
   dutyLogs: many(dutyLogs),
   locationLogs: many(locationLogs),
   blacklistHistory: many(blacklistHistory),
+  negativeWalletBlocks: many(riderNegativeWalletBlocks),
   orders: many(orders),
   orderActions: many(orderActions),
   walletLedger: many(walletLedger),
+  walletFreezeHistory: many(riderWalletFreezeHistory),
   withdrawalRequests: many(withdrawalRequests),
+  walletCreditRequests: many(walletCreditRequests),
   onboardingPayments: many(onboardingPayments),
   offerParticipation: many(offerParticipation),
   ratings: many(ratings),
@@ -1260,6 +2108,40 @@ export const riderDocumentsRelations = relations(
   })
 );
 
+export const riderPenaltiesRelations = relations(
+  riderPenalties,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [riderPenalties.riderId],
+      references: [riders.id],
+    }),
+    order: one(orders, {
+      fields: [riderPenalties.orderId],
+      references: [orders.id],
+    }),
+    imposedByUser: one(systemUsers, {
+      fields: [riderPenalties.imposedBy],
+      references: [systemUsers.id],
+      relationName: "penaltyImposedBy",
+    }),
+    reversedByUser: one(systemUsers, {
+      fields: [riderPenalties.reversedBy],
+      references: [systemUsers.id],
+      relationName: "penaltyReversedBy",
+    }),
+  })
+);
+
+export const riderVehiclesRelations = relations(
+  riderVehicles,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [riderVehicles.riderId],
+      references: [riders.id],
+    }),
+  })
+);
+
 export const ordersRelations = relations(orders, ({ one, many }) => ({
   rider: one(riders, {
     fields: [orders.riderId],
@@ -1269,7 +2151,88 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
   events: many(orderEvents),
   ratings: many(ratings),
   tickets: many(tickets),
+  walletCreditRequests: many(walletCreditRequests),
 }));
+
+export const orderProvidersRelations = relations(orderProviders, ({ many }) => ({
+  providerMappings: many(orderProviderMapping),
+}));
+
+export const ordersCoreRelations = relations(ordersCore, ({ one, many }) => ({
+  rider: one(riders, {
+    fields: [ordersCore.riderId],
+    references: [riders.id],
+  }),
+  food: one(ordersFood),
+  parcel: one(ordersParcel),
+  ride: one(ordersRide),
+  providerMappings: many(orderProviderMapping),
+  otps: many(orderOtps),
+  deliveryImages: many(orderDeliveryImages),
+  routeSnapshots: many(orderRouteSnapshots),
+}));
+
+export const ordersFoodRelations = relations(ordersFood, ({ one }) => ({
+  order: one(ordersCore, {
+    fields: [ordersFood.orderId],
+    references: [ordersCore.id],
+  }),
+}));
+
+export const ordersParcelRelations = relations(ordersParcel, ({ one }) => ({
+  order: one(ordersCore, {
+    fields: [ordersParcel.orderId],
+    references: [ordersCore.id],
+  }),
+}));
+
+export const ordersRideRelations = relations(ordersRide, ({ one }) => ({
+  order: one(ordersCore, {
+    fields: [ordersRide.orderId],
+    references: [ordersCore.id],
+  }),
+}));
+
+export const orderProviderMappingRelations = relations(
+  orderProviderMapping,
+  ({ one }) => ({
+    order: one(ordersCore, {
+      fields: [orderProviderMapping.orderId],
+      references: [ordersCore.id],
+    }),
+    provider: one(orderProviders, {
+      fields: [orderProviderMapping.providerId],
+      references: [orderProviders.id],
+    }),
+  })
+);
+
+export const orderOtpsRelations = relations(orderOtps, ({ one }) => ({
+  order: one(ordersCore, {
+    fields: [orderOtps.orderId],
+    references: [ordersCore.id],
+  }),
+}));
+
+export const orderDeliveryImagesRelations = relations(
+  orderDeliveryImages,
+  ({ one }) => ({
+    order: one(ordersCore, {
+      fields: [orderDeliveryImages.orderId],
+      references: [ordersCore.id],
+    }),
+  })
+);
+
+export const orderRouteSnapshotsRelations = relations(
+  orderRouteSnapshots,
+  ({ one }) => ({
+    order: one(ordersCore, {
+      fields: [orderRouteSnapshots.orderId],
+      references: [ordersCore.id],
+    }),
+  })
+);
 
 export const walletLedgerRelations = relations(walletLedger, ({ one }) => ({
   rider: one(riders, {
@@ -1277,6 +2240,65 @@ export const walletLedgerRelations = relations(walletLedger, ({ one }) => ({
     references: [riders.id],
   }),
 }));
+
+export const riderWalletRelations = relations(riderWallet, ({ one }) => ({
+  rider: one(riders, {
+    fields: [riderWallet.riderId],
+    references: [riders.id],
+  }),
+  frozenByUser: one(systemUsers, {
+    fields: [riderWallet.frozenBySystemUserId],
+    references: [systemUsers.id],
+  }),
+}));
+
+export const riderWalletFreezeHistoryRelations = relations(
+  riderWalletFreezeHistory,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [riderWalletFreezeHistory.riderId],
+      references: [riders.id],
+    }),
+    performedByUser: one(systemUsers, {
+      fields: [riderWalletFreezeHistory.performedBySystemUserId],
+      references: [systemUsers.id],
+    }),
+  })
+);
+
+export const riderNegativeWalletBlocksRelations = relations(
+  riderNegativeWalletBlocks,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [riderNegativeWalletBlocks.riderId],
+      references: [riders.id],
+    }),
+  })
+);
+
+export const walletCreditRequestsRelations = relations(
+  walletCreditRequests,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [walletCreditRequests.riderId],
+      references: [riders.id],
+    }),
+    order: one(orders, {
+      fields: [walletCreditRequests.orderId],
+      references: [orders.id],
+    }),
+    requestedByUser: one(systemUsers, {
+      fields: [walletCreditRequests.requestedBySystemUserId],
+      references: [systemUsers.id],
+      relationName: "walletCreditRequestedBy",
+    }),
+    reviewedByUser: one(systemUsers, {
+      fields: [walletCreditRequests.reviewedBySystemUserId],
+      references: [systemUsers.id],
+      relationName: "walletCreditReviewedBy",
+    }),
+  })
+);
 
 export const referralsRelations = relations(referrals, ({ one }) => ({
   referrer: one(riders, {

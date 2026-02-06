@@ -54,6 +54,12 @@ export const DASHBOARD_DEFINITIONS: Record<
         description: "Take actions on riders for person ride orders: cancel ride, assign, penalty, blacklist/whitelist, wallet, deactivate",
         allowedActions: ["UPDATE", "CANCEL", "BLOCK", "UNBLOCK"],
       },
+      {
+        group: "RIDER_WALLET_CREDITS",
+        label: "Wallet Credit Requests",
+        description: "Request wallet credits (CREATE) or approve/reject pending requests (APPROVE, REJECT, VIEW)",
+        allowedActions: ["CREATE", "VIEW", "APPROVE", "REJECT"],
+      },
     ],
   },
   MERCHANT: {

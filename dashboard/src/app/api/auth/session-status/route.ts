@@ -20,11 +20,15 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getSession();
 
     if (sessionError || !session) {
-      return NextResponse.json({
-        success: false,
-        authenticated: false,
-        error: "Not authenticated",
-      });
+      return NextResponse.json(
+        {
+          success: false,
+          authenticated: false,
+          error: "Not authenticated",
+          code: "SESSION_REQUIRED",
+        },
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     // Get session metadata from cookies
@@ -68,8 +72,9 @@ export async function GET(request: NextRequest) {
       {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
+        code: "SESSION_STATUS_ERROR",
       },
-      { status: 500 }
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 }

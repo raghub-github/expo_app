@@ -10,7 +10,7 @@
  * - Fallback: Use email if UUID mapping doesn't exist
  */
 
-import { getDb } from "../db/client";
+import { getDb, getSql } from "../db/client";
 import { eq, and, isNull, sql } from "drizzle-orm";
 import { systemUsers } from "../db/schema";
 
@@ -50,14 +50,12 @@ export async function getSystemUserByEmail(
   email: string | null | undefined
 ): Promise<SystemUser | null> {
   try {
-    // Validate email parameter
     if (!email || typeof email !== 'string' || email.trim() === '') {
       return null;
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    
-    // Check request-level cache (only for same request cycle)
+
     const cacheKey = `email:${normalizedEmail}`;
     const cached = requestCache.get(cacheKey);
     const now = Date.now();
@@ -66,7 +64,10 @@ export async function getSystemUserByEmail(
     }
 
     const db = getDb();
-    
+
+    // Only consider non-deleted users
+    const notDeleted = isNull(systemUsers.deletedAt);
+
     // Try exact match first (emails in DB should be lowercase)
     let result = await db
       .select({
@@ -79,31 +80,59 @@ export async function getSystemUserByEmail(
         status: systemUsers.status,
       })
       .from(systemUsers)
-      .where(eq(systemUsers.email, normalizedEmail))
+      .where(and(eq(systemUsers.email, normalizedEmail), notDeleted))
       .limit(1);
-    
-    // If no result, try case-insensitive match
+
+    // If no result, try case-insensitive + trim-insensitive via raw SQL (handles DB storage quirks)
     if (result.length === 0) {
-      result = await db
-        .select({
-          id: systemUsers.id,
-          system_user_id: systemUsers.systemUserId,
-          email: systemUsers.email,
-          mobile: systemUsers.mobile,
-          full_name: systemUsers.fullName,
-          primary_role: systemUsers.primaryRole,
-          status: systemUsers.status,
-        })
-        .from(systemUsers)
-        .where(sql`LOWER(TRIM(${systemUsers.email})) = LOWER(TRIM(${normalizedEmail}))`)
-        .limit(1);
+      try {
+        const sqlClient = getSql();
+        const rawRows = await sqlClient`
+          SELECT id, system_user_id, email, mobile, full_name, primary_role, status
+          FROM system_users
+          WHERE LOWER(TRIM(email)) = ${normalizedEmail}
+            AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (rawRows.length > 0) {
+          const row = rawRows[0] as {
+            id: number | string;
+            system_user_id: string;
+            email: string;
+            mobile: string;
+            full_name: string;
+            primary_role: string;
+            status: string;
+          };
+          const numericId = Number(row.id);
+          if (!Number.isFinite(numericId)) {
+            result = [];
+          } else {
+            result = [{
+              id: numericId,
+              system_user_id: row.system_user_id,
+              email: row.email,
+              mobile: row.mobile,
+              full_name: row.full_name,
+              primary_role: row.primary_role,
+              status: row.status,
+            }];
+          }
+        }
+      } catch {
+        // Ignore raw fallback errors; result stays empty
+      }
     }
 
     let userData: SystemUser | null = null;
     if (result.length > 0) {
       const user = result[0];
+      const numericId = Number(user.id);
+      if (!Number.isFinite(numericId)) {
+        return null;
+      }
       userData = {
-        id: user.id,
+        id: numericId,
         system_user_id: user.system_user_id,
         email: user.email,
         mobile: user.mobile,
@@ -113,10 +142,8 @@ export async function getSystemUserByEmail(
       };
     }
 
-    // Cache result for this request cycle
     requestCache.set(cacheKey, { data: userData, timestamp: now });
-    
-    // Clean up old cache entries periodically
+
     if (requestCache.size > 100) {
       for (const [key, value] of requestCache.entries()) {
         if ((now - value.timestamp) > CACHE_TTL) {
@@ -127,15 +154,15 @@ export async function getSystemUserByEmail(
 
     return userData;
   } catch (error) {
-    // Only log actual errors, not normal "not found" cases
     if (error instanceof Error) {
-      const isConnectionError = 
+      // Only rethrow for actual connection failures (unreachable host, etc.).
+      // Do NOT rethrow for "Failed query" — that can be timeout/transient; return null so
+      // callers (e.g. permissions) get null and can return exists: false without stack trace.
+      const isConnectionError =
         error.message.includes('CONNECT_TIMEOUT') ||
         error.message.includes('ECONNREFUSED') ||
         error.message.includes('ETIMEDOUT') ||
-        error.message.includes('ENOTFOUND') ||
-        error.message.includes('Failed query');
-      
+        error.message.includes('ENOTFOUND');
       if (isConnectionError) {
         throw new Error(`Database connection error: ${error.message}`);
       }

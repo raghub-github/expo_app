@@ -146,3 +146,17 @@ If you encounter issues:
 2. Verify your database connection string is correct
 3. Ensure you have proper database permissions
 4. Check Supabase logs if using Supabase
+
+---
+
+## Rider wallet global block and FIFO (0079)
+
+**File**: `0079_global_block_and_fifo_unblock.sql`
+
+Run after 0078. This migration:
+
+1. Adds `unblock_alloc_food`, `unblock_alloc_parcel`, `unblock_alloc_person_ride` to `rider_wallet` (NUMERIC default 0).
+2. Replaces `sync_rider_negative_wallet_blocks_from_wallet()`: global block when `total_balance <= -200` (all services, reason `global_emergency`); else per-service block when effective_net = (earnings - penalties + unblock_alloc) <= -50.
+3. Replaces `trigger_update_wallet_from_ledger()` so that **generic** `manual_add` (no `service_type`) does not update the wallet in the trigger; the dashboard app uses POST `/api/riders/[id]/wallet/add-balance` to update wallet, run FIFO allocation, and sync blocks.
+
+**Verification**: After running, apply a penalty and confirm only that service is blocked when net <= -50; set total_balance to <= -200 (e.g. via SQL for test) and confirm all three services show as blocked with reason `global_emergency`.

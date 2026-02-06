@@ -20,7 +20,11 @@ export async function register() {
         errorStack.includes("JSON.parse");
       
       if (isJsonParseError) {
-        // Silently suppress - these are from agent logging that's not critical
+        // Log source once so we can fix the call site (then remove or reduce logging)
+        console.warn(
+          "[instrumentation] JSON parse rejection (fix the call site that parses non-JSON):",
+          reason instanceof Error ? reason.stack : String(reason)
+        );
         return;
       }
       

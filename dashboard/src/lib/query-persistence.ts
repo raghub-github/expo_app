@@ -156,8 +156,20 @@ export function createPersister(): Persister {
       try {
         const item = storage.getItem(CACHE_KEY);
         if (!item) return undefined;
-        
-        const client = JSON.parse(item) as PersistedClient;
+        // Defensive: avoid parsing non-JSON (e.g. corrupt or HTML)
+        const trimmed = item.trim();
+        if (trimmed.length === 0 || (trimmed[0] !== "{" && trimmed[0] !== "[")) {
+          storage.removeItem(CACHE_KEY);
+          return undefined;
+        }
+        let client: PersistedClient;
+        try {
+          client = JSON.parse(item) as PersistedClient;
+        } catch (parseErr) {
+          console.warn("[Persister] Corrupt cache (not JSON), clearing:", parseErr);
+          storage.removeItem(CACHE_KEY);
+          return undefined;
+        }
         
         // Validate cache version
         if (client.clientState?.clientState?.version !== CACHE_VERSION) {

@@ -15,11 +15,12 @@
 - **`DATABASE_SCHEMA_CUSTOMER_DOMAIN_PART4_LOYALTY_REWARDS.md`** - Loyalty & rewards (8 tables)
 - **`DATABASE_SCHEMA_CUSTOMER_DOMAIN_PART5_SUPPORT_ANALYTICS.md`** - Support & analytics (19 tables)
 
-### **Orders Domain** (28 tables) - ✅ Complete - Split into 4 parts
+### **Orders Domain** (28+ tables) - ✅ Complete - Split into 4 parts + Hybrid
 - **`DATABASE_SCHEMA_ORDERS_DOMAIN_PART1_CORE.md`** - Core orders table (1 table)
 - **`DATABASE_SCHEMA_ORDERS_DOMAIN_PART2_ITEMS_SERVICES.md`** - Items & service-specific (10 tables)
 - **`DATABASE_SCHEMA_ORDERS_DOMAIN_PART3_ASSIGNMENTS_TIMELINE.md`** - Assignments & timeline (11 tables)
 - **`DATABASE_SCHEMA_ORDERS_DOMAIN_PART4_PAYMENTS_DISPUTES.md`** - Payments, disputes, conflicts (6 tables)
+- **`ORDER_HYBRID_ARCHITECTURE.md`** - Hybrid schema: orders_core, orders_food/parcel/ride, order_provider_mapping, OTPs, delivery images, route snapshots (migrations 0067–0069)
 
 ### **Merchant Domain** (35 tables) - ✅ Complete - Split into 3 parts
 - **`DATABASE_SCHEMA_MERCHANT_DOMAIN_PART1_CORE.md`** - Core merchant structure (7 tables)

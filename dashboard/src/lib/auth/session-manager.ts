@@ -1,11 +1,29 @@
 /**
  * Session Management Utilities
- * 
- * Handles session lifecycle:
- * - 24 hour session duration
- * - Activity-based renewal (renews on activity within 24h)
- * - 7 day maximum session duration
- * - Immediate expiration on logout
+ *
+ * Session rules (cookie-based, validated in middleware on every request):
+ *
+ * 1. On login: session is valid for 24 hours from that moment (session_start_time
+ *    and last_activity_time are set to now).
+ *
+ * 2. Activity-based renewal: if the user accesses any protected page/API again
+ *    within 24 hours, last_activity_time is updated to now (updateActivity in
+ *    middleware). That effectively renews the session for another 24 hours from
+ *    that visit. This renewal happens on every request while the session is valid.
+ *
+ * 3. Maximum lifetime: no matter how often they visit, the session expires 7 days
+ *    after the first login (session_start_time never changes). After 7 days they
+ *    must log in again.
+ *
+ * 4. Inactivity expiry: if the user does NOT access the app for 24 hours, the
+ *    session expires (timeSinceLastActivity > 24h). No renewal; they must log in again.
+ *
+ * 5. Logout / expire: expireSession() clears session cookies; middleware calls it
+ *    when validity fails or on explicit logout.
+ *
+ * Cookie management: only POST /api/auth/set-cookie sets these cookies (on login).
+ * Middleware only reads them and updates last_activity_time. Logout and
+ * expireSession clear them.
  */
 
 // Constants
@@ -111,7 +129,7 @@ export function checkSessionValidity(
  * Initialize session (call on login)
  */
 export function initializeSession(cookies: {
-  set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string }) => void;
+  set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => void;
 }): SessionMetadata {
   const now = Date.now();
   const sessionId = generateSessionId();
@@ -124,10 +142,11 @@ export function initializeSession(cookies: {
 
   // Set cookies with 7 day expiration (max session duration)
   const cookieOptions = {
-    maxAge: MAX_SESSION_DURATION / 1000, // Convert to seconds
+    maxAge: MAX_SESSION_DURATION / 1000, // seconds
     path: "/",
-    httpOnly: false, // Need to read from client-side too
+    httpOnly: false, // allow client read for session status display
     sameSite: "lax" as const,
+    secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
   };
 
   cookies.set(SESSION_START_COOKIE, now.toString(), cookieOptions);
@@ -143,7 +162,7 @@ export function initializeSession(cookies: {
 export function updateActivity(
   cookies: {
     get: (name: string) => { value: string } | undefined;
-    set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string }) => void;
+    set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => void;
   },
   currentTime: number = Date.now()
 ): boolean {
@@ -153,12 +172,12 @@ export function updateActivity(
       return false;
     }
 
-    // Update last activity time
     const cookieOptions = {
       maxAge: MAX_SESSION_DURATION / 1000,
       path: "/",
       httpOnly: false,
       sameSite: "lax" as const,
+      secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
     };
 
     cookies.set(LAST_ACTIVITY_COOKIE, currentTime.toString(), cookieOptions);
@@ -174,13 +193,14 @@ export function updateActivity(
  * Expire session (call on logout or expiration)
  */
 export function expireSession(cookies: {
-  set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string }) => void;
+  set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => void;
 }): void {
   const expireOptions = {
     maxAge: 0,
     path: "/",
     httpOnly: false,
     sameSite: "lax" as const,
+    secure: typeof process !== "undefined" && process.env?.NODE_ENV === "production",
   };
 
   cookies.set(SESSION_START_COOKIE, "", expireOptions);

@@ -1,20 +1,32 @@
 /**
  * Enterprise-Grade Permission Engine
- * 
- * This module implements the custom authorization system that works alongside
- * Supabase Auth. Supabase handles authentication (identity), this handles
- * authorization (permissions, roles, access control).
- * 
- * Architecture:
- * 1. Supabase Auth verifies identity (JWT)
- * 2. This engine checks authorization (roles, permissions)
- * 3. Database RLS provides additional security layer
+ *
+ * Works alongside Supabase Auth: Supabase verifies identity (JWT); this engine
+ * handles authorization (who can access which dashboard/page/action).
+ *
+ * What is implemented and used today:
+ * - system_users.primary_role → isSuperAdmin (SUPER_ADMIN bypasses all checks).
+ * - dashboard_access → which dashboards a user can open (RIDER, MERCHANT, etc.).
+ * - dashboard_access_points → which actions are allowed per dashboard (VIEW, CREATE,
+ *   APPROVE, etc.) and optional context (e.g. access_point_group, ticket category).
+ * - Path-to-dashboard mapping lives in path-mapping.ts (client-safe); canAccessPage
+ *   and page-protection use it. API routes call hasDashboardAccessByAuth, isSuperAdmin,
+ *   hasAccessPointAction, and actions in lib/permissions/actions.ts for fine-grained checks.
+ *
+ * What is stubbed for future RBAC:
+ * - getUserRolesFromDb / getUserPermissionsFromDb return []. When user_roles and
+ *   role_permissions (or equivalent) are wired, permission checks can combine
+ *   role-based permissions with dashboard/access-point checks.
+ *
+ * Client usage: Prefer the usePermission() hook (cached permissions + dashboard access)
+ * for UI; always enforce in API routes with this engine or actions.ts.
  */
 
 import { getDb } from "../db/client";
 import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
 import { getSystemUserByEmail, getSystemUserByAuthId, isUserAccountActive } from "../auth/user-mapping";
 import { dashboardAccess, dashboardAccessPoints, type DashboardType, type AccessPointGroup, type ActionType } from "../db/schema";
+import { getDashboardTypeFromPath } from "./path-mapping";
 
 // Type definitions - these should match your database schema
 export type AccessModule = 
@@ -97,7 +109,7 @@ export interface AccessPoint {
  * Get system user ID from Supabase auth user
  * This is the bridge between Supabase Auth and our authorization system
  */
-async function getSystemUserIdFromAuthUser(
+export async function getSystemUserIdFromAuthUser(
   supabaseAuthId: string,
   email: string | null | undefined
 ): Promise<number | null> {
@@ -331,42 +343,8 @@ export async function checkPermission(
   }
 }
 
-/**
- * Map URL path to dashboard type
- * Helper function to convert page paths to dashboard types
- */
-export function getDashboardTypeFromPath(pagePath: string): DashboardType | null {
-  const pathToDashboardMap: Record<string, DashboardType> = {
-    "/dashboard/riders": "RIDER",
-    "/dashboard/merchants": "MERCHANT",
-    "/dashboard/customers": "CUSTOMER", // All customer paths map to CUSTOMER dashboard
-    "/dashboard/orders": "ORDER_FOOD", // Default to food, but check specific paths
-    "/dashboard/orders/food": "ORDER_FOOD",
-    "/dashboard/orders/person-ride": "ORDER_PERSON_RIDE",
-    "/dashboard/orders/parcel": "ORDER_PARCEL",
-    "/dashboard/tickets": "TICKET", // All ticket paths map to TICKET dashboard
-    "/dashboard/offers": "OFFER",
-    "/dashboard/area-managers": "AREA_MANAGER",
-    "/dashboard/payments": "PAYMENT",
-    "/dashboard/system": "SYSTEM",
-    "/dashboard/analytics": "ANALYTICS",
-    "/dashboard/super-admin": "SYSTEM", // Super admin dashboard is part of system
-  };
-
-  // Check exact match first
-  if (pathToDashboardMap[pagePath]) {
-    return pathToDashboardMap[pagePath];
-  }
-
-  // Check if path starts with any dashboard path
-  for (const [path, dashboardType] of Object.entries(pathToDashboardMap)) {
-    if (pagePath.startsWith(path)) {
-      return dashboardType;
-    }
-  }
-
-  return null;
-}
+/** Re-export for backward compatibility; implementation in path-mapping.ts (client-safe). */
+export { getDashboardTypeFromPath } from "./path-mapping";
 
 /**
  * Check if user can access a specific page/route
@@ -597,6 +575,37 @@ export async function hasAccessPoint(
   } catch (error) {
     console.error("Error checking access point:", error);
     return false; // Fail closed
+  }
+}
+
+/**
+ * Check if user has a specific action in a given access point group
+ */
+export async function hasAccessPointAction(
+  systemUserId: number,
+  dashboardType: DashboardType,
+  accessPointGroup: AccessPointGroup,
+  actionType: ActionType
+): Promise<boolean> {
+  try {
+    const db = getDb();
+    const result = await db
+      .select({ allowedActions: dashboardAccessPoints.allowedActions })
+      .from(dashboardAccessPoints)
+      .where(
+        and(
+          eq(dashboardAccessPoints.systemUserId, systemUserId),
+          eq(dashboardAccessPoints.dashboardType, dashboardType),
+          eq(dashboardAccessPoints.accessPointGroup, accessPointGroup),
+          eq(dashboardAccessPoints.isActive, true)
+        )
+      )
+      .limit(1);
+    const row = result[0];
+    const actions = (row?.allowedActions as string[] | null) ?? [];
+    return actions.includes(actionType);
+  } catch (error) {
+    return false;
   }
 }
 

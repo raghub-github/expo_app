@@ -18,11 +18,6 @@ export default function NewUserPage() {
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full">
-        <p className="text-sm sm:text-base text-gray-600">
-          Add a new system user, agent, or administrator
-        </p>
-      </div>
       <div className="bg-white rounded-lg shadow p-6">
         <UserForm mode="create" isSuperAdmin={isSuperAdmin} currentUserId={systemUserId} />
       </div>

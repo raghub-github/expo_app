@@ -15,11 +15,6 @@ export default async function OrdersPage() {
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full">
-        <p className="text-sm sm:text-base text-gray-600">
-          Select an order type to manage orders
-        </p>
-      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Food Orders Card */}

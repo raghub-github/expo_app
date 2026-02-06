@@ -1,0 +1,124 @@
+/**
+ * GET /api/wallet-credit-requests
+ * List wallet credit requests with filters. Requires VIEW on RIDER_WALLET_CREDITS.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getDb } from "@/lib/db/client";
+import { walletCreditRequests, riders } from "@/lib/db/schema";
+import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
+import { getSystemUserIdFromAuthUser, hasDashboardAccess, hasAccessPointAction, isSuperAdmin } from "@/lib/permissions/engine";
+
+export const runtime = "nodejs";
+
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session) {
+      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    }
+
+    const systemUserId = await getSystemUserIdFromAuthUser(session.user.id, session.user.email ?? undefined);
+    if (!systemUserId) {
+      return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
+    }
+
+    const canView =
+      (await isSuperAdmin(session.user.id, session.user.email!)) ||
+      ((await hasDashboardAccess(systemUserId, "RIDER")) &&
+        (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "VIEW")));
+    if (!canView) {
+      return NextResponse.json({ success: false, error: "Insufficient permissions. VIEW on RIDER_WALLET_CREDITS required." }, { status: 403 });
+    }
+
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get("status"); // pending | approved | rejected
+    const riderIdParam = searchParams.get("riderId");
+    const from = searchParams.get("from");
+    const to = searchParams.get("to");
+    const minAmount = searchParams.get("minAmount");
+    const maxAmount = searchParams.get("maxAmount");
+    const orderIdParam = searchParams.get("orderId");
+    const limit = Math.min(100, parseInt(searchParams.get("limit") || "30"));
+    const offset = parseInt(searchParams.get("offset") || "0");
+
+    const db = getDb();
+
+    const conditions: ReturnType<typeof eq>[] = [];
+    if (status && ["pending", "approved", "rejected"].includes(status)) {
+      conditions.push(eq(walletCreditRequests.status, status));
+    }
+    if (riderIdParam) {
+      const riderId = parseInt(riderIdParam);
+      if (!isNaN(riderId)) conditions.push(eq(walletCreditRequests.riderId, riderId));
+    }
+    if (from) conditions.push(gte(walletCreditRequests.requestedAt, new Date(from + "T00:00:00.000Z")));
+    if (to) conditions.push(lte(walletCreditRequests.requestedAt, new Date(to + "T23:59:59.999Z")));
+    if (minAmount != null && minAmount !== "") {
+      const n = parseFloat(minAmount);
+      if (!isNaN(n)) conditions.push(sql`${walletCreditRequests.amount} >= ${n.toFixed(2)}`);
+    }
+    if (maxAmount != null && maxAmount !== "") {
+      const n = parseFloat(maxAmount);
+      if (!isNaN(n)) conditions.push(sql`${walletCreditRequests.amount} <= ${n.toFixed(2)}`);
+    }
+    if (orderIdParam) {
+      const orderId = parseInt(orderIdParam);
+      if (!isNaN(orderId)) conditions.push(eq(walletCreditRequests.orderId, orderId));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const rows = await db
+      .select({
+        id: walletCreditRequests.id,
+        riderId: walletCreditRequests.riderId,
+        orderId: walletCreditRequests.orderId,
+        serviceType: walletCreditRequests.serviceType,
+        amount: walletCreditRequests.amount,
+        reason: walletCreditRequests.reason,
+        status: walletCreditRequests.status,
+        requestedBySystemUserId: walletCreditRequests.requestedBySystemUserId,
+        requestedByEmail: walletCreditRequests.requestedByEmail,
+        requestedAt: walletCreditRequests.requestedAt,
+        reviewedBySystemUserId: walletCreditRequests.reviewedBySystemUserId,
+        reviewedByEmail: walletCreditRequests.reviewedByEmail,
+        reviewedAt: walletCreditRequests.reviewedAt,
+        reviewNote: walletCreditRequests.reviewNote,
+        approvedLedgerRef: walletCreditRequests.approvedLedgerRef,
+      })
+      .from(walletCreditRequests)
+      .where(whereClause)
+      .orderBy(desc(walletCreditRequests.requestedAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Optional: include rider display (e.g. rider_id or mobile) - keep response lean
+    const list = rows.map((r) => ({
+      id: r.id,
+      riderId: r.riderId,
+      orderId: r.orderId ?? undefined,
+      serviceType: r.serviceType ?? undefined,
+      amount: Number(r.amount),
+      reason: r.reason,
+      status: r.status,
+      requestedBySystemUserId: r.requestedBySystemUserId ?? undefined,
+      requestedByEmail: r.requestedByEmail ?? undefined,
+      requestedAt: r.requestedAt,
+      reviewedByEmail: r.reviewedByEmail ?? undefined,
+      reviewedAt: r.reviewedAt ?? undefined,
+      reviewNote: r.reviewNote ?? undefined,
+      approvedLedgerRef: r.approvedLedgerRef ?? undefined,
+    }));
+
+    return NextResponse.json({ success: true, data: list });
+  } catch (error) {
+    console.error("[GET /api/wallet-credit-requests] Error:", error);
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : "Failed to list requests" },
+      { status: 500 }
+    );
+  }
+}

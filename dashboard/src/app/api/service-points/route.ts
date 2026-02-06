@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
+import { apiErrorResponse } from "@/lib/api-errors";
 
 export const runtime = 'nodejs';
 
@@ -44,13 +45,8 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("[service-points API] Error:", error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
+    const { body, status } = apiErrorResponse(error);
+    return NextResponse.json(body, { status });
   }
 }
 

@@ -1,29 +1,65 @@
 /**
  * Dashboard Access API Route
  * GET /api/auth/dashboard-access - Get current user's dashboard access
+ * Uses getUser() with retry so transient/Supabase errors return 503 (client retries) instead of 401.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getUserDashboardAccess, getUserAccessPoints } from "@/lib/permissions/engine";
+import { getUserDashboardAccess, getUserAccessPoints, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { apiErrorResponse } from "@/lib/api-errors";
+import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
+
+const maxGetUserAttempts = 3;
+const retryDelaysMs = [800, 1600];
 
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-    if (sessionError || !session) {
+    let user: { id: string; email?: string } | null = null;
+    let userError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
+      const result = await supabase.auth.getUser();
+      user = result.data?.user ?? null;
+      userError = result.error ?? null;
+
+      if (!userError && user) break;
+      if (userError && isInvalidRefreshToken(userError)) break;
+      if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
+        const delay = retryDelaysMs[attempt - 1] ?? 1000;
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      break;
+    }
+
+    if (userError || !user) {
+      if (userError && isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json(
+          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+          { status: 401 }
+        );
+      }
+      if (userError && isNetworkOrTransientError(userError)) {
+        return NextResponse.json(
+          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503 }
+        );
+      }
       return NextResponse.json(
-        { success: false, error: "Not authenticated" },
+        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
         { status: 401 }
       );
     }
 
     // Get system user
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },
@@ -32,8 +68,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if super admin - they have access to all dashboards
-    const { isSuperAdmin } = await import("@/lib/permissions/engine");
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
 
     if (userIsSuperAdmin) {
       // Super admin has access to all dashboards
@@ -86,12 +121,13 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("[GET /api/auth/dashboard-access] Error:", error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
+    if (isNetworkOrTransientError(error)) {
+      return NextResponse.json(
+        { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+        { status: 503 }
+      );
+    }
+    const { body, status } = apiErrorResponse(error);
+    return NextResponse.json(body, { status });
   }
 }

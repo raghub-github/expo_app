@@ -2,10 +2,10 @@ import { QueryClient } from "@tanstack/react-query";
 import { createPersister } from "./query-persistence";
 
 /**
- * QueryClient configuration with optimal defaults for the dashboard
- * - Smart caching based on data volatility (see cache-strategies.ts)
- * - Persistence for static/medium data via localStorage
- * - Automatic cache invalidation on mutations
+ * QueryClient configuration with optimal defaults for smooth loading and updates:
+ * - Keep previous data visible while refetching (no flash of empty state)
+ * - Smart caching and persistence (see cache-strategies.ts)
+ * - Refetch on reconnect so data stays fresh after network restore
  */
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -13,8 +13,10 @@ export const queryClient = new QueryClient({
       staleTime: 5 * 60 * 1000, // 5 minutes default
       gcTime: 10 * 60 * 1000, // 10 minutes default (formerly cacheTime)
       refetchOnWindowFocus: false,
-      refetchOnMount: false, // Don't refetch if data is fresh
+      refetchOnMount: false,
       refetchOnReconnect: true,
+      // Keep previous data visible during refetch for smooth, non-jarring updates
+      placeholderData: (previousData) => previousData,
       retry: 1,
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
     },

@@ -90,6 +90,7 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
 
       await createServicePoint.mutateAsync(payload);
       
+      // Wait a moment for the query to refetch before closing
       setSuccess(true);
       setFormData({
         name: "",
@@ -98,13 +99,26 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
         longitude: "",
         address: "",
       });
+      
+      // Give time for the mutation to complete and query to refetch
       setTimeout(() => {
         setIsOpen(false);
         setSuccess(false);
-        if (onSuccess) onSuccess();
+        // Call onSuccess callback to trigger map refresh
+        if (onSuccess) {
+          // Small delay to ensure query has refetched
+          setTimeout(() => {
+            onSuccess();
+          }, 300);
+        }
       }, 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create service point");
+      // Show user-friendly error message
+      const errorMessage = err instanceof Error 
+        ? err.message 
+        : "Failed to create service point";
+      setError(errorMessage);
+      console.error("Create service point error:", err);
     }
   };
 

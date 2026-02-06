@@ -43,35 +43,100 @@ export async function middleware(request: NextRequest) {
       }
     );
 
-    // Get current Supabase session (suppress refresh token errors)
+    // Get current Supabase session (suppress expected errors, handle invalid token)
     let session = null;
-    let sessionError = null;
+    let sessionError: { message?: string; code?: string } | null = null;
     try {
       const sessionResult = await supabase.auth.getSession();
       session = sessionResult.data?.session || null;
-      sessionError = sessionResult.error;
-      
-      // Suppress refresh token not found errors (they're expected when no session exists)
-      if (sessionError && sessionError.message?.includes('refresh_token_not_found')) {
-        sessionError = null; // Ignore this error
+      sessionError = sessionResult.error as { message?: string; code?: string } | null;
+
+      const isRefreshTokenNotFound =
+        sessionError?.code === "refresh_token_not_found" ||
+        sessionError?.message?.includes("refresh_token_not_found");
+      const isInvalidOrUsedRefreshToken =
+        sessionError &&
+        (sessionError.code === "refresh_token_already_used" ||
+          sessionError.message?.includes("refresh_token_already_used") ||
+          sessionError.message?.toLowerCase().includes("invalid refresh token"));
+
+      // Refresh token not found or invalid: clear auth cookies once, then treat as no session
+      if (isRefreshTokenNotFound || isInvalidOrUsedRefreshToken) {
+        if (process.env.NODE_ENV === "development" && isInvalidOrUsedRefreshToken) {
+          console.log("[middleware] Invalid/used refresh token, clearing session");
+        }
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore signOut errors
+        }
+        session = null;
+        sessionError = null;
+        // For /api/* always return JSON so clients never receive HTML redirect
+        if (pathname.startsWith("/api/")) {
+          return NextResponse.json(
+            { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+            { status: 401, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        // Allow /login and /auth/callback to load so user can sign in or complete OAuth
+        if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
+          const redirectUrl = request.nextUrl.clone();
+          redirectUrl.pathname = "/login";
+          redirectUrl.searchParams.set("redirect", pathname);
+          redirectUrl.searchParams.set("reason", "session_invalid");
+          return NextResponse.redirect(redirectUrl);
+        }
       }
     } catch (err) {
-      // Ignore session errors
-      sessionError = err as any;
-      if (sessionError?.message?.includes('refresh_token_not_found')) {
+      sessionError = err as { message?: string; code?: string };
+      const isRefreshTokenNotFound =
+        sessionError?.code === "refresh_token_not_found" ||
+        sessionError?.message?.includes("refresh_token_not_found");
+      const isInvalidOrUsedRefreshToken =
+        sessionError &&
+        (sessionError.code === "refresh_token_already_used" ||
+          sessionError.message?.includes("refresh_token_already_used"));
+
+      if (isRefreshTokenNotFound || isInvalidOrUsedRefreshToken) {
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          // ignore
+        }
+        session = null;
         sessionError = null;
+        if (pathname.startsWith("/api/")) {
+          return NextResponse.json(
+            { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+            { status: 401, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
+          const redirectUrl = request.nextUrl.clone();
+          redirectUrl.pathname = "/login";
+          redirectUrl.searchParams.set("redirect", pathname);
+          redirectUrl.searchParams.set("reason", "session_invalid");
+          return NextResponse.redirect(redirectUrl);
+        }
       }
     }
 
-    // Public routes that don't require authentication
+    // Public routes: login, auth (including callback), and all /api/auth/* so clients always get JSON
     const publicRoutes = ["/login", "/auth", "/api/auth"];
-    const isPublicRoute = publicRoutes.some((route) =>
-      pathname.startsWith(route)
-    );
+    const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route));
 
-    // If no Supabase session and trying to access protected route, redirect to login
+    // If no Supabase session and trying to access protected route
     if (!session && !isPublicRoute) {
-      console.log("[middleware] No Supabase session, redirecting to login");
+      if (process.env.NODE_ENV === "development") {
+        console.log("[middleware] No Supabase session, redirecting to login");
+      }
+      if (pathname.startsWith("/api/")) {
+        return NextResponse.json(
+          { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+          { status: 401, headers: { "Content-Type": "application/json" } }
+        );
+      }
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/login";
       redirectUrl.searchParams.set("redirect", pathname);
@@ -95,20 +160,23 @@ export async function middleware(request: NextRequest) {
       const validity = checkSessionValidity(metadata);
 
       if (!validity.isValid) {
-        console.log("[middleware] Session expired:", validity.reason);
-        
-        // Expire session cookies
+        if (process.env.NODE_ENV === "development") {
+          console.log("[middleware] Session expired:", validity.reason);
+        }
         const cookieSetter = {
           set: (name: string, value: string, options: any) => {
             response.cookies.set(name, value, options);
           },
         };
         expireSession(cookieSetter);
-
-        // Sign out from Supabase
         await supabase.auth.signOut();
 
-        // Redirect to login
+        if (pathname.startsWith("/api/")) {
+          return NextResponse.json(
+            { success: false, error: "Session expired", code: "SESSION_EXPIRED" },
+            { status: 401, headers: { "Content-Type": "application/json" } }
+          );
+        }
         const redirectUrl = request.nextUrl.clone();
         redirectUrl.pathname = "/login";
         redirectUrl.searchParams.set("expired", validity.reason || "unknown");
@@ -192,9 +260,13 @@ export async function middleware(request: NextRequest) {
             requestMethod: request.method,
           }),
         }).catch((error) => {
-          // Silently ignore timeout and network errors - audit tracking should never block requests
-          // Only log unexpected errors
-          if (error.name !== 'HeadersTimeoutError' && !error.message?.includes('timeout')) {
+          // Silently ignore timeout, network, and fetch failures - audit tracking should never block requests
+          // Edge/sandbox can fail with "fetch failed" for same-origin calls; don't log these
+          const isExpected =
+            error.name === "HeadersTimeoutError" ||
+            error.message?.includes("timeout") ||
+            error.message?.includes("fetch failed");
+          if (!isExpected) {
             console.error("[middleware] Audit tracking failed:", error);
           }
         });

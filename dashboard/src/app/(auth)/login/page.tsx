@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { requestEmailOTP, verifyOTP, signInWithGoogle } from "@/lib/auth/supabase";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
+import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
@@ -85,17 +86,14 @@ export default function LoginPage() {
         if (!setCookieResponse.ok) {
           let errorMessage = "Your account is not authorized to access this portal. Please contact an administrator.";
           try {
-            const contentType = setCookieResponse.headers.get("content-type");
-            if (contentType && contentType.includes("application/json")) {
-              const errorData = await setCookieResponse.json();
-              errorMessage = errorData.error || errorMessage;
-            } else {
-              const errorText = await setCookieResponse.text();
-              errorMessage = errorText || errorMessage;
+            const text = await setCookieResponse.text();
+            if (text.trim()) {
+              const parsed = safeParseJson<{ error?: string }>(text, "");
+              if (parsed?.error) errorMessage = parsed.error;
+              else if (text.length < 300) errorMessage = text.trim();
             }
-          } catch (parseError) {
-            console.error("Error parsing error response:", parseError);
-            // Use default error message
+          } catch {
+            // Use default error message when body is not valid JSON
           }
           // Sign out from Supabase if validation failed
           await supabase.auth.signOut();
@@ -104,9 +102,9 @@ export default function LoginPage() {
           return;
         }
 
-        // Redirect to dashboard after successful OTP verification and validation
-        router.push("/dashboard");
-        router.refresh();
+        // Full navigation so the next request has cookies and middleware sees the session
+        window.location.href = "/dashboard";
+        return;
       } catch (cookieError) {
         console.error("Error setting cookies:", cookieError);
         setError("Failed to complete login. Please try again.");
@@ -154,8 +152,19 @@ export default function LoginPage() {
         <div className="rounded-2xl bg-white p-5 shadow-2xl ring-1 ring-gray-200 sm:p-7">
           {/* Error Message */}
           {error && (
-            <div className="mb-4 rounded-lg bg-red-50 border border-red-200 p-3">
-              <p className="text-xs font-medium text-red-800 sm:text-sm">{error}</p>
+            <div className={`mb-4 rounded-lg border p-3 ${
+              error.toLowerCase().includes("not registered") || error.toLowerCase().includes("not yet added") || error.toLowerCase().includes("create your account")
+                ? "bg-amber-50 border-amber-200"
+                : "bg-red-50 border-red-200"
+            }`}>
+              <p className={`text-xs font-medium sm:text-sm ${
+                error.toLowerCase().includes("not registered") || error.toLowerCase().includes("not yet added") || error.toLowerCase().includes("create your account")
+                  ? "text-amber-800"
+                  : "text-red-800"
+              }`}>{error}</p>
+              {(error.toLowerCase().includes("not registered") || error.toLowerCase().includes("not yet added") || error.toLowerCase().includes("create your account")) && (
+                <p className="mt-1.5 text-xs text-amber-700">Your email must exist in Dashboard → Users with status ACTIVE and a role. Ask an administrator to add you.</p>
+              )}
             </div>
           )}
 

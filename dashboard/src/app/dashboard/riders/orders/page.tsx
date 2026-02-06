@@ -1,16 +1,5 @@
-import { requireDashboardAccess } from "@/lib/permissions/page-protection";
+import { RiderOrdersClient } from "@/components/riders/RiderOrdersClient";
 
-export default async function RiderOrdersPage() {
-  await requireDashboardAccess("RIDER");
-
-  return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full">
-        <p className="text-sm sm:text-base text-gray-600">View and manage orders for riders</p>
-      </div>
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <p className="text-gray-500">Rider orders functionality coming soon...</p>
-      </div>
-    </div>
-  );
+export default function RiderOrdersPage() {
+  return <RiderOrdersClient />;
 }

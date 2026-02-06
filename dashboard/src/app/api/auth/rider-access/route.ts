@@ -1,0 +1,109 @@
+/**
+ * GET /api/auth/rider-access
+ * Returns the current user's rider dashboard action capabilities (for conditional UI).
+ * Used to show/hide Add Penalty, Revert, Blacklist/Whitelist actions, Wallet freeze, etc.
+ */
+
+import { NextResponse } from "next/server";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import {
+  getSystemUserIdFromAuthUser,
+  hasDashboardAccess,
+  isSuperAdmin,
+  hasAccessPointAction,
+} from "@/lib/permissions/engine";
+import {
+  canPerformRiderServiceAction,
+  canPerformRiderActionAnyService,
+} from "@/lib/permissions/actions";
+
+export const runtime = "nodejs";
+
+const SERVICES = ["food", "parcel", "person_ride"] as const;
+
+export async function GET() {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session?.user?.email) {
+      return NextResponse.json(
+        { success: false, error: "Not authenticated" },
+        { status: 401 }
+      );
+    }
+
+    const authId = session.user.id;
+    const email = session.user.email;
+
+    const systemUserId = await getSystemUserIdFromAuthUser(authId, email);
+    if (!systemUserId) {
+      return NextResponse.json({
+        success: true,
+        data: {
+          hasRiderAccess: false,
+          isSuperAdmin: false,
+          canAddPenalty: { food: false, parcel: false, person_ride: false },
+          canBlock: { food: false, parcel: false, person_ride: false },
+          canUnblock: { food: false, parcel: false, person_ride: false },
+          canFreezeWallet: false,
+          canRequestWalletCredit: false,
+          canApproveRejectWalletCredit: false,
+        },
+      });
+    }
+
+    const superAdmin = await isSuperAdmin(authId, email);
+    const hasRiderAccess = await hasDashboardAccess(systemUserId, "RIDER");
+
+    const canAddPenalty = { food: false, parcel: false, person_ride: false };
+    const canBlock = { food: false, parcel: false, person_ride: false };
+    const canUnblock = { food: false, parcel: false, person_ride: false };
+
+    if (hasRiderAccess || superAdmin) {
+      for (const svc of SERVICES) {
+        if (superAdmin) {
+          canAddPenalty[svc] = true;
+          canBlock[svc] = true;
+          canUnblock[svc] = true;
+        } else {
+          canAddPenalty[svc] = await canPerformRiderServiceAction(authId, email, svc, "UPDATE");
+          canBlock[svc] = await canPerformRiderServiceAction(authId, email, svc, "BLOCK");
+          canUnblock[svc] = await canPerformRiderServiceAction(authId, email, svc, "UNBLOCK");
+        }
+      }
+    }
+
+    const canFreezeWallet =
+      superAdmin || (hasRiderAccess && (await canPerformRiderActionAnyService(authId, email, "UPDATE")));
+
+    const canRequestWalletCredit =
+      superAdmin ||
+      (hasRiderAccess && (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "CREATE")));
+
+    const canApproveRejectWalletCredit =
+      superAdmin ||
+      (hasRiderAccess &&
+        ((await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "APPROVE")) ||
+          (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "REJECT"))));
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        hasRiderAccess: !!hasRiderAccess || superAdmin,
+        isSuperAdmin: superAdmin,
+        canAddPenalty,
+        canBlock,
+        canUnblock,
+        canFreezeWallet,
+        canRequestWalletCredit,
+        canApproveRejectWalletCredit: !!canApproveRejectWalletCredit,
+      },
+    });
+  } catch (error) {
+    console.error("[GET /api/auth/rider-access] Error:", error);
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : "Failed to get rider access" },
+      { status: 500 }
+    );
+  }
+}

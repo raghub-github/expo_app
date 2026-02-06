@@ -3,7 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
+import { safeParseJson } from "@/lib/utils";
 import type { DashboardType, AccessPointGroup } from "@/lib/db/schema";
+
+const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
 
 interface DashboardAccess {
   dashboardType: string;
@@ -30,25 +33,37 @@ interface DashboardAccessResponse {
   error?: string;
 }
 
-async function fetchDashboardAccess(): Promise<DashboardAccessData> {
+/** Exported for prefetch in dashboard layout */
+export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
   const response = await fetch("/api/auth/dashboard-access", {
-    credentials: "include", // Include cookies for session
-    cache: "no-store", // Always fetch fresh data
+    credentials: "include",
+    cache: "no-store",
   });
-  
+  const text = await response.text();
+  const isJson = (response.headers.get("content-type") ?? "").includes("application/json");
+
   if (!response.ok) {
-    const errorText = await response.text();
     let errorMessage = `Failed to fetch dashboard access: ${response.status}`;
-    try {
-      const errorData = JSON.parse(errorText);
-      errorMessage = errorData.error || errorMessage;
-    } catch {
-      errorMessage = errorText || errorMessage;
+    if (isJson && text.trim()) {
+      try {
+        const errorData = safeParseJson<{ error?: string }>(text, "");
+        if (errorData?.error) errorMessage = errorData.error;
+      } catch {
+        if (text.length < 200) errorMessage = text.trim();
+      }
     }
     throw new Error(errorMessage);
   }
 
-  const result: DashboardAccessResponse = await response.json();
+  if (!isJson || !text.trim()) {
+    throw new Error("Invalid response from dashboard access API");
+  }
+  let result: DashboardAccessResponse;
+  try {
+    result = safeParseJson<DashboardAccessResponse>(text, "Invalid response from dashboard access API");
+  } catch (e) {
+    throw new Error(e instanceof Error ? e.message : "Invalid response from dashboard access API");
+  }
 
   if (!result.success || !result.data) {
     throw new Error(result.error || "Failed to fetch dashboard access");
@@ -68,17 +83,18 @@ export function useDashboardAccessQuery() {
     queryKey: queryKeys.dashboardAccess(),
     queryFn: fetchDashboardAccess,
     ...staticConfig,
+    placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
-      // Don't retry on 401 (unauthorized) or 404 (user not found)
+      if (failureCount >= 3) return false;
       if (error instanceof Error) {
-        if (error.message.includes("401") || error.message.includes("404")) {
-          return false;
-        }
+        if (error.message.includes("401") || error.message.includes("404")) return false;
+        const code = (error as Error & { code?: string }).code;
+        if (code === SERVICE_UNAVAILABLE || error.message.includes("503") || error.name === "AbortError") return true;
+        if (error.message === "Failed to fetch" || error.name === "TypeError") return true;
       }
-      // Retry up to 2 times for other errors
       return failureCount < 2;
     },
-    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
   });
 }
 

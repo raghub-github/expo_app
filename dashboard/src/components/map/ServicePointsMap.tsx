@@ -3,9 +3,11 @@
 import { useState, useCallback, useEffect, useMemo, memo } from "react";
 import dynamic from "next/dynamic";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
+import Link from "next/link";
 import { 
   useServicePointsQuery, 
   useDeleteServicePoint,
+  SESSION_EXPIRED_MESSAGE,
   type ServicePoint 
 } from "@/hooks/queries/useServicePointsQuery";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -103,15 +105,29 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   }
 
   if (error) {
+    const isSessionExpired = error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE;
     return (
-      <div className={`rounded-lg border border-red-200 bg-red-50 p-8 text-center ${className}`}>
-        <p className="text-red-600">Error: {error instanceof Error ? error.message : "Failed to load service points"}</p>
-        <button
-          onClick={() => window.location.reload()}
-          className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
-        >
-          Retry
-        </button>
+      <div className={`rounded-lg border p-8 text-center ${className} ${isSessionExpired ? "border-amber-200 bg-amber-50" : "border-red-200 bg-red-50"}`}>
+        <p className={isSessionExpired ? "text-amber-800" : "text-red-600"}>
+          {isSessionExpired
+            ? "Your session has expired. Please log in again to continue."
+            : `Error: ${error instanceof Error ? error.message : "Failed to load service points"}`}
+        </p>
+        {isSessionExpired ? (
+          <Link
+            href="/login?expired=1&redirect=/dashboard"
+            className="mt-4 inline-block px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-medium"
+          >
+            Log in again
+          </Link>
+        ) : (
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+          >
+            Retry
+          </button>
+        )}
       </div>
     );
   }

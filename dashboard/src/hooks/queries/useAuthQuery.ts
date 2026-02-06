@@ -3,6 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { authCacheConfig, sessionStatusCacheConfig } from "@/lib/cache-strategies";
+import { safeParseJson } from "@/lib/utils";
 
 interface SessionData {
   session: {
@@ -36,6 +37,7 @@ interface SessionResponse {
   success: boolean;
   data?: SessionData;
   error?: string;
+  code?: string;
 }
 
 interface SessionStatusResponse {
@@ -47,11 +49,53 @@ interface SessionStatusResponse {
   error?: string;
 }
 
+/** Thrown when session API returns 503 (Supabase unreachable). Client should retry, not redirect to login. */
+export const SESSION_SERVICE_UNAVAILABLE = "SESSION_SERVICE_UNAVAILABLE";
+
 async function fetchSession(): Promise<SessionData> {
-  const response = await fetch("/api/auth/session");
-  const result: SessionResponse = await response.json();
+  const response = await fetch("/api/auth/session", { credentials: "include" });
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  const isJson = contentType.includes("application/json");
+
+  let result: SessionResponse | null = null;
+  if (text.trim() && isJson) {
+    try {
+      result = safeParseJson<SessionResponse>(text, "Invalid JSON");
+    } catch {
+      result = null;
+    }
+  }
+
+  if (!result) {
+    if (response.status === 503) {
+      throw new Error(SESSION_SERVICE_UNAVAILABLE);
+    }
+    if (response.status === 401 || response.status === 403) {
+      const params = new URLSearchParams();
+      params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
+      params.set("reason", "session_required");
+      if (typeof window !== "undefined") {
+        window.location.href = `/login?${params.toString()}`;
+        return new Promise(() => {});
+      }
+    }
+    throw new Error("Session API returned invalid response");
+  }
 
   if (!result.success || !result.data) {
+    if (response.status === 503 && result.code === "SERVICE_UNAVAILABLE") {
+      throw new Error(SESSION_SERVICE_UNAVAILABLE);
+    }
+    if (response.status === 401 && (result.code === "SESSION_INVALID" || result.code === "SESSION_REQUIRED")) {
+      const params = new URLSearchParams();
+      params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
+      params.set("reason", result.code === "SESSION_INVALID" ? "session_invalid" : "session_required");
+      if (typeof window !== "undefined") {
+        window.location.href = `/login?${params.toString()}`;
+        return new Promise(() => {});
+      }
+    }
     throw new Error(result.error || "Not authenticated");
   }
 
@@ -59,8 +103,23 @@ async function fetchSession(): Promise<SessionData> {
 }
 
 async function fetchSessionStatus(): Promise<SessionStatus> {
-  const response = await fetch("/api/auth/session-status");
-  const result: SessionStatusResponse = await response.json();
+  const response = await fetch("/api/auth/session-status", { credentials: "include" });
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  const isJson = contentType.includes("application/json");
+
+  let result: SessionStatusResponse | null = null;
+  if (text.trim() && isJson) {
+    try {
+      result = safeParseJson<SessionStatusResponse>(text, "Invalid JSON");
+    } catch {
+      result = null;
+    }
+  }
+
+  if (!result) {
+    throw new Error("Session status API returned invalid response");
+  }
 
   if (!result.success) {
     throw new Error(result.error || "Failed to fetch session status");
@@ -77,10 +136,22 @@ async function fetchSessionStatus(): Promise<SessionStatus> {
 async function logout(): Promise<void> {
   const response = await fetch("/api/auth/logout", {
     method: "POST",
+    credentials: "include",
   });
-
-  const result = await response.json();
-
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  let result: { success?: boolean; error?: string } | null = null;
+  if (text.trim() && contentType.includes("application/json")) {
+    try {
+      result = safeParseJson<{ success?: boolean; error?: string }>(text, "Invalid JSON");
+    } catch {
+      result = null;
+    }
+  }
+  if (!result) {
+    if (response.ok) return;
+    throw new Error("Failed to logout");
+  }
   if (!result.success) {
     throw new Error(result.error || "Failed to logout");
   }
@@ -95,7 +166,12 @@ export function useSessionQuery() {
     queryKey: ["auth", "session"],
     queryFn: fetchSession,
     ...authCacheConfig,
-    retry: false, // Don't retry on auth failures
+    placeholderData: (previousData) => previousData,
+    retry: (failureCount, error) => {
+      if (failureCount >= 3) return false;
+      return error instanceof Error && error.message === SESSION_SERVICE_UNAVAILABLE;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10000),
   });
 }
 
@@ -108,6 +184,7 @@ export function useSessionStatusQuery() {
     queryKey: ["auth", "session-status"],
     queryFn: fetchSessionStatus,
     ...sessionStatusCacheConfig,
+    placeholderData: (previousData) => previousData,
     retry: false,
   });
 }
