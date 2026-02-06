@@ -7,6 +7,7 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
 import { Filter, Plus, RotateCcw } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 
 interface Penalty {
   id: number;

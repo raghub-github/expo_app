@@ -3,7 +3,10 @@
 import { X, FilterX } from "lucide-react";
 
 export interface FilterChipItem {
-  id: string;
+  /** Unique id for the chip (used as React key and passed to onRemove). Either id or key must be set. */
+  id?: string;
+  /** Alternative to id; some callers use key. Used as React key and passed to onRemove when id is not set. */
+  key?: string;
   label: string;
 }
 
@@ -20,22 +23,25 @@ export function FilterChips({ chips, onRemove, onClearAll, inline = false }: Fil
 
   const content = (
     <>
-      {chips.map((chip) => (
+      {chips.map((chip) => {
+        const chipKey = chip.id ?? chip.key ?? chip.label;
+        return (
         <span
-          key={chip.id}
+          key={chipKey}
           className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 rounded-lg bg-white border border-gray-200 text-sm text-gray-800 shadow-sm ring-1 ring-gray-900/5"
         >
           <span className="max-w-[160px] sm:max-w-[180px] truncate">{chip.label}</span>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onRemove(chip.id); }}
+            onClick={(e) => { e.stopPropagation(); onRemove(chipKey); }}
             className="flex-shrink-0 p-0.5 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             aria-label={`Remove ${chip.label}`}
           >
             <X className="h-3.5 w-3.5" />
           </button>
         </span>
-      ))}
+        );
+      })}
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); onClearAll(); }}
