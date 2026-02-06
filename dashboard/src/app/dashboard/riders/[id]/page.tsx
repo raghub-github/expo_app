@@ -4,9 +4,9 @@ import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
-import { usePermissions } from '@/hooks/queries/usePermissionsQuery';
+import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
-import { CheckCircle, ArrowLeft, User, Car, Wallet, FileText } from 'lucide-react';
+import { CheckCircle, ArrowLeft, User, Car, Wallet, FileText, CreditCard } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 
 interface Rider {
@@ -85,19 +85,82 @@ interface WithdrawalEntry {
   updatedAt: string;
 }
 
+interface RiderAddress {
+  id: number;
+  fullAddress: string;
+  addressType: string;
+  isPrimary: boolean;
+  state: string | null;
+  pincode: string | null;
+}
+
+interface DocumentFile {
+  id: number;
+  fileUrl: string;
+  side?: string;
+  sortOrder?: number;
+}
+
+interface RiderDocument {
+  id: number;
+  docType: string;
+  fileUrl: string;
+  docNumber?: string | null;
+  verificationMethod?: string;
+  verificationStatus?: string;
+  expiryDate?: string | null;
+  verified: boolean;
+  verifiedAt?: string | null;
+  verifierName?: string | null;
+  rejectedReason?: string | null;
+  createdAt: string;
+  files?: DocumentFile[];
+}
+
+interface RiderVehicle {
+  id: number;
+  vehicleType: string;
+  registrationNumber: string;
+  registrationState?: string | null;
+  make: string | null;
+  model: string | null;
+  year?: number | null;
+  color?: string | null;
+  fuelType: string | null;
+  vehicleCategory?: string | null;
+  acType?: string | null;
+  isCommercial?: boolean;
+  permitExpiry?: string | null;
+  insuranceExpiry?: string | null;
+  vehicleActiveStatus?: string;
+  seatingCapacity?: number | null;
+  serviceTypes?: string[];
+  verified?: boolean;
+  verifiedAt?: string | null;
+  isActive?: boolean;
+}
+
+interface PaymentMethod {
+  id: number;
+  methodType: string;
+  accountHolderName: string;
+  bankName?: string | null;
+  ifsc?: string | null;
+  branch?: string | null;
+  accountNumberMasked?: string | null;
+  upiId?: string | null;
+  verificationStatus: string;
+  verificationProofType?: string | null;
+  verifiedAt?: string | null;
+  createdAt: string;
+}
+
 interface RiderData {
   rider: Rider;
-  documents: any[];
-  vehicle?: {
-    id: number;
-    vehicleType: string;
-    registrationNumber: string;
-    make: string | null;
-    model: string | null;
-    fuelType: string | null;
-    vehicleCategory: string | null;
-    acType: string | null;
-  } | null;
+  documents: RiderDocument[];
+  addresses?: RiderAddress[];
+  vehicle?: RiderVehicle | null;
+  paymentMethods?: PaymentMethod[];
   wallet?: WalletInfo | null;
   recentLedger?: LedgerEntry[];
   recentPenalties?: PenaltyEntry[];
@@ -258,7 +321,10 @@ export default function RiderDetailsPage() {
 
   const rider = riderData.rider;
   const documents = riderData.documents || [];
+  const addresses = riderData.addresses ?? [];
   const vehicle = riderData.vehicle ?? null;
+  const primaryAddress = addresses.find((a) => a.isPrimary) || addresses[0];
+  const displayAddress = primaryAddress?.fullAddress || rider.address || "—";
   const wallet = riderData.wallet ?? null;
 
   const isFullyOnboarded =
@@ -271,12 +337,36 @@ export default function RiderDetailsPage() {
 
   const documentLabels: Record<string, string> = {
     aadhaar: "Aadhaar Card",
+    aadhaar_front: "Aadhaar (Front)",
+    aadhaar_back: "Aadhaar (Back)",
     pan: "PAN Card",
     dl: "Driving License",
+    dl_front: "Driving License (Front)",
+    dl_back: "Driving License (Back)",
     rc: "RC (Registration Certificate)",
     selfie: "Selfie",
     rental_proof: "Rental Proof (EV Bikes)",
     ev_proof: "EV Proof",
+    insurance: "Insurance",
+    bank_proof: "Bank Proof (Passbook/Cheque/Statement)",
+    upi_qr_proof: "UPI QR Proof",
+    profile_photo: "Profile Photo",
+    vehicle_image: "Vehicle Image",
+    ev_ownership_proof: "EV Ownership Proof",
+    other: "Other Document",
+  };
+
+  const verificationStatusLabel: Record<string, string> = {
+    pending: "Pending",
+    approved: "Approved",
+    rejected: "Rejected",
+  };
+
+  const proofTypeLabel: Record<string, string> = {
+    passbook: "Passbook",
+    cancelled_cheque: "Cancelled Cheque",
+    statement: "Bank Statement",
+    upi_qr_image: "UPI QR Image",
   };
 
   const statusBadgeClass = (status: string) => {
@@ -337,7 +427,7 @@ export default function RiderDetailsPage() {
           <InfoRow label="City" value={rider.city || "—"} />
           <InfoRow label="State" value={rider.state || "—"} />
           <InfoRow label="Pincode" value={rider.pincode || "—"} />
-          <InfoRow label="Address" value={rider.address || "—"} className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-4" />
+          <InfoRow label="Address" value={displayAddress} className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-4" />
           <div className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-4 flex flex-wrap gap-2">
             <span className={`inline-flex px-2.5 py-1 text-xs font-medium rounded-full ${statusBadgeClass(rider.onboardingStage)}`}>Onboarding: {rider.onboardingStage}</span>
             <span className={`inline-flex px-2.5 py-1 text-xs font-medium rounded-full ${statusBadgeClass(rider.kycStatus)}`}>KYC: {rider.kycStatus}</span>
@@ -360,14 +450,34 @@ export default function RiderDetailsPage() {
           <h2 className="text-lg sm:text-xl font-bold text-gray-900">Vehicle</h2>
         </div>
         {vehicle ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-4 sm:gap-5">
-            <InfoRow label="Type" value={vehicle.vehicleType ? String(vehicle.vehicleType).charAt(0).toUpperCase() + String(vehicle.vehicleType).slice(1) : "—"} />
-            <InfoRow label="Registration" value={vehicle.registrationNumber || "—"} highlight />
-            <InfoRow label="Make" value={vehicle.make || "—"} />
-            <InfoRow label="Model" value={vehicle.model || "—"} />
-            <InfoRow label="Fuel" value={vehicle.fuelType || "—"} />
-            <InfoRow label="Category" value={vehicle.vehicleCategory ? String(vehicle.vehicleCategory).replace(/_/g, " ") : "—"} />
-            {vehicle.acType && <InfoRow label="AC Type" value={vehicle.acType} />}
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-4 sm:gap-5">
+              <InfoRow label="Type" value={vehicle.vehicleType ? String(vehicle.vehicleType).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—"} />
+              <InfoRow label="Registration" value={vehicle.registrationNumber || "—"} highlight />
+              <InfoRow label="Registration State" value={vehicle.registrationState || "—"} />
+              <InfoRow label="Make" value={vehicle.make || "—"} />
+              <InfoRow label="Model" value={vehicle.model || "—"} />
+              <InfoRow label="Year" value={vehicle.year ? String(vehicle.year) : "—"} />
+              <InfoRow label="Color" value={vehicle.color || "—"} />
+              <InfoRow label="Fuel" value={vehicle.fuelType || "—"} />
+              <InfoRow label="Category" value={vehicle.vehicleCategory ? String(vehicle.vehicleCategory).replace(/_/g, " ") : "—"} />
+              {vehicle.acType && <InfoRow label="AC Type" value={vehicle.acType} />}
+              <InfoRow label="Seating Capacity" value={vehicle.seatingCapacity != null ? String(vehicle.seatingCapacity) : "—"} />
+              <InfoRow label="Commercial" value={vehicle.isCommercial ? "Yes" : "No"} />
+              <InfoRow label="Insurance Expiry" value={vehicle.insuranceExpiry ? new Date(vehicle.insuranceExpiry).toLocaleDateString() : "—"} />
+              <InfoRow label="Permit Expiry" value={vehicle.permitExpiry ? new Date(vehicle.permitExpiry).toLocaleDateString() : "—"} />
+              <InfoRow label="Status" value={vehicle.vehicleActiveStatus ? String(vehicle.vehicleActiveStatus).replace(/_/g, " ") : "—"} />
+            </div>
+            {vehicle.serviceTypes && Array.isArray(vehicle.serviceTypes) && vehicle.serviceTypes.length > 0 && (
+              <div className="flex flex-wrap gap-2 pt-2">
+                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Services</span>
+                {(vehicle.serviceTypes as string[]).map((s) => (
+                  <span key={s} className="inline-flex px-2.5 py-1 text-xs font-medium rounded-full bg-violet-100 text-violet-800">
+                    {String(s).replace(/_/g, " ")}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-sm text-gray-500 py-2">No vehicle on file.</p>
@@ -419,44 +529,100 @@ export default function RiderDetailsPage() {
         </div>
         {documents.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {documents.map((doc) => (
-              <div key={doc.id} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 hover:border-gray-300 hover:shadow-sm transition-all">
-                <div className="flex items-start justify-between gap-2 mb-3">
-                  <h3 className="font-semibold text-gray-900 text-sm leading-tight">
-                    {documentLabels[doc.docType] || doc.docType}
-                  </h3>
-                  <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${
-                    doc.verified ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                  }`}>
-                    {doc.verified ? "Verified" : "Pending"}
-                  </span>
+            {documents.map((doc) => {
+              const verStatus = (doc.verificationStatus || (doc.verified ? "approved" : "pending")).toLowerCase();
+              const hasMultipleFiles = doc.files && doc.files.length > 0;
+              const displayFiles = hasMultipleFiles ? doc.files! : (doc.fileUrl ? [{ id: 0, fileUrl: doc.fileUrl, side: "single" }] : []);
+              return (
+                <div key={doc.id} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 hover:border-gray-300 hover:shadow-sm transition-all">
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <h3 className="font-semibold text-gray-900 text-sm leading-tight">
+                      {documentLabels[doc.docType] || doc.docType}
+                    </h3>
+                    <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${
+                      verStatus === "approved" ? "bg-emerald-100 text-emerald-800" :
+                      verStatus === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
+                    }`}>
+                      {verificationStatusLabel[verStatus] || (doc.verified ? "Verified" : "Pending")}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 text-xs text-gray-600">
+                    <p><span className="font-medium text-gray-700">Method:</span> {doc.verificationMethod || "N/A"}</p>
+                    {doc.docNumber && <p><span className="font-medium text-gray-700">Number:</span> {doc.docNumber}</p>}
+                    {doc.expiryDate && (
+                      <p><span className="font-medium text-gray-700">Expiry:</span> {new Date(doc.expiryDate).toLocaleDateString()}</p>
+                    )}
+                    {doc.verifierName && <p><span className="font-medium text-gray-700">Verified by:</span> {doc.verifierName}</p>}
+                    {doc.rejectedReason && (
+                      <p className="text-red-600"><span className="font-medium">Rejected:</span> {doc.rejectedReason}</p>
+                    )}
+                    <p className="text-gray-500 pt-1">{new Date(doc.createdAt).toLocaleDateString()}</p>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {displayFiles.map((f, i) => (
+                      <a
+                        key={f.id || i}
+                        href={f.fileUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
+                      >
+                        {f.side && f.side !== "single" ? `View ${String(f.side).charAt(0).toUpperCase() + String(f.side).slice(1)} →` : "View Document →"}
+                      </a>
+                    ))}
+                  </div>
                 </div>
-                <div className="space-y-1.5 text-xs text-gray-600">
-                  <p><span className="font-medium text-gray-700">Method:</span> {doc.verificationMethod || "N/A"}</p>
-                  {doc.docNumber && <p><span className="font-medium text-gray-700">Number:</span> {doc.docNumber}</p>}
-                  {doc.verifierName && <p><span className="font-medium text-gray-700">Verified by:</span> {doc.verifierName}</p>}
-                  {doc.rejectedReason && (
-                    <p className="text-red-600"><span className="font-medium">Rejected:</span> {doc.rejectedReason}</p>
-                  )}
-                  <p className="text-gray-500 pt-1">{new Date(doc.createdAt).toLocaleDateString()}</p>
-                </div>
-                {doc.fileUrl && (
-                  <a
-                    href={doc.fileUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-3 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
-                  >
-                    View Document →
-                  </a>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <p className="text-sm text-gray-500 py-2">No documents found.</p>
         )}
       </section>
+
+      {/* Payment Methods (Bank / UPI) */}
+      {riderData.paymentMethods && riderData.paymentMethods.length > 0 && (
+        <section className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5">
+          <div className="flex items-center gap-2 mb-4 sm:mb-5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600 shrink-0">
+              <CreditCard className="h-5 w-5" />
+            </div>
+            <h2 className="text-lg sm:text-xl font-bold text-gray-900">Payment Methods</h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {riderData.paymentMethods.map((pm) => (
+              <div key={pm.id} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <span className="font-semibold text-gray-900 text-sm">
+                    {pm.methodType === "bank" ? "Bank Account" : "UPI"}
+                  </span>
+                  <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${
+                    pm.verificationStatus === "verified" ? "bg-emerald-100 text-emerald-800" :
+                    pm.verificationStatus === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
+                  }`}>
+                    {verificationStatusLabel[pm.verificationStatus] || pm.verificationStatus}
+                  </span>
+                </div>
+                <div className="space-y-1 text-xs text-gray-600">
+                  <p><span className="font-medium text-gray-700">Account holder:</span> {pm.accountHolderName}</p>
+                  {pm.methodType === "bank" && (
+                    <>
+                      {pm.bankName && <p><span className="font-medium text-gray-700">Bank:</span> {pm.bankName}</p>}
+                      {pm.ifsc && <p><span className="font-medium text-gray-700">IFSC:</span> {pm.ifsc}</p>}
+                      {pm.accountNumberMasked && <p><span className="font-medium text-gray-700">Account:</span> {pm.accountNumberMasked}</p>}
+                    </>
+                  )}
+                  {pm.methodType === "upi" && pm.upiId && <p><span className="font-medium text-gray-700">UPI ID:</span> {pm.upiId}</p>}
+                  {pm.verificationProofType && (
+                    <p><span className="font-medium text-gray-700">Proof:</span> {proofTypeLabel[pm.verificationProofType] || pm.verificationProofType}</p>
+                  )}
+                  {pm.verifiedAt && <p className="text-gray-500">Verified {new Date(pm.verifiedAt).toLocaleDateString()}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

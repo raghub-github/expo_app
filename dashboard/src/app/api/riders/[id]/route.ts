@@ -66,19 +66,31 @@ export async function GET(
       );
     }
 
-    // Regenerate signed URLs for documents with r2_key
+    // Regenerate signed URLs for documents and their files (multi-file: front/back)
     const documentsWithUrls = await Promise.all(
-      riderData.documents.map(async (doc) => {
+      riderData.documents.map(async (doc: any) => {
+        let fileUrl = doc.fileUrl;
         if (doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key) {
           try {
-            const newSignedUrl = await getSignedUrlFromKey(doc.r2Key);
-            return { ...doc, fileUrl: newSignedUrl };
+            fileUrl = await getSignedUrlFromKey(doc.r2Key);
           } catch (error) {
             console.error(`[GET /api/riders/${riderId}] Failed to regenerate signed URL for doc ${doc.id}:`, error);
-            return doc;
           }
         }
-        return doc;
+        const files = (doc.files || []).map((f: { fileUrl: string; r2Key?: string | null; side?: string; id: number; sortOrder?: number }) => ({ ...f }));
+        const filesWithUrls = await Promise.all(
+          files.map(async (f: { fileUrl: string; r2Key?: string | null; side?: string; id: number }) => {
+            if (f.r2Key) {
+              try {
+                return { ...f, fileUrl: await getSignedUrlFromKey(f.r2Key) };
+              } catch {
+                return f;
+              }
+            }
+            return f;
+          })
+        );
+        return { ...doc, fileUrl, files: filesWithUrls };
       })
     );
 
@@ -172,18 +184,45 @@ export async function GET(
       data: {
         rider: riderData.rider,
         documents: documentsWithUrls,
+        addresses: riderData.addresses ?? [],
         vehicle: riderData.vehicle
           ? {
               id: riderData.vehicle.id,
               vehicleType: riderData.vehicle.vehicleType,
               registrationNumber: riderData.vehicle.registrationNumber,
+              registrationState: riderData.vehicle.registrationState ?? null,
               make: riderData.vehicle.make,
               model: riderData.vehicle.model,
+              year: riderData.vehicle.year,
+              color: riderData.vehicle.color,
               fuelType: riderData.vehicle.fuelType,
               vehicleCategory: riderData.vehicle.vehicleCategory,
               acType: riderData.vehicle.acType,
+              isCommercial: riderData.vehicle.isCommercial ?? false,
+              permitExpiry: riderData.vehicle.permitExpiry ?? null,
+              insuranceExpiry: riderData.vehicle.insuranceExpiry ?? null,
+              vehicleActiveStatus: riderData.vehicle.vehicleActiveStatus ?? "active",
+              seatingCapacity: riderData.vehicle.seatingCapacity ?? null,
+              serviceTypes: riderData.vehicle.serviceTypes ?? [],
+              verified: riderData.vehicle.verified ?? false,
+              verifiedAt: riderData.vehicle.verifiedAt ?? null,
+              isActive: riderData.vehicle.isActive ?? true,
             }
           : null,
+        paymentMethods: (riderData.paymentMethods || []).map((pm: any) => ({
+          id: pm.id,
+          methodType: pm.methodType,
+          accountHolderName: pm.accountHolderName,
+          bankName: pm.bankName ?? null,
+          ifsc: pm.ifsc ?? null,
+          branch: pm.branch ?? null,
+          accountNumberMasked: pm.accountNumberEncrypted ? "••••" : null,
+          upiId: pm.upiId ?? null,
+          verificationStatus: pm.verificationStatus,
+          verificationProofType: pm.verificationProofType ?? null,
+          verifiedAt: pm.verifiedAt ?? null,
+          createdAt: pm.createdAt,
+        })),
         wallet,
         recentLedger,
         recentPenalties,

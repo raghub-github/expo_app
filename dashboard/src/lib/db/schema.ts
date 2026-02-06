@@ -63,12 +63,59 @@ export const riderStatusEnum = pgEnum("rider_status", [
 
 export const documentTypeEnum = pgEnum("document_type", [
   "aadhaar",
+  "aadhaar_front",
+  "aadhaar_back",
   "dl",
+  "dl_front",
+  "dl_back",
   "rc",
   "pan",
   "selfie",
   "rental_proof",
   "ev_proof",
+  "insurance",
+  "bank_proof",
+  "upi_qr_proof",
+  "profile_photo",
+  "vehicle_image",
+  "ev_ownership_proof",
+  "other",
+]);
+
+export const documentVerificationStatusEnum = pgEnum("document_verification_status", [
+  "pending",
+  "approved",
+  "rejected",
+]);
+
+export const documentFileSideEnum = pgEnum("document_file_side", [
+  "front",
+  "back",
+  "single",
+]);
+
+export const paymentMethodTypeEnum = pgEnum("payment_method_type", [
+  "bank",
+  "upi",
+]);
+
+export const paymentMethodVerificationStatusEnum = pgEnum("payment_method_verification_status", [
+  "pending",
+  "verified",
+  "rejected",
+]);
+
+export const verificationProofTypeEnum = pgEnum("verification_proof_type", [
+  "passbook",
+  "cancelled_cheque",
+  "statement",
+  "upi_qr_image",
+]);
+
+export const riderAddressTypeEnum = pgEnum("rider_address_type", [
+  "registered",
+  "current",
+  "other",
 ]);
 
 export const verificationMethodEnum = pgEnum("verification_method", [
@@ -636,6 +683,92 @@ export type ActionType =
 export type ActionStatus = "SUCCESS" | "FAILED" | "PENDING";
 
 // ============================================================================
+// REFERENCE: CITIES, SERVICE TYPES, VEHICLE-SERVICE RULES (backend source of truth)
+// ============================================================================
+
+export const cities = pgTable(
+  "cities",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name").notNull(),
+    state: text("state").notNull(),
+    countryCode: text("country_code").notNull().default("IN"),
+    timezone: text("timezone"),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    nameStateIdx: index("cities_name_state_idx").on(table.name, table.state),
+    isActiveIdx: index("cities_is_active_idx").on(table.isActive),
+  })
+);
+
+export const serviceTypes = pgTable(
+  "service_types",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    code: text("code").notNull().unique(),
+    name: text("name").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    sortOrder: integer("sort_order").default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    codeIdx: uniqueIndex("service_types_code_idx").on(table.code),
+    isActiveIdx: index("service_types_is_active_idx").on(table.isActive),
+  })
+);
+
+export const vehicleServiceMapping = pgTable(
+  "vehicle_service_mapping",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    vehicleType: text("vehicle_type").notNull(),
+    serviceTypeId: integer("service_type_id")
+      .notNull()
+      .references((): any => serviceTypes.id, { onDelete: "cascade" }),
+    allowed: boolean("allowed").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    vehicleServiceIdx: index("vehicle_service_mapping_vehicle_service_idx").on(
+      table.vehicleType,
+      table.serviceTypeId
+    ),
+  })
+);
+
+export const cityVehicleRules = pgTable(
+  "city_vehicle_rules",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    cityId: integer("city_id")
+      .notNull()
+      .references((): any => cities.id, { onDelete: "cascade" }),
+    serviceTypeId: integer("service_type_id")
+      .notNull()
+      .references((): any => serviceTypes.id, { onDelete: "cascade" }),
+    ruleType: text("rule_type").notNull(),
+    ruleConfig: jsonb("rule_config").default({}),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    cityServiceIdx: index("city_vehicle_rules_city_service_idx").on(
+      table.cityId,
+      table.serviceTypeId
+    ),
+    isActiveIdx: index("city_vehicle_rules_is_active_idx").on(table.isActive),
+  })
+);
+
+// ============================================================================
 // RIDER CORE DOMAIN
 // ============================================================================
 
@@ -673,6 +806,10 @@ const ridersTable = pgTable(
     vehicleChoice: text("vehicle_choice"), // 'EV' or 'Petrol'
     // Preferred service types (array stored as JSONB)
     preferredServiceTypes: jsonb("preferred_service_types").default([]), // ['food', 'parcel', 'person_ride']
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBy: integer("deleted_by"),
+    createdBy: integer("created_by"),
+    updatedBy: integer("updated_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -682,6 +819,7 @@ const ridersTable = pgTable(
   },
   (table) => ({
     mobileIdx: uniqueIndex("riders_mobile_idx").on(table.mobile),
+    deletedAtIdx: index("riders_deleted_at_idx").on(table.deletedAt),
     referralCodeIdx: uniqueIndex("riders_referral_code_idx").on(
       table.referralCode
     ),
@@ -712,11 +850,20 @@ export const riderDocuments = pgTable(
     extractedName: text("extracted_name"),
     extractedDob: date("extracted_dob"),
     verified: boolean("verified").notNull().default(false),
+    verificationStatus: documentVerificationStatusEnum("verification_status").default("pending"),
+    expiryDate: date("expiry_date"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifiedBy: integer("verified_by").references((): any => systemUsers.id, { onDelete: "set null" }),
     verifierUserId: integer("verifier_user_id"),
     rejectedReason: text("rejected_reason"),
     vehicleId: integer("vehicle_id"), // Link RC document to vehicle (optional, for future use)
     metadata: jsonb("metadata").default({}),
+    createdBy: integer("created_by"),
+    updatedBy: integer("updated_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
@@ -724,9 +871,32 @@ export const riderDocuments = pgTable(
     riderIdIdx: index("rider_documents_rider_id_idx").on(table.riderId),
     docTypeIdx: index("rider_documents_doc_type_idx").on(table.docType),
     verifiedIdx: index("rider_documents_verified_idx").on(table.verified),
+    verificationStatusIdx: index("rider_documents_verification_status_idx").on(table.verificationStatus),
     docNumberIdx: index("rider_documents_doc_number_idx").on(table.docNumber),
     verificationMethodIdx: index("rider_documents_verification_method_idx").on(table.verificationMethod),
     vehicleIdIdx: index("rider_documents_vehicle_id_idx").on(table.vehicleId),
+  })
+);
+
+/**
+ * Rider document files - multiple images per document (e.g. Aadhaar front + back)
+ */
+export const riderDocumentFiles = pgTable(
+  "rider_document_files",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    documentId: integer("document_id")
+      .notNull()
+      .references(() => riderDocuments.id, { onDelete: "cascade" }),
+    fileUrl: text("file_url").notNull(),
+    r2Key: text("r2_key"),
+    side: documentFileSideEnum("side").notNull().default("single"),
+    mimeType: text("mime_type"),
+    sortOrder: integer("sort_order").default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    documentIdIdx: index("rider_document_files_document_id_idx").on(table.documentId),
   })
 );
 
@@ -861,6 +1031,7 @@ export const riderVehicles = pgTable(
       .references(() => riders.id, { onDelete: "cascade" }),
     vehicleType: vehicleTypeEnum("vehicle_type").notNull(), // 'bike', 'car', 'bicycle', 'scooter', 'auto'
     registrationNumber: text("registration_number").notNull(), // Official RC number - use consistently, NOT "bike_number" or "vehicle_number"
+    registrationState: text("registration_state"),
     make: text("make"), // e.g., 'Honda', 'Hero'
     model: text("model"), // e.g., 'Activa', 'Splendor'
     year: integer("year"),
@@ -869,7 +1040,11 @@ export const riderVehicles = pgTable(
     vehicleCategory: vehicleCategoryEnum("vehicle_category"), // 'Auto', 'Bike', 'Cab', 'Taxi', 'Bicycle', 'Scooter'
     acType: acTypeEnum("ac_type"), // 'AC', 'Non-AC' (for person_ride)
     serviceTypes: jsonb("service_types").default([]), // Array: ['food', 'parcel', 'person_ride']
+    isCommercial: boolean("is_commercial").default(false),
+    permitExpiry: date("permit_expiry"),
     insuranceExpiry: date("insurance_expiry"),
+    vehicleActiveStatus: text("vehicle_active_status").default("active"),
+    seatingCapacity: integer("seating_capacity"),
     rcDocumentUrl: text("rc_document_url"),
     insuranceDocumentUrl: text("insurance_document_url"),
     verified: boolean("verified").notNull().default(false),
@@ -893,6 +1068,34 @@ export const riderVehicles = pgTable(
     vehicleCategoryIdx: index("rider_vehicles_vehicle_category_idx").on(table.vehicleCategory),
     // Note: Unique constraint for one active vehicle per rider handled at application level
     // or via database trigger (not directly supported in Drizzle uniqueIndex with WHERE)
+  })
+);
+
+/**
+ * Rider addresses - high-precision geo; one rider can have multiple addresses (backend source of truth)
+ */
+export const riderAddresses = pgTable(
+  "rider_addresses",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    addressType: riderAddressTypeEnum("address_type").notNull().default("registered"),
+    fullAddress: text("full_address").notNull(),
+    cityId: integer("city_id").references((): any => cities.id, { onDelete: "set null" }),
+    state: text("state"),
+    pincode: text("pincode"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_addresses_rider_id_idx").on(table.riderId),
+    cityIdIdx: index("rider_addresses_city_id_idx").on(table.cityId),
+    isPrimaryIdx: index("rider_addresses_is_primary_idx").on(table.riderId, table.isPrimary),
   })
 );
 
@@ -1643,6 +1846,39 @@ export const walletLedger = pgTable(
 );
 
 /**
+ * Rider payment methods - verified bank/UPI for withdrawals (backend source of truth)
+ */
+export const riderPaymentMethods = pgTable(
+  "rider_payment_methods",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    methodType: paymentMethodTypeEnum("method_type").notNull(),
+    accountHolderName: text("account_holder_name").notNull(),
+    bankName: text("bank_name"),
+    ifsc: text("ifsc"),
+    branch: text("branch"),
+    accountNumberEncrypted: text("account_number_encrypted"),
+    upiId: text("upi_id"),
+    verificationStatus: paymentMethodVerificationStatusEnum("verification_status").notNull().default("pending"),
+    verificationProofType: verificationProofTypeEnum("verification_proof_type"),
+    proofDocumentId: integer("proof_document_id").references(() => riderDocuments.id, { onDelete: "set null" }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    verifiedBy: integer("verified_by").references((): any => systemUsers.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_payment_methods_rider_id_idx").on(table.riderId),
+    verificationStatusIdx: index("rider_payment_methods_verification_status_idx").on(table.verificationStatus),
+    deletedAtIdx: index("rider_payment_methods_deleted_at_idx").on(table.deletedAt),
+  })
+);
+
+/**
  * Withdrawal requests
  */
 export const withdrawalRequests = pgTable(
@@ -1652,6 +1888,7 @@ export const withdrawalRequests = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
+    paymentMethodId: integer("payment_method_id").references(() => riderPaymentMethods.id, { onDelete: "set null" }),
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
     status: withdrawalStatusEnum("status").notNull().default("pending"),
     bankAcc: text("bank_acc").notNull(),
@@ -1671,6 +1908,7 @@ export const withdrawalRequests = pgTable(
   },
   (table) => ({
     riderIdIdx: index("withdrawal_requests_rider_id_idx").on(table.riderId),
+    paymentMethodIdIdx: index("withdrawal_requests_payment_method_id_idx").on(table.paymentMethodId),
     statusIdx: index("withdrawal_requests_status_idx").on(table.status),
     createdAtIdx: index("withdrawal_requests_created_at_idx").on(
       table.createdAt
@@ -2073,6 +2311,8 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
   documents: many(riderDocuments),
   devices: many(riderDevices),
   vehicles: many(riderVehicles),
+  addresses: many(riderAddresses),
+  paymentMethods: many(riderPaymentMethods),
   penalties: many(riderPenalties),
   wallet: one(riderWallet, {
     fields: [riders.id],
@@ -2100,10 +2340,68 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
 
 export const riderDocumentsRelations = relations(
   riderDocuments,
-  ({ one }) => ({
+  ({ one, many }) => ({
     rider: one(riders, {
       fields: [riderDocuments.riderId],
       references: [riders.id],
+    }),
+    files: many(riderDocumentFiles),
+  })
+);
+
+export const riderDocumentFilesRelations = relations(
+  riderDocumentFiles,
+  ({ one }) => ({
+    document: one(riderDocuments, {
+      fields: [riderDocumentFiles.documentId],
+      references: [riderDocuments.id],
+    }),
+  })
+);
+
+export const riderAddressesRelations = relations(
+  riderAddresses,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [riderAddresses.riderId],
+      references: [riders.id],
+    }),
+    city: one(cities, {
+      fields: [riderAddresses.cityId],
+      references: [cities.id],
+    }),
+  })
+);
+
+export const riderPaymentMethodsRelations = relations(
+  riderPaymentMethods,
+  ({ one, many }) => ({
+    rider: one(riders, {
+      fields: [riderPaymentMethods.riderId],
+      references: [riders.id],
+    }),
+    proofDocument: one(riderDocuments, {
+      fields: [riderPaymentMethods.proofDocumentId],
+      references: [riderDocuments.id],
+    }),
+    verifiedByUser: one(systemUsers, {
+      fields: [riderPaymentMethods.verifiedBy],
+      references: [systemUsers.id],
+    }),
+    withdrawalRequests: many(withdrawalRequests),
+  })
+);
+
+export const withdrawalRequestsRelations = relations(
+  withdrawalRequests,
+  ({ one }) => ({
+    rider: one(riders, {
+      fields: [withdrawalRequests.riderId],
+      references: [riders.id],
+    }),
+    paymentMethod: one(riderPaymentMethods, {
+      fields: [withdrawalRequests.paymentMethodId],
+      references: [riderPaymentMethods.id],
     }),
   })
 );

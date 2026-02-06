@@ -89,11 +89,15 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
           )}
         </div>
 
-        {/* Navigation Content */}
+        {/* Navigation Content - only the most specific (longest) matching route is active */}
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
-          {currentSubRoutes.map((route) => {
-            const isActive = cleanPathname === route.href || cleanPathname.startsWith(route.href + "/");
-            const Icon = route.icon;
+          {(() => {
+            const activeHref = currentSubRoutes
+              .filter((r) => cleanPathname === r.href || cleanPathname.startsWith(r.href + "/"))
+              .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
+            return currentSubRoutes.map((route) => {
+              const isActive = activeHref === route.href;
+              const Icon = route.icon;
             return (
               <Link
                 key={route.href}
@@ -131,7 +135,8 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
                 )}
               </Link>
             );
-          })}
+          });
+          })()}
         </nav>
 
         {/* Sidebar Footer with Toggle Button */}

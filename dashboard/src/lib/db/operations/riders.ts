@@ -4,8 +4,8 @@
  */
 
 import { getDb } from "../client";
-import { riders, riderDocuments, riderVehicles, onboardingPayments } from "../schema";
-import { eq, and, desc } from "drizzle-orm";
+import { riders, riderDocuments, riderVehicles, riderAddresses, riderDocumentFiles, riderPaymentMethods, onboardingPayments } from "../schema";
+import { eq, and, desc, inArray, isNull } from "drizzle-orm";
 import { getSystemUserById } from "./users";
 
 /**
@@ -76,23 +76,79 @@ export async function getRiderActiveVehicle(riderId: number) {
 }
 
 /**
- * Get rider with all documents and active vehicle
+ * Get addresses for a rider (rider_addresses). Primary first, then by created_at.
+ */
+export async function getRiderAddresses(riderId: number) {
+  const db = getDb();
+  const rows = await db
+    .select()
+    .from(riderAddresses)
+    .where(eq(riderAddresses.riderId, riderId))
+    .orderBy(desc(riderAddresses.isPrimary), desc(riderAddresses.createdAt));
+  return rows;
+}
+
+/**
+ * Get document files by document IDs (for multi-file docs: front/back, etc.)
+ */
+export async function getRiderDocumentFilesByDocumentIds(documentIds: number[]) {
+  if (documentIds.length === 0) return [];
+  const db = getDb();
+  return db
+    .select()
+    .from(riderDocumentFiles)
+    .where(inArray(riderDocumentFiles.documentId, documentIds))
+    .orderBy(riderDocumentFiles.documentId, riderDocumentFiles.sortOrder, riderDocumentFiles.id);
+}
+
+/**
+ * Get payment methods for a rider (bank/UPI; exclude soft-deleted)
+ */
+export async function getRiderPaymentMethods(riderId: number) {
+  const db = getDb();
+  return db
+    .select()
+    .from(riderPaymentMethods)
+    .where(and(eq(riderPaymentMethods.riderId, riderId), isNull(riderPaymentMethods.deletedAt)))
+    .orderBy(desc(riderPaymentMethods.createdAt));
+}
+
+/**
+ * Get rider with all documents (with files), active vehicle, addresses, and payment methods
  */
 export async function getRiderWithDocuments(id: number) {
   const rider = await getRiderById(id);
   if (!rider) {
     return null;
   }
-  
-  const [documents, vehicle] = await Promise.all([
+
+  const [documents, vehicle, addresses, paymentMethods] = await Promise.all([
     getRiderDocumentsWithVerifier(id),
     getRiderActiveVehicle(id),
+    getRiderAddresses(id),
+    getRiderPaymentMethods(id),
   ]);
-  
+
+  const docIds = documents.map((d) => d.id);
+  const allFiles = await getRiderDocumentFilesByDocumentIds(docIds);
+  const filesByDocId = new Map<number, typeof allFiles>();
+  for (const f of allFiles) {
+    const list = filesByDocId.get(f.documentId) || [];
+    list.push(f);
+    filesByDocId.set(f.documentId, list);
+  }
+
+  const documentsWithFiles = documents.map((doc) => ({
+    ...doc,
+    files: filesByDocId.get(doc.id) || [],
+  }));
+
   return {
     rider,
-    documents,
+    documents: documentsWithFiles,
     vehicle,
+    addresses,
+    paymentMethods,
   };
 }
 

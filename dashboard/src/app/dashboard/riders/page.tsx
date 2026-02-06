@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/rider-dashboard/supabaseClient';
@@ -199,6 +200,7 @@ export default function RidersPage() {
   const [expandedPenaltyId, setExpandedPenaltyId] = useState<number | null>(null);
   // Order row menu (3-dot)
   const [openOrderMenuId, setOpenOrderMenuId] = useState<number | null>(null);
+  const [orderMenuPosition, setOrderMenuPosition] = useState<{ top: number; left: number } | null>(null);
   // Add Amount (wallet credit request) from order
   const [addAmountFromOrder, setAddAmountFromOrder] = useState<{ orderId: number; orderType: string } | null>(null);
   // Add Amount (wallet credit request) manual (non-order)
@@ -947,48 +949,34 @@ export default function RidersPage() {
                             <div className="relative">
                               <button
                                 type="button"
-                                onClick={() => setOpenOrderMenuId(openOrderMenuId === order.id ? null : order.id)}
+                                onClick={(e) => {
+                                  if (openOrderMenuId === order.id) {
+                                    setOpenOrderMenuId(null);
+                                    setOrderMenuPosition(null);
+                                    return;
+                                  }
+                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                  const menuWidth = 176;
+                                  const menuHeight = 120;
+                                  const spaceBelow = window.innerHeight - rect.bottom;
+                                  if (spaceBelow >= menuHeight + 8) {
+                                    setOrderMenuPosition({
+                                      top: rect.bottom + 4,
+                                      left: Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+                                    });
+                                  } else {
+                                    setOrderMenuPosition({
+                                      top: rect.top - menuHeight - 4,
+                                      left: Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+                                    });
+                                  }
+                                  setOpenOrderMenuId(order.id);
+                                }}
                                 className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 hover:text-gray-800 transition-colors"
                                 aria-label="Order actions"
                               >
                                 <MoreVertical className="h-4 w-4" />
                               </button>
-                              {openOrderMenuId === order.id && (
-                                <>
-                                  <div className="fixed inset-0 z-40" onClick={() => setOpenOrderMenuId(null)} aria-hidden />
-                                  <div className="absolute right-0 top-full mt-1 z-50 py-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg">
-                                    {pendingCreditOrderIds.has(order.id) ? (
-                                      <div className="px-3 py-2 text-sm text-amber-700 bg-amber-50 border-b border-amber-100" title="An add amount request is already pending for this order">
-                                        Add amount — request pending
-                                      </div>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setAddAmountFromOrder({ orderId: order.id, orderType: order.orderType || 'food' });
-                                          setOpenOrderMenuId(null);
-                                        }}
-                                        className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-800 font-medium"
-                                      >
-                                        Add Amount
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        const orderValue = Number(order.riderEarning || 0) || 0;
-                                        setAddPenaltyFromOrder({ orderId: order.id, orderType: order.orderType || 'food', orderValue });
-                                        setAddPenaltyForm((f) => ({ ...f, orderId: String(order.id), serviceType: order.orderType || 'food', penaltyPercent: 100 }));
-                                        setAddPenaltyModalOpen(true);
-                                        setOpenOrderMenuId(null);
-                                      }}
-                                      className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-amber-50 hover:text-amber-800 font-medium"
-                                    >
-                                      Add Penalty
-                                    </button>
-                                  </div>
-                                </>
-                              )}
                             </div>
                           </div>
                         </div>
@@ -998,6 +986,74 @@ export default function RidersPage() {
                     <p className="text-gray-500 text-sm text-center py-4">No orders found</p>
                   )}
                 </div>
+                {typeof document !== "undefined" &&
+                  openOrderMenuId != null &&
+                  orderMenuPosition != null &&
+                  (() => {
+                    const order = summary.recentOrders?.find((o: { id: number }) => o.id === openOrderMenuId);
+                    if (!order) return null;
+                    return createPortal(
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => {
+                            setOpenOrderMenuId(null);
+                            setOrderMenuPosition(null);
+                          }}
+                          aria-hidden
+                        />
+                        <div
+                          className="fixed z-[100] py-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg"
+                          style={{ top: orderMenuPosition.top, left: orderMenuPosition.left }}
+                        >
+                          {pendingCreditOrderIds.has(order.id) ? (
+                            <div
+                              className="px-3 py-2 text-sm text-amber-700 bg-amber-50 border-b border-amber-100"
+                              title="An add amount request is already pending for this order"
+                            >
+                              Add amount — request pending
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAddAmountFromOrder({ orderId: order.id, orderType: order.orderType || "food" });
+                                setOpenOrderMenuId(null);
+                                setOrderMenuPosition(null);
+                              }}
+                              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-800 font-medium"
+                            >
+                              Add Amount
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const orderValue = Number(order.riderEarning || 0) || 0;
+                              setAddPenaltyFromOrder({
+                                orderId: order.id,
+                                orderType: order.orderType || "food",
+                                orderValue,
+                              });
+                              setAddPenaltyForm((f) => ({
+                                ...f,
+                                orderId: String(order.id),
+                                serviceType: order.orderType || "food",
+                                penaltyPercent: 100,
+                              }));
+                              setAddPenaltyModalOpen(true);
+                              setOpenOrderMenuId(null);
+                              setOrderMenuPosition(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-amber-50 hover:text-amber-800 font-medium"
+                          >
+                            Add Penalty
+                          </button>
+                        </div>
+                      </>,
+                      document.body
+                    );
+                  })()}
               </div>
             );
             const withdrawalsSection = (

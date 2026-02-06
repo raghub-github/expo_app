@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
@@ -53,6 +53,29 @@ export function RiderOrdersClient() {
   const [pendingCreditOrderIds, setPendingCreditOrderIds] = useState<Set<number>>(new Set());
   const [approvedExtraByOrderId, setApprovedExtraByOrderId] = useState<Map<number, number>>(new Map());
   const [openMenuOrderId, setOpenMenuOrderId] = useState<number | null>(null);
+
+  const orderFilterChips: FilterChipItem[] = useMemo(() => {
+    const chips: FilterChipItem[] = [];
+    if (orderType && orderType !== "all") chips.push({ key: "orderType", label: `Service: ${orderType.replace("_", " ")}` });
+    if (status && status !== "all") chips.push({ key: "status", label: `Status: ${status.replace("_", " ")}` });
+    if (from) chips.push({ key: "from", label: `From: ${from}` });
+    if (to) chips.push({ key: "to", label: `To: ${to}` });
+    return chips;
+  }, [orderType, status, from, to]);
+
+  const removeOrderFilter = useCallback((key: string) => {
+    if (key === "orderType") setOrderType("all");
+    else if (key === "status") setStatus("all");
+    else if (key === "from") setFrom("");
+    else if (key === "to") setTo("");
+  }, []);
+
+  const clearAllOrderFilters = useCallback(() => {
+    setOrderType("all");
+    setStatus("all");
+    setFrom("");
+    setTo("");
+  }, []);
 
   const resolveRider = useCallback(async (value: string) => {
     if (!value.trim()) {
@@ -189,7 +212,7 @@ export function RiderOrdersClient() {
     [riderAccess]
   );
 
-  const applyFilters = () => {
+  const applyFilters = useCallback(() => {
     const p = new URLSearchParams();
     if (searchValue) p.set("search", searchValue);
     if (orderType !== "all") p.set("orderType", orderType);
@@ -197,7 +220,8 @@ export function RiderOrdersClient() {
     if (from) p.set("from", from);
     if (to) p.set("to", to);
     router.push(`/dashboard/riders/orders?${p.toString()}`);
-  };
+    if (rider) fetchOrders(rider.id);
+  }, [searchValue, orderType, status, from, to, rider, router, fetchOrders]);
 
   const handleAddPenaltyFromOrder = useCallback(
     async (e: React.FormEvent) => {
@@ -318,44 +342,19 @@ export function RiderOrdersClient() {
                     <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                   </div>
                 )}
-                <div className={`overflow-x-auto transition-opacity duration-200 ${loading && orders.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Order ID</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Type</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Status</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Fare</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Earning</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
-                      <th className="px-4 py-2 w-10"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
+                <div className={`transition-opacity duration-200 ${loading && orders.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
+                  {/* Card layout for small screens */}
+                  <div className="block md:hidden space-y-3">
                     {orders.length === 0 ? (
-                      <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600 text-sm">No orders found.</td></tr>
+                      <p className="px-4 py-8 text-center text-gray-600 text-sm">No orders found.</p>
                     ) : (
                       orders.map((o) => (
-                        <tr key={o.id} className="relative">
-                          <td className="px-4 py-2 text-sm font-mono text-gray-900">{o.externalRef || o.id}</td>
-                          <td className="px-4 py-2 text-sm text-gray-900">{o.orderType}</td>
-                          <td className="px-4 py-2 text-sm text-gray-900">{o.status}</td>
-                          <td className="px-4 py-2 text-sm text-right text-gray-900">₹{o.fareAmount ?? "—"}</td>
-                          <td className="px-4 py-2 text-sm text-right">
-                            <div className="flex flex-col items-end leading-tight">
-                              <span className="text-gray-900">₹{o.riderEarning ?? "—"}</span>
-                              {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
-                                <span
-                                  className="mt-1 inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700 border border-green-200"
-                                  title="Approved extra amount (add amount) for this order"
-                                >
-                                  Extra +₹{(approvedExtraByOrderId.get(o.id) ?? 0).toFixed(2)}
-                                </span>
-                              )}
+                        <div key={o.id} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm ring-1 ring-gray-900/5">
+                          <div className="flex justify-between items-start gap-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="font-semibold text-gray-900">#{o.externalRef || o.id}</p>
+                              <p className="text-sm text-gray-500 capitalize">{o.orderType.replace("_", " ")} • {o.status.replace("_", " ")}</p>
                             </div>
-                          </td>
-                          <td className="px-4 py-2 text-sm text-gray-800">{new Date(o.createdAt).toLocaleString()}</td>
-                          <td className="px-4 py-2 text-right">
                             <OrderRowMenu
                               orderId={o.id}
                               orderType={o.orderType}
@@ -372,6 +371,79 @@ export function RiderOrdersClient() {
                                 setOpenMenuOrderId(null);
                               }}
                               addAmountPending={pendingCreditOrderIds.has(o.id)}
+                              showAddPenalty={canAddPenaltyForService(o.orderType)}
+                            />
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                            <span className="text-gray-600">Fare: <span className="font-medium text-gray-900">₹{o.fareAmount ?? "—"}</span></span>
+                            <span className="text-gray-600">Earning: <span className="font-medium text-gray-900">₹{o.riderEarning ?? "—"}</span></span>
+                            {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
+                              <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-xs font-semibold text-green-700 border border-green-200">
+                                Extra +₹{(approvedExtraByOrderId.get(o.id) ?? 0).toFixed(2)}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-2 text-xs text-gray-500">{new Date(o.createdAt).toLocaleString()}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  {/* Table for md and up */}
+                  <div className="hidden md:block overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Order ID</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Type</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Status</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Fare</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wide">Earning</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
+                      <th className="px-4 py-3 w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {orders.length === 0 ? (
+                      <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-600 text-sm">No orders found.</td></tr>
+                    ) : (
+                      orders.map((o) => (
+                        <tr key={o.id} className="relative hover:bg-gray-50/50">
+                          <td className="px-4 py-3 text-sm font-mono font-medium text-gray-900">{o.externalRef || o.id}</td>
+                          <td className="px-4 py-3 text-sm text-gray-900 capitalize">{o.orderType.replace("_", " ")}</td>
+                          <td className="px-4 py-3 text-sm text-gray-900 capitalize">{o.status.replace("_", " ")}</td>
+                          <td className="px-4 py-3 text-sm text-right text-gray-900">₹{o.fareAmount ?? "—"}</td>
+                          <td className="px-4 py-3 text-sm text-right">
+                            <div className="flex flex-col items-end leading-tight">
+                              <span className="font-medium text-gray-900">₹{o.riderEarning ?? "—"}</span>
+                              {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (
+                                <span
+                                  className="mt-1 inline-flex items-center rounded-md bg-green-50 px-2 py-0.5 text-[11px] font-semibold text-green-700 border border-green-200"
+                                  title="Approved extra amount (add amount) for this order"
+                                >
+                                  Extra +₹{(approvedExtraByOrderId.get(o.id) ?? 0).toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">{new Date(o.createdAt).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-right">
+                            <OrderRowMenu
+                              orderId={o.id}
+                              orderType={o.orderType}
+                              isOpen={openMenuOrderId === o.id}
+                              onToggle={() => setOpenMenuOrderId((id) => (id === o.id ? null : o.id))}
+                              onAddPenalty={() => {
+                                const orderValue = parseFloat(o.riderEarning || o.fareAmount || "0") || 0;
+                                setAddPenaltyForOrder({ orderId: o.id, serviceType: o.orderType, orderValue });
+                                setAddPenaltyForm({ reason: "", penaltyPercent: 100 });
+                                setOpenMenuOrderId(null);
+                              }}
+                              onAddAmount={() => {
+                                setAddAmountForOrder({ orderId: o.id, serviceType: o.orderType });
+                                setOpenMenuOrderId(null);
+                              }}
+                              addAmountPending={pendingCreditOrderIds.has(o.id)}
+                              showAddPenalty={canAddPenaltyForService(o.orderType)}
                             />
                           </td>
                         </tr>
@@ -379,6 +451,7 @@ export function RiderOrdersClient() {
                     )}
                   </tbody>
                 </table>
+                </div>
                 </div>
               </>
             )}
@@ -499,7 +572,7 @@ function OrderRowMenu({
         <MoreVertical className="h-4 w-4" />
       </button>
       {isOpen && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] rounded-lg border border-gray-200 bg-white shadow-lg py-1">
+        <div className="absolute right-0 top-full mt-1 z-[100] min-w-[160px] rounded-lg border border-gray-200 bg-white shadow-lg py-1 ring-1 ring-gray-900/5">
           {addAmountPending ? (
             <div className="px-3 py-2 text-sm text-amber-700 bg-amber-50 border-b border-amber-100" title="An add amount request is already pending for this order">
               Add amount — request pending
