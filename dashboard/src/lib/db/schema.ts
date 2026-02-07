@@ -326,6 +326,7 @@ export const withdrawalStatusEnum = pgEnum("withdrawal_status", [
   "completed",
   "failed",
   "cancelled",
+  "aborted",
 ]);
 
 export const paymentStatusEnum = pgEnum("payment_status", [
@@ -345,6 +346,21 @@ export const rewardTypeEnum = pgEnum("reward_type", [
   "cash",
   "voucher",
   "bonus",
+]);
+
+export const referralOfferTypeEnum = pgEnum("referral_offer_type", [
+  "fixed_per_referral",
+  "per_order_bonus",
+  "tiered",
+  "custom",
+]);
+
+export const referralFulfillmentStatusEnum = pgEnum("referral_fulfillment_status", [
+  "pending",
+  "fulfilled",
+  "credited",
+  "expired",
+  "cancelled",
 ]);
 
 export const ratingFromTypeEnum = pgEnum("rating_from_type", [
@@ -1017,7 +1033,7 @@ export const riderPenalties = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
-    serviceType: orderTypeEnum("service_type").notNull(), // 'food', 'parcel', 'person_ride'
+    serviceType: orderTypeEnum("service_type"), // 'food', 'parcel', 'person_ride'; null = unspecified
     penaltyType: text("penalty_type").notNull(), // 'late_delivery', 'customer_complaint', 'fraud', 'cancellation', etc.
     amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
     reason: text("reason").notNull(),
@@ -1265,6 +1281,72 @@ export const dutyLogs = pgTable(
       table.riderId,
       table.status,
       table.timestamp
+    ),
+  })
+);
+
+/**
+ * Rider activity sessions - one row per login session per service
+ * For activity logs: login time per day/week/month, which service rider was on
+ */
+export const riderActivitySessions = pgTable(
+  "rider_activity_sessions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    serviceType: text("service_type").notNull(), // 'food' | 'parcel' | 'person_ride'
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("rider_activity_sessions_rider_id_idx").on(table.riderId),
+    startedAtIdx: index("rider_activity_sessions_started_at_idx").on(table.startedAt),
+    riderStartedIdx: index("rider_activity_sessions_rider_started_idx").on(
+      table.riderId,
+      table.startedAt
+    ),
+    serviceTypeIdx: index("rider_activity_sessions_service_type_idx").on(table.serviceType),
+  })
+);
+
+/**
+ * Rider activity daily - one row per rider per day per service (aggregates)
+ * For dashboard: login time, orders completed/cancelled, earnings (orders, offers, incentives)
+ */
+export const riderActivityDaily = pgTable(
+  "rider_activity_daily",
+  {
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    activityDate: date("activity_date").notNull(),
+    serviceType: text("service_type").notNull(), // 'food' | 'parcel' | 'person_ride'
+    totalLoginSeconds: integer("total_login_seconds").notNull().default(0),
+    firstLoginAt: timestamp("first_login_at", { withTimezone: true }),
+    lastLogoutAt: timestamp("last_logout_at", { withTimezone: true }),
+    ordersCompleted: integer("orders_completed").notNull().default(0),
+    ordersCancelled: integer("orders_cancelled").notNull().default(0),
+    earningsOrders: numeric("earnings_orders", { precision: 12, scale: 2 }).notNull().default("0"),
+    earningsOffers: numeric("earnings_offers", { precision: 12, scale: 2 }).notNull().default("0"),
+    earningsIncentives: numeric("earnings_incentives", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.riderId, table.activityDate, table.serviceType] }),
+    riderIdIdx: index("rider_activity_daily_rider_id_idx").on(table.riderId),
+    activityDateIdx: index("rider_activity_daily_activity_date_idx").on(table.activityDate),
+    serviceTypeIdx: index("rider_activity_daily_service_type_idx").on(table.serviceType),
+    riderDateIdx: index("rider_activity_daily_rider_date_idx").on(
+      table.riderId,
+      table.activityDate
     ),
   })
 );
@@ -2264,7 +2346,74 @@ export const tickets = pgTable(
 // ============================================================================
 
 /**
- * Referral tracking
+ * Referral offer/campaign definition. Default T&C, amount, order count, limits;
+ * city-wise overrides in referral_offer_city_rules.
+ */
+export const referralOffers = pgTable(
+  "referral_offers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    offerCode: text("offer_code").notNull().unique(),
+    name: text("name").notNull(),
+    description: text("description"),
+    offerType: referralOfferTypeEnum("offer_type").notNull().default("fixed_per_referral"),
+    amount: numeric("amount", { precision: 10, scale: 2 }),
+    amountConfig: jsonb("amount_config").notNull().default({}),
+    serviceTypes: text("service_types").array().default([]),
+    minOrdersPerReferred: integer("min_orders_per_referred").notNull().default(0),
+    minReferredCount: integer("min_referred_count").notNull().default(1),
+    maxReferralsPerReferrer: integer("max_referrals_per_referrer"), // global cap per referrer (null = no limit)
+    termsAndConditions: text("terms_and_conditions"),
+    termsSnapshot: jsonb("terms_snapshot").default({}),
+    validFrom: timestamp("valid_from", { withTimezone: true }),
+    validTo: timestamp("valid_to", { withTimezone: true }),
+    cityIds: bigint("city_ids", { mode: "number" }).array(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdBy: bigint("created_by", { mode: "number" }).references(() => systemUsers.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    offerCodeIdx: uniqueIndex("referral_offers_offer_code_idx").on(table.offerCode),
+    isActiveIdx: index("referral_offers_is_active_idx").on(table.isActive),
+    offerTypeIdx: index("referral_offers_offer_type_idx").on(table.offerType),
+  })
+);
+
+/**
+ * City-wise overrides for referral offers: amount, min_orders, max_referrals limit, T&C.
+ * Resolve: lookup (offer_id, city_id) here; if not found use referral_offers defaults.
+ */
+export const referralOfferCityRules = pgTable(
+  "referral_offer_city_rules",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    offerId: bigint("offer_id", { mode: "number" })
+      .notNull()
+      .references(() => referralOffers.id, { onDelete: "cascade" }),
+    cityId: bigint("city_id", { mode: "number" })
+      .notNull()
+      .references((): any => cities.id, { onDelete: "cascade" }),
+    amount: numeric("amount", { precision: 10, scale: 2 }),
+    minOrdersPerReferred: integer("min_orders_per_referred"),
+    maxReferralsPerReferrer: integer("max_referrals_per_referrer"),
+    termsAndConditions: text("terms_and_conditions"),
+    termsSnapshot: jsonb("terms_snapshot").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    offerIdIdx: index("referral_offer_city_rules_offer_id_idx").on(table.offerId),
+    cityIdIdx: index("referral_offer_city_rules_city_id_idx").on(table.cityId),
+    offerCityUniqueIdx: uniqueIndex("referral_offer_city_rules_offer_city_idx").on(
+      table.offerId,
+      table.cityId
+    ),
+  })
+);
+
+/**
+ * Referral tracking (who referred whom; optional link to offer and city)
  */
 export const referrals = pgTable(
   "referrals",
@@ -2276,6 +2425,10 @@ export const referrals = pgTable(
     referredId: integer("referred_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
+    offerId: bigint("offer_id", { mode: "number" }).references(() => referralOffers.id, { onDelete: "set null" }),
+    referralCodeUsed: text("referral_code_used"),
+    referredCityId: bigint("referred_city_id", { mode: "number" }).references((): any => cities.id, { onDelete: "set null" }),
+    referredCityName: text("referred_city_name"),
     referrerReward: numeric("referrer_reward", { precision: 10, scale: 2 }),
     referredReward: numeric("referred_reward", { precision: 10, scale: 2 }),
     referrerRewardPaid: boolean("referrer_reward_paid")
@@ -2295,6 +2448,56 @@ export const referrals = pgTable(
     referredIdUniqueIdx: uniqueIndex("referrals_referred_id_unique_idx").on(
       table.referredId
     ),
+    offerIdIdx: index("referrals_offer_id_idx").on(table.offerId),
+    referredCityIdIdx: index("referrals_referred_city_id_idx").on(table.referredCityId),
+  })
+);
+
+/**
+ * Per-referral fulfillment: order counts, amount credited to referrer, status, T&C snapshot.
+ */
+export const referralFulfillments = pgTable(
+  "referral_fulfillments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    referralId: bigint("referral_id", { mode: "number" })
+      .notNull()
+      .references(() => referrals.id, { onDelete: "cascade" }),
+    offerId: bigint("offer_id", { mode: "number" })
+      .notNull()
+      .references(() => referralOffers.id, { onDelete: "restrict" }),
+    referrerRiderId: integer("referrer_rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    referredRiderId: integer("referred_rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    status: referralFulfillmentStatusEnum("status").notNull().default("pending"),
+    minOrdersRequired: integer("min_orders_required").notNull().default(0),
+    ordersCompletedByReferred: integer("orders_completed_by_referred").notNull().default(0),
+    ordersCompletedFood: integer("orders_completed_food").notNull().default(0),
+    ordersCompletedParcel: integer("orders_completed_parcel").notNull().default(0),
+    ordersCompletedPersonRide: integer("orders_completed_person_ride").notNull().default(0),
+    amountCredited: numeric("amount_credited", { precision: 10, scale: 2 }).notNull().default("0"),
+    amountCreditedFood: numeric("amount_credited_food", { precision: 10, scale: 2 }).notNull().default("0"),
+    amountCreditedParcel: numeric("amount_credited_parcel", { precision: 10, scale: 2 }).notNull().default("0"),
+    amountCreditedPersonRide: numeric("amount_credited_person_ride", { precision: 10, scale: 2 }).notNull().default("0"),
+    walletLedgerId: bigint("wallet_ledger_id", { mode: "number" }),
+    creditedAt: timestamp("credited_at", { withTimezone: true }),
+    fulfilledAt: timestamp("fulfilled_at", { withTimezone: true }),
+    cityId: bigint("city_id", { mode: "number" }).references((): any => cities.id, { onDelete: "set null" }),
+    cityName: text("city_name"),
+    termsSnapshot: jsonb("terms_snapshot").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    referralIdIdx: uniqueIndex("referral_fulfillments_referral_id_unique").on(table.referralId),
+    referrerRiderIdIdx: index("referral_fulfillments_referrer_rider_id_idx").on(table.referrerRiderId),
+    referredRiderIdIdx: index("referral_fulfillments_referred_rider_id_idx").on(table.referredRiderId),
+    offerIdIdx: index("referral_fulfillments_offer_id_idx").on(table.offerId),
+    statusIdx: index("referral_fulfillments_status_idx").on(table.status),
+    cityIdIdx: index("referral_fulfillments_city_id_idx").on(table.cityId),
   })
 );
 
@@ -2439,6 +2642,8 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
     references: [riderWallet.riderId],
   }),
   dutyLogs: many(dutyLogs),
+  riderActivitySessions: many(riderActivitySessions),
+  riderActivityDaily: many(riderActivityDaily),
   locationLogs: many(locationLogs),
   blacklistHistory: many(blacklistHistory),
   negativeWalletBlocks: many(riderNegativeWalletBlocks),

@@ -84,7 +84,7 @@ export async function POST(
     const validServiceTypes = ["food", "parcel", "person_ride"] as const;
     const serviceType = validServiceTypes.includes(rawServiceType as any)
       ? (rawServiceType as "food" | "parcel" | "person_ride")
-      : "food";
+      : "parcel";
     const canRevert =
       userIsSuperAdmin ||
       (await canPerformRiderServiceAction(user.id, email, serviceType, "UPDATE"));

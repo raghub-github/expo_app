@@ -11,6 +11,7 @@ interface AddPenaltyModalProps {
 }
 
 const SERVICE_TYPES = [
+  { value: "", label: "Select service" },
   { value: "food", label: "Food" },
   { value: "parcel", label: "Parcel" },
   { value: "person_ride", label: "Person Ride" },
@@ -32,7 +33,7 @@ export function AddPenaltyModal({
 }: AddPenaltyModalProps) {
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
-  const [serviceType, setServiceType] = useState<string>("food");
+  const [serviceType, setServiceType] = useState<string>("");
   const [penaltyType, setPenaltyType] = useState<string>("other");
   const [orderId, setOrderId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -50,6 +51,10 @@ export function AddPenaltyModal({
       setError("Reason is required");
       return;
     }
+    if (!serviceType || !["food", "parcel", "person_ride"].includes(serviceType)) {
+      setError("Please select a service (Food, Parcel, or Person Ride).");
+      return;
+    }
     setLoading(true);
     try {
       const res = await fetch(`/api/riders/${riderId}/penalties`, {
@@ -58,7 +63,7 @@ export function AddPenaltyModal({
         body: JSON.stringify({
           amount: amt,
           reason: reason.trim(),
-          serviceType,
+          serviceType: serviceType as "food" | "parcel" | "person_ride",
           penaltyType,
           orderId: orderId.trim() ? parseInt(orderId, 10) : undefined,
         }),
@@ -119,16 +124,18 @@ export function AddPenaltyModal({
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Service</label>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Service *</label>
             <select
               value={serviceType}
               onChange={(e) => setServiceType(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+              required
             >
               {SERVICE_TYPES.map((s) => (
-                <option key={s.value} value={s.value}>{s.label}</option>
+                <option key={s.value || "none"} value={s.value}>{s.label}</option>
               ))}
             </select>
+            <p className="mt-0.5 text-xs text-gray-500">Select the service this penalty applies to (Food, Parcel, or Person Ride)</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Type</label>

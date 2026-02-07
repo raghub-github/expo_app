@@ -8,6 +8,8 @@ export interface FilterSearchBarProps {
   placeholder: string;
   /** Optional hint shown below the input on focus/desktop */
   hint?: string;
+  /** Optional: called when user presses Enter (e.g. apply filters) */
+  onSubmit?: () => void;
   /** Input type; "search" for native clear and better mobile UX */
   type?: "text" | "search";
   /** Optional class for the wrapper */
@@ -26,10 +28,18 @@ export function FilterSearchBar({
   onChange,
   placeholder,
   hint,
+  onSubmit,
   type = "search",
   className = "",
   id,
 }: FilterSearchBarProps) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSubmit?.();
+    }
+  };
+
   return (
     <div className={`min-w-0 flex-1 w-full sm:min-w-[180px] sm:max-w-[280px] ${className}`}>
       <label htmlFor={id} className="block text-xs font-medium text-gray-600 mb-0.5">
@@ -44,6 +54,7 @@ export function FilterSearchBar({
           type={type}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder={placeholder}
           className="w-full pl-9 pr-9 py-2 border border-gray-300 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow focus:shadow-md"
           aria-label="Search"

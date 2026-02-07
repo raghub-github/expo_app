@@ -1,6 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+
+const SERVICE_OPTIONS = [
+  { value: "", label: "— Not specified" },
+  { value: "food", label: "Food" },
+  { value: "parcel", label: "Parcel" },
+  { value: "person_ride", label: "Person Ride" },
+] as const;
 
 interface AddAmountModalProps {
   riderId: number;
@@ -10,6 +17,7 @@ interface AddAmountModalProps {
   onSuccess: (requestId?: number) => void;
   /** When set, request is order-linked (read-only in UI) */
   orderId?: number;
+  /** Pre-fill service when opened from order context; still editable unless you want read-only */
   serviceType?: "food" | "parcel" | "person_ride";
 }
 
@@ -31,8 +39,13 @@ export function AddAmountModal({
 }: AddAmountModalProps) {
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
+  const [serviceTypeLocal, setServiceTypeLocal] = useState<string>(serviceType ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) setServiceTypeLocal(serviceType ?? "");
+  }, [open, serviceType]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,7 +74,8 @@ export function AddAmountModal({
         idempotencyKey,
       };
       if (orderId != null) body.orderId = orderId;
-      if (serviceType) body.serviceType = serviceType;
+      const st = serviceTypeLocal && serviceTypeLocal.trim() ? serviceTypeLocal.trim() : undefined;
+      if (st && ["food", "parcel", "person_ride"].includes(st)) body.serviceType = st;
 
       const res = await fetch(`/api/riders/${riderId}/wallet-credit-requests`, {
         method: "POST",
@@ -112,6 +126,19 @@ export function AddAmountModal({
               )}
             </div>
           )}
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Service (optional)</label>
+            <select
+              value={serviceTypeLocal}
+              onChange={(e) => setServiceTypeLocal(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            >
+              {SERVICE_OPTIONS.map((o) => (
+                <option key={o.value || "none"} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <p className="mt-0.5 text-xs text-gray-500">For which service this credit applies (e.g. Food, Parcel, Person Ride)</p>
+          </div>
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Amount (₹) *</label>
             <input

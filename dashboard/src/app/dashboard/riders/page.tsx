@@ -113,10 +113,10 @@ export default function RidersPage() {
   const [withdrawalsPage, setWithdrawalsPage] = useState(1);
   const [withdrawalsPageSize, setWithdrawalsPageSize] = useState(10);
 
-  useEffect(() => { setOrdersPage(1); }, [ordersLimit, ordersFrom, ordersTo, ordersOrderType, ordersStatus, ordersOrderIdSearch]);
-  useEffect(() => { setTicketsPage(1); }, [ticketsLimit, ticketsFrom, ticketsTo, ticketsStatus, ticketsCategory, ticketsPriority, ticketsSearch]);
-  useEffect(() => { setPenaltiesPage(1); }, [penaltiesLimit, penaltiesFrom, penaltiesTo, penaltiesStatus, penaltiesServiceType, penaltiesOrderIdSearch]);
-  useEffect(() => { setWithdrawalsPage(1); }, [withdrawalsLimit, withdrawalsFrom, withdrawalsTo]);
+  useEffect(() => { setOrdersPage(1); }, [ordersPageSize, ordersFrom, ordersTo, ordersOrderType, ordersStatus, ordersOrderIdSearch]);
+  useEffect(() => { setTicketsPage(1); }, [ticketsPageSize, ticketsFrom, ticketsTo, ticketsStatus, ticketsCategory, ticketsPriority, ticketsSearch]);
+  useEffect(() => { setPenaltiesPage(1); }, [penaltiesPageSize, penaltiesFrom, penaltiesTo, penaltiesStatus, penaltiesServiceType, penaltiesOrderIdSearch]);
+  useEffect(() => { setWithdrawalsPage(1); }, [withdrawalsPageSize, withdrawalsFrom, withdrawalsTo]);
 
   const formatWalletNum = (v: string | number | null | undefined) => {
     const n = Number(v);
@@ -129,23 +129,24 @@ export default function RidersPage() {
   ) ?? false;
 
   const riderId = riders[0]?.id ?? null;
+  // Use page size (Rows dropdown) as API limit so changing Rows refetches with new limit
   const summaryParams: RiderSummaryParams = {
-    ordersLimit,
+    ordersLimit: ordersPageSize,
     ordersFrom,
     ordersTo,
     ordersOrderType,
     ordersStatus,
     ordersOrderId: ordersOrderIdSearch.trim() || '',
-    withdrawalsLimit,
+    withdrawalsLimit: withdrawalsPageSize,
     withdrawalsFrom,
     withdrawalsTo,
-    ticketsLimit,
+    ticketsLimit: ticketsPageSize,
     ticketsFrom,
     ticketsTo,
     ticketsStatus,
     ticketsCategory,
     ticketsPriority,
-    penaltiesLimit,
+    penaltiesLimit: penaltiesPageSize,
     penaltiesFrom,
     penaltiesTo,
     penaltiesStatus,
@@ -207,7 +208,7 @@ export default function RidersPage() {
 
   // Add Penalty modal (home dashboard)
   const [addPenaltyModalOpen, setAddPenaltyModalOpen] = useState(false);
-  const [addPenaltyForm, setAddPenaltyForm] = useState({ amount: '', reason: '', serviceType: 'food' as string, penaltyType: 'other' as string, orderId: '', penaltyPercent: 100 });
+  const [addPenaltyForm, setAddPenaltyForm] = useState({ amount: '', reason: '', serviceType: '' as string, penaltyType: 'other' as string, orderId: '', penaltyPercent: 100 });
   const [addPenaltySubmitting, setAddPenaltySubmitting] = useState(false);
   const [addPenaltyError, setAddPenaltyError] = useState<string | null>(null);
   // Add Penalty from order (pre-fill orderId + serviceType + orderValue for % flow)
@@ -259,6 +260,13 @@ export default function RidersPage() {
       setAddPenaltyError('Order ID must be a positive number if provided.');
       return;
     }
+    if (!fromOrder) {
+      const svc = addPenaltyForm.serviceType?.trim();
+      if (!svc || !['food', 'parcel', 'person_ride'].includes(svc)) {
+        setAddPenaltyError('Please select a service (Food, Parcel, or Person Ride).');
+        return;
+      }
+    }
     setAddPenaltyError(null);
     setAddPenaltySubmitting(true);
     try {
@@ -269,7 +277,7 @@ export default function RidersPage() {
         body: JSON.stringify({
           amount: Math.round(amount * 100) / 100,
           reason,
-          serviceType: fromOrder ? addPenaltyFromOrder!.orderType : addPenaltyForm.serviceType,
+          serviceType: fromOrder ? addPenaltyFromOrder!.orderType : (addPenaltyForm.serviceType && ['food', 'parcel', 'person_ride'].includes(addPenaltyForm.serviceType) ? addPenaltyForm.serviceType : null),
           penaltyType: 'other',
           ...(orderId != null && !Number.isNaN(orderId) ? { orderId } : {}),
         }),
@@ -281,7 +289,7 @@ export default function RidersPage() {
       }
       setAddPenaltyModalOpen(false);
       setAddPenaltyFromOrder(null);
-      setAddPenaltyForm({ amount: '', reason: '', serviceType: 'food', penaltyType: 'other', orderId: '', penaltyPercent: 100 });
+      setAddPenaltyForm({ amount: '', reason: '', serviceType: '', penaltyType: 'other', orderId: '', penaltyPercent: 100 });
       if (riderId) invalidateRiderSummary(queryClient, riderId);
       await refetchRiderSummary();
     } catch (err) {
@@ -631,7 +639,7 @@ export default function RidersPage() {
   const handleOrdersLimitChange = useCallback((v: number) => { setLoadingSection('orders'); setOrdersLimit(v); }, [setLoadingSection]);
   const handleOrdersFromChange = useCallback((v: string) => { setLoadingSection('orders'); setOrdersFrom(v); }, [setLoadingSection]);
   const handleOrdersToChange = useCallback((v: string) => { setLoadingSection('orders'); setOrdersTo(v); }, [setLoadingSection]);
-  const handleWithdrawalsLimitChange = useCallback((v: number) => { setLoadingSection('withdrawals'); setWithdrawalsLimit(v); }, [setLoadingSection]);
+  const handleWithdrawalsLimitChange = useCallback((v: number) => { setLoadingSection('withdrawals'); setWithdrawalsPageSize(v); setWithdrawalsPage(1); }, [setLoadingSection]);
   const handleWithdrawalsFromChange = useCallback((v: string) => { setLoadingSection('withdrawals'); setWithdrawalsFrom(v); }, [setLoadingSection]);
   const handleWithdrawalsToChange = useCallback((v: string) => { setLoadingSection('withdrawals'); setWithdrawalsTo(v); }, [setLoadingSection]);
   const handleTicketsLimitChange = useCallback((v: number) => { setLoadingSection('tickets'); setTicketsLimit(v); }, [setLoadingSection]);
@@ -1007,6 +1015,18 @@ export default function RidersPage() {
                       <button type="button" onClick={clearOrdersFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
                     </>
                   )}
+                  {(summary.recentOrders?.length ?? 0) > 0 && (
+                    <>
+                      <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+                      <select value={ordersPageSize} onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+                        <option value={5}>5</option>
+                        <option value={10}>10</option>
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                      </select>
+                      <TablePagination page={ordersPage} pageSize={ordersPageSize} total={totalOrders} onPageChange={setOrdersPage} disabled={summaryQueryFetching} ariaLabel="Orders" compact />
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => { setShowOrdersFilters((v) => !v); if (!showOrdersFilters) setLoadingSection('orders'); }}
@@ -1066,18 +1086,6 @@ export default function RidersPage() {
                     </div>
                   ) : (summary.recentOrders?.length ?? 0) > 0 ? (
                     <>
-                    <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
-                        <select value={ordersPageSize} onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
-                          <option value={5}>5</option>
-                          <option value={10}>10</option>
-                          <option value={20}>20</option>
-                          <option value={50}>50</option>
-                        </select>
-                      </div>
-                      <TablePagination page={ordersPage} pageSize={ordersPageSize} total={totalOrders} onPageChange={setOrdersPage} disabled={summaryQueryFetching} ariaLabel="Orders" />
-                    </div>
                     <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                       {displayedOrders.map((order: { id: number; orderType: string; status: string; riderEarning?: number; createdAt: string }) => (
                         <div key={order.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100/80 transition-colors group">
@@ -1217,7 +1225,7 @@ export default function RidersPage() {
               <RecentDataSection
                 title="Recent Withdrawals"
                 data={summary.recentWithdrawals ?? []}
-                limit={withdrawalsLimit}
+                limit={withdrawalsPageSize}
                 onLimitChange={handleWithdrawalsLimitChange}
                 fromDate={withdrawalsFrom}
                 toDate={withdrawalsTo}
@@ -1259,6 +1267,18 @@ export default function RidersPage() {
                       <button type="button" onClick={clearTicketsFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
                     </>
                   )}
+                  {summary.recentTickets?.length ? (
+                    <>
+                      <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+                      <select value={ticketsPageSize} onChange={(e) => { setTicketsPageSize(Number(e.target.value)); setTicketsPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+                        <option value={5}>5</option>
+                        <option value={10}>10</option>
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                      </select>
+                      <TablePagination page={ticketsPage} pageSize={ticketsPageSize} total={totalTickets} onPageChange={setTicketsPage} disabled={summaryQueryFetching} ariaLabel="Tickets" compact />
+                    </>
+                  ) : null}
                   <button type="button" onClick={() => { setShowTicketsFilters((v) => !v); if (!showTicketsFilters) setLoadingSection('tickets'); }} className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border ml-auto sm:ml-0 ${showTicketsFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}><Filter className="h-3.5 w-3.5" /> Filters</button>
                 </div>
                 {showTicketsFilters && showTicketsMoreFilters && (
@@ -1287,18 +1307,6 @@ export default function RidersPage() {
                     <p className="text-gray-500 text-sm py-6 text-center">No tickets found</p>
                   ) : (
                     <>
-                    <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
-                        <select value={ticketsPageSize} onChange={(e) => { setTicketsPageSize(Number(e.target.value)); setTicketsPage(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
-                          <option value={5}>5</option>
-                          <option value={10}>10</option>
-                          <option value={20}>20</option>
-                          <option value={50}>50</option>
-                        </select>
-                      </div>
-                      <TablePagination page={ticketsPage} pageSize={ticketsPageSize} total={totalTickets} onPageChange={setTicketsPage} disabled={summaryQueryFetching} ariaLabel="Tickets" />
-                    </div>
                     <div className="overflow-x-auto max-h-80 overflow-y-auto rounded-lg border border-gray-200 -mr-1">
                       <table className="min-w-full text-sm border-collapse">
                         <thead className="bg-gray-50 sticky top-0 z-10">
@@ -1363,6 +1371,18 @@ export default function RidersPage() {
                         {showPenaltiesMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                       </button>
                       <button type="button" onClick={clearPenaltiesFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
+                    </>
+                  )}
+                  {(summary.recentPenalties?.length ?? 0) > 0 && (
+                    <>
+                      <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+                      <select value={penaltiesPageSize} onChange={(e) => { setPenaltiesPageSize(Number(e.target.value)); setPenaltiesPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+                        <option value={5}>5</option>
+                        <option value={10}>10</option>
+                        <option value={20}>20</option>
+                        <option value={50}>50</option>
+                      </select>
+                      <TablePagination page={penaltiesPage} pageSize={penaltiesPageSize} total={totalPenalties} onPageChange={setPenaltiesPage} disabled={summaryQueryFetching} ariaLabel="Penalties" compact />
                     </>
                   )}
                   <button
@@ -1452,18 +1472,6 @@ export default function RidersPage() {
                     </div>
                   ) : (summary.recentPenalties?.length ?? 0) > 0 ? (
                     <>
-                    <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
-                        <select value={penaltiesPageSize} onChange={(e) => { setPenaltiesPageSize(Number(e.target.value)); setPenaltiesPage(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
-                          <option value={5}>5</option>
-                          <option value={10}>10</option>
-                          <option value={20}>20</option>
-                          <option value={50}>50</option>
-                        </select>
-                      </div>
-                      <TablePagination page={penaltiesPage} pageSize={penaltiesPageSize} total={totalPenalties} onPageChange={setPenaltiesPage} disabled={summaryQueryFetching} ariaLabel="Penalties" />
-                    </div>
                     <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200">
                       <table className="w-full max-w-full text-xs table-fixed border-collapse">
                         <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
@@ -1480,7 +1488,7 @@ export default function RidersPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
-                          {displayedPenalties.map((penalty: { id: number; orderId?: number | null; serviceType: string; penaltyType: string; amount: string; reason: string; status: string; imposedAt: string; resolvedAt?: string | null; imposedByEmail?: string | null; reversedByEmail?: string | null }) => {
+                          {displayedPenalties.map((penalty: { id: number; orderId?: number | null; serviceType: string | null; penaltyType: string; amount: string; reason: string; status: string; imposedAt: string; resolvedAt?: string | null; imposedByEmail?: string | null; reversedByEmail?: string | null }) => {
                             const canRevert = (penalty.status === 'active' || penalty.status === 'paid') && penalty.status !== 'reversed';
                             const imposedDate = penalty.imposedAt ? new Date(penalty.imposedAt).toLocaleDateString() : '—';
                             const resolvedDate = penalty.resolvedAt ? new Date(penalty.resolvedAt).toLocaleDateString() : null;
@@ -1488,7 +1496,7 @@ export default function RidersPage() {
                             const statusLabel = isReversed ? 'Reverted' : (penalty.status === 'paid' ? 'Paid' : 'Active');
                             const statusClass = isReversed ? 'bg-green-100 text-green-800' : 'bg-red-50 text-red-700';
                             const isExpanded = expandedPenaltyId === penalty.id;
-                            const typeLabel = `${String(penalty.penaltyType).replace(/_/g, ' ')} • ${penalty.serviceType}`;
+                            const typeLabel = `${String(penalty.penaltyType).replace(/_/g, ' ')} • ${penalty.serviceType ? penalty.serviceType.replace(/_/g, ' ') : '—'}`;
                             return (
                               <React.Fragment key={penalty.id}>
                                 <tr className="hover:bg-gray-50/80 transition-colors">
@@ -1512,7 +1520,7 @@ export default function RidersPage() {
                                   </td>
                                   <td className="py-1.5 px-1.5 align-middle text-gray-500 whitespace-nowrap min-w-0">{imposedDate}</td>
                                   <td className="py-1.5 px-1.5 align-middle text-right min-w-0">
-                                    {canRevert && canRevertPenaltyForService(penalty.serviceType) ? (
+                                    {canRevert && canRevertPenaltyForService(penalty.serviceType ?? 'parcel') ? (
                                       <button
                                         type="button"
                                         onClick={() => { setRevertPenaltyId(penalty.id); setRevertReason(''); setRevertError(null); }}
@@ -2310,8 +2318,9 @@ export default function RidersPage() {
                               <textarea rows={2} required value={addPenaltyForm.reason} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, reason: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900 placeholder:text-gray-500" placeholder="e.g. Order cancellation, fraud, extra charges..." />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">Service Type</label>
-                              <select value={addPenaltyForm.serviceType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 bg-white text-gray-900">
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Service *</label>
+                              <select value={addPenaltyForm.serviceType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))} required className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 bg-white text-gray-900">
+                                <option value="" className="text-gray-900 bg-white">Select service</option>
                                 <option value="food" className="text-gray-900 bg-white">Food</option>
                                 <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
                                 <option value="person_ride" className="text-gray-900 bg-white">Person Ride</option>
@@ -2430,11 +2439,11 @@ function RecentDataSection({
   const displayData = page != null && pageSize != null ? data.slice((page - 1) * pageSize, page * pageSize) : data;
   return (
     <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
-      {/* Same line: title, filter options (when open), More filters (optional), Filters button — compact and responsive */}
-      <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
-        <h3 className="text-md font-semibold text-gray-800 shrink-0">{title}</h3>
+      {/* Single line: title, refresh, filters (when open), rows per page, pagination, Filters button — compact */}
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-2 shrink-0">
+        <h3 className="text-sm sm:text-md font-semibold text-gray-800 shrink-0">{title}</h3>
         {onRefresh && (
-          <button type="button" onClick={onRefresh} disabled={refreshing} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh section"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
+          <button type="button" onClick={onRefresh} disabled={refreshing} className="p-1 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 disabled:opacity-50" title="Refresh"><RefreshCw className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
         )}
         {showFilters && (
           <>
@@ -2442,7 +2451,7 @@ function RecentDataSection({
               <select
                 value={limit}
                 onChange={(e) => onLimitChange(Number(e.target.value))}
-                className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-14 sm:w-16"
+                className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-12 sm:w-14"
                 title="Number of records"
               >
                 <option value={5}>5</option>
@@ -2451,47 +2460,30 @@ function RecentDataSection({
                 <option value={50}>50</option>
               </select>
             )}
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => onFromDateChange(e.target.value)}
-              className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]"
-              title="From date"
-            />
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => onToDateChange(e.target.value)}
-              className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]"
-              title="To date"
-            />
+            <input type="date" value={fromDate} onChange={(e) => onFromDateChange(e.target.value)} className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-24 sm:w-28" title="From" />
+            <input type="date" value={toDate} onChange={(e) => onToDateChange(e.target.value)} className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-24 sm:w-28" title="To" />
             {onClearFilters && (
-              <button type="button" onClick={onClearFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
+              <button type="button" onClick={onClearFilters} className="shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50" title="Clear filters">Clear filters</button>
             )}
             {onToggleMoreFilters != null && moreFiltersContent != null && (
-              <button
-                type="button"
-                onClick={onToggleMoreFilters}
-                className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border transition-colors ${showMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
-                title={showMoreFilters ? "Hide more filters" : "Show more filters"}
-              >
-                More filters
-                {showMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-              </button>
+              <button type="button" onClick={onToggleMoreFilters} className={`flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border ${showMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`} title={showMoreFilters ? "Hide more filters" : "More filters"}>More {showMoreFilters ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}</button>
             )}
           </>
         )}
-        <button
-          type="button"
-          onClick={() => setShowFilters((v) => !v)}
-          className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border transition-colors ml-auto sm:ml-0 ${
-            showFilters
-              ? "border-blue-300 bg-blue-50 text-blue-700"
-              : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"
-          }`}
-        >
-          <Filter className="h-3.5 w-3.5 shrink-0" />
-          Filters
+        {page != null && onPageChange != null && (
+          <>
+            <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+            <select value={pageSize} onChange={(e) => { onPageSizeChange?.(Number(e.target.value)); onPageChange(1); }} className="h-6 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+            </select>
+            <TablePagination page={page} pageSize={pageSize ?? 10} total={total} onPageChange={onPageChange} disabled={refreshing} ariaLabel={title} compact />
+          </>
+        )}
+        <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border ml-auto sm:ml-0 ${showFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}>
+          <Filter className="h-3 w-3 sm:h-3.5 sm:w-3.5 shrink-0" /> Filters
         </button>
       </div>
       {showFilters && showMoreFilters && moreFiltersContent != null && (
@@ -2505,22 +2497,6 @@ function RecentDataSection({
           </div>
         ) : data.length > 0 ? (
           <>
-          {page != null && onPageChange != null && (
-            <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60 shrink-0">
-              {onPageSizeChange != null && (
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
-                  <select value={pageSize} onChange={(e) => { onPageSizeChange(Number(e.target.value)); onPageChange(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
-                    <option value={5}>5</option>
-                    <option value={10}>10</option>
-                    <option value={20}>20</option>
-                    <option value={50}>50</option>
-                  </select>
-                </div>
-              )}
-              <TablePagination page={page} pageSize={pageSize ?? 10} total={total} onPageChange={onPageChange} disabled={refreshing} ariaLabel={title} />
-            </div>
-          )}
           <div className="space-y-2 min-h-0 overflow-y-auto pr-1 flex-1">
             {displayData.map((item, index) => (
               <div key={item.id || index}>

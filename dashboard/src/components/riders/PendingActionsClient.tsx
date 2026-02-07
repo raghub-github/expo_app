@@ -222,6 +222,23 @@ export function PendingActionsClient() {
         label="Filters"
         activeCount={activeFilterCount}
         filterChipsSlot={filterChips.length > 0 ? <FilterChips inline chips={filterChips} onRemove={removeFilter} onClearAll={clearAllFilters} /> : null}
+        trailingSlot={
+          <>
+            <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+            <select
+              value={pageSize}
+              onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+              className="h-6 sm:h-7 min-w-[2.5rem] rounded border border-gray-300 bg-white px-1.5 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              aria-label="Rows per page"
+            >
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+            </select>
+            <TablePagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} disabled={loading} ariaLabel="Pending actions" compact />
+          </>
+        }
         filterContent={
           <>
             <div className="min-w-[120px]">
@@ -296,13 +313,6 @@ export function PendingActionsClient() {
                 className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <button
-              type="button"
-              onClick={applyFilters}
-              className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors h-[34px]"
-            >
-              Apply
-            </button>
             <button type="button" onClick={clearAllFilters} className="w-full sm:w-auto px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">Clear filters</button>
           </>
         }
@@ -319,30 +329,6 @@ export function PendingActionsClient() {
                   <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                 </div>
               )}
-              <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                    className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    aria-label="Rows per page"
-                  >
-                    <option value={5}>5</option>
-                    <option value={10}>10</option>
-                    <option value={20}>20</option>
-                    <option value={50}>50</option>
-                  </select>
-                </div>
-                <TablePagination
-                  page={page}
-                  pageSize={pageSize}
-                  total={total}
-                  onPageChange={setPage}
-                  disabled={loading}
-                  ariaLabel="Pending actions"
-                />
-              </div>
               <div className={`overflow-x-auto transition-opacity duration-200 ${loading && requests.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">

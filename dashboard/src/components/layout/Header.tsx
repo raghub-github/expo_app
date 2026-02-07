@@ -15,6 +15,7 @@ export function Header() {
   const pathname = usePathname();
   const pageName = useMemo(() => getCurrentPageName(pathname), [pathname]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -184,9 +185,18 @@ export function Header() {
     }
   }, [userEmail, userMetadata, sessionData]);
 
-  const handleLogout = async () => {
-    setShowDropdown(false); // Close dropdown
+  const openLogoutConfirm = () => {
+    setShowDropdown(false);
+    setShowLogoutConfirm(true);
+  };
+
+  const handleLogoutConfirm = () => {
+    setShowLogoutConfirm(false);
     logoutMutation.mutate();
+  };
+
+  const handleLogoutCancel = () => {
+    setShowLogoutConfirm(false);
   };
 
   return (
@@ -261,27 +271,75 @@ export function Header() {
             >
               <div className="py-1">
                 <button
-                  onClick={handleLogout}
+                  type="button"
+                  onClick={openLogoutConfirm}
                   disabled={logoutMutation.isPending}
                   className="flex w-full items-center space-x-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {logoutMutation.isPending ? (
-                    <>
-                      <LoadingSpinner variant="button" size="sm" />
-                      <span>Signing out...</span>
-                    </>
-                  ) : (
-                    <>
-                      <LogOut className="h-4 w-4" />
-                      <span>Sign out</span>
-                    </>
-                  )}
+                  <LogOut className="h-4 w-4" />
+                  <span>Sign out</span>
                 </button>
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* Sign out confirmation modal */}
+      {showLogoutConfirm && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logout-dialog-title"
+          aria-describedby="logout-dialog-desc"
+          onClick={handleLogoutCancel}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 sm:p-7">
+              <div className="flex items-center justify-center w-12 h-12 mx-auto mb-4 rounded-full bg-red-50 text-red-600">
+                <LogOut className="h-6 w-6" />
+              </div>
+              <h2 id="logout-dialog-title" className="text-lg font-semibold text-gray-900 text-center">
+                Sign out?
+              </h2>
+              <p id="logout-dialog-desc" className="mt-2 text-sm text-gray-500 text-center">
+                Are you sure you want to sign out? You will need to sign in again to access the dashboard.
+              </p>
+              <div className="mt-6 flex flex-col-reverse sm:flex-row gap-3 sm:gap-3">
+                <button
+                  type="button"
+                  onClick={handleLogoutCancel}
+                  className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogoutConfirm}
+                  disabled={logoutMutation.isPending}
+                  className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {logoutMutation.isPending ? (
+                    <>
+                      <LoadingSpinner variant="button" size="sm" />
+                      Signing out...
+                    </>
+                  ) : (
+                    <>
+                      <LogOut className="h-4 w-4" />
+                      Sign out
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

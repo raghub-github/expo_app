@@ -5,8 +5,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
-import { riders, withdrawalRequests } from "@/lib/db/schema";
-import { eq, and, or, desc, gte, lte, sql } from "drizzle-orm";
+import { riders, withdrawalRequests, riderPaymentMethods } from "@/lib/db/schema";
+import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
@@ -68,15 +68,74 @@ export async function GET(
       .select({ count: sql<number>`count(*)::int` })
       .from(withdrawalRequests)
       .where(whereClause);
-    const list = await db
-      .select()
+    const rows = await db
+      .select({
+        id: withdrawalRequests.id,
+        riderId: withdrawalRequests.riderId,
+        paymentMethodId: withdrawalRequests.paymentMethodId,
+        amount: withdrawalRequests.amount,
+        status: withdrawalRequests.status,
+        bankAcc: withdrawalRequests.bankAcc,
+        ifsc: withdrawalRequests.ifsc,
+        accountHolderName: withdrawalRequests.accountHolderName,
+        upiId: withdrawalRequests.upiId,
+        transactionId: withdrawalRequests.transactionId,
+        failureReason: withdrawalRequests.failureReason,
+        processedAt: withdrawalRequests.processedAt,
+        createdAt: withdrawalRequests.createdAt,
+        updatedAt: withdrawalRequests.updatedAt,
+        pmAccountHolderName: riderPaymentMethods.accountHolderName,
+        pmBankName: riderPaymentMethods.bankName,
+        pmIfsc: riderPaymentMethods.ifsc,
+        pmBranch: riderPaymentMethods.branch,
+        pmUpiId: riderPaymentMethods.upiId,
+        pmMethodType: riderPaymentMethods.methodType,
+      })
       .from(withdrawalRequests)
+      .leftJoin(riderPaymentMethods, eq(withdrawalRequests.paymentMethodId, riderPaymentMethods.id))
       .where(whereClause)
       .orderBy(desc(withdrawalRequests.createdAt))
       .limit(Number.isNaN(limit) ? 30 : limit)
       .offset(offset);
 
-    return NextResponse.json({ success: true, data: { withdrawals: list, total: Number(total) ?? 0 } });
+    const withdrawals = rows.map((r) => ({
+      id: r.id,
+      riderId: r.riderId,
+      paymentMethodId: r.paymentMethodId,
+      amount: r.amount,
+      status: r.status,
+      bankAcc: r.bankAcc,
+      ifsc: r.ifsc,
+      accountHolderName: r.accountHolderName,
+      upiId: r.upiId,
+      transactionId: r.transactionId,
+      failureReason: r.failureReason,
+      processedAt: r.processedAt,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      paymentMethodDetails:
+        r.pmBankName != null || r.pmUpiId != null || r.pmAccountHolderName != null || r.pmMethodType != null
+          ? {
+              accountHolderName: r.pmAccountHolderName ?? r.accountHolderName,
+              bankName: r.pmBankName,
+              ifsc: r.pmIfsc ?? r.ifsc,
+              branch: r.pmBranch,
+              upiId: r.pmUpiId ?? r.upiId,
+              bankAccMasked: r.bankAcc,
+              methodType: r.pmMethodType ?? null,
+            }
+          : {
+              accountHolderName: r.accountHolderName,
+              bankName: null,
+              ifsc: r.ifsc,
+              branch: null,
+              upiId: r.upiId,
+              bankAccMasked: r.bankAcc,
+              methodType: (r.ifsc || r.bankAcc) && !r.upiId ? "bank" : r.upiId ? "upi" : null,
+            },
+    }));
+
+    return NextResponse.json({ success: true, data: { withdrawals, total: Number(total) ?? 0 } });
   } catch (error) {
     console.error("[GET /api/riders/[id]/withdrawals] Error:", error);
     return NextResponse.json(

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
@@ -11,13 +12,13 @@ import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
 import { FilterSearchBar } from "./FilterSearchBar";
 import { TablePagination } from "./TablePagination";
-import { Plus, RotateCcw, RefreshCw } from "lucide-react";
+import { Plus, RotateCcw, RefreshCw, ChevronDown, X } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 
 interface Penalty {
   id: number;
-  serviceType: string;
+  serviceType: string | null;
   penaltyType: string;
   amount: string;
   reason: string;
@@ -74,6 +75,9 @@ export function RiderPenaltiesClient() {
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
   const [filterSearch, setFilterSearch] = useState<string>("");
+  /** Applied search term (debounced or on Enter) — used for API fetch */
+  const [appliedFilterSearch, setAppliedFilterSearch] = useState<string>("");
+  const filterSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [revertingId, setRevertingId] = useState<number | null>(null);
 
   const [showAddPenalty, setShowAddPenalty] = useState(false);
@@ -81,7 +85,7 @@ export function RiderPenaltiesClient() {
   const [addPenaltyForm, setAddPenaltyForm] = useState({
     amount: "",
     reason: "",
-    serviceType: "food",
+    serviceType: "",
     penaltyType: "other",
     orderId: "",
   });
@@ -100,7 +104,7 @@ export function RiderPenaltiesClient() {
   const canRevertForService = useCallback(
     (serviceType: string) => {
       if (riderAccess?.isSuperAdmin) return true;
-      const svc = serviceType === "food" ? "food" : serviceType === "parcel" ? "parcel" : "person_ride";
+      const svc = serviceType === "food" ? "food" : serviceType === "parcel" ? "parcel" : serviceType === "person_ride" ? "person_ride" : "parcel";
       return !!riderAccess?.canRevertPenalty?.[svc];
     },
     [riderAccess]
@@ -120,7 +124,7 @@ export function RiderPenaltiesClient() {
         const params = new URLSearchParams();
         params.set("limit", String(limit));
         params.set("offset", String((page - 1) * limit));
-        if (filterSearch.trim()) params.set("q", filterSearch.trim());
+        if (appliedFilterSearch.trim()) params.set("q", appliedFilterSearch.trim());
         if (serviceType && serviceType !== "all") {
           params.set("serviceType", serviceType);
         }
@@ -150,7 +154,7 @@ export function RiderPenaltiesClient() {
         setLoading(false);
       }
     },
-    [limit, page, filterSearch, serviceType, status, from, to]
+    [limit, page, appliedFilterSearch, serviceType, status, from, to]
   );
 
   const openRevertModal = useCallback((penaltyId: number) => {
@@ -291,6 +295,11 @@ export function RiderPenaltiesClient() {
         setError("Reason is required.");
         return;
       }
+      const svc = addPenaltyForm.serviceType?.trim();
+      if (!svc || !["food", "parcel", "person_ride"].includes(svc)) {
+        setError("Please select a service (Food, Parcel, or Person Ride).");
+        return;
+      }
       if (orderId !== undefined && (Number.isNaN(orderId) || orderId < 1)) {
         setError("Order ID must be a positive number if provided.");
         return;
@@ -304,7 +313,7 @@ export function RiderPenaltiesClient() {
           body: JSON.stringify({
             amount,
             reason,
-            serviceType: addPenaltyForm.serviceType,
+            serviceType: addPenaltyForm.serviceType && ["food", "parcel", "person_ride"].includes(addPenaltyForm.serviceType) ? addPenaltyForm.serviceType : null,
             penaltyType: addPenaltyForm.penaltyType,
             ...(orderId != null && !Number.isNaN(orderId) ? { orderId } : {}),
           }),
@@ -314,7 +323,7 @@ export function RiderPenaltiesClient() {
           throw new Error(json.error || "Failed to add penalty");
         }
         setShowAddPenalty(false);
-        setAddPenaltyForm({ amount: "", reason: "", serviceType: "food", penaltyType: "other", orderId: "" });
+        setAddPenaltyForm({ amount: "", reason: "", serviceType: "", penaltyType: "other", orderId: "" });
         invalidateRiderSummary(queryClient, rider.id);
         await fetchPenalties(rider);
       } catch (err: unknown) {
@@ -343,23 +352,42 @@ export function RiderPenaltiesClient() {
     }
   }, [hasSearch, searchValue, riderFromContext?.id, resolveRider]);
 
-  // Fetch penalties whenever rider or filters change
+  // Fetch penalties whenever rider or applied filters change
   useEffect(() => {
     if (rider) {
       fetchPenalties(rider);
     }
   }, [rider, fetchPenalties]);
 
+  // Debounce filter search: apply 400ms after user stops typing
+  useEffect(() => {
+    if (filterSearchDebounceRef.current) {
+      clearTimeout(filterSearchDebounceRef.current);
+      filterSearchDebounceRef.current = null;
+    }
+    if (filterSearch === appliedFilterSearch) return;
+    filterSearchDebounceRef.current = setTimeout(() => {
+      setAppliedFilterSearch(filterSearch);
+      setPage(1);
+      filterSearchDebounceRef.current = null;
+    }, 400);
+    return () => {
+      if (filterSearchDebounceRef.current) clearTimeout(filterSearchDebounceRef.current);
+    };
+  }, [filterSearch]);
+
   const penaltyFilterChips: FilterChipItem[] = [];
-  if (filterSearch.trim()) penaltyFilterChips.push({ id: "q", label: `Search: ${filterSearch.trim().slice(0, 16)}${filterSearch.trim().length > 16 ? "…" : ""}` });
-  if (serviceType !== "all") penaltyFilterChips.push({ id: "serviceType", label: `Service: ${serviceType.replace("_", " ")}` });
+  if (appliedFilterSearch.trim()) penaltyFilterChips.push({ id: "q", label: `Search: ${appliedFilterSearch.trim().slice(0, 16)}${appliedFilterSearch.trim().length > 16 ? "…" : ""}` });
+  if (serviceType !== "all") penaltyFilterChips.push({ id: "serviceType", label: `Service: ${serviceType === "unspecified" ? "Unspecified" : serviceType.replace("_", " ")}` });
   if (status !== "all") penaltyFilterChips.push({ id: "status", label: `Status: ${status}` });
   if (from) penaltyFilterChips.push({ id: "from", label: `From: ${from}` });
   if (to) penaltyFilterChips.push({ id: "to", label: `To: ${to}` });
   if (limit !== 10) penaltyFilterChips.push({ id: "limit", label: `Limit: ${limit}` });
   const removePenaltyFilter = (id: string) => {
-    if (id === "q") setFilterSearch("");
-    else if (id === "serviceType") setServiceType("all");
+    if (id === "q") {
+      setFilterSearch("");
+      setAppliedFilterSearch("");
+    } else if (id === "serviceType") setServiceType("all");
     else if (id === "status") setStatus("all");
     else if (id === "from") setFrom("");
     else if (id === "to") setTo("");
@@ -368,6 +396,7 @@ export function RiderPenaltiesClient() {
   const clearAllPenaltyFilters = useCallback(() => {
     setPage(1);
     setFilterSearch("");
+    setAppliedFilterSearch("");
     setServiceType("all");
     setStatus("all");
     setFrom("");
@@ -377,7 +406,7 @@ export function RiderPenaltiesClient() {
 
   useEffect(() => {
     setPage(1);
-  }, [filterSearch, serviceType, status, from, to, limit]);
+  }, [appliedFilterSearch, serviceType, status, from, to, limit]);
 
   const handlePageSizeChange = useCallback((newSize: number) => {
     setLimit(newSize);
@@ -385,9 +414,13 @@ export function RiderPenaltiesClient() {
   }, []);
 
   const applyPenaltyFilters = useCallback(() => {
+    if (filterSearchDebounceRef.current) {
+      clearTimeout(filterSearchDebounceRef.current);
+      filterSearchDebounceRef.current = null;
+    }
+    setAppliedFilterSearch(filterSearch);
     setPage(1);
-    if (rider) fetchPenalties(rider);
-  }, [rider, fetchPenalties]);
+  }, [filterSearch]);
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
@@ -417,21 +450,44 @@ export function RiderPenaltiesClient() {
       {/* Filters + table */}
       {rider && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm ring-1 ring-gray-900/5">
-          <div className="flex flex-wrap items-center justify-end gap-2 mb-4">
-            {canAddPenaltyAny && (
-              <button
-                type="button"
-                onClick={() => setShowAddPenalty(true)}
-                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors shadow-sm"
-              >
-                <Plus className="h-4 w-4" />
-                Add Penalty
-              </button>
-            )}
-          </div>
           <CollapsibleTableFilters
             label="Filters"
             activeCount={penaltyFilterChips.length}
+            trailingSlot={
+              <>
+                {canAddPenaltyAny && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddPenalty(true)}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded border border-amber-700 shrink-0"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add Penalty
+                  </button>
+                )}
+                <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
+                <select
+                  value={limit}
+                  onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                  className="h-6 sm:h-7 min-w-[2.5rem] rounded border border-gray-300 bg-white px-1.5 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                  aria-label="Rows per page"
+                >
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                </select>
+                <TablePagination
+                  page={page}
+                  pageSize={limit}
+                  total={total}
+                  onPageChange={setPage}
+                  disabled={loading}
+                  ariaLabel="Penalties"
+                  compact
+                />
+              </>
+            }
             filterChipsSlot={
               penaltyFilterChips.length > 0 ? (
                 <FilterChips
@@ -447,8 +503,9 @@ export function RiderPenaltiesClient() {
                 <FilterSearchBar
                   value={filterSearch}
                   onChange={setFilterSearch}
-                  placeholder="Penalty ID, Order ID"
-                  hint="Match penalty ID or order ID"
+                  onSubmit={applyPenaltyFilters}
+                  placeholder="Penalty ID, Order ID, or reason"
+                  // hint="Match penalty ID, order ID, or reason text"
                   id="penalties-filter-search"
                 />
                 <div className="min-w-[120px]">
@@ -459,6 +516,7 @@ export function RiderPenaltiesClient() {
                     className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
                     <option value="all">All</option>
+                    <option value="unspecified">Unspecified</option>
                     <option value="food">Food</option>
                     <option value="parcel">Parcel</option>
                     <option value="person_ride">Person Ride</option>
@@ -495,13 +553,6 @@ export function RiderPenaltiesClient() {
                     className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={applyPenaltyFilters}
-                  className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors h-[34px]"
-                >
-                  Apply
-                </button>
                 <button type="button" onClick={clearAllPenaltyFilters} className="px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">
                   Clear filters
                 </button>
@@ -524,60 +575,52 @@ export function RiderPenaltiesClient() {
                     <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                   </div>
                 )}
-                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
-                    <select
-                      value={limit}
-                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                      className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      aria-label="Rows per page"
-                    >
-                      <option value={5}>5</option>
-                      <option value={10}>10</option>
-                      <option value={20}>20</option>
-                      <option value={50}>50</option>
-                    </select>
+                <div className={`transition-opacity duration-200 ${loading && penalties.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
+                  {/* Desktop: modern table (lg and up) */}
+                  <div className="hidden lg:block rounded-xl border border-gray-200/80 overflow-hidden bg-white shadow-sm">
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[800px] text-sm border-collapse">
+                        <thead>
+                          <tr className="bg-gradient-to-r from-gray-50 to-gray-50/80 border-b border-gray-200">
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Order</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Service</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Type</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider min-w-[130px]">Reason</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Amount</th>
+                            <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider w-[100px]">Details</th>
+                            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider w-28">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {penalties.map((p) => (
+                            <PenaltyRow
+                              key={p.id}
+                              penalty={p}
+                              riderId={rider.id}
+                              onReverted={fetchPenalties.bind(null, rider)}
+                              revertingId={revertingId}
+                              onRevert={openRevertModal}
+                              canRevert={canRevertForService(p.serviceType ?? "parcel")}
+                            />
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                  <TablePagination
-                    page={page}
-                    pageSize={limit}
-                    total={total}
-                    onPageChange={setPage}
-                    disabled={loading}
-                    ariaLabel="Penalties"
-                  />
-                </div>
-                <div className={`overflow-x-auto -mx-1 transition-opacity duration-200 ${loading && penalties.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
-                  <table className="w-full divide-y divide-gray-200 text-xs border-collapse">
-                    <thead className="bg-gray-50/80 sticky top-0 z-10">
-                      <tr>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Dates</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">ID</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Order</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Service</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] whitespace-nowrap">Type</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] min-w-[100px]">Reason</th>
-                        <th className="px-2 py-2 text-right font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Amount</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] min-w-[120px]">Agent</th>
-                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Status</th>
-                        <th className="px-2 py-2 text-right font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {penalties.map((p) => (
-                        <PenaltyRow
-                          key={p.id}
-                          penalty={p}
-                          riderId={rider.id}
-                          onReverted={fetchPenalties.bind(null, rider)}
-                          revertingId={revertingId}
-                          onRevert={openRevertModal}
-                          canRevert={canRevertForService(p.serviceType)}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
+
+                  {/* Mobile/Tablet: card layout */}
+                  <div className="lg:hidden space-y-3">
+                    {penalties.map((p) => (
+                      <PenaltyCard
+                        key={p.id}
+                        penalty={p}
+                        revertingId={revertingId}
+                        onRevert={openRevertModal}
+                        canRevert={canRevertForService(p.serviceType ?? "parcel")}
+                      />
+                    ))}
+                  </div>
                 </div>
               </>
             )}
@@ -617,12 +660,14 @@ export function RiderPenaltiesClient() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Service Type</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Service *</label>
                     <select
                       value={addPenaltyForm.serviceType}
                       onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))}
+                      required
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900"
                     >
+                      <option value="" className="text-gray-900 bg-white">Select service</option>
                       <option value="food" className="text-gray-900 bg-white">Food</option>
                       <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
                       <option value="person_ride" className="text-gray-900 bg-white">Person Ride</option>
@@ -749,7 +794,61 @@ function PenaltyRow({
   onRevert: (id: number) => void;
   canRevert: boolean;
 }) {
-  const isRevertible = (penalty.status === "active" || penalty.status === "paid") && penalty.status !== "reversed";
+  const [showDetails, setShowDetails] = useState(false);
+  const [detailsOpenBelow, setDetailsOpenBelow] = useState(true);
+  const [detailsPosition, setDetailsPosition] = useState<{ top?: number; bottom?: number; left: number }>({ left: 0 });
+  const viewButtonRef = useRef<HTMLButtonElement>(null);
+  const detailsPortalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showDetails) return;
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inButton = viewButtonRef.current?.contains(target);
+      const inPortal = detailsPortalRef.current?.contains(target);
+      if (!inButton && !inPortal) setShowDetails(false);
+    };
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, [showDetails]);
+
+  useEffect(() => {
+    if (!showDetails) return;
+    const handleScrollOrResize = () => setShowDetails(false);
+    window.addEventListener("scroll", handleScrollOrResize, true);
+    window.addEventListener("resize", handleScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", handleScrollOrResize, true);
+      window.removeEventListener("resize", handleScrollOrResize);
+    };
+  }, [showDetails]);
+
+  const toggleDetails = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (showDetails) {
+      setShowDetails(false);
+      return;
+    }
+    const btn = viewButtonRef.current;
+    if (btn && typeof window !== "undefined") {
+      const rect = btn.getBoundingClientRect();
+      const spaceAbove = rect.top;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const openBelow = spaceBelow >= spaceAbove;
+      setDetailsOpenBelow(openBelow);
+      const dropdownWidth = 280;
+      let left = rect.left + rect.width / 2 - dropdownWidth / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - dropdownWidth - 8));
+      if (openBelow) {
+        setDetailsPosition({ top: rect.bottom + 4, left });
+      } else {
+        setDetailsPosition({ bottom: window.innerHeight - rect.top + 4, left });
+      }
+    }
+    setShowDetails(true);
+  };
+
+  const isRevertible = penalty.status === "active" || penalty.status === "paid";
   const canRevert = isRevertible && canRevertPermission;
   const imposedBy = penalty.imposedByUser?.email ?? penalty.imposedByUser?.fullName ?? null;
   const reversedBy = penalty.reversedByUser?.email ?? penalty.reversedByUser?.fullName ?? null;
@@ -757,72 +856,182 @@ function PenaltyRow({
   const revertedAtStr = penalty.resolvedAt ? new Date(penalty.resolvedAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : null;
 
   return (
-    <tr className="hover:bg-amber-50/40 transition-colors border-b border-gray-100 last:border-0">
-      <td className="px-2 py-2 text-gray-600 align-top">
-        <div className="space-y-0.5 text-[11px] leading-tight">
-          <div><span className="text-gray-400 font-medium">Imposed:</span> {imposedAtStr}</div>
-          {revertedAtStr && <div><span className="text-gray-400 font-medium">Reverted:</span> {revertedAtStr}</div>}
-        </div>
-      </td>
-      <td className="px-2 py-2 text-gray-800 font-mono align-top">{penalty.id}</td>
-      <td className="px-2 py-2 text-gray-800 font-mono align-top">
+    <tr className="hover:bg-gray-50/80 transition-colors">
+      <td className="px-4 py-3.5 text-gray-800 font-mono text-[14px] align-middle">{penalty.id}</td>
+      <td className="px-4 py-3.5 text-gray-800 font-mono text-[14px] align-middle">
         {penalty.orderId != null ? penalty.orderId : "—"}
       </td>
-      <td className="px-2 py-2 capitalize text-gray-800 align-top">
-        {penalty.serviceType.replace("_", " ")}
+      <td className="px-4 py-3.5 capitalize text-gray-800 text-[14px] align-middle">
+        {penalty.serviceType ? penalty.serviceType.replace("_", " ") : "—"}
       </td>
-      <td className="px-2 py-2 text-gray-800 align-top truncate max-w-[80px]" title={penalty.penaltyType}>
+      <td className="px-4 py-3.5 text-gray-700 text-[14px] align-middle truncate max-w-[100px]" title={penalty.penaltyType}>
         {penalty.penaltyType.replace("_", " ")}
       </td>
-      <td className="px-2 py-2 text-gray-700 align-top max-w-[140px]">
-        <span className="block truncate text-[11px] leading-snug" title={penalty.reason}>{penalty.reason}</span>
+      <td className="px-4 py-3.5 text-gray-700 align-middle max-w-[180px]">
+        <span className="block text-[14px] leading-snug line-clamp-2" title={penalty.reason}>{penalty.reason}</span>
         {penalty.status === "reversed" && penalty.resolutionNotes && (
-          <span className="block text-[10px] text-gray-500 truncate mt-0.5" title={penalty.resolutionNotes}>
+          <span className="block text-[13px] text-gray-500 mt-0.5 line-clamp-1" title={penalty.resolutionNotes}>
             Revert: {penalty.resolutionNotes}
           </span>
         )}
       </td>
-      <td className="px-2 py-2 text-right font-semibold text-red-600 align-top whitespace-nowrap">
+      <td className="px-4 py-3.5 text-right font-semibold text-red-600 text-[15px] align-middle whitespace-nowrap">
         ₹{Number(penalty.amount || 0).toFixed(2)}
       </td>
-      <td className="px-2 py-2 text-gray-900 align-top max-w-[130px]">
-        <div className="space-y-0.5 text-[11px] leading-tight">
-          <div className="truncate" title={imposedBy ?? undefined}>
-            <span className="text-gray-600 font-medium">Imposed:</span> <span className="text-gray-900">{imposedBy ?? "—"}</span>
-          </div>
-          <div className="truncate" title={reversedBy !== "—" ? String(reversedBy) : undefined}>
-            <span className="text-gray-600 font-medium">Reverted:</span> <span className="text-gray-900">{reversedBy ?? "—"}</span>
-          </div>
+      <td className="px-4 py-3.5 align-middle w-[100px] overflow-visible">
+        <div className="relative flex justify-center">
+          <button
+            ref={viewButtonRef}
+            type="button"
+            onClick={toggleDetails}
+            className="inline-flex items-center gap-1 px-2 py-1.5 text-[14px] font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg border border-gray-200 bg-white transition-colors"
+            aria-expanded={showDetails}
+          >
+            View <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showDetails ? "rotate-180" : ""}`} />
+          </button>
+          {showDetails &&
+            typeof document !== "undefined" &&
+            createPortal(
+              <div
+                ref={detailsPortalRef}
+                className="fixed z-[9999] min-w-[280px] max-w-[320px] rounded-lg border border-gray-200 bg-white shadow-2xl py-3 px-4"
+                style={{
+                  left: detailsPosition.left,
+                  ...(detailsOpenBelow
+                    ? { top: detailsPosition.top }
+                    : { bottom: detailsPosition.bottom }),
+                }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Imposed / Reverted</span>
+                  <button type="button" onClick={() => setShowDetails(false)} className="p-0.5 text-gray-400 hover:text-gray-600 rounded" aria-label="Close">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-2.5 text-[14px] leading-snug">
+                  <div>
+                    <span className="text-gray-500 font-medium text-[12px] uppercase">Imposed</span>
+                    <p className="text-gray-800 mt-0.5">{imposedAtStr} <span className="text-gray-500">by</span></p>
+                    <p className="text-gray-900 break-all font-medium text-[13px]" title={imposedBy ?? undefined}>{imposedBy ?? "—"}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 font-medium text-[12px] uppercase">Reverted</span>
+                    {revertedAtStr ? (
+                      <>
+                        <p className="text-gray-800 mt-0.5">{revertedAtStr} <span className="text-gray-500">by</span></p>
+                        <p className="text-gray-900 break-all font-medium text-[13px]" title={reversedBy ?? undefined}>{reversedBy ?? "—"}</p>
+                      </>
+                    ) : (
+                      <p className="text-gray-500 mt-0.5">—</p>
+                    )}
+                  </div>
+                </div>
+              </div>,
+              document.body
+            )}
         </div>
       </td>
-      <td className="px-2 py-2 align-top">
-        <span
-          className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-medium capitalize ${
-            penalty.status === "active"
-              ? "bg-red-50 text-red-700"
-              : penalty.status === "paid"
-              ? "bg-emerald-50 text-emerald-700"
-              : "bg-gray-100 text-gray-600"
-          }`}
-        >
-          {penalty.status}
-        </span>
-      </td>
-      <td className="px-2 py-2 text-right align-top">
+      <td className="px-4 py-3.5 text-right align-middle">
         {canRevert ? (
           <button
             type="button"
             onClick={() => onRevert(penalty.id)}
             disabled={revertingId === penalty.id}
-            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-md transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[14px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors disabled:opacity-50 border border-amber-200/60"
           >
             {revertingId === penalty.id ? "…" : "Revert"}
           </button>
         ) : (
-          <span className="text-gray-300">—</span>
+          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
+            Reverted
+          </span>
         )}
       </td>
     </tr>
+  );
+}
+
+/** Mobile/tablet card: one penalty per card, responsive and touch-friendly */
+function PenaltyCard({
+  penalty,
+  revertingId,
+  onRevert,
+  canRevert,
+}: {
+  penalty: Penalty;
+  revertingId: number | null;
+  onRevert: (id: number) => void;
+  canRevert: boolean;
+}) {
+  const isRevertible = penalty.status === "active" || penalty.status === "paid";
+  const canRevertAction = isRevertible && canRevert;
+  const imposedBy = penalty.imposedByUser?.email ?? penalty.imposedByUser?.fullName ?? null;
+  const reversedBy = penalty.reversedByUser?.email ?? penalty.reversedByUser?.fullName ?? null;
+  const imposedAtStr = penalty.imposedAt ? new Date(penalty.imposedAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "—";
+  const revertedAtStr = penalty.resolvedAt ? new Date(penalty.resolvedAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : null;
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[14px] font-medium text-gray-800">#{penalty.id}</span>
+          <span className="text-[14px] text-gray-500 capitalize">{penalty.serviceType ? penalty.serviceType.replace("_", " ") : "—"}</span>
+          <span className="text-gray-500">·</span>
+          <span className="text-[14px] text-gray-600 capitalize">{penalty.penaltyType.replace("_", " ")}</span>
+        </div>
+        {canRevertAction ? (
+          <button
+            type="button"
+            onClick={() => onRevert(penalty.id)}
+            disabled={revertingId === penalty.id}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[14px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200/60 disabled:opacity-50"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            {revertingId === penalty.id ? "…" : "Revert"}
+          </button>
+        ) : (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
+            Reverted
+          </span>
+        )}
+      </div>
+      <div className="text-[18px] font-semibold text-red-600 mb-3">
+        ₹{Number(penalty.amount || 0).toFixed(2)}
+      </div>
+      <div className="space-y-2 text-[14px] text-gray-600">
+        <div>
+          <span className="text-gray-500 font-medium">Reason</span>
+          <p className="text-gray-800 mt-0.5">{penalty.reason}</p>
+          {penalty.status === "reversed" && penalty.resolutionNotes && (
+            <p className="text-[13px] text-gray-500 mt-1">Revert: {penalty.resolutionNotes}</p>
+          )}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-gray-100">
+          <div>
+            <span className="text-gray-500 font-medium text-[11px] uppercase tracking-wide">Imposed</span>
+            <p className="text-[14px] text-gray-800 mt-0.5">{imposedAtStr} <span className="text-gray-500">by</span></p>
+            <p className="text-[14px] text-gray-900 break-all font-medium" title={imposedBy ?? undefined}>{imposedBy ?? "—"}</p>
+          </div>
+          <div>
+            <span className="text-gray-500 font-medium text-[11px] uppercase tracking-wide">Reverted</span>
+            {revertedAtStr ? (
+              <>
+                <p className="text-[14px] text-gray-800 mt-0.5">{revertedAtStr} <span className="text-gray-500">by</span></p>
+                <p className="text-[14px] text-gray-900 break-all font-medium" title={reversedBy ?? undefined}>{reversedBy ?? "—"}</p>
+              </>
+            ) : (
+              <p className="text-[14px] text-gray-500 mt-0.5">—</p>
+            )}
+          </div>
+          {penalty.orderId != null && (
+            <div>
+              <span className="text-gray-500 font-medium text-[11px] uppercase tracking-wide">Order</span>
+              <p className="text-[14px] font-mono text-gray-800 mt-0.5">{penalty.orderId}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

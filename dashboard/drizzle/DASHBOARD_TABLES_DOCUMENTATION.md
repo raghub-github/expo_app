@@ -1,9 +1,11 @@
 # Dashboard Tables Documentation
 
-This document provides a comprehensive reference of all tables currently used in the dashboard project, organized by functional area. This documentation is based on the SQL migration files through 0079 and previous schema files.
+This document provides a comprehensive reference of all tables currently used in the dashboard project, organized by functional area. This documentation is based on the SQL migration files through 0086 and previous schema files.
 
-**Last Updated**: February 2, 2026  
-**Migration Files Analyzed**: 0042 through 0079 (dashboard), 0055-0056 (backend)
+**Last Updated**: February 8, 2026  
+**Migration Files Analyzed**: 0042 through 0086 (dashboard), 0055-0056 (backend)
+
+**Continued upgrades** (migrations 0080–0086, new tables such as `wallet_credit_requests`, rider schema redesign, onboarding redesign, and Enterprise Ticket System reference) are documented in **[DASHBOARD_TABLES_DOCUMENTATION_PART2.md](DASHBOARD_TABLES_DOCUMENTATION_PART2.md)**.
 
 ---
 
@@ -1172,6 +1174,7 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 
 ### 8.6 `tickets`
 **Purpose**: Support tickets raised by or related to riders  
+**Migration**: 0080_tickets_resolved_by.sql (adds `resolved_by`)  
 **Used By**: `/api/riders/[id]/summary` (recent tickets section)
 
 | Column | Type | Description |
@@ -1185,6 +1188,7 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 | `message` | TEXT | Ticket message (NOT NULL) |
 | `status` | ticket_status | Status enum: 'open', 'in_progress', 'resolved', 'closed' (NOT NULL, default: 'open') |
 | `assigned_to` | INTEGER | Foreign key to `system_users.id` (assigned agent) |
+| `resolved_by` | INTEGER | Foreign key to `system_users.id` – agent who resolved/closed the ticket (0080) |
 | `resolution` | TEXT | Resolution text |
 | `metadata` | JSONB | Additional metadata (default: '{}') |
 | `created_at` | TIMESTAMP WITH TIME ZONE | Creation timestamp (NOT NULL, default: NOW()) |
@@ -1196,6 +1200,7 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 - `tickets_status_idx` on `status`
 - `tickets_category_idx` on `category`
 - `tickets_created_at_idx` on `created_at`
+- `tickets_resolved_by_idx` on `resolved_by` WHERE `resolved_by IS NOT NULL` (0080)
 
 **Data Collected For**:
 - Recent tickets displayed in the rider summary page (with filters for count and date range)
@@ -1355,7 +1360,7 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 
 **Triggers**:
 - `wallet_ledger_update_wallet_trigger`: On every `wallet_ledger` INSERT, updates `rider_wallet` for **all entry types except penalty, penalty_reversal, and generic manual_add (no service_type)** (0077, 0079). Those are updated only by the dashboard app. Generic manual_add is applied via POST `/api/riders/[id]/wallet/add-balance` (FIFO allocation + sync).
-- `rider_wallet_sync_negative_blocks`: On every `rider_wallet` INSERT or UPDATE, runs `sync_rider_negative_wallet_blocks_from_wallet()` (0073, 0076, 0078, 0079). **Global block**: if `total_balance ≤ -200`, block ALL services (reason `global_emergency`); unlock when `total_balance ≥ 0`. **Service block**: else block service when effective_net = (earnings − penalties + unblock_alloc) ≤ -50.
+- `rider_wallet_sync_negative_blocks`: On every `rider_wallet` INSERT or UPDATE, runs `sync_rider_negative_wallet_blocks_from_wallet()` (0073, 0076, 0078, 0079, **0084**). **0084**: No blocks when `total_balance > 0`; only when `total_balance ≤ 0` are per-service (effective_net ≤ -50) and global (total_balance ≤ -200) blocks applied. **Global block**: if `total_balance ≤ -200`, block ALL services (reason `global_emergency`); unlock when `total_balance ≥ 0`. **Service block**: else block service when effective_net = (earnings − penalties + unblock_alloc) ≤ -50.
 
 **Notes**:
 - **Unified Wallet**: Total balance = sum of all credits minus all debits; can be negative, zero, or positive.
@@ -1390,7 +1395,7 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 
 ### 8.10.2 `rider_negative_wallet_blocks`
 **Purpose**: Temporary blocks: **global** when `total_balance ≤ -200` (all services, reason `global_emergency`); **per-service** when effective_net = (earnings − penalties + unblock_alloc) ≤ -50 (reason `negative_wallet`). Not used for agent blacklist (that is `blacklist_history`).  
-**Migration**: 0072 (table), 0073 (trigger), 0076 (repair + trigger), 0078 (threshold -50), 0079 (global block -200, effective_net + allocation).  
+**Migration**: 0072 (table), 0073 (trigger), 0076 (repair + trigger), 0078 (threshold -50), 0079 (global block -200, effective_net + allocation), 0084 (no blocks when total_balance > 0).  
 **Used By**: `/api/riders/[id]/summary` (negativeWalletBlocks, globalWalletBlock, blockReason), UI “Blocked (negative wallet)” / “All services blocked (wallet ≤ -200)”
 
 | Column | Type | Description |
@@ -1414,6 +1419,7 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 - `rider_wallet_sync_negative_blocks` on `rider_wallet` (AFTER INSERT OR UPDATE) calls `sync_rider_negative_wallet_blocks_from_wallet()`. **Global**: if `total_balance ≤ -200`, delete all blocks for rider and insert three rows (food, parcel, person_ride) with reason `global_emergency`. **Per-service**: else effective_net = (earnings − penalties + unblock_alloc) per service; delete all, then insert only for services where effective_net ≤ -50 (reason `negative_wallet`). Unblock when effective_net > -50 or when total_balance ≥ 0 for global. See **BLOCK_STATUS_SOURCES.md**.
 
 **Notes**:
+- **0084**: No blocks are created while `total_balance > 0`. Per-service and global blocks apply only when `total_balance ≤ 0`.
 - **Global block**: total_balance ≤ -200 → all services blocked; unlock when total_balance ≥ 0 (0079).
 - **Service threshold**: Block only when effective_net ≤ **-50** (0078, 0079). -49 or higher = no block. effective_net includes `unblock_alloc_*` for FIFO.
 - **Single source of blocks**: Only this table drives “negative wallet” blocks. Agent blacklist is separate (`blacklist_history` / `blacklist_current_status`).
@@ -1648,6 +1654,13 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 - **0077**: ledger trigger skips penalty and penalty_reversal (dashboard app updates rider_wallet for those)
 - **0078**: negative wallet block threshold set to ≤ -50 (block only when per-service net ≤ -50)
 - **0079**: rider_wallet unblock_alloc_food/parcel/person_ride (FIFO); global block when total_balance ≤ -200 (reason global_emergency); sync uses effective_net = (earnings − penalties + unblock_alloc); ledger trigger skips generic manual_add (app add-balance API + FIFO)
+- **0080**: tickets.resolved_by (FK to system_users.id) for "resolved by whom" audit; index tickets_resolved_by_idx
+- **0081**: wallet_credit_requests table (agent-initiated credits; pending/approved/rejected; approver workflow)
+- **0082**: Rider schema redesign – reference tables (cities, service_types, vehicle_service_mapping, city_vehicle_rules), rider_addresses, rider_document_files, rider_payment_methods, riders soft delete/audit columns, rider_documents new columns, withdrawal_requests.payment_method_id
+- **0083**: Rider schema full upgrade (idempotent) – enums, reference tables, riders/rider_addresses/rider_documents/rider_document_files/rider_vehicles/rider_payment_methods, withdrawal_requests.payment_method_id, duty_logs.vehicle_id
+- **0084**: sync_rider_negative_wallet_blocks_from_wallet() – block only when total_balance ≤ 0 (no blocks while wallet is positive); repair for riders with positive balance but existing blocks
+- **0085**: Rider onboarding system redesign – vehicle_type extend (taxi, e_rickshaw, ev_car), rider_documents (fraud_flags, duplicate_document_id, requires_manual_review, verification_method), rider_vehicles (ownership_type, limitation_flags, is_commercial), rider_service_activation, onboarding_status_transitions, onboarding_rule_policies, vehicle_service_mapping seed
+- **0086**: Rider domain dummy data (realistic seed; idempotent)
 - **0020**: Unified ticket system
 - **0016**: Access management complete
 - **0017**: Access controls and audit
@@ -1679,9 +1692,16 @@ The hybrid order schema (migrations 0067–0069) introduces **orders_core** as t
 
 ---
 
-**Document Version**: 1.7  
-**Last Updated**: February 2, 2026  
+**Document Version**: 1.8  
+**Last Updated**: February 8, 2026  
 **Maintained By**: Development Team
+
+**Changelog (v1.8)**:
+- **Last Updated**: February 8, 2026. **Migration scope**: 0042 through 0086 (dashboard), 0055-0056 (backend).
+- **0080**: Documented `tickets.resolved_by` (FK to system_users) and index; used for "resolved by whom" audit.
+- **0084**: Documented `sync_rider_negative_wallet_blocks_from_wallet()` change – no blocks when total_balance > 0; blocks only when total_balance ≤ 0.
+- **Migration History Reference**: Added 0080, 0081, 0082, 0083, 0084, 0085, 0086.
+- **Continued documentation**: New tables and detailed changes for 0080–0086 and Enterprise Ticket System are in **DASHBOARD_TABLES_DOCUMENTATION_PART2.md**.
 
 **Changelog (v1.7)**:
 - **Migration 0079**: rider_wallet unblock_alloc_food/parcel/person_ride for FIFO unblock; global block when total_balance ≤ -200 (reason global_emergency); sync uses effective_net; ledger trigger skips generic manual_add; POST /api/riders/[id]/wallet/add-balance for generic add + FIFO.

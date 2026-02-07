@@ -114,7 +114,7 @@ export async function POST(
         entryType: "manual_add",
         amount: amount.toFixed(2),
         balance: balanceAfter,
-        serviceType: null,
+        serviceType: row.serviceType && ["food", "parcel", "person_ride"].includes(row.serviceType) ? row.serviceType : null,
         ref,
         refType: "wallet_credit_request",
         description: row.reason,

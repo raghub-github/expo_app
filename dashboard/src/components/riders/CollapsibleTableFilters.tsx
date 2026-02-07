@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronUp, SlidersHorizontal } from "lucide-react";
 
 interface CollapsibleTableFiltersProps {
-  /** Filter controls (dropdowns, dates, Apply button). Shown when expanded. */
+  /** Filter controls (dropdowns, dates). Shown when expanded. Filters apply automatically on change. */
   filterContent: React.ReactNode;
   /** Table and any loading overlay. Rendered below the filter bar. */
   children: React.ReactNode;

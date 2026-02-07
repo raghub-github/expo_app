@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, riderPenalties, riderWallet, walletLedger, systemUsers } from "@/lib/db/schema";
-import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
@@ -35,7 +35,7 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid rider ID" }, { status: 400 });
     }
 
-    let body: { amount: number; reason: string; serviceType: string; penaltyType?: string; orderId?: number };
+    let body: { amount: number; reason: string; serviceType?: string | null; penaltyType?: string; orderId?: number };
     try {
       body = await request.json();
     } catch {
@@ -44,10 +44,11 @@ export async function POST(
 
     const amount = Number(body.amount);
     const reason = String(body.reason || "").trim();
-    const rawServiceType = String(body.serviceType || "food").toLowerCase().trim();
-    const serviceType = (["food", "parcel", "person_ride"].includes(rawServiceType)
-      ? rawServiceType
-      : "food") as "food" | "parcel" | "person_ride";
+    const rawServiceType = body.serviceType != null && body.serviceType !== "" ? String(body.serviceType).toLowerCase().trim() : "";
+    const validServiceTypes = ["food", "parcel", "person_ride"] as const;
+    const serviceTypeForDb = validServiceTypes.includes(rawServiceType as any) ? (rawServiceType as "food" | "parcel" | "person_ride") : null;
+    // For wallet/ledger allocation we need a concrete service; use parcel when unspecified
+    const serviceTypeForWallet = serviceTypeForDb ?? "parcel";
 
     const penaltyType = (body.penaltyType || "other") as string;
     const orderId = body.orderId != null ? Number(body.orderId) : null;
@@ -57,9 +58,6 @@ export async function POST(
     }
     if (!reason) {
       return NextResponse.json({ success: false, error: "Reason is required" }, { status: 400 });
-    }
-    if (!["food", "parcel", "person_ride"].includes(serviceType)) {
-      return NextResponse.json({ success: false, error: "Invalid serviceType" }, { status: 400 });
     }
 
     const db = getDb();
@@ -94,7 +92,7 @@ export async function POST(
       .insert(riderPenalties)
       .values({
         riderId,
-        serviceType,
+        serviceType: serviceTypeForDb,
         penaltyType,
         amount: amount.toFixed(2),
         reason,
@@ -111,7 +109,7 @@ export async function POST(
       entryType: "penalty",
       amount: amount.toFixed(2),
       balance: balanceAfter,
-      serviceType,
+      serviceType: serviceTypeForWallet,
       ref: `pen_${penalty.id}`,
       refType: "penalty",
       description: reason,
@@ -128,9 +126,9 @@ export async function POST(
     await db
       .update(riderWallet)
       .set({
-        penaltiesFood: serviceType === "food" ? (pf + amount).toFixed(2) : (wallet?.penaltiesFood ?? "0"),
-        penaltiesParcel: serviceType === "parcel" ? (pp + amount).toFixed(2) : (wallet?.penaltiesParcel ?? "0"),
-        penaltiesPersonRide: serviceType === "person_ride" ? (pr + amount).toFixed(2) : (wallet?.penaltiesPersonRide ?? "0"),
+        penaltiesFood: serviceTypeForWallet === "food" ? (pf + amount).toFixed(2) : (wallet?.penaltiesFood ?? "0"),
+        penaltiesParcel: serviceTypeForWallet === "parcel" ? (pp + amount).toFixed(2) : (wallet?.penaltiesParcel ?? "0"),
+        penaltiesPersonRide: serviceTypeForWallet === "person_ride" ? (pr + amount).toFixed(2) : (wallet?.penaltiesPersonRide ?? "0"),
         totalBalance: balanceAfter,
         lastUpdatedAt: new Date(),
       })
@@ -152,7 +150,7 @@ export async function POST(
           riderId,
           penaltyId: penalty.id,
           amount,
-          serviceType,
+          serviceType: serviceTypeForDb ?? "unspecified",
           penaltyType,
           orderId,
           reason,
@@ -160,7 +158,7 @@ export async function POST(
           imposedByName: agentName,
           source: "agent",
         },
-        newValues: { penaltyId: penalty.id, orderId, amount, serviceType, reason },
+        newValues: { penaltyId: penalty.id, orderId, amount, serviceType: serviceTypeForDb ?? "unspecified", reason },
         requestPath: request.nextUrl?.pathname,
         requestMethod: "POST",
         ipAddress: getIpAddress(request),
@@ -244,7 +242,11 @@ export async function GET(
     const conditions: any[] = [eq(riderPenalties.riderId, riderId)];
 
     if (serviceType && serviceType !== "all") {
-      conditions.push(eq(riderPenalties.serviceType, serviceType as any));
+      if (serviceType === "unspecified" || serviceType === "null") {
+        conditions.push(isNull(riderPenalties.serviceType));
+      } else {
+        conditions.push(eq(riderPenalties.serviceType, serviceType as any));
+      }
     }
 
     if (status && status !== "all") {
@@ -260,8 +262,12 @@ export async function GET(
 
     if (q) {
       const num = parseInt(q, 10);
-      if (!Number.isNaN(num) && String(num) === q) {
+      const isNumeric = !Number.isNaN(num) && String(num) === q;
+      if (isNumeric) {
         conditions.push(or(eq(riderPenalties.id, num), eq(riderPenalties.orderId, num)) as any);
+      } else {
+        const term = `%${q.replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
+        conditions.push(ilike(riderPenalties.reason, term) as any);
       }
     }
 

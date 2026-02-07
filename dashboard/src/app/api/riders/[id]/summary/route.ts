@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, riderDocuments, systemUsers } from "@/lib/db/schema";
-import { eq, and, or, desc, gte, lte } from "drizzle-orm";
+import { eq, and, or, desc, gte, lte, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
@@ -422,7 +422,11 @@ export async function GET(
         penaltiesConditions.push(or(eq(riderPenalties.status, "active"), eq(riderPenalties.status, "paid")));
       }
       if (params_obj.penaltiesServiceType && params_obj.penaltiesServiceType !== "all") {
-        penaltiesConditions.push(eq(riderPenalties.serviceType, params_obj.penaltiesServiceType as "food" | "parcel" | "person_ride"));
+        if (params_obj.penaltiesServiceType === "unspecified" || params_obj.penaltiesServiceType === "null") {
+          penaltiesConditions.push(isNull(riderPenalties.serviceType));
+        } else {
+          penaltiesConditions.push(eq(riderPenalties.serviceType, params_obj.penaltiesServiceType as "food" | "parcel" | "person_ride"));
+        }
       }
       if (params_obj.penaltiesOrderId && params_obj.penaltiesOrderId.trim() !== "") {
         const orderIdNum = parseInt(params_obj.penaltiesOrderId.trim(), 10);
