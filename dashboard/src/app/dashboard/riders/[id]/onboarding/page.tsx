@@ -79,9 +79,14 @@ const DOCUMENT_SECTIONS = {
 
 export default function RiderOnboardingPage() {
   // ALL HOOKS MUST BE CALLED FIRST - BEFORE ANY CONDITIONAL RETURNS
-  const { isSuperAdmin, loading: permissionsLoading, exists, error: permissionsError } = usePermissions();
+  const { data: permissionsData, isLoading: permissionsLoading, error: permissionsError } = usePermissionsQuery();
   const { data: dashboardAccessData, isLoading: dashboardAccessLoading, error: dashboardAccessError } = useDashboardAccessQuery();
-  
+
+  const hasCachedPermissions = permissionsData != null;
+  const hasCachedDashboardAccess = dashboardAccessData != null;
+  const isSuperAdmin = permissionsData?.isSuperAdmin ?? false;
+  const exists = permissionsData?.exists ?? false;
+
   const params = useParams();
   const router = useRouter();
   const riderId = parseInt(params.id as string);

@@ -14,6 +14,8 @@ export interface RiderAccessData {
   hasRiderAccess: boolean;
   isSuperAdmin: boolean;
   canAddPenalty: RiderAccessByService;
+  /** Revert penalty: only for agents with UPDATE on rider service (not view-only) */
+  canRevertPenalty: RiderAccessByService;
   canBlock: RiderAccessByService;
   canUnblock: RiderAccessByService;
   canFreezeWallet: boolean;

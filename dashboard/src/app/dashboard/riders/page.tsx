@@ -8,13 +8,15 @@ import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { useRiderDashboard } from '@/context/RiderDashboardContext';
 import { queryKeys } from '@/lib/queryKeys';
+import { invalidateRiderSummary } from '@/lib/cache-invalidation';
 import { useRiderSummaryQuery } from '@/hooks/queries/useRiderSummaryQuery';
 import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
 import type { RiderSummaryParams } from '@/lib/queryKeys';
 import Link from 'next/link';
-import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, MoreVertical, Banknote, Trash2 } from 'lucide-react';
+import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
 
 /** Wallet credit request row (add amount) for display on rider info */
@@ -92,6 +94,7 @@ export default function RidersPage() {
   const [ticketsStatus, setTicketsStatus] = useState<string>('all');
   const [ticketsCategory, setTicketsCategory] = useState<string>('all');
   const [ticketsPriority, setTicketsPriority] = useState<string>('all');
+  const [ticketsSearch, setTicketsSearch] = useState('');
   const [penaltiesLimit, setPenaltiesLimit] = useState(10);
   const [penaltiesFrom, setPenaltiesFrom] = useState('');
   const [penaltiesTo, setPenaltiesTo] = useState('');
@@ -101,6 +104,19 @@ export default function RidersPage() {
   const [penaltiesServiceType, setPenaltiesServiceType] = useState<string>('all'); // 'all' | 'food' | 'parcel' | 'person_ride'
   const [penaltiesOrderIdSearch, setPenaltiesOrderIdSearch] = useState('');
   const [vehicleOpen, setVehicleOpen] = useState(false);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [ordersPageSize, setOrdersPageSize] = useState(10);
+  const [ticketsPage, setTicketsPage] = useState(1);
+  const [ticketsPageSize, setTicketsPageSize] = useState(10);
+  const [penaltiesPage, setPenaltiesPage] = useState(1);
+  const [penaltiesPageSize, setPenaltiesPageSize] = useState(10);
+  const [withdrawalsPage, setWithdrawalsPage] = useState(1);
+  const [withdrawalsPageSize, setWithdrawalsPageSize] = useState(10);
+
+  useEffect(() => { setOrdersPage(1); }, [ordersLimit, ordersFrom, ordersTo, ordersOrderType, ordersStatus, ordersOrderIdSearch]);
+  useEffect(() => { setTicketsPage(1); }, [ticketsLimit, ticketsFrom, ticketsTo, ticketsStatus, ticketsCategory, ticketsPriority, ticketsSearch]);
+  useEffect(() => { setPenaltiesPage(1); }, [penaltiesLimit, penaltiesFrom, penaltiesTo, penaltiesStatus, penaltiesServiceType, penaltiesOrderIdSearch]);
+  useEffect(() => { setWithdrawalsPage(1); }, [withdrawalsLimit, withdrawalsFrom, withdrawalsTo]);
 
   const formatWalletNum = (v: string | number | null | undefined) => {
     const n = Number(v);
@@ -154,6 +170,10 @@ export default function RidersPage() {
   const canAddPenaltyForService = (s: string) => {
     const svc = s === 'person_ride' ? 'person_ride' : s === 'parcel' ? 'parcel' : 'food';
     return riderAccess?.canAddPenalty?.[svc] ?? false;
+  };
+  const canRevertPenaltyForService = (s: string) => {
+    const svc = s === 'person_ride' ? 'person_ride' : s === 'parcel' ? 'parcel' : 'food';
+    return riderAccess?.canRevertPenalty?.[svc] ?? false;
   };
   const canBlockForService = (s: 'food' | 'parcel' | 'person_ride' | 'all') =>
     s === 'all'
@@ -210,6 +230,8 @@ export default function RidersPage() {
   const [creditRequestsForRider, setCreditRequestsForRider] = useState<WalletCreditRequestRow[]>([]);
   const [creditRequestsLoading, setCreditRequestsLoading] = useState(false);
   const [deletingCreditRequestId, setDeletingCreditRequestId] = useState<number | null>(null);
+  const [actioningCreditRequestId, setActioningCreditRequestId] = useState<number | null>(null);
+  const [rejectCreditRequestModal, setRejectCreditRequestModal] = useState<{ id: number; reason: string } | null>(null);
   const [creditRequestsModalOpen, setCreditRequestsModalOpen] = useState(false);
 
   const PENALTY_TYPES = ['cancellation', 'fraud', 'extra_charges', 'late_delivery', 'customer_complaint', 'order_mistake', 'other'] as const;
@@ -260,13 +282,14 @@ export default function RidersPage() {
       setAddPenaltyModalOpen(false);
       setAddPenaltyFromOrder(null);
       setAddPenaltyForm({ amount: '', reason: '', serviceType: 'food', penaltyType: 'other', orderId: '', penaltyPercent: 100 });
+      if (riderId) invalidateRiderSummary(queryClient, riderId);
       await refetchRiderSummary();
     } catch (err) {
       setAddPenaltyError(err instanceof Error ? err.message : 'Failed to add penalty');
     } finally {
       setAddPenaltySubmitting(false);
     }
-  }, [riderId, addPenaltyForm, addPenaltyFromOrder, refetchRiderSummary]);
+  }, [riderId, queryClient, addPenaltyForm, addPenaltyFromOrder, refetchRiderSummary]);
 
   const handleRevertSubmit = useCallback(async () => {
     if (!riderId || revertPenaltyId == null) return;
@@ -291,13 +314,14 @@ export default function RidersPage() {
       }
       setRevertPenaltyId(null);
       setRevertReason('');
+      if (riderId) invalidateRiderSummary(queryClient, riderId);
       await refetchRiderSummary();
     } catch (err) {
       setRevertError(err instanceof Error ? err.message : 'Failed to revert penalty');
     } finally {
       setRevertSubmitting(false);
     }
-  }, [riderId, revertPenaltyId, revertReason, refetchRiderSummary]);
+  }, [riderId, queryClient, revertPenaltyId, revertReason, refetchRiderSummary]);
 
   // Sync query data to context so sub-pages (Penalties, Orders, etc.) get currentRiderInfo
   useEffect(() => {
@@ -401,7 +425,9 @@ export default function RidersPage() {
             return next;
           });
         }
+        if (riderId) invalidateRiderSummary(queryClient, riderId);
         refetchCreditRequestsForRider();
+        await refetchRiderSummary();
       } catch (err) {
         console.error(err);
         setError(err instanceof Error ? err.message : "Failed to delete request");
@@ -409,7 +435,58 @@ export default function RidersPage() {
         setDeletingCreditRequestId(null);
       }
     },
-    [refetchCreditRequestsForRider]
+    [riderId, queryClient, refetchCreditRequestsForRider, refetchRiderSummary]
+  );
+
+  const handleApproveCreditRequest = useCallback(
+    async (requestId: number) => {
+      setActioningCreditRequestId(requestId);
+      try {
+        const res = await fetch(`/api/wallet-credit-requests/${requestId}/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+          credentials: "include",
+        });
+        const json = await res.json();
+        if (!res.ok || !json.success) throw new Error(json.error || "Failed to approve");
+        if (riderId) invalidateRiderSummary(queryClient, riderId);
+        await refetchCreditRequestsForRider();
+        refetchRiderSummary();
+      } catch (err) {
+        console.error(err);
+        setError(err instanceof Error ? err.message : "Failed to approve request");
+      } finally {
+        setActioningCreditRequestId(null);
+      }
+    },
+    [riderId, queryClient, refetchCreditRequestsForRider, refetchRiderSummary]
+  );
+
+  const handleRejectCreditRequest = useCallback(
+    async (requestId: number, reviewNote?: string) => {
+      setActioningCreditRequestId(requestId);
+      try {
+        const res = await fetch(`/api/wallet-credit-requests/${requestId}/reject`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reviewNote: (reviewNote ?? "").trim() || undefined }),
+          credentials: "include",
+        });
+        const json = await res.json();
+        if (!res.ok || !json.success) throw new Error(json.error || "Failed to reject");
+        setRejectCreditRequestModal(null);
+        if (riderId) invalidateRiderSummary(queryClient, riderId);
+        await refetchCreditRequestsForRider();
+        await refetchRiderSummary();
+      } catch (err) {
+        console.error(err);
+        setError(err instanceof Error ? err.message : "Failed to reject request");
+      } finally {
+        setActioningCreditRequestId(null);
+      }
+    },
+    [riderId, queryClient, refetchCreditRequestsForRider, refetchRiderSummary]
   );
 
   // Use fresh query data for block/blacklist UI so toggles update immediately after penalty/revert (no one-render delay)
@@ -488,8 +565,10 @@ export default function RidersPage() {
       }
 
       if (data && data.length > 0) {
-        setRiders(data as RiderListEntry[]);
+        const list = data as RiderListEntry[];
+        setRiders(list);
         setError(null);
+        router.replace(`/dashboard/riders?search=GMR${list[0].id}`, { scroll: false });
         // Summary is fetched by useRiderSummaryQuery when riderId is set
       } else {
         setRiders([]);
@@ -508,16 +587,21 @@ export default function RidersPage() {
       if (spinnerTimeout) clearTimeout(spinnerTimeout);
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   // Track the last search we actually ran to avoid re-running when effect re-fires (e.g. after setRiders([]) changes context and triggers re-render).
   const lastRanSearchRef = useRef<string | null>(null);
 
   // Run search only when URL has ?search= and it's a *different* rider than already in context.
   // When returning to Rider Information from Orders/Penalties/etc., same rider in URL + context → skip search.
+  // When we have a rider in context but no search in URL, sync URL so refresh and sub-route links keep the rider.
   useEffect(() => {
     const searchValue = searchParams.get('search')?.trim() ?? '';
     if (!searchValue) {
+      if (riders.length > 0 && riders[0]) {
+        router.replace(`/dashboard/riders?search=GMR${riders[0].id}`, { scroll: false });
+        return;
+      }
       lastRanSearchRef.current = null;
       return;
     }
@@ -538,7 +622,7 @@ export default function RidersPage() {
     if (lastRanSearchRef.current === searchValue) return;
     lastRanSearchRef.current = searchValue;
     runSearch(searchValue);
-  }, [searchParams, runSearch, riders]);
+  }, [searchParams, runSearch, riders, router]);
 
 
   // When rider changes (new search), reset so section effects don’t refetch until user changes a filter
@@ -559,6 +643,46 @@ export default function RidersPage() {
   const handlePenaltiesLimitChange = useCallback((v: number) => { setLoadingSection('penalties'); setPenaltiesLimit(v); }, [setLoadingSection]);
   const handlePenaltiesFromChange = useCallback((v: string) => { setLoadingSection('penalties'); setPenaltiesFrom(v); }, [setLoadingSection]);
   const handlePenaltiesToChange = useCallback((v: string) => { setLoadingSection('penalties'); setPenaltiesTo(v); }, [setLoadingSection]);
+
+  const clearOrdersFilters = useCallback(() => {
+    setOrdersPage(1);
+    setLoadingSection('orders');
+    setOrdersFrom('');
+    setOrdersTo('');
+    setOrdersOrderType('all');
+    setOrdersStatus('all');
+    setOrdersOrderIdSearch('');
+  }, []);
+  const clearTicketsFilters = useCallback(() => {
+    setTicketsPage(1);
+    setLoadingSection('tickets');
+    setTicketsFrom('');
+    setTicketsTo('');
+    setTicketsStatus('all');
+    setTicketsCategory('all');
+    setTicketsPriority('all');
+    setTicketsSearch('');
+  }, []);
+  const clearPenaltiesFilters = useCallback(() => {
+    setPenaltiesPage(1);
+    setLoadingSection('penalties');
+    setPenaltiesFrom('');
+    setPenaltiesTo('');
+    setPenaltiesStatus('all');
+    setPenaltiesServiceType('all');
+    setPenaltiesOrderIdSearch('');
+  }, []);
+  const clearWithdrawalsFilters = useCallback(() => {
+    setWithdrawalsPage(1);
+    setLoadingSection('withdrawals');
+    setWithdrawalsFrom('');
+    setWithdrawalsTo('');
+  }, []);
+
+  const handleRefreshSection = useCallback((section: 'orders' | 'withdrawals' | 'tickets' | 'penalties') => {
+    setLoadingSection(section);
+    refetchRiderSummary();
+  }, [setLoadingSection, refetchRiderSummary]);
 
   const handleRetryAccess = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
@@ -799,16 +923,28 @@ export default function RidersPage() {
                   )}
                 </div>
 
-                {/* Vehicle details: compact panel when expanded */}
+                {/* Vehicle details: inline line(s) in dropdown when expanded */}
                 {vehicleOpen && (riderSummary?.vehicle || riderSummary?.rider?.vehicleChoice) && (
-                  <div className="mt-2 max-w-md rounded border border-gray-200 bg-gray-50/80 p-2 text-xs">
+                  <div className="mt-2 w-full max-w-2xl rounded border border-gray-200 bg-gray-50/80 px-3 py-2 text-xs">
                     {riderSummary?.vehicle ? (
-                      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-                        <div><span className="text-gray-500">Fuel</span><p className="font-medium text-gray-900">{riderSummary.vehicle.fuelType || "—"}</p></div>
-                        <div><span className="text-gray-500">Make</span><p className="font-medium text-gray-900">{riderSummary.vehicle.make || "—"}</p></div>
-                        <div><span className="text-gray-500">Model</span><p className="font-medium text-gray-900">{riderSummary.vehicle.model || "—"}</p></div>
-                        <div><span className="text-gray-500">Category</span><p className="font-medium text-gray-900">{riderSummary.vehicle.vehicleCategory ? String(riderSummary.vehicle.vehicleCategory).replace(/_/g, " ") : "—"}</p></div>
-                        <div className="col-span-2"><span className="text-gray-500">RC</span><p className="font-medium text-gray-900 font-mono">{riderSummary.vehicle.registrationNumber || "—"}</p></div>
+                      <div className="flex flex-wrap items-baseline gap-x-1 gap-y-1">
+                        <span className="text-gray-500 shrink-0">Type:</span>
+                        <span className="font-medium text-gray-900 shrink-0">{String(riderSummary.vehicle.vehicleType ?? "—").replace(/_/g, " ")}</span>
+                        <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                        <span className="text-gray-500 shrink-0">Fuel:</span>
+                        <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.fuelType || "—"}</span>
+                        <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                        <span className="text-gray-500 shrink-0">Make:</span>
+                        <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.make || "—"}</span>
+                        <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                        <span className="text-gray-500 shrink-0">Model:</span>
+                        <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.model || "—"}</span>
+                        <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                        <span className="text-gray-500 shrink-0">Category:</span>
+                        <span className="font-medium text-gray-900 shrink-0">{riderSummary.vehicle.vehicleCategory ? String(riderSummary.vehicle.vehicleCategory).replace(/_/g, " ") : "—"}</span>
+                        <span className="text-gray-300 shrink-0 mx-0.5" aria-hidden>•</span>
+                        <span className="text-gray-500 shrink-0">RC:</span>
+                        <span className="font-medium text-gray-900 font-mono shrink-0">{riderSummary.vehicle.registrationNumber || "—"}</span>
                       </div>
                     ) : (
                       <p className="text-gray-600">No vehicle on file. Type: {riderSummary?.rider?.vehicleChoice}.</p>
@@ -822,23 +958,29 @@ export default function RidersPage() {
           {displaySummary && (() => {
             type SectionId = 'orders' | 'withdrawals' | 'tickets' | 'penalties' | 'blacklist' | 'metrics' | 'walletFreeze';
             const summary = displaySummary;
+            const ordersList = summary.recentOrders ?? [];
+            const totalOrders = ordersList.length;
+            const displayedOrders = ordersList.slice((ordersPage - 1) * ordersPageSize, ordersPage * ordersPageSize);
+            const ticketsList = (() => {
+              const list = summary.recentTickets ?? [];
+              const q = ticketsSearch.trim().toLowerCase();
+              return q ? list.filter((t: { id: number; orderId?: number; subject: string; message?: string }) => (String(t.id) === q || (t.orderId != null && String(t.orderId) === q) || (t.subject?.toLowerCase().includes(q)) || (t.message?.toLowerCase().includes(q)))) : list;
+            })();
+            const totalTickets = ticketsList.length;
+            const displayedTickets = ticketsList.slice((ticketsPage - 1) * ticketsPageSize, ticketsPage * ticketsPageSize);
+            const penaltiesList = summary.recentPenalties ?? [];
+            const totalPenalties = penaltiesList.length;
+            const displayedPenalties = penaltiesList.slice((penaltiesPage - 1) * penaltiesPageSize, penaltiesPage * penaltiesPageSize);
+            const withdrawalsList = summary.recentWithdrawals ?? [];
+            const totalWithdrawals = withdrawalsList.length;
+            const displayedWithdrawals = withdrawalsList.slice((withdrawalsPage - 1) * withdrawalsPageSize, withdrawalsPage * withdrawalsPageSize);
             const ordersSection = (
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
                   <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Orders</h3>
+                  <button type="button" onClick={() => handleRefreshSection('orders')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh orders"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
                   {showOrdersFilters && (
                     <>
-                      <select
-                        value={ordersLimit}
-                        onChange={(e) => { setLoadingSection('orders'); handleOrdersLimitChange(Number(e.target.value)); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-14 sm:w-16"
-                        title="Number of records"
-                      >
-                        <option value={5}>5</option>
-                        <option value={10}>10</option>
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
-                      </select>
                       <input
                         type="date"
                         value={ordersFrom}
@@ -862,6 +1004,7 @@ export default function RidersPage() {
                         More filters
                         {showOrdersMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                       </button>
+                      <button type="button" onClick={clearOrdersFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
                     </>
                   )}
                   <button
@@ -922,8 +1065,21 @@ export default function RidersPage() {
                       <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
                     </div>
                   ) : (summary.recentOrders?.length ?? 0) > 0 ? (
+                    <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                        <select value={ordersPageSize} onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
+                          <option value={5}>5</option>
+                          <option value={10}>10</option>
+                          <option value={20}>20</option>
+                          <option value={50}>50</option>
+                        </select>
+                      </div>
+                      <TablePagination page={ordersPage} pageSize={ordersPageSize} total={totalOrders} onPageChange={setOrdersPage} disabled={summaryQueryFetching} ariaLabel="Orders" />
+                    </div>
                     <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                      {summary.recentOrders.map((order: { id: number; orderType: string; status: string; riderEarning?: number; createdAt: string }) => (
+                      {displayedOrders.map((order: { id: number; orderType: string; status: string; riderEarning?: number; createdAt: string }) => (
                         <div key={order.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg hover:bg-gray-100/80 transition-colors group">
                           <div className="min-w-0 flex-1">
                             <p className="font-medium text-gray-900">Order #{order.id}</p>
@@ -982,6 +1138,7 @@ export default function RidersPage() {
                         </div>
                       ))}
                     </div>
+                    </>
                   ) : (
                     <p className="text-gray-500 text-sm text-center py-4">No orders found</p>
                   )}
@@ -1059,7 +1216,7 @@ export default function RidersPage() {
             const withdrawalsSection = (
               <RecentDataSection
                 title="Recent Withdrawals"
-                data={summary.recentWithdrawals}
+                data={summary.recentWithdrawals ?? []}
                 limit={withdrawalsLimit}
                 onLimitChange={handleWithdrawalsLimitChange}
                 fromDate={withdrawalsFrom}
@@ -1067,6 +1224,13 @@ export default function RidersPage() {
                 onFromDateChange={handleWithdrawalsFromChange}
                 onToDateChange={handleWithdrawalsToChange}
                 loading={loadingSection === 'withdrawals' && summaryQueryFetching}
+                onRefresh={() => handleRefreshSection('withdrawals')}
+                refreshing={summaryQueryFetching}
+                page={withdrawalsPage}
+                pageSize={withdrawalsPageSize}
+                onPageChange={setWithdrawalsPage}
+                onPageSizeChange={(s) => { setWithdrawalsPageSize(s); setWithdrawalsPage(1); }}
+                onClearFilters={clearWithdrawalsFilters}
                 renderItem={(withdrawal) => (
                   <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
                     <div>
@@ -1086,28 +1250,28 @@ export default function RidersPage() {
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
                   <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Tickets</h3>
+                  <button type="button" onClick={() => handleRefreshSection('tickets')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh tickets"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
                   {showTicketsFilters && (
                     <>
-                      <select
-                        value={ticketsLimit}
-                        onChange={(e) => { setLoadingSection('tickets'); handleTicketsLimitChange(Number(e.target.value)); }}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-14 sm:w-16"
-                        title="Number of records"
-                      >
-                        <option value={5}>5</option>
-                        <option value={10}>10</option>
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
-                      </select>
                       <input type="date" value={ticketsFrom} onChange={(e) => { setLoadingSection('tickets'); handleTicketsFromChange(e.target.value); }} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]" title="From" />
                       <input type="date" value={ticketsTo} onChange={(e) => { setLoadingSection('tickets'); handleTicketsToChange(e.target.value); }} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]" title="To" />
                       <button type="button" onClick={() => setShowTicketsMoreFilters((v) => !v)} className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border ${showTicketsMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}>More filters {showTicketsMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}</button>
+                      <button type="button" onClick={clearTicketsFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
                     </>
                   )}
                   <button type="button" onClick={() => { setShowTicketsFilters((v) => !v); if (!showTicketsFilters) setLoadingSection('tickets'); }} className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border ml-auto sm:ml-0 ${showTicketsFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}><Filter className="h-3.5 w-3.5" /> Filters</button>
                 </div>
                 {showTicketsFilters && showTicketsMoreFilters && (
                   <div className="flex flex-wrap items-center gap-3 mb-4 p-3 rounded-lg border border-gray-200 bg-gray-50/80 shrink-0">
+                    <span className="text-xs font-medium text-gray-600">Search:</span>
+                    <input
+                      type="search"
+                      value={ticketsSearch}
+                      onChange={(e) => setTicketsSearch(e.target.value)}
+                      placeholder="Ticket ID, Order ID, title…"
+                      className="px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-44 sm:w-52 placeholder:text-gray-400"
+                      title="Search by ticket ID, order ID, or title"
+                    />
                     <span className="text-xs font-medium text-gray-600">Status:</span>
                     <select value={ticketsStatus} onChange={(e) => handleTicketsStatusChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900"><option value="all">All</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select>
                     <span className="text-xs font-medium text-gray-600">Category:</span>
@@ -1122,6 +1286,19 @@ export default function RidersPage() {
                   ) : !summary.recentTickets?.length ? (
                     <p className="text-gray-500 text-sm py-6 text-center">No tickets found</p>
                   ) : (
+                    <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                        <select value={ticketsPageSize} onChange={(e) => { setTicketsPageSize(Number(e.target.value)); setTicketsPage(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
+                          <option value={5}>5</option>
+                          <option value={10}>10</option>
+                          <option value={20}>20</option>
+                          <option value={50}>50</option>
+                        </select>
+                      </div>
+                      <TablePagination page={ticketsPage} pageSize={ticketsPageSize} total={totalTickets} onPageChange={setTicketsPage} disabled={summaryQueryFetching} ariaLabel="Tickets" />
+                    </div>
                     <div className="overflow-x-auto max-h-80 overflow-y-auto rounded-lg border border-gray-200 -mr-1">
                       <table className="min-w-full text-sm border-collapse">
                         <thead className="bg-gray-50 sticky top-0 z-10">
@@ -1136,7 +1313,7 @@ export default function RidersPage() {
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-100">
-                          {(summary.recentTickets ?? []).map((ticket: { id: number; orderId?: number; subject: string; category: string; priority: string; status: string; message?: string; createdAt: string }) => (
+                          {displayedTickets.map((ticket: { id: number; orderId?: number; subject: string; category: string; priority: string; status: string; message?: string; createdAt: string }) => (
                             <tr key={ticket.id} className="hover:bg-gray-50/80 transition-colors">
                               <td className="px-3 py-2 font-mono text-gray-900">{ticket.id}</td>
                               <td className="px-3 py-2 text-gray-700">{ticket.orderId != null ? `#${ticket.orderId}` : "—"}</td>
@@ -1150,6 +1327,7 @@ export default function RidersPage() {
                         </tbody>
                       </table>
                     </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -1158,19 +1336,9 @@ export default function RidersPage() {
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
                   <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Penalties</h3>
+                  <button type="button" onClick={() => handleRefreshSection('penalties')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh penalties"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
                   {showPenaltiesFilters && (
                     <>
-                      <select
-                        value={penaltiesLimit}
-                        onChange={(e) => handlePenaltiesLimitChange(Number(e.target.value))}
-                        className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-14 sm:w-16"
-                        title="Number of records"
-                      >
-                        <option value={5}>5</option>
-                        <option value={10}>10</option>
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
-                      </select>
                       <input
                         type="date"
                         value={penaltiesFrom}
@@ -1194,6 +1362,7 @@ export default function RidersPage() {
                         More filters
                         {showPenaltiesMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                       </button>
+                      <button type="button" onClick={clearPenaltiesFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
                     </>
                   )}
                   <button
@@ -1282,6 +1451,19 @@ export default function RidersPage() {
                       <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500" />
                     </div>
                   ) : (summary.recentPenalties?.length ?? 0) > 0 ? (
+                    <>
+                    <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                        <select value={penaltiesPageSize} onChange={(e) => { setPenaltiesPageSize(Number(e.target.value)); setPenaltiesPage(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
+                          <option value={5}>5</option>
+                          <option value={10}>10</option>
+                          <option value={20}>20</option>
+                          <option value={50}>50</option>
+                        </select>
+                      </div>
+                      <TablePagination page={penaltiesPage} pageSize={penaltiesPageSize} total={totalPenalties} onPageChange={setPenaltiesPage} disabled={summaryQueryFetching} ariaLabel="Penalties" />
+                    </div>
                     <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-200">
                       <table className="w-full max-w-full text-xs table-fixed border-collapse">
                         <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-10">
@@ -1298,7 +1480,7 @@ export default function RidersPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
-                          {(summary.recentPenalties ?? []).map((penalty: { id: number; orderId?: number | null; serviceType: string; penaltyType: string; amount: string; reason: string; status: string; imposedAt: string; resolvedAt?: string | null; imposedByEmail?: string | null; reversedByEmail?: string | null }) => {
+                          {displayedPenalties.map((penalty: { id: number; orderId?: number | null; serviceType: string; penaltyType: string; amount: string; reason: string; status: string; imposedAt: string; resolvedAt?: string | null; imposedByEmail?: string | null; reversedByEmail?: string | null }) => {
                             const canRevert = (penalty.status === 'active' || penalty.status === 'paid') && penalty.status !== 'reversed';
                             const imposedDate = penalty.imposedAt ? new Date(penalty.imposedAt).toLocaleDateString() : '—';
                             const resolvedDate = penalty.resolvedAt ? new Date(penalty.resolvedAt).toLocaleDateString() : null;
@@ -1330,7 +1512,7 @@ export default function RidersPage() {
                                   </td>
                                   <td className="py-1.5 px-1.5 align-middle text-gray-500 whitespace-nowrap min-w-0">{imposedDate}</td>
                                   <td className="py-1.5 px-1.5 align-middle text-right min-w-0">
-                                    {canRevert && canAddPenaltyForService(penalty.serviceType) ? (
+                                    {canRevert && canRevertPenaltyForService(penalty.serviceType) ? (
                                       <button
                                         type="button"
                                         onClick={() => { setRevertPenaltyId(penalty.id); setRevertReason(''); setRevertError(null); }}
@@ -1340,7 +1522,7 @@ export default function RidersPage() {
                                         Revert
                                       </button>
                                     ) : canRevert ? (
-                                      <span className="text-[11px] text-gray-400">—</span>
+                                      <span className="text-[11px] text-gray-400">View only</span>
                                     ) : (
                                       <span className="text-gray-400">—</span>
                                     )}
@@ -1386,6 +1568,7 @@ export default function RidersPage() {
                         </tbody>
                       </table>
                     </div>
+                    </>
                   ) : (
                     <p className="text-gray-500 text-sm text-center py-4">No penalties found</p>
                   )}
@@ -1440,6 +1623,7 @@ export default function RidersPage() {
                 setBlacklistReason('');
                 setBlacklistPermanent(true);
                 setBlacklistDurationHours(24);
+                if (riderId) invalidateRiderSummary(queryClient, riderId);
                 await refetchRiderSummary();
               } catch (e) {
                 setBlacklistError(e instanceof Error ? e.message : 'Request failed');
@@ -1466,6 +1650,7 @@ export default function RidersPage() {
                 }
                 setWalletFreezeModal(null);
                 setWalletFreezeReason('');
+                if (riderId) invalidateRiderSummary(queryClient, riderId);
                 await refetchRiderSummary();
               } catch (e) {
                 setWalletFreezeError(e instanceof Error ? e.message : 'Request failed');
@@ -1874,15 +2059,15 @@ export default function RidersPage() {
                     (r.requestedBySystemUserId === systemUserId || canApproveRejectWalletCredit);
 
                   return (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setCreditRequestsModalOpen(false)}>
-                      <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[85vh] overflow-hidden border border-gray-200" onClick={(e) => e.stopPropagation()}>
-                        <div className="p-4 border-b border-gray-200 flex items-center gap-3">
-                          <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                            <Banknote className="h-5 w-5 text-blue-600" />
-                            Add amount requests (wallet credit)
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-sm" onClick={() => !rejectCreditRequestModal && setCreditRequestsModalOpen(false)}>
+                      <div className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] sm:max-h-[85vh] overflow-hidden border border-gray-200 relative flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <div className="p-3 sm:p-4 border-b border-gray-200 flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
+                          <h3 className="text-base sm:text-lg font-bold text-gray-900 flex items-center gap-2">
+                            <Banknote className="h-5 w-5 text-blue-600 shrink-0" />
+                            <span>Add amount requests (wallet credit)</span>
                           </h3>
-                          <span className="text-sm text-gray-500">Rider: GMR{riderId}</span>
-                          <div className="ml-auto flex items-center gap-2">
+                          <span className="text-xs sm:text-sm text-gray-500">Rider: GMR{riderId}</span>
+                          <div className="ml-auto flex items-center gap-2 shrink-0">
                             <Link href="/dashboard/riders/pending-actions" className="text-xs font-medium text-blue-600 hover:underline">
                               Open Pending Actions
                             </Link>
@@ -1896,17 +2081,17 @@ export default function RidersPage() {
                           </div>
                         </div>
 
-                        <div className="p-4">
+                        <div className="p-3 sm:p-4 overflow-hidden flex flex-col min-h-0">
                           {creditRequestsLoading ? (
                             <div className="flex justify-center py-10">
-                              <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-blue-500" />
+                              <div className="animate-spin rounded-full h-7 w-7 border-2 border-blue-500 border-t-transparent rounded-full" />
                             </div>
                           ) : creditRequestsForRider.length === 0 ? (
-                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-8 text-center text-gray-600">
+                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 sm:p-8 text-center text-sm text-gray-600">
                               No add amount requests for this rider.
                             </div>
                           ) : (
-                            <div className="overflow-auto border border-gray-200 rounded-lg max-h-[60vh]">
+                            <div className="overflow-auto border border-gray-200 rounded-lg max-h-[50vh] sm:max-h-[60vh] min-h-0">
                               <table className="min-w-full text-sm">
                                 <thead className="bg-gray-50 sticky top-0 z-10">
                                   <tr>
@@ -1918,51 +2103,87 @@ export default function RidersPage() {
                                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Status</th>
                                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Approved/Rejected by</th>
                                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Review note</th>
-                                    <th className="px-3 py-2 w-10 text-right text-xs font-medium text-gray-600 uppercase">Action</th>
+                                    <th className="px-3 py-2 text-right text-xs font-medium text-gray-600 uppercase min-w-[140px] sm:min-w-[180px]">Action</th>
                                   </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-100">
                                   {creditRequestsForRider.map((r) => (
-                                    <tr key={r.id} className="text-gray-900">
-                                      <td className="px-3 py-2 font-mono">{r.id}</td>
-                                      <td className="px-3 py-2 font-mono">{r.orderId ?? "—"}</td>
-                                      <td className="px-3 py-2 text-right font-medium">₹{Number(r.amount).toFixed(2)}</td>
-                                      <td className="px-3 py-2 max-w-[220px] truncate text-gray-700" title={r.reason}>{r.reason}</td>
-                                      <td className="px-3 py-2">
-                                        <div className="flex flex-col leading-tight">
-                                          <span className="text-gray-700">{r.requestedByEmail ?? "—"}</span>
+                                    <tr key={r.id} className="text-gray-900 hover:bg-gray-50/50 transition-colors">
+                                      <td className="px-3 py-2 font-mono text-xs sm:text-sm align-top">{r.id}</td>
+                                      <td className="px-3 py-2 font-mono text-xs sm:text-sm align-top">{r.orderId ?? "—"}</td>
+                                      <td className="px-3 py-2 text-right font-medium text-xs sm:text-sm align-top">₹{Number(r.amount).toFixed(2)}</td>
+                                      <td className="px-3 py-2 max-w-[180px] sm:max-w-[220px] truncate text-gray-700 text-xs sm:text-sm align-top" title={r.reason}>{r.reason}</td>
+                                      <td className="px-3 py-2 align-top">
+                                        <div className="flex flex-col leading-tight min-w-0">
+                                          <span className="text-gray-700 text-xs sm:text-sm truncate">{r.requestedByEmail ?? "—"}</span>
                                           <span className="text-[11px] text-gray-500 mt-0.5">{new Date(r.requestedAt).toLocaleString()}</span>
                                         </div>
                                       </td>
-                                      <td className="px-3 py-2">
-                                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${r.status === "approved" ? "bg-green-100 text-green-800" : r.status === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
+                                      <td className="px-3 py-2 align-top">
+                                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${r.status === "approved" ? "bg-green-100 text-green-800" : r.status === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
                                           {r.status}
                                         </span>
                                       </td>
-                                      <td className="px-3 py-2">
-                                        <div className="flex flex-col leading-tight">
-                                          <span className="text-gray-700">{r.reviewedByEmail ?? "—"}</span>
+                                      <td className="px-3 py-2 align-top">
+                                        <div className="flex flex-col leading-tight min-w-0">
+                                          <span className="text-gray-700 text-xs sm:text-sm truncate">{r.reviewedByEmail ?? "—"}</span>
                                           <span className="text-[11px] text-gray-500 mt-0.5">{r.reviewedAt ? new Date(r.reviewedAt).toLocaleString() : "—"}</span>
                                         </div>
                                       </td>
-                                      <td className="px-3 py-2 max-w-[220px] truncate text-gray-700" title={r.reviewNote ?? ""}>{r.reviewNote ?? "—"}</td>
-                                      <td className="px-3 py-2 text-right">
-                                        {canDeleteCreditRequest(r) && (
-                                          <button
-                                            type="button"
-                                            onClick={() => handleDeleteCreditRequest(r.id, r.orderId)}
-                                            disabled={deletingCreditRequestId === r.id}
-                                            className="p-1.5 rounded text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                            title="Delete request"
-                                            aria-label="Delete request"
-                                          >
-                                            {deletingCreditRequestId === r.id ? (
-                                              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-red-400 border-t-transparent" />
-                                            ) : (
-                                              <Trash2 className="h-4 w-4" />
-                                            )}
-                                          </button>
-                                        )}
+                                      <td className="px-3 py-2 max-w-[180px] sm:max-w-[220px] truncate text-gray-700 text-xs sm:text-sm align-top" title={r.reviewNote ?? ""}>{r.reviewNote ?? "—"}</td>
+                                      <td className="px-3 py-2 align-top">
+                                        <div className="flex items-center justify-end gap-1.5 sm:gap-2 flex-wrap">
+                                          {r.status === "pending" && canApproveRejectWalletCredit && (
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleApproveCreditRequest(r.id)}
+                                                disabled={actioningCreditRequestId !== null || deletingCreditRequestId !== null}
+                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm min-h-[32px] sm:min-h-[36px]"
+                                                title="Approve request"
+                                                aria-label="Approve request"
+                                              >
+                                                {actioningCreditRequestId === r.id ? (
+                                                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                                                ) : (
+                                                  <Check className="h-4 w-4 shrink-0" />
+                                                )}
+                                                <span>Approve</span>
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => setRejectCreditRequestModal({ id: r.id, reason: "" })}
+                                                disabled={actioningCreditRequestId !== null || deletingCreditRequestId !== null}
+                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm min-h-[32px] sm:min-h-[36px]"
+                                                title="Reject request"
+                                                aria-label="Reject request"
+                                              >
+                                                <X className="h-4 w-4 shrink-0" />
+                                                <span>Reject</span>
+                                              </button>
+                                            </>
+                                          )}
+                                          {r.status === "pending" && !canApproveRejectWalletCredit && (
+                                            <span className="text-xs text-gray-500 italic">View only</span>
+                                          )}
+                                          {canDeleteCreditRequest(r) && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleDeleteCreditRequest(r.id, r.orderId)}
+                                              disabled={deletingCreditRequestId !== null || actioningCreditRequestId !== null}
+                                              className="inline-flex items-center gap-1 p-1.5 sm:p-2 rounded-lg text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors border border-transparent hover:border-red-200"
+                                              title="Delete request"
+                                              aria-label="Delete request"
+                                            >
+                                              {deletingCreditRequestId === r.id ? (
+                                                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-red-400 border-t-transparent" />
+                                              ) : (
+                                                <Trash2 className="h-4 w-4" />
+                                              )}
+                                              <span className="text-xs font-medium hidden sm:inline">Delete</span>
+                                            </button>
+                                          )}
+                                        </div>
                                       </td>
                                     </tr>
                                   ))}
@@ -1971,6 +2192,46 @@ export default function RidersPage() {
                             </div>
                           )}
                         </div>
+
+                        {/* Reject request sub-modal – only for users with approve/reject access */}
+                        {rejectCreditRequestModal && canApproveRejectWalletCredit && (
+                          <div className="absolute inset-0 z-10 flex items-center justify-center p-4 bg-black/40 rounded-b-xl" onClick={() => !actioningCreditRequestId && setRejectCreditRequestModal(null)}>
+                            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5 border border-gray-200" onClick={(e) => e.stopPropagation()}>
+                              <h4 className="text-base font-semibold text-gray-900 mb-2">Reject request #{rejectCreditRequestModal.id}</h4>
+                              <p className="text-sm text-gray-600 mb-3">Optional: add a note for the requester.</p>
+                              <textarea
+                                rows={3}
+                                value={rejectCreditRequestModal.reason}
+                                onChange={(e) => setRejectCreditRequestModal((m) => m ? { ...m, reason: e.target.value } : null)}
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg text-gray-900 bg-white placeholder:text-gray-500 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                placeholder="Reason for rejection (optional)"
+                              />
+                              <div className="flex gap-2 mt-4">
+                                <button
+                                  type="button"
+                                  onClick={() => setRejectCreditRequestModal(null)}
+                                  disabled={!!actioningCreditRequestId}
+                                  className="flex-1 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50 transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => rejectCreditRequestModal && handleRejectCreditRequest(rejectCreditRequestModal.id, rejectCreditRequestModal.reason)}
+                                  disabled={!!actioningCreditRequestId}
+                                  className="flex-1 px-3 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 transition-colors inline-flex items-center justify-center gap-1.5"
+                                >
+                                  {actioningCreditRequestId === rejectCreditRequestModal?.id ? (
+                                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                                  ) : (
+                                    <X className="h-4 w-4" />
+                                  )}
+                                  Reject
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -1985,6 +2246,7 @@ export default function RidersPage() {
                     onClose={() => setAddAmountFromOrder(null)}
                     onSuccess={() => {
                       setPendingCreditOrderIds((prev) => new Set(prev).add(addAmountFromOrder.orderId));
+                      if (riderId) invalidateRiderSummary(queryClient, riderId);
                       refetchCreditRequestsForRider();
                       refetchRiderSummary();
                     }}
@@ -2001,6 +2263,7 @@ export default function RidersPage() {
                     open={true}
                     onClose={() => setAddAmountManualOpen(false)}
                     onSuccess={() => {
+                      if (riderId) invalidateRiderSummary(queryClient, riderId);
                       refetchCreditRequestsForRider();
                       refetchRiderSummary();
                     }}
@@ -2128,6 +2391,15 @@ interface RecentDataSectionProps {
   showMoreFilters?: boolean;
   onToggleMoreFilters?: () => void;
   moreFiltersContent?: React.ReactNode;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  /** When provided, enable client-side pagination (slice data and show TablePagination) */
+  page?: number;
+  pageSize?: number;
+  onPageChange?: (page: number) => void;
+  onPageSizeChange?: (size: number) => void;
+  /** When provided, show Clear filters button when filters are visible */
+  onClearFilters?: () => void;
 }
 
 function RecentDataSection({
@@ -2145,26 +2417,40 @@ function RecentDataSection({
   showMoreFilters = false,
   onToggleMoreFilters,
   moreFiltersContent,
+  onRefresh,
+  refreshing = false,
+  page,
+  pageSize = 10,
+  onPageChange,
+  onPageSizeChange,
+  onClearFilters,
 }: RecentDataSectionProps) {
   const [showFilters, setShowFilters] = useState(false);
+  const total = data.length;
+  const displayData = page != null && pageSize != null ? data.slice((page - 1) * pageSize, page * pageSize) : data;
   return (
     <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
       {/* Same line: title, filter options (when open), More filters (optional), Filters button — compact and responsive */}
       <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
         <h3 className="text-md font-semibold text-gray-800 shrink-0">{title}</h3>
+        {onRefresh && (
+          <button type="button" onClick={onRefresh} disabled={refreshing} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh section"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
+        )}
         {showFilters && (
           <>
-            <select
-              value={limit}
-              onChange={(e) => onLimitChange(Number(e.target.value))}
-              className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-14 sm:w-16"
-              title="Number of records"
-            >
-              <option value={5}>5</option>
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-            </select>
+            {page == null && (
+              <select
+                value={limit}
+                onChange={(e) => onLimitChange(Number(e.target.value))}
+                className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-14 sm:w-16"
+                title="Number of records"
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
+            )}
             <input
               type="date"
               value={fromDate}
@@ -2179,6 +2465,9 @@ function RecentDataSection({
               className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]"
               title="To date"
             />
+            {onClearFilters && (
+              <button type="button" onClick={onClearFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
+            )}
             {onToggleMoreFilters != null && moreFiltersContent != null && (
               <button
                 type="button"
@@ -2215,13 +2504,31 @@ function RecentDataSection({
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
           </div>
         ) : data.length > 0 ? (
+          <>
+          {page != null && onPageChange != null && (
+            <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60 shrink-0">
+              {onPageSizeChange != null && (
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                  <select value={pageSize} onChange={(e) => { onPageSizeChange(Number(e.target.value)); onPageChange(1); }} className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500" aria-label="Rows per page">
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+              )}
+              <TablePagination page={page} pageSize={pageSize ?? 10} total={total} onPageChange={onPageChange} disabled={refreshing} ariaLabel={title} />
+            </div>
+          )}
           <div className="space-y-2 min-h-0 overflow-y-auto pr-1 flex-1">
-            {data.map((item, index) => (
+            {displayData.map((item, index) => (
               <div key={item.id || index}>
                 {renderItem(item)}
               </div>
             ))}
           </div>
+          </>
         ) : (
           <p className="text-gray-500 text-sm text-center py-4">{emptyMessage}</p>
         )}

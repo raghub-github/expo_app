@@ -163,13 +163,42 @@ export const penaltyTypeEnum = pgEnum("penalty_type", [
   "other",
 ]);
 
-// Vehicle Type Enum
+// Vehicle Type Enum (aligned with backend and 0085 migration)
 export const vehicleTypeEnum = pgEnum("vehicle_type", [
   "bike",
+  "ev_bike",
+  "cycle",
   "car",
-  "bicycle",
-  "scooter",
   "auto",
+  "cng_auto",
+  "ev_auto",
+  "taxi",
+  "e_rickshaw",
+  "ev_car",
+  "other",
+]);
+
+/** Ownership proof: ownership | rental | authorization_letter */
+export const ownershipTypeEnum = pgEnum("ownership_type", [
+  "ownership",
+  "rental",
+  "authorization_letter",
+]);
+
+/** Per-service activation: inactive | active | limited | suspended */
+export const serviceActivationStatusEnum = pgEnum("service_activation_status", [
+  "inactive",
+  "active",
+  "limited",
+  "suspended",
+]);
+
+/** Rule scope for onboarding_rule_policies */
+export const onboardingRuleScopeEnum = pgEnum("onboarding_rule_scope", [
+  "global",
+  "city",
+  "service",
+  "vehicle_type",
 ]);
 
 // Fuel Type Enum
@@ -857,6 +886,9 @@ export const riderDocuments = pgTable(
     verifierUserId: integer("verifier_user_id"),
     rejectedReason: text("rejected_reason"),
     vehicleId: integer("vehicle_id"), // Link RC document to vehicle (optional, for future use)
+    fraudFlags: jsonb("fraud_flags").default({}),
+    duplicateDocumentId: bigint("duplicate_document_id", { mode: "number" }).references((): any => riderDocuments.id, { onDelete: "set null" }),
+    requiresManualReview: boolean("requires_manual_review").notNull().default(false),
     metadata: jsonb("metadata").default({}),
     createdBy: integer("created_by"),
     updatedBy: integer("updated_by"),
@@ -1029,7 +1061,7 @@ export const riderVehicles = pgTable(
     riderId: integer("rider_id")
       .notNull()
       .references(() => riders.id, { onDelete: "cascade" }),
-    vehicleType: vehicleTypeEnum("vehicle_type").notNull(), // 'bike', 'car', 'bicycle', 'scooter', 'auto'
+    vehicleType: vehicleTypeEnum("vehicle_type").notNull(), // bike, ev_bike, cycle, car, auto, taxi, e_rickshaw, ev_car, etc.
     registrationNumber: text("registration_number").notNull(), // Official RC number - use consistently, NOT "bike_number" or "vehicle_number"
     registrationState: text("registration_state"),
     make: text("make"), // e.g., 'Honda', 'Hero'
@@ -1040,6 +1072,8 @@ export const riderVehicles = pgTable(
     vehicleCategory: vehicleCategoryEnum("vehicle_category"), // 'Auto', 'Bike', 'Cab', 'Taxi', 'Bicycle', 'Scooter'
     acType: acTypeEnum("ac_type"), // 'AC', 'Non-AC' (for person_ride)
     serviceTypes: jsonb("service_types").default([]), // Array: ['food', 'parcel', 'person_ride']
+    ownershipType: text("ownership_type"), // ownership | rental | authorization_letter
+    limitationFlags: jsonb("limitation_flags").default({}),
     isCommercial: boolean("is_commercial").default(false),
     permitExpiry: date("permit_expiry"),
     insuranceExpiry: date("insurance_expiry"),
@@ -1096,6 +1130,92 @@ export const riderAddresses = pgTable(
     riderIdIdx: index("rider_addresses_rider_id_idx").on(table.riderId),
     cityIdIdx: index("rider_addresses_city_id_idx").on(table.cityId),
     isPrimaryIdx: index("rider_addresses_is_primary_idx").on(table.riderId, table.isPrimary),
+  })
+);
+
+/**
+ * Onboarding rule policies - configurable rule engine (commercial-only cities, EV incentives, etc.)
+ */
+export const onboardingRulePolicies = pgTable(
+  "onboarding_rule_policies",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    ruleCode: text("rule_code").notNull().unique(),
+    ruleName: text("rule_name").notNull(),
+    scope: onboardingRuleScopeEnum("scope").notNull().default("global"),
+    scopeRefId: bigint("scope_ref_id", { mode: "number" }),
+    ruleType: text("rule_type").notNull(),
+    ruleConfig: jsonb("rule_config").notNull().default({}),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    isActive: boolean("is_active").notNull().default(true),
+    priority: integer("priority").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    ruleCodeIdx: uniqueIndex("onboarding_rule_policies_rule_code_idx").on(table.ruleCode),
+    isActiveIdx: index("onboarding_rule_policies_is_active_idx").on(table.isActive),
+    scopeIdx: index("onboarding_rule_policies_scope_idx").on(table.scope),
+  })
+);
+
+/**
+ * Rider service activation - per-rider per-service status; driven by Service Activation Engine
+ */
+export const riderServiceActivation = pgTable(
+  "rider_service_activation",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    serviceTypeId: bigint("service_type_id", { mode: "number" })
+      .notNull()
+      .references((): any => serviceTypes.id, { onDelete: "cascade" }),
+    status: serviceActivationStatusEnum("status").notNull().default("inactive"),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+    deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
+    vehicleId: bigint("vehicle_id", { mode: "number" }).references((): any => riderVehicles.id, { onDelete: "set null" }),
+    limitationFlags: jsonb("limitation_flags").default({}),
+    activatedByRuleId: bigint("activated_by_rule_id", { mode: "number" }).references((): any => onboardingRulePolicies.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderServiceUnique: uniqueIndex("rider_service_activation_rider_service_unique").on(table.riderId, table.serviceTypeId),
+    riderIdIdx: index("rider_service_activation_rider_id_idx").on(table.riderId),
+    serviceTypeIdIdx: index("rider_service_activation_service_type_id_idx").on(table.serviceTypeId),
+    statusIdx: index("rider_service_activation_status_idx").on(table.status),
+    vehicleIdIdx: index("rider_service_activation_vehicle_id_idx").on(table.vehicleId),
+  })
+);
+
+/**
+ * Onboarding status transitions - state machine audit log for rider onboarding
+ */
+export const onboardingStatusTransitions = pgTable(
+  "onboarding_status_transitions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id")
+      .notNull()
+      .references(() => riders.id, { onDelete: "cascade" }),
+    fromStage: text("from_stage"),
+    toStage: text("to_stage"),
+    fromKyc: text("from_kyc"),
+    toKyc: text("to_kyc"),
+    fromStatus: text("from_status"),
+    toStatus: text("to_status"),
+    triggerType: text("trigger_type").notNull(),
+    triggerRefId: bigint("trigger_ref_id", { mode: "number" }),
+    performedBySystemUserId: bigint("performed_by_system_user_id", { mode: "number" }).references((): any => systemUsers.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderIdIdx: index("onboarding_status_transitions_rider_id_idx").on(table.riderId),
+    createdAtIdx: index("onboarding_status_transitions_created_at_idx").on(table.createdAt),
+    riderCreatedIdx: index("onboarding_status_transitions_rider_created_idx").on(table.riderId, table.createdAt),
   })
 );
 

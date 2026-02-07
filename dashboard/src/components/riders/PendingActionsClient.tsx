@@ -2,11 +2,14 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
+import { invalidateRiderSummary } from "@/lib/cache-invalidation";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { TablePagination } from "./TablePagination";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 
@@ -28,6 +31,7 @@ interface RequestRow {
 }
 
 export function PendingActionsClient() {
+  const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const riderIdParam = searchParams.get("search") || searchParams.get("riderId") || "";
 
@@ -40,6 +44,9 @@ export function PendingActionsClient() {
   const [orderIdSearch, setOrderIdSearch] = useState(searchParams.get("orderId") || "");
 
   const [requests, setRequests] = useState<RequestRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<number | null>(null);
@@ -66,23 +73,35 @@ export function PendingActionsClient() {
       if (minAmount.trim()) params.set("minAmount", minAmount.trim());
       if (maxAmount.trim()) params.set("maxAmount", maxAmount.trim());
       if (orderIdSearch.trim()) params.set("orderId", orderIdSearch.trim());
-      params.set("limit", "100");
+      params.set("limit", String(pageSize));
+      params.set("offset", String((page - 1) * pageSize));
 
       const res = await fetch(`/api/wallet-credit-requests?${params.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to load requests");
       setRequests(json.data || []);
+      setTotal(json.total ?? 0);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load requests");
       setRequests([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [status, riderIdFilter, from, to, minAmount, maxAmount, orderIdSearch]);
+  }, [status, riderIdFilter, from, to, minAmount, maxAmount, orderIdSearch, page, pageSize]);
 
   useEffect(() => {
     fetchRequests();
   }, [fetchRequests]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [status, riderIdFilter, from, to, minAmount, maxAmount, orderIdSearch]);
+
+  const handlePageSizeChange = useCallback((newSize: number) => {
+    setPageSize(newSize);
+    setPage(1);
+  }, []);
 
   const handleApprove = async (id: number) => {
     setActioningId(id);
@@ -95,6 +114,8 @@ export function PendingActionsClient() {
       });
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to approve");
+      const req = requests.find((r) => r.id === id);
+      if (req) invalidateRiderSummary(queryClient, req.riderId);
       await fetchRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to approve");
@@ -115,6 +136,8 @@ export function PendingActionsClient() {
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to reject");
       setRejectModal(null);
+      const req = requests.find((r) => r.id === id);
+      if (req) invalidateRiderSummary(queryClient, req.riderId);
       await fetchRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to reject");
@@ -127,9 +150,11 @@ export function PendingActionsClient() {
     setDeletingId(id);
     setError(null);
     try {
+      const req = requests.find((r) => r.id === id);
       const res = await fetch(`/api/wallet-credit-requests/${id}/delete`, { method: "DELETE", credentials: "include" });
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to delete");
+      if (req) invalidateRiderSummary(queryClient, req.riderId);
       setRequests((prev) => prev.filter((r) => r.id !== id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete");
@@ -170,6 +195,7 @@ export function PendingActionsClient() {
   };
 
   const clearAllFilters = () => {
+    setPage(1);
     setStatus("pending");
     setRiderIdFilter("");
     setFrom("");
@@ -277,6 +303,7 @@ export function PendingActionsClient() {
             >
               Apply
             </button>
+            <button type="button" onClick={clearAllFilters} className="w-full sm:w-auto px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">Clear filters</button>
           </>
         }
       >
@@ -292,6 +319,30 @@ export function PendingActionsClient() {
                   <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                 </div>
               )}
+              <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                    className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    aria-label="Rows per page"
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+                <TablePagination
+                  page={page}
+                  pageSize={pageSize}
+                  total={total}
+                  onPageChange={setPage}
+                  disabled={loading}
+                  ariaLabel="Pending actions"
+                />
+              </div>
               <div className={`overflow-x-auto transition-opacity duration-200 ${loading && requests.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
@@ -349,22 +400,28 @@ export function PendingActionsClient() {
                             <td className="px-4 py-2 text-right">
                               {r.status === "pending" ? (
                                 <div className="flex items-center justify-end gap-1 flex-wrap">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleApprove(r.id)}
-                                    disabled={actioningId !== null}
-                                    className="px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded"
-                                  >
-                                    {actioningId === r.id ? "..." : "Approve"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setRejectModal({ id: r.id, reason: "" })}
-                                    disabled={actioningId !== null}
-                                    className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded"
-                                  >
-                                    Reject
-                                  </button>
+                                  {canApproveRejectWalletCredit ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleApprove(r.id)}
+                                        disabled={actioningId !== null}
+                                        className="px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded"
+                                      >
+                                        {actioningId === r.id ? "..." : "Approve"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setRejectModal({ id: r.id, reason: "" })}
+                                        disabled={actioningId !== null}
+                                        className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded"
+                                      >
+                                        Reject
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <span className="text-xs text-gray-500">View only</span>
+                                  )}
                                   {canDeleteRequest(r) && (
                                     <button
                                       type="button"

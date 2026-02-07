@@ -7,7 +7,9 @@ import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
+import { FilterSearchBar } from "./FilterSearchBar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { TablePagination } from "./TablePagination";
 import Link from "next/link";
 
 interface RiderInfo {
@@ -45,9 +47,13 @@ export function RiderWalletHistoryClient() {
   const [serviceType, setServiceType] = useState(searchParams.get("serviceType") || "all");
   const [from, setFrom] = useState(searchParams.get("from") || "");
   const [to, setTo] = useState(searchParams.get("to") || "");
+  const [filterSearch, setFilterSearch] = useState(searchParams.get("q") || "");
 
   const [rider, setRider] = useState<RiderInfo | null>(null);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
   const [resolveLoading, setResolveLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,18 +104,22 @@ export function RiderWalletHistoryClient() {
       if (serviceType !== "all") params.set("serviceType", serviceType);
       if (from) params.set("from", from);
       if (to) params.set("to", to);
-      params.set("limit", "50");
+      if (filterSearch.trim()) params.set("q", filterSearch.trim());
+      params.set("limit", String(pageSize));
+      params.set("offset", String((page - 1) * pageSize));
       const res = await fetch(`/api/riders/${riderId}/ledger?${params.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to load wallet history");
       setLedger(json.data?.ledger ?? []);
+      setTotal(json.data?.total ?? 0);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load wallet history");
       setLedger([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [flow, entryType, serviceType, from, to]);
+  }, [flow, entryType, serviceType, from, to, filterSearch, page, pageSize]);
 
   const riderFromContext = riderContext?.currentRiderInfo
     ? { id: riderContext.currentRiderInfo.id, name: riderContext.currentRiderInfo.name, mobile: riderContext.currentRiderInfo.mobile }
@@ -132,19 +142,30 @@ export function RiderWalletHistoryClient() {
     setServiceType(searchParams.get("serviceType") || "all");
     setFrom(searchParams.get("from") || "");
     setTo(searchParams.get("to") || "");
+    setFilterSearch(searchParams.get("q") || "");
   }, [searchParams]);
 
   useEffect(() => {
     if (rider) fetchLedger(rider.id);
   }, [rider, fetchLedger]);
 
-  const applyFilters = (overrides?: { flow?: string; entryType?: string; serviceType?: string; from?: string; to?: string }) => {
+  useEffect(() => {
+    setPage(1);
+  }, [flow, entryType, serviceType, from, to, filterSearch]);
+
+  const handlePageSizeChange = useCallback((newSize: number) => {
+    setPageSize(newSize);
+    setPage(1);
+  }, []);
+
+  const applyFilters = (overrides?: { flow?: string; entryType?: string; serviceType?: string; from?: string; to?: string; q?: string }) => {
     const o = overrides ?? {};
     const fl = o.flow ?? flow;
     const et = o.entryType ?? entryType;
     const svc = o.serviceType ?? serviceType;
     const fr = o.from ?? from;
     const t = o.to ?? to;
+    const qVal = o.q ?? filterSearch;
     const p = new URLSearchParams();
     if (searchValue) p.set("search", searchValue);
     if (fl !== "all") p.set("flow", fl);
@@ -152,6 +173,8 @@ export function RiderWalletHistoryClient() {
     if (svc !== "all") p.set("serviceType", svc);
     if (fr) p.set("from", fr);
     if (t) p.set("to", t);
+    if (qVal.trim()) p.set("q", qVal.trim());
+    setPage(1);
     router.push(`/dashboard/riders/wallet-history?${p.toString()}`);
     if (overrides) {
       setFlow(fl);
@@ -159,10 +182,12 @@ export function RiderWalletHistoryClient() {
       setServiceType(svc);
       setFrom(fr);
       setTo(t);
+      if (o.q !== undefined) setFilterSearch(o.q);
     }
   };
 
   const ledgerFilterChips: FilterChipItem[] = [];
+  if (filterSearch.trim()) ledgerFilterChips.push({ id: "q", label: `Search: "${filterSearch.trim().slice(0, 14)}${filterSearch.trim().length > 14 ? "…" : ""}"` });
   if (flow !== "all") ledgerFilterChips.push({ id: "flow", label: `Flow: ${flow === "credit" ? "Credit only" : "Debit only"}` });
   if (entryType !== "all") ledgerFilterChips.push({ id: "entryType", label: `Type: ${entryType.replace("_", " ")}` });
   if (serviceType !== "all") ledgerFilterChips.push({ id: "serviceType", label: `Service: ${serviceType.replace("_", " ")}` });
@@ -175,12 +200,16 @@ export function RiderWalletHistoryClient() {
       serviceType: id === "serviceType" ? "all" : serviceType,
       from: id === "from" ? "" : from,
       to: id === "to" ? "" : to,
+      q: id === "q" ? "" : filterSearch,
     });
   };
-  const clearAllLedgerFilters = () => applyFilters({ flow: "all", entryType: "all", serviceType: "all", from: "", to: "" });
+  const clearAllLedgerFilters = () => {
+    setPage(1);
+    applyFilters({ flow: "all", entryType: "all", serviceType: "all", from: "", to: "", q: "" });
+  };
 
   const isCredit = (t: string) =>
-    ["earning", "bonus", "refund", "referral_bonus", "penalty_reversal"].includes(t);
+    ["earning", "bonus", "refund", "referral_bonus", "penalty_reversal", "manual_add", "incentive", "surge", "failed_withdrawal_revert", "cancellation_payout"].includes(t);
 
   function actionByLabel(row: LedgerRow): string {
     const t = (row.performedByType ?? "system").toLowerCase();
@@ -213,10 +242,17 @@ export function RiderWalletHistoryClient() {
         <>
           <CollapsibleTableFilters
             label="Filters"
-            activeCount={[flow, entryType, serviceType, from, to].filter((v) => v && v !== "all").length}
+            activeCount={[filterSearch.trim(), flow, entryType, serviceType, from, to].filter((v) => v && v !== "all").length}
             filterChipsSlot={<FilterChips inline chips={ledgerFilterChips} onRemove={removeLedgerFilter} onClearAll={clearAllLedgerFilters} />}
             filterContent={
               <>
+                <FilterSearchBar
+                  value={filterSearch}
+                  onChange={setFilterSearch}
+                  placeholder="Amount, ref, description…"
+                  hint="Match amount, ref, or description"
+                  id="ledger-filter-search"
+                />
                 <div className="min-w-[100px]">
                   <label className="block text-xs font-medium text-gray-600 mb-0.5">Flow</label>
                   <select value={flow} onChange={(e) => setFlow(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500">
@@ -257,6 +293,7 @@ export function RiderWalletHistoryClient() {
                   <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <button type="button" onClick={applyFilters} className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 h-[34px]">Apply</button>
+                <button type="button" onClick={clearAllLedgerFilters} className="px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">Clear filters</button>
               </>
             }
           >
@@ -270,6 +307,30 @@ export function RiderWalletHistoryClient() {
                     <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                   </div>
                 )}
+                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                      className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      aria-label="Rows per page"
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  <TablePagination
+                    page={page}
+                    pageSize={pageSize}
+                    total={total}
+                    onPageChange={setPage}
+                    disabled={loading}
+                    ariaLabel="Wallet history"
+                  />
+                </div>
                 <div className={`overflow-x-auto transition-opacity duration-200 ${loading && ledger.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">

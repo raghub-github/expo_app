@@ -79,9 +79,12 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Penalty not found" }, { status: 404 });
     }
 
-    const serviceType = (penalty.serviceType === "food" || penalty.serviceType === "parcel" || penalty.serviceType === "person_ride"
-      ? penalty.serviceType
-      : "food") as "food" | "parcel" | "person_ride";
+    // Normalize serviceType from DB (enum may come as string or driver-specific; handle null/legacy)
+    const rawServiceType = penalty.serviceType != null ? String(penalty.serviceType).toLowerCase().trim() : "";
+    const validServiceTypes = ["food", "parcel", "person_ride"] as const;
+    const serviceType = validServiceTypes.includes(rawServiceType as any)
+      ? (rawServiceType as "food" | "parcel" | "person_ride")
+      : "food";
     const canRevert =
       userIsSuperAdmin ||
       (await canPerformRiderServiceAction(user.id, email, serviceType, "UPDATE"));
@@ -97,7 +100,6 @@ export async function POST(
     }
 
     const amount = Number(penalty.amount);
-    const serviceType = String(penalty.serviceType);
 
     await db
       .update(riderPenalties)

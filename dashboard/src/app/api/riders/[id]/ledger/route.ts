@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, walletLedger, systemUsers } from "@/lib/db/schema";
-import { eq, and, desc, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, or, desc, gte, lte, inArray, ilike, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
@@ -44,12 +44,14 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = Math.min(100, parseInt(searchParams.get("limit") || "30"));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "30", 10) || 30));
+    const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const flow = searchParams.get("flow"); // "credit" | "debit" | omit = all
     const entryType = searchParams.get("entryType"); // earning, penalty, etc. or "all"
     const serviceType = searchParams.get("serviceType"); // food, parcel, person_ride or "all"
+    const q = (searchParams.get("q") || "").trim();
 
     const conditions: any[] = [eq(walletLedger.riderId, riderId)];
     if (flow === "credit") {
@@ -65,8 +67,26 @@ export async function GET(
     }
     if (from) conditions.push(gte(walletLedger.createdAt, new Date(from + "T00:00:00.000Z")));
     if (to) conditions.push(lte(walletLedger.createdAt, new Date(to + "T23:59:59.999Z")));
+    if (q) {
+      const term = `%${q.replace(/%/g, "\\%")}%`;
+      const textMatch = or(
+        ilike(walletLedger.ref, term),
+        ilike(walletLedger.description, term)
+      ) as any;
+      const num = parseFloat(q);
+      const isNumeric = !Number.isNaN(num) && /^-?\d+(\.\d+)?$/.test(q.trim());
+      if (isNumeric) {
+        conditions.push(or(eq(walletLedger.amount, q), textMatch) as any);
+      } else {
+        conditions.push(textMatch);
+      }
+    }
 
     const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(walletLedger)
+      .where(whereClause);
     const rows = await db
       .select({
         id: walletLedger.id,
@@ -89,7 +109,8 @@ export async function GET(
       .leftJoin(systemUsers, eq(walletLedger.performedById, systemUsers.id))
       .where(whereClause)
       .orderBy(desc(walletLedger.createdAt))
-      .limit(Number.isNaN(limit) ? 30 : limit);
+      .limit(Number.isNaN(limit) ? 30 : limit)
+      .offset(offset);
 
     const ledger = rows.map((r) => {
       const meta = r.metadata as { orderId?: number } | null | undefined;
@@ -119,7 +140,7 @@ export async function GET(
       };
     });
 
-    return NextResponse.json({ success: true, data: { ledger } });
+    return NextResponse.json({ success: true, data: { ledger, total: Number(total) ?? 0 } });
   } catch (error) {
     console.error("[GET /api/riders/[id]/ledger] Error:", error);
     return NextResponse.json(

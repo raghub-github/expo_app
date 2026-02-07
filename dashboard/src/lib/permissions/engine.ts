@@ -27,6 +27,7 @@ import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
 import { getSystemUserByEmail, getSystemUserByAuthId, isUserAccountActive } from "../auth/user-mapping";
 import { dashboardAccess, dashboardAccessPoints, type DashboardType, type AccessPointGroup, type ActionType } from "../db/schema";
 import { getDashboardTypeFromPath } from "./path-mapping";
+import { supabaseAdmin } from "../supabase/server";
 
 // Type definitions - these should match your database schema
 export type AccessModule = 
@@ -245,10 +246,21 @@ export async function getUserPermissions(
       return cached.data;
     }
     
-    // 1. Get system user (this already calls getSystemUserByEmail)
-    const systemUser = await getSystemUserByEmail(email || null);
+    // 1. Get system user by email
+    let systemUser = await getSystemUserByEmail(email || null);
+    if (!systemUser && supabaseAuthId && supabaseAdmin) {
+      // Fallback: resolve email from Supabase Auth by auth id (e.g. when session email was missing)
+      try {
+        const { data: { user: authUser } } = await supabaseAdmin.auth.admin.getUserById(supabaseAuthId);
+        const resolvedEmail = authUser?.email;
+        if (resolvedEmail?.trim()) {
+          systemUser = await getSystemUserByEmail(resolvedEmail.trim());
+        }
+      } catch {
+        // Ignore; systemUser stays null
+      }
+    }
     if (!systemUser) {
-      // User doesn't exist in system_users - might be customer/rider/merchant
       permissionsCache.set(cacheKey, { data: null, timestamp: now });
       return null;
     }

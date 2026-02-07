@@ -63,6 +63,8 @@ export function useRiderSummaryQuery(
     queryFn: () => fetchRiderSummary(riderId!, params),
     enabled: riderId != null && riderId > 0,
     ...cacheConfig,
+    // Refetch when mounting so invalidated cache (e.g. after penalty/revert on another route) updates UI
+    refetchOnMount: true,
     // Keep previous summary visible while refetching (filters/rider change) for smooth UX
     placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {

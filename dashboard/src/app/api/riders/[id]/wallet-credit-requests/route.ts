@@ -32,12 +32,12 @@ export async function POST(
       return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
     }
 
+    // Any agent with RIDER dashboard access (view or full) can request add amount
     const canCreate =
       (await isSuperAdmin(session.user.id, session.user.email!)) ||
-      ((await hasDashboardAccess(systemUserId, "RIDER")) &&
-        (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "CREATE")));
+      (await hasDashboardAccess(systemUserId, "RIDER"));
     if (!canCreate) {
-      return NextResponse.json({ success: false, error: "Insufficient permissions. CREATE on RIDER_WALLET_CREDITS required." }, { status: 403 });
+      return NextResponse.json({ success: false, error: "Insufficient permissions. RIDER dashboard access required." }, { status: 403 });
     }
 
     const { id } = await params;

@@ -43,10 +43,10 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
     return null;
   }
 
-  // Keep selected rider across rider dashboard sub-routes
+  // Keep selected rider across rider dashboard sub-routes (use GMR{id} so URL is stable and refresh restores)
   const isRiderDashboard = cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
   const selectedRiderSearch = (searchParams.get("search") || "").trim();
-  const selectedRiderId = selectedRiderSearch || (riderCtx?.currentRiderId != null ? String(riderCtx.currentRiderId) : "");
+  const selectedRiderId = selectedRiderSearch || (riderCtx?.currentRiderId != null ? `GMR${riderCtx.currentRiderId}` : "");
   const appendRiderSearch = (href: string) => {
     if (!isRiderDashboard) return href;
     if (!selectedRiderId) return href;

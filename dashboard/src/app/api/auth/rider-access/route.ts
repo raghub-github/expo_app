@@ -43,6 +43,7 @@ export async function GET() {
           hasRiderAccess: false,
           isSuperAdmin: false,
           canAddPenalty: { food: false, parcel: false, person_ride: false },
+          canRevertPenalty: { food: false, parcel: false, person_ride: false },
           canBlock: { food: false, parcel: false, person_ride: false },
           canUnblock: { food: false, parcel: false, person_ride: false },
           canFreezeWallet: false,
@@ -56,6 +57,7 @@ export async function GET() {
     const hasRiderAccess = await hasDashboardAccess(systemUserId, "RIDER");
 
     const canAddPenalty = { food: false, parcel: false, person_ride: false };
+    const canRevertPenalty = { food: false, parcel: false, person_ride: false };
     const canBlock = { food: false, parcel: false, person_ride: false };
     const canUnblock = { food: false, parcel: false, person_ride: false };
 
@@ -63,10 +65,13 @@ export async function GET() {
       for (const svc of SERVICES) {
         if (superAdmin) {
           canAddPenalty[svc] = true;
+          canRevertPenalty[svc] = true;
           canBlock[svc] = true;
           canUnblock[svc] = true;
         } else {
-          canAddPenalty[svc] = await canPerformRiderServiceAction(authId, email, svc, "UPDATE");
+          // All agents with rider access (including view-only) can add penalty and add amount
+          canAddPenalty[svc] = true;
+          canRevertPenalty[svc] = await canPerformRiderServiceAction(authId, email, svc, "UPDATE");
           canBlock[svc] = await canPerformRiderServiceAction(authId, email, svc, "BLOCK");
           canUnblock[svc] = await canPerformRiderServiceAction(authId, email, svc, "UNBLOCK");
         }
@@ -76,9 +81,8 @@ export async function GET() {
     const canFreezeWallet =
       superAdmin || (hasRiderAccess && (await canPerformRiderActionAnyService(authId, email, "UPDATE")));
 
-    const canRequestWalletCredit =
-      superAdmin ||
-      (hasRiderAccess && (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "CREATE")));
+    // Any agent with rider access (view or full) can request wallet credit (add amount)
+    const canRequestWalletCredit = !!hasRiderAccess || superAdmin;
 
     const canApproveRejectWalletCredit =
       superAdmin ||
@@ -92,6 +96,7 @@ export async function GET() {
         hasRiderAccess: !!hasRiderAccess || superAdmin,
         isSuperAdmin: superAdmin,
         canAddPenalty,
+        canRevertPenalty,
         canBlock,
         canUnblock,
         canFreezeWallet,

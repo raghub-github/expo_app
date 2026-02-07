@@ -6,8 +6,7 @@ import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { UserPlus, Hash, User } from "lucide-react";
-import Link from "next/link";
+import { UserPlus, Hash, User, Copy, Check } from "lucide-react";
 
 interface RiderInfo {
   id: number;
@@ -37,6 +36,19 @@ export function RiderReferralsClient() {
   const [resolveLoading, setResolveLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [referredByCopied, setReferredByCopied] = useState(false);
+
+  const copyReferredById = useCallback(async () => {
+    if (referredBy == null) return;
+    const id = `GMR${referredBy}`;
+    try {
+      await navigator.clipboard.writeText(id);
+      setReferredByCopied(true);
+      setTimeout(() => setReferredByCopied(false), 2000);
+    } catch {
+      setError("Failed to copy to clipboard");
+    }
+  }, [referredBy]);
 
   const resolveRider = useCallback(async (value: string) => {
     if (!value.trim()) {
@@ -163,14 +175,28 @@ export function RiderReferralsClient() {
                   </div>
                   <p className="text-lg font-bold text-gray-900">
                     {referredBy != null ? (
-                      <Link href={`/dashboard/riders?search=${referredBy}`} className="text-blue-600 hover:underline">
-                        GMR{referredBy}
-                      </Link>
+                      <button
+                        type="button"
+                        onClick={copyReferredById}
+                        className="inline-flex items-center gap-2 rounded-lg px-2 py-1 -ml-2 text-blue-600 hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 transition-colors"
+                        aria-label={`Copy referrer ID GMR${referredBy}`}
+                        title="Copy ID"
+                      >
+                        <span className="font-mono">GMR{referredBy}</span>
+                        {referredByCopied ? (
+                          <Check className="h-4 w-4 text-green-600 shrink-0" aria-hidden />
+                        ) : (
+                          <Copy className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+                        )}
+                        {referredByCopied && (
+                          <span className="text-xs font-medium text-green-600 animate-in fade-in">Copied!</span>
+                        )}
+                      </button>
                     ) : (
                       "—"
                     )}
                   </p>
-                  <p className="text-xs text-gray-500 mt-1">Rider ID of the referrer, if any.</p>
+                  <p className="text-xs text-gray-500 mt-1">Rider ID of the referrer. Click to copy.</p>
                 </div>
               </div>
               <p className="text-xs text-gray-500 mt-4">Referral history and list of referred riders can be expanded when data is available.</p>

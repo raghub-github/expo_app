@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, riderPenalties, riderWallet, walletLedger, systemUsers } from "@/lib/db/schema";
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { canPerformRiderServiceAction } from "@/lib/permissions/actions";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { syncNegativeWalletBlocks } from "@/lib/rider-negative-wallet-blocks";
@@ -45,17 +44,11 @@ export async function POST(
 
     const amount = Number(body.amount);
     const reason = String(body.reason || "").trim();
-    const serviceType = (body.serviceType || "food") as "food" | "parcel" | "person_ride";
+    const rawServiceType = String(body.serviceType || "food").toLowerCase().trim();
+    const serviceType = (["food", "parcel", "person_ride"].includes(rawServiceType)
+      ? rawServiceType
+      : "food") as "food" | "parcel" | "person_ride";
 
-    const canAddPenalty =
-      userIsSuperAdmin ||
-      (await canPerformRiderServiceAction(session.user.id, session.user.email!, serviceType, "UPDATE"));
-    if (!canAddPenalty) {
-      return NextResponse.json(
-        { success: false, error: "Insufficient permissions. Rider action (penalty) access required for this service." },
-        { status: 403 }
-      );
-    }
     const penaltyType = (body.penaltyType || "other") as string;
     const orderId = body.orderId != null ? Number(body.orderId) : null;
 
@@ -191,24 +184,18 @@ export async function GET(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    const hasRiderAccess = await hasDashboardAccessByAuth(
-      session.user.id,
-      session.user.email!,
-      "RIDER"
-    );
+    const email = user.email ?? "";
+    const userIsSuperAdmin = await isSuperAdmin(user.id, email);
+    const hasRiderAccess = await hasDashboardAccessByAuth(user.id, email, "RIDER");
 
     if (!userIsSuperAdmin && !hasRiderAccess) {
       return NextResponse.json(
@@ -246,11 +233,13 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get("limit") || "20");
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "20", 10) || 20));
+    const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const serviceType = searchParams.get("serviceType"); // food / parcel / person_ride
     const status = searchParams.get("status"); // active / reversed / paid / etc.
+    const q = (searchParams.get("q") || "").trim();
 
     const conditions: any[] = [eq(riderPenalties.riderId, riderId)];
 
@@ -269,8 +258,20 @@ export async function GET(
       conditions.push(lte(riderPenalties.imposedAt, new Date(to)));
     }
 
+    if (q) {
+      const num = parseInt(q, 10);
+      if (!Number.isNaN(num) && String(num) === q) {
+        conditions.push(or(eq(riderPenalties.id, num), eq(riderPenalties.orderId, num)) as any);
+      }
+    }
+
     const whereClause =
       conditions.length > 1 ? and(...conditions) : conditions[0];
+
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(riderPenalties)
+      .where(whereClause);
 
     const imposedByUser = alias(systemUsers, "imposed_by_user");
     const reversedByUser = alias(systemUsers, "reversed_by_user");
@@ -288,7 +289,8 @@ export async function GET(
       .leftJoin(reversedByUser, eq(riderPenalties.reversedBy, reversedByUser.id))
       .where(whereClause)
       .orderBy(desc(riderPenalties.imposedAt))
-      .limit(Number.isNaN(limit) ? 20 : limit);
+      .limit(Number.isNaN(limit) ? 20 : limit)
+      .offset(offset);
 
     const penalties = penaltyRows.map((row) => ({
       ...row.penalty,
@@ -304,6 +306,7 @@ export async function GET(
       success: true,
       data: {
         penalties,
+        total: Number(total) ?? 0,
       },
     });
   } catch (error) {

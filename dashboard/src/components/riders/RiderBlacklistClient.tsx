@@ -7,7 +7,7 @@ import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
-import { ShieldCheck, ShieldOff, Clock } from "lucide-react";
+import { ShieldCheck, ShieldOff, Clock, Filter, ListFilter } from "lucide-react";
 
 interface RiderInfo {
   id: number;
@@ -78,6 +78,12 @@ export function RiderBlacklistClient() {
   const [blacklistError, setBlacklistError] = useState<string | null>(null);
   const [blacklistSubmitting, setBlacklistSubmitting] = useState(false);
   const [blacklistLoadingService, setBlacklistLoadingService] = useState<string | null>(null);
+
+  type ActionFilter = "all" | "blacklist" | "whitelist";
+  type ServiceFilter = "all" | "food" | "parcel" | "person_ride" | "all_services";
+  const [historyActionFilter, setHistoryActionFilter] = useState<ActionFilter>("all");
+  const [historyServiceFilter, setHistoryServiceFilter] = useState<ServiceFilter>("all");
+  const [historyFiltersOpen, setHistoryFiltersOpen] = useState(false);
 
   const { data: riderAccess } = useRiderAccessQuery();
   const canActForService = (s: "food" | "parcel" | "person_ride" | "all", action: "block" | "unblock") => {
@@ -212,6 +218,22 @@ export function RiderBlacklistClient() {
 
   const hasSearch = searchValue.length > 0;
 
+  const blacklistHistory = summary?.blacklistHistory ?? [];
+  const totalBlacklistCount = blacklistHistory.filter((h) => h.banned).length;
+  const totalWhitelistCount = blacklistHistory.filter((h) => !h.banned).length;
+
+  const filteredHistory = blacklistHistory.filter((h) => {
+    if (historyActionFilter !== "all") {
+      if (historyActionFilter === "blacklist" && !h.banned) return false;
+      if (historyActionFilter === "whitelist" && h.banned) return false;
+    }
+    if (historyServiceFilter !== "all") {
+      const svc = h.serviceType === "all" ? "all_services" : h.serviceType;
+      if (svc !== historyServiceFilter) return false;
+    }
+    return true;
+  });
+
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <RiderSectionHeader
@@ -324,41 +346,105 @@ export function RiderBlacklistClient() {
             )}
           </div>
 
-          {/* Blacklist history table: who did what and when */}
-          {summary?.blacklistHistory && summary.blacklistHistory.length > 0 && (
-            <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5 mt-6">
-              <h2 className="text-lg font-bold text-gray-800 mb-3">Blacklist / Whitelist History</h2>
-              <p className="text-sm text-gray-500 mb-4">Recent actions with performer and reason.</p>
-              <div className="overflow-x-auto">
+          {/* Blacklist / Whitelist History: counts, filters, table */}
+          <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5 mt-6">
+            <div className="flex flex-col gap-4 sm:gap-0 sm:flex-row sm:items-start sm:justify-between sm:flex-wrap">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-gray-800">Blacklist / Whitelist History</h2>
+                <p className="text-sm text-gray-500 mt-0.5">Recent actions with performer and reason.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-shrink-0">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1.5 text-sm font-semibold text-red-700 ring-1 ring-red-200/80">
+                  <ShieldOff className="h-4 w-4" aria-hidden />
+                  Blacklist: {totalBlacklistCount}
+                </span>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200/80">
+                  <ShieldCheck className="h-4 w-4" aria-hidden />
+                  Whitelist: {totalWhitelistCount}
+                </span>
+              </div>
+            </div>
+
+            {/* Filters: responsive — inline on md+, collapsible on small */}
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setHistoryFiltersOpen((o) => !o)}
+                className="flex md:hidden items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+              >
+                <Filter className="h-4 w-4" />
+                Filters {historyFiltersOpen ? "▲" : "▼"}
+              </button>
+              <div
+                className={`grid gap-4 ${historyFiltersOpen ? "grid-cols-1 mt-2" : "hidden md:grid"} md:grid-cols-[auto_1fr] md:items-center md:gap-4`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <ListFilter className="h-4 w-4 text-gray-500 hidden md:block" aria-hidden />
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Action</label>
+                  <select
+                    value={historyActionFilter}
+                    onChange={(e) => setHistoryActionFilter(e.target.value as ActionFilter)}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[120px]"
+                  >
+                    <option value="all">All</option>
+                    <option value="blacklist">Blacklist</option>
+                    <option value="whitelist">Whitelist</option>
+                  </select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Service</label>
+                  <select
+                    value={historyServiceFilter}
+                    onChange={(e) => setHistoryServiceFilter(e.target.value as ServiceFilter)}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[140px]"
+                  >
+                    <option value="all">All</option>
+                    <option value="food">Food</option>
+                    <option value="parcel">Parcel</option>
+                    <option value="person_ride">Person Ride</option>
+                    <option value="all_services">All Services</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-x-auto -mx-4 sm:mx-0 sm:rounded-lg ring-1 ring-gray-200 rounded-lg">
+              {filteredHistory.length > 0 ? (
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Service</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Action</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Reason</th>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Performed by</th>
+                      <th className="px-3 sm:px-4 py-2.5 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Date</th>
+                      <th className="px-3 sm:px-4 py-2.5 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Service</th>
+                      <th className="px-3 sm:px-4 py-2.5 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Action</th>
+                      <th className="px-3 sm:px-4 py-2.5 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Reason</th>
+                      <th className="px-3 sm:px-4 py-2.5 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Performed by</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {summary.blacklistHistory.map((h) => (
-                      <tr key={h.id}>
-                        <td className="px-4 py-2 text-sm text-gray-800">{new Date(h.createdAt).toLocaleString()}</td>
-                        <td className="px-4 py-2 text-sm text-gray-900">{h.serviceType.replace("_", " ")}</td>
-                        <td className="px-4 py-2 text-sm">
+                    {filteredHistory.map((h) => (
+                      <tr key={h.id} className="hover:bg-gray-50/50">
+                        <td className="px-3 sm:px-4 py-2.5 text-sm text-gray-800 whitespace-nowrap">{new Date(h.createdAt).toLocaleString()}</td>
+                        <td className="px-3 sm:px-4 py-2.5 text-sm text-gray-900">{h.serviceType.replace("_", " ")}</td>
+                        <td className="px-3 sm:px-4 py-2.5 text-sm">
                           <span className={h.banned ? "text-red-600 font-medium" : "text-emerald-600 font-medium"}>{h.banned ? "Blacklist" : "Whitelist"}</span>
                         </td>
-                        <td className="px-4 py-2 text-sm text-gray-900 max-w-[200px] truncate" title={h.reason}>{h.reason}</td>
-                        <td className="px-4 py-2 text-sm text-gray-800">
+                        <td className="px-3 sm:px-4 py-2.5 text-sm text-gray-900 max-w-[180px] sm:max-w-[200px] truncate" title={h.reason}>{h.reason}</td>
+                        <td className="px-3 sm:px-4 py-2.5 text-sm text-gray-800">
                           {h.source === "agent" && (h.actorEmail || h.actorName) ? (h.actorName ? `${h.actorName} (${h.actorEmail ?? "—"})` : (h.actorEmail ?? "Agent")) : h.source === "system" ? "System" : "Automated"}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
+              ) : (
+                <div className="py-12 text-center text-sm text-gray-500 bg-gray-50/50">
+                  {blacklistHistory.length === 0
+                    ? "No blacklist or whitelist history yet for this rider."
+                    : "No entries match the current filters."}
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </>
       )}
 

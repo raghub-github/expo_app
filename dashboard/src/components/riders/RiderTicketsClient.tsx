@@ -7,7 +7,9 @@ import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
+import { FilterSearchBar } from "./FilterSearchBar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { TablePagination } from "./TablePagination";
 import Link from "next/link";
 
 interface RiderInfo {
@@ -49,9 +51,13 @@ export function RiderTicketsClient() {
   const [status, setStatus] = useState(searchParams.get("status") || "all");
   const [from, setFrom] = useState(searchParams.get("from") || "");
   const [to, setTo] = useState(searchParams.get("to") || "");
+  const [filterSearch, setFilterSearch] = useState(searchParams.get("q") || "");
 
   const [rider, setRider] = useState<RiderInfo | null>(null);
   const [tickets, setTickets] = useState<TicketRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
   const [resolveLoading, setResolveLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,24 +108,29 @@ export function RiderTicketsClient() {
       if (status !== "all") params.set("status", status);
       if (from) params.set("from", from);
       if (to) params.set("to", to);
-      params.set("limit", "50");
+      if (filterSearch.trim()) params.set("q", filterSearch.trim());
+      params.set("limit", String(pageSize));
+      params.set("offset", String((page - 1) * pageSize));
       const res = await fetch(`/api/riders/${riderId}/tickets?${params.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to load tickets");
       setTickets(json.data?.tickets ?? []);
+      setTotal(json.data?.total ?? 0);
     } catch (err: any) {
       setError(err?.message || "Failed to load tickets");
       setTickets([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [orderRelated, category, status, from, to]);
+  }, [orderRelated, category, status, from, to, filterSearch, page, pageSize]);
 
   const riderFromContext = riderContext?.currentRiderInfo
     ? { id: riderContext.currentRiderInfo.id, name: riderContext.currentRiderInfo.name, mobile: riderContext.currentRiderInfo.mobile }
     : null;
 
   useEffect(() => setSearchInput(searchValue), [searchValue]);
+  useEffect(() => setFilterSearch(searchParams.get("q") || ""), [searchParams.get("q")]);
   useEffect(() => {
     if (searchValue) resolveRider(searchValue);
     else if (riderFromContext) {
@@ -135,7 +146,17 @@ export function RiderTicketsClient() {
     if (rider) fetchTickets(rider.id);
   }, [rider, fetchTickets]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [orderRelated, category, status, from, to, filterSearch]);
+
+  const handlePageSizeChange = useCallback((newSize: number) => {
+    setPageSize(newSize);
+    setPage(1);
+  }, []);
+
   const applyFilters = () => {
+    setPage(1);
     const p = new URLSearchParams();
     if (searchValue) p.set("search", searchValue);
     if (orderRelated !== "all") p.set("orderRelated", orderRelated);
@@ -143,12 +164,14 @@ export function RiderTicketsClient() {
     if (status !== "all") p.set("status", status);
     if (from) p.set("from", from);
     if (to) p.set("to", to);
+    if (filterSearch.trim()) p.set("q", filterSearch.trim());
     router.push(`/dashboard/riders/tickets?${p.toString()}`);
   };
 
   const hasSearch = searchValue.length > 0;
 
   const ticketFilterChips: FilterChipItem[] = [];
+  if (filterSearch.trim()) ticketFilterChips.push({ key: "q", label: `Search: "${filterSearch.trim().slice(0, 20)}${filterSearch.trim().length > 20 ? "…" : ""}"` });
   if (orderRelated !== "all") ticketFilterChips.push({ key: "orderRelated", label: `Order: ${orderRelated === "yes" ? "Related" : "Non-order"}` });
   if (category !== "all") ticketFilterChips.push({ key: "category", label: `Category: ${category}` });
   if (status !== "all") ticketFilterChips.push({ key: "status", label: `Status: ${status}` });
@@ -156,7 +179,8 @@ export function RiderTicketsClient() {
   if (to) ticketFilterChips.push({ key: "to", label: `To: ${to}` });
 
   const removeTicketFilter = (key: string) => {
-    if (key === "orderRelated") setOrderRelated("all");
+    if (key === "q") setFilterSearch("");
+    else if (key === "orderRelated") setOrderRelated("all");
     else if (key === "category") setCategory("all");
     else if (key === "status") setStatus("all");
     else if (key === "from") setFrom("");
@@ -164,6 +188,8 @@ export function RiderTicketsClient() {
   };
 
   const clearAllTicketFilters = () => {
+    setPage(1);
+    setFilterSearch("");
     setOrderRelated("all");
     setCategory("all");
     setStatus("all");
@@ -185,10 +211,17 @@ export function RiderTicketsClient() {
         <>
           <CollapsibleTableFilters
             label="Filters"
-            activeCount={[orderRelated, category, status, from, to].filter((v) => v && v !== "all").length}
+            activeCount={[filterSearch.trim(), orderRelated, category, status, from, to].filter((v) => v && v !== "all").length}
             filterChipsSlot={ticketFilterChips.length > 0 ? <FilterChips inline chips={ticketFilterChips} onRemove={removeTicketFilter} onClearAll={clearAllTicketFilters} /> : null}
             filterContent={
               <>
+                <FilterSearchBar
+                  value={filterSearch}
+                  onChange={setFilterSearch}
+                  placeholder="Ticket ID, Order ID, title…"
+                  hint="Match ticket ID, order ID, or title/message"
+                  id="tickets-filter-search"
+                />
                 <div className="min-w-[110px]">
                   <label className="block text-xs font-medium text-gray-600 mb-0.5">Order</label>
                   <select value={orderRelated} onChange={(e) => setOrderRelated(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
@@ -229,6 +262,7 @@ export function RiderTicketsClient() {
                   <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <button type="button" onClick={applyFilters} className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors h-[34px]">Apply</button>
+                <button type="button" onClick={clearAllTicketFilters} className="px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">Clear filters</button>
               </>
             }
           >
@@ -242,6 +276,30 @@ export function RiderTicketsClient() {
                     <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                   </div>
                 )}
+                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                      className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      aria-label="Rows per page"
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  <TablePagination
+                    page={page}
+                    pageSize={pageSize}
+                    total={total}
+                    onPageChange={setPage}
+                    disabled={loading}
+                    ariaLabel="Tickets"
+                  />
+                </div>
                 <div className={`overflow-x-auto transition-opacity duration-200 rounded-lg border border-gray-200 ${loading && tickets.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
                 <table className="min-w-full divide-y divide-gray-200 text-sm">
                   <thead className="bg-gray-50 sticky top-0 z-10">

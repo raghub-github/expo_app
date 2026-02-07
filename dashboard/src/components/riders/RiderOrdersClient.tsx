@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { RiderSectionHeader } from "./RiderSectionHeader";
 import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
+import { FilterSearchBar } from "./FilterSearchBar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { TablePagination } from "./TablePagination";
 import { AddAmountModal } from "./AddAmountModal";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 import Link from "next/link";
@@ -39,9 +42,13 @@ export function RiderOrdersClient() {
   const [status, setStatus] = useState(searchParams.get("status") || "all");
   const [from, setFrom] = useState(searchParams.get("from") || "");
   const [to, setTo] = useState(searchParams.get("to") || "");
+  const [filterSearch, setFilterSearch] = useState(searchParams.get("orderId") || searchParams.get("q") || "");
 
   const [rider, setRider] = useState<RiderInfo | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(false);
   const [resolveLoading, setResolveLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,21 +63,25 @@ export function RiderOrdersClient() {
 
   const orderFilterChips: FilterChipItem[] = useMemo(() => {
     const chips: FilterChipItem[] = [];
+    if (filterSearch.trim()) chips.push({ key: "q", label: `Order ID: ${filterSearch.trim()}` });
     if (orderType && orderType !== "all") chips.push({ key: "orderType", label: `Service: ${orderType.replace("_", " ")}` });
     if (status && status !== "all") chips.push({ key: "status", label: `Status: ${status.replace("_", " ")}` });
     if (from) chips.push({ key: "from", label: `From: ${from}` });
     if (to) chips.push({ key: "to", label: `To: ${to}` });
     return chips;
-  }, [orderType, status, from, to]);
+  }, [filterSearch, orderType, status, from, to]);
 
   const removeOrderFilter = useCallback((key: string) => {
-    if (key === "orderType") setOrderType("all");
+    if (key === "q") setFilterSearch("");
+    else if (key === "orderType") setOrderType("all");
     else if (key === "status") setStatus("all");
     else if (key === "from") setFrom("");
     else if (key === "to") setTo("");
   }, []);
 
   const clearAllOrderFilters = useCallback(() => {
+    setPage(1);
+    setFilterSearch("");
     setOrderType("all");
     setStatus("all");
     setFrom("");
@@ -117,28 +128,33 @@ export function RiderOrdersClient() {
     setError(null);
     try {
       const params = new URLSearchParams();
+      if (filterSearch.trim()) params.set("q", filterSearch.trim());
       if (orderType !== "all") params.set("orderType", orderType);
       if (status !== "all") params.set("status", status);
       if (from) params.set("from", from);
       if (to) params.set("to", to);
-      params.set("limit", "50");
+      params.set("limit", String(pageSize));
+      params.set("offset", String((page - 1) * pageSize));
       const res = await fetch(`/api/riders/${riderId}/orders?${params.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to load orders");
       setOrders(json.data?.orders ?? []);
+      setTotal(json.data?.total ?? 0);
     } catch (err: any) {
       setError(err?.message || "Failed to load orders");
       setOrders([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [orderType, status, from, to]);
+  }, [filterSearch, orderType, status, from, to, page, pageSize]);
 
   const riderFromContext = riderContext?.currentRiderInfo
     ? { id: riderContext.currentRiderInfo.id, name: riderContext.currentRiderInfo.name, mobile: riderContext.currentRiderInfo.mobile }
     : null;
 
   useEffect(() => setSearchInput(searchValue), [searchValue]);
+  useEffect(() => setFilterSearch(searchParams.get("orderId") || searchParams.get("q") || ""), [searchParams.get("orderId"), searchParams.get("q")]);
   useEffect(() => {
     if (searchValue) resolveRider(searchValue);
     else if (riderFromContext) {
@@ -153,6 +169,15 @@ export function RiderOrdersClient() {
   useEffect(() => {
     if (rider) fetchOrders(rider.id);
   }, [rider, fetchOrders]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filterSearch, orderType, status, from, to]);
+
+  const handlePageSizeChange = useCallback((newSize: number) => {
+    setPageSize(newSize);
+    setPage(1);
+  }, []);
 
   const fetchPendingCreditOrderIds = useCallback(async (riderId: number) => {
     try {
@@ -213,15 +238,17 @@ export function RiderOrdersClient() {
   );
 
   const applyFilters = useCallback(() => {
+    setPage(1);
     const p = new URLSearchParams();
     if (searchValue) p.set("search", searchValue);
+    if (filterSearch.trim()) p.set("orderId", filterSearch.trim());
     if (orderType !== "all") p.set("orderType", orderType);
     if (status !== "all") p.set("status", status);
     if (from) p.set("from", from);
     if (to) p.set("to", to);
     router.push(`/dashboard/riders/orders?${p.toString()}`);
     if (rider) fetchOrders(rider.id);
-  }, [searchValue, orderType, status, from, to, rider, router, fetchOrders]);
+  }, [searchValue, filterSearch, orderType, status, from, to, rider, router, fetchOrders]);
 
   const handleAddPenaltyFromOrder = useCallback(
     async (e: React.FormEvent) => {
@@ -291,10 +318,17 @@ export function RiderOrdersClient() {
         <>
           <CollapsibleTableFilters
             label="Filters"
-            activeCount={[orderType, status, from, to].filter((v) => v && v !== "all").length}
+            activeCount={[filterSearch.trim(), orderType, status, from, to].filter((v) => v && v !== "all").length}
             filterChipsSlot={orderFilterChips.length > 0 ? <FilterChips inline chips={orderFilterChips} onRemove={removeOrderFilter} onClearAll={clearAllOrderFilters} /> : null}
             filterContent={
               <>
+                <FilterSearchBar
+                  value={filterSearch}
+                  onChange={setFilterSearch}
+                  placeholder="Order ID"
+                  hint="Filter by order ID"
+                  id="orders-filter-search"
+                />
                 <div className="min-w-[100px]">
                   <label className="block text-xs font-medium text-gray-600 mb-0.5">Service</label>
                   <select value={orderType} onChange={(e) => setOrderType(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
@@ -329,6 +363,9 @@ export function RiderOrdersClient() {
                 <button type="button" onClick={applyFilters} className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors h-[34px]">
                   Apply
                 </button>
+                <button type="button" onClick={clearAllOrderFilters} className="px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">
+                  Clear filters
+                </button>
               </>
             }
           >
@@ -342,6 +379,30 @@ export function RiderOrdersClient() {
                     <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
                   </div>
                 )}
+                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                      className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      aria-label="Rows per page"
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  <TablePagination
+                    page={page}
+                    pageSize={pageSize}
+                    total={total}
+                    onPageChange={setPage}
+                    disabled={loading}
+                    ariaLabel="Orders"
+                  />
+                </div>
                 <div className={`transition-opacity duration-200 ${loading && orders.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
                   {/* Card layout for small screens */}
                   <div className="block md:hidden space-y-3">
@@ -541,6 +602,8 @@ export function RiderOrdersClient() {
   );
 }
 
+const DROPDOWN_MIN_WIDTH = 180;
+
 function OrderRowMenu({
   orderId,
   orderType,
@@ -560,43 +623,86 @@ function OrderRowMenu({
   showAddPenalty?: boolean;
   addAmountPending?: boolean;
 }) {
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number } | null>(null);
+
   const showPenalty = showAddPenalty !== false;
+
+  useEffect(() => {
+    if (!isOpen) {
+      setDropdownStyle(null);
+      return;
+    }
+    if (typeof document === "undefined") return;
+    const el = triggerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const left = Math.min(rect.right - DROPDOWN_MIN_WIDTH, window.innerWidth - DROPDOWN_MIN_WIDTH - 8);
+    setDropdownStyle({
+      top: rect.bottom + 4,
+      left: Math.max(8, left),
+    });
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const close = () => onToggle();
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [isOpen, onToggle]);
+
   return (
-    <div className="relative inline-block" data-order-menu>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="p-1 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700"
-        aria-label="Order actions"
-      >
-        <MoreVertical className="h-4 w-4" />
-      </button>
-      {isOpen && (
-        <div className="absolute right-0 top-full mt-1 z-[100] min-w-[160px] rounded-lg border border-gray-200 bg-white shadow-lg py-1 ring-1 ring-gray-900/5">
-          {addAmountPending ? (
-            <div className="px-3 py-2 text-sm text-amber-700 bg-amber-50 border-b border-amber-100" title="An add amount request is already pending for this order">
-              Add amount — request pending
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => { onAddAmount(); }}
-              className="w-full px-3 py-2 text-left text-sm text-blue-700 hover:bg-blue-50"
-            >
-              Add amount
-            </button>
-          )}
-          {showPenalty && (
-            <button
-              type="button"
-              onClick={() => { onAddPenalty(); }}
-              className="w-full px-3 py-2 text-left text-sm text-amber-700 hover:bg-amber-50"
-            >
-              Add penalty
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+    <>
+      <div ref={triggerRef} className="relative inline-block" data-order-menu>
+        <button
+          type="button"
+          onClick={onToggle}
+          className="p-1 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700"
+          aria-label="Order actions"
+          aria-expanded={isOpen}
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </div>
+      {isOpen && dropdownStyle != null && typeof document !== "undefined" &&
+        createPortal(
+          <div
+            data-order-menu
+            role="menu"
+            className="fixed z-[9999] min-w-[180px] rounded-lg border border-gray-200 bg-white shadow-lg py-1 ring-1 ring-gray-900/5"
+            style={{ top: dropdownStyle.top, left: dropdownStyle.left }}
+          >
+            {addAmountPending ? (
+              <div className="px-3 py-2 text-sm text-amber-700 bg-amber-50 border-b border-amber-100" title="An add amount request is already pending for this order">
+                Add amount — request pending
+              </div>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { onAddAmount(); }}
+                className="w-full px-3 py-2 text-left text-sm text-blue-700 hover:bg-blue-50"
+              >
+                Add amount
+              </button>
+            )}
+            {showPenalty && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { onAddPenalty(); }}
+                className="w-full px-3 py-2 text-left text-sm text-amber-700 hover:bg-amber-50"
+              >
+                Add penalty
+              </button>
+            )}
+          </div>,
+          document.body
+        )}
+    </>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { LogOut, User, Bell } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -17,8 +17,22 @@ export function Header() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const { data: sessionData, isLoading } = useSessionQuery();
   const logoutMutation = useLogout();
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    if (!showDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const el = userMenuRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showDropdown]);
 
   // Extract user info from session
   const userEmail = sessionData?.session?.user?.email || null;
@@ -176,7 +190,7 @@ export function Header() {
   };
 
   return (
-    <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-30 relative gap-2 sm:gap-4">
+    <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
       {/* Mobile: Logo + Page name, Desktop: Just Page name */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0 flex-shrink">
         {/* Mobile logo - icon only */}
@@ -196,10 +210,13 @@ export function Header() {
           <Bell className="h-5 w-5" />
         </button>
 
-        <div className="relative">
+        <div ref={userMenuRef} className="relative">
           <button
-            onClick={() => setShowDropdown(!showDropdown)}
+            type="button"
+            onClick={() => setShowDropdown((prev) => !prev)}
             className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 min-w-0"
+            aria-expanded={showDropdown}
+            aria-haspopup="true"
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
               {isLoading ? (
@@ -238,7 +255,10 @@ export function Header() {
           </button>
 
           {showDropdown && (
-            <div className="absolute right-0 mt-2 w-48 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5">
+            <div
+              className="absolute right-0 top-full mt-1 w-48 rounded-lg border border-gray-200 bg-white shadow-lg ring-1 ring-gray-900/5 py-1 z-[100]"
+              role="menu"
+            >
               <div className="py-1">
                 <button
                   onClick={handleLogout}

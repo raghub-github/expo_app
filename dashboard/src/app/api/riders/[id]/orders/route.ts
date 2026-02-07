@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, orders, ordersCore } from "@/lib/db/schema";
-import { eq, and, desc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
@@ -70,12 +70,14 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = Math.min(100, parseInt(searchParams.get("limit") || "30"));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "30", 10) || 30));
+    const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const orderType = searchParams.get("orderType");
     const status = searchParams.get("status");
     const sourceCore = searchParams.get("source") === "core";
+    const orderIdParam = (searchParams.get("orderId") || searchParams.get("q") || "").trim();
 
     if (sourceCore) {
       const conditions: any[] = [eq(ordersCore.riderId, riderId)];
@@ -87,15 +89,24 @@ export async function GET(
       }
       if (from) conditions.push(gte(ordersCore.createdAt, new Date(from)));
       if (to) conditions.push(lte(ordersCore.createdAt, new Date(to)));
+      const orderIdNum = orderIdParam ? parseInt(orderIdParam, 10) : NaN;
+      if (!Number.isNaN(orderIdNum) && orderIdNum > 0) {
+        conditions.push(eq(ordersCore.id, orderIdNum));
+      }
       const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+      const [{ count: total }] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(ordersCore)
+        .where(whereClause);
       const list = await db
         .select()
         .from(ordersCore)
         .where(whereClause)
         .orderBy(desc(ordersCore.createdAt))
-        .limit(Number.isNaN(limit) ? 30 : limit);
+        .limit(Number.isNaN(limit) ? 30 : limit)
+        .offset(offset);
       const mapped = list.map(ordersCoreToLegacyShape);
-      return NextResponse.json({ success: true, data: { orders: mapped }, source: "core" });
+      return NextResponse.json({ success: true, data: { orders: mapped, total: Number(total) ?? 0 }, source: "core" });
     }
 
     const conditions: any[] = [eq(orders.riderId, riderId)];
@@ -107,16 +118,25 @@ export async function GET(
     }
     if (from) conditions.push(gte(orders.createdAt, new Date(from)));
     if (to) conditions.push(lte(orders.createdAt, new Date(to)));
+    const orderIdNum = orderIdParam ? parseInt(orderIdParam, 10) : NaN;
+    if (!Number.isNaN(orderIdNum) && orderIdNum > 0) {
+      conditions.push(eq(orders.id, orderIdNum));
+    }
 
     const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(orders)
+      .where(whereClause);
     const list = await db
       .select()
       .from(orders)
       .where(whereClause)
       .orderBy(desc(orders.createdAt))
-      .limit(Number.isNaN(limit) ? 30 : limit);
+      .limit(Number.isNaN(limit) ? 30 : limit)
+      .offset(offset);
 
-    return NextResponse.json({ success: true, data: { orders: list } });
+    return NextResponse.json({ success: true, data: { orders: list, total: Number(total) ?? 0 } });
   } catch (error) {
     console.error("[GET /api/riders/[id]/orders] Error:", error);
     return NextResponse.json(

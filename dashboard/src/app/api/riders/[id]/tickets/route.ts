@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, tickets } from "@/lib/db/schema";
-import { eq, and, desc, gte, lte, isNotNull, isNull } from "drizzle-orm";
+import { eq, and, or, desc, gte, lte, isNotNull, isNull, ilike, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
@@ -41,12 +41,14 @@ export async function GET(
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = Math.min(100, parseInt(searchParams.get("limit") || "30"));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "30", 10) || 30));
+    const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
     const from = searchParams.get("from");
     const to = searchParams.get("to");
     const orderRelated = searchParams.get("orderRelated"); // yes | no | all
     const category = searchParams.get("category"); // payment | order | technical | food | parcel | person_ride | all
     const status = searchParams.get("status"); // open | in_progress | resolved | closed | all
+    const q = (searchParams.get("q") || "").trim();
 
     const conditions: any[] = [eq(tickets.riderId, riderId)];
     if (orderRelated === "yes") conditions.push(isNotNull(tickets.orderId));
@@ -55,8 +57,21 @@ export async function GET(
     if (status && status !== "all") conditions.push(eq(tickets.status, status as any));
     if (from) conditions.push(gte(tickets.createdAt, new Date(from)));
     if (to) conditions.push(lte(tickets.createdAt, new Date(to)));
+    if (q) {
+      const num = parseInt(q, 10);
+      if (!Number.isNaN(num) && String(num) === q) {
+        conditions.push(or(eq(tickets.id, num), eq(tickets.orderId, num)) as any);
+      } else {
+        const term = `%${q.replace(/%/g, "\\%")}%`;
+        conditions.push(or(ilike(tickets.subject, term), ilike(tickets.message, term)) as any);
+      }
+    }
 
     const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(tickets)
+      .where(whereClause);
     // Explicit select without resolved_by so this works even if migration 0080 has not been run
     const rows = await db
       .select({
@@ -76,7 +91,8 @@ export async function GET(
       .from(tickets)
       .where(whereClause)
       .orderBy(desc(tickets.createdAt))
-      .limit(Number.isNaN(limit) ? 30 : limit);
+      .limit(Number.isNaN(limit) ? 30 : limit)
+      .offset(offset);
 
     const list = rows.map((r) => ({
       id: r.id,
@@ -96,7 +112,7 @@ export async function GET(
       resolvedByName: null as string | null,
     }));
 
-    return NextResponse.json({ success: true, data: { tickets: list } });
+    return NextResponse.json({ success: true, data: { tickets: list, total: Number(total) ?? 0 } });
   } catch (error) {
     console.error("[GET /api/riders/[id]/tickets] Error:", error);
     return NextResponse.json(

@@ -8,7 +8,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { walletCreditRequests, riders } from "@/lib/db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
-import { getSystemUserIdFromAuthUser, hasDashboardAccess, hasAccessPointAction, isSuperAdmin } from "@/lib/permissions/engine";
+import { getSystemUserIdFromAuthUser, hasDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
 
@@ -25,12 +25,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
     }
 
+    // Any agent with RIDER dashboard access (view or full) can see pending action data
     const canView =
       (await isSuperAdmin(session.user.id, session.user.email!)) ||
-      ((await hasDashboardAccess(systemUserId, "RIDER")) &&
-        (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "VIEW")));
+      (await hasDashboardAccess(systemUserId, "RIDER"));
     if (!canView) {
-      return NextResponse.json({ success: false, error: "Insufficient permissions. VIEW on RIDER_WALLET_CREDITS required." }, { status: 403 });
+      return NextResponse.json({ success: false, error: "Insufficient permissions. RIDER dashboard access required." }, { status: 403 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -41,8 +41,8 @@ export async function GET(request: NextRequest) {
     const minAmount = searchParams.get("minAmount");
     const maxAmount = searchParams.get("maxAmount");
     const orderIdParam = searchParams.get("orderId");
-    const limit = Math.min(100, parseInt(searchParams.get("limit") || "30"));
-    const offset = parseInt(searchParams.get("offset") || "0");
+    const limit = Math.min(100, parseInt(searchParams.get("limit") || "30", 10));
+    const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
 
     const db = getDb();
 
@@ -71,7 +71,12 @@ export async function GET(request: NextRequest) {
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-    const rows = await db
+    const countBase = db.select({ count: sql<number>`count(*)::int` }).from(walletCreditRequests);
+    const [{ count: total }] = whereClause
+      ? await countBase.where(whereClause)
+      : await countBase;
+
+    const rowsQuery = db
       .select({
         id: walletCreditRequests.id,
         riderId: walletCreditRequests.riderId,
@@ -90,10 +95,11 @@ export async function GET(request: NextRequest) {
         approvedLedgerRef: walletCreditRequests.approvedLedgerRef,
       })
       .from(walletCreditRequests)
-      .where(whereClause)
       .orderBy(desc(walletCreditRequests.requestedAt))
-      .limit(limit)
+      .limit(Number.isNaN(limit) ? 30 : limit)
       .offset(offset);
+
+    const rows = whereClause ? await rowsQuery.where(whereClause) : await rowsQuery;
 
     // Optional: include rider display (e.g. rider_id or mobile) - keep response lean
     const list = rows.map((r) => ({
@@ -113,7 +119,7 @@ export async function GET(request: NextRequest) {
       approvedLedgerRef: r.approvedLedgerRef ?? undefined,
     }));
 
-    return NextResponse.json({ success: true, data: list });
+    return NextResponse.json({ success: true, data: list, total: Number(total) ?? 0 });
   } catch (error) {
     console.error("[GET /api/wallet-credit-requests] Error:", error);
     return NextResponse.json(

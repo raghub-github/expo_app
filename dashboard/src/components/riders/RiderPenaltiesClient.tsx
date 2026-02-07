@@ -1,11 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/rider-dashboard/supabaseClient";
+import { invalidateRiderSummary } from "@/lib/cache-invalidation";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { RiderSectionHeader } from "./RiderSectionHeader";
+import { CollapsibleTableFilters } from "./CollapsibleTableFilters";
 import { FilterChips, type FilterChipItem } from "./FilterChips";
-import { Filter, Plus, RotateCcw } from "lucide-react";
+import { FilterSearchBar } from "./FilterSearchBar";
+import { TablePagination } from "./TablePagination";
+import { Plus, RotateCcw, RefreshCw } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
 
@@ -47,6 +53,7 @@ const PENALTY_TYPES = [
 ] as const;
 
 export function RiderPenaltiesClient() {
+  const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const searchValue = (searchParams.get("search") || "").trim();
   const riderContext = useRiderDashboardOptional();
@@ -56,17 +63,18 @@ export function RiderPenaltiesClient() {
   const [resolveError, setResolveError] = useState<string | null>(null);
 
   const [penalties, setPenalties] = useState<Penalty[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [serviceType, setServiceType] = useState<string>("all");
   const [status, setStatus] = useState<string>("all");
-  const [limit, setLimit] = useState<number>(20);
+  const [limit, setLimit] = useState<number>(10);
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
+  const [filterSearch, setFilterSearch] = useState<string>("");
   const [revertingId, setRevertingId] = useState<number | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
-  const filterPopoverRef = useRef<HTMLDivElement>(null);
 
   const [showAddPenalty, setShowAddPenalty] = useState(false);
   const [addPenaltySubmitting, setAddPenaltySubmitting] = useState(false);
@@ -93,7 +101,7 @@ export function RiderPenaltiesClient() {
     (serviceType: string) => {
       if (riderAccess?.isSuperAdmin) return true;
       const svc = serviceType === "food" ? "food" : serviceType === "parcel" ? "parcel" : "person_ride";
-      return !!riderAccess?.canAddPenalty?.[svc];
+      return !!riderAccess?.canRevertPenalty?.[svc];
     },
     [riderAccess]
   );
@@ -111,6 +119,8 @@ export function RiderPenaltiesClient() {
 
         const params = new URLSearchParams();
         params.set("limit", String(limit));
+        params.set("offset", String((page - 1) * limit));
+        if (filterSearch.trim()) params.set("q", filterSearch.trim());
         if (serviceType && serviceType !== "all") {
           params.set("serviceType", serviceType);
         }
@@ -130,15 +140,17 @@ export function RiderPenaltiesClient() {
         }
 
         setPenalties(json.data.penalties || []);
+        setTotal(json.data.total ?? 0);
       } catch (err: unknown) {
         console.error("[RiderPenalties] Error loading penalties:", err);
         setError(err instanceof Error ? err.message : "Failed to load penalties");
         setPenalties([]);
+        setTotal(0);
       } finally {
         setLoading(false);
       }
     },
-    [limit, serviceType, status, from, to]
+    [limit, page, filterSearch, serviceType, status, from, to]
   );
 
   const openRevertModal = useCallback((penaltyId: number) => {
@@ -168,6 +180,7 @@ export function RiderPenaltiesClient() {
         setShowRevertModal(false);
         setRevertPenaltyId(null);
         setRevertReason("");
+        invalidateRiderSummary(queryClient, rider.id);
         await fetchPenalties(rider);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to revert penalty");
@@ -175,7 +188,7 @@ export function RiderPenaltiesClient() {
         setRevertingId(null);
       }
     },
-    [rider, fetchPenalties]
+    [rider, queryClient, fetchPenalties]
   );
 
   const confirmRevert = useCallback(() => {
@@ -302,6 +315,7 @@ export function RiderPenaltiesClient() {
         }
         setShowAddPenalty(false);
         setAddPenaltyForm({ amount: "", reason: "", serviceType: "food", penaltyType: "other", orderId: "" });
+        invalidateRiderSummary(queryClient, rider.id);
         await fetchPenalties(rider);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to add penalty");
@@ -309,7 +323,7 @@ export function RiderPenaltiesClient() {
         setAddPenaltySubmitting(false);
       }
     },
-    [rider, addPenaltyForm, fetchPenalties]
+    [rider, queryClient, addPenaltyForm, fetchPenalties]
   );
 
   // Rider from context (persists when navigating from Rider Information to Penalties)
@@ -336,94 +350,74 @@ export function RiderPenaltiesClient() {
     }
   }, [rider, fetchPenalties]);
 
-  useEffect(() => {
-    if (!showFilters) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (filterPopoverRef.current && !filterPopoverRef.current.contains(e.target as Node)) {
-        setShowFilters(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showFilters]);
-
   const penaltyFilterChips: FilterChipItem[] = [];
+  if (filterSearch.trim()) penaltyFilterChips.push({ id: "q", label: `Search: ${filterSearch.trim().slice(0, 16)}${filterSearch.trim().length > 16 ? "…" : ""}` });
   if (serviceType !== "all") penaltyFilterChips.push({ id: "serviceType", label: `Service: ${serviceType.replace("_", " ")}` });
   if (status !== "all") penaltyFilterChips.push({ id: "status", label: `Status: ${status}` });
   if (from) penaltyFilterChips.push({ id: "from", label: `From: ${from}` });
   if (to) penaltyFilterChips.push({ id: "to", label: `To: ${to}` });
-  if (limit !== 20) penaltyFilterChips.push({ id: "limit", label: `Limit: ${limit}` });
+  if (limit !== 10) penaltyFilterChips.push({ id: "limit", label: `Limit: ${limit}` });
   const removePenaltyFilter = (id: string) => {
-    if (id === "serviceType") setServiceType("all");
+    if (id === "q") setFilterSearch("");
+    else if (id === "serviceType") setServiceType("all");
     else if (id === "status") setStatus("all");
     else if (id === "from") setFrom("");
     else if (id === "to") setTo("");
-    else if (id === "limit") setLimit(20);
+    else if (id === "limit") setLimit(10);
   };
-  const clearAllPenaltyFilters = () => {
+  const clearAllPenaltyFilters = useCallback(() => {
+    setPage(1);
+    setFilterSearch("");
     setServiceType("all");
     setStatus("all");
     setFrom("");
     setTo("");
-    setLimit(20);
-  };
+    setLimit(10);
+  }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filterSearch, serviceType, status, from, to, limit]);
+
+  const handlePageSizeChange = useCallback((newSize: number) => {
+    setLimit(newSize);
+    setPage(1);
+  }, []);
+
+  const applyPenaltyFilters = useCallback(() => {
+    setPage(1);
+    if (rider) fetchPenalties(rider);
+  }, [rider, fetchPenalties]);
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 tracking-tight">
-            Penalties
-          </h1>
-          <p className="mt-1 text-sm text-gray-600">
-            View and analyse rider penalties by service, status and date range.
-          </p>
-        </div>
-        {rider && (
-          <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm ring-1 ring-gray-900/5 flex flex-col sm:flex-row sm:items-center gap-2 text-sm">
-            <div className="font-semibold text-gray-900">
-              GMR{rider.id}{" "}
-              <span className="text-gray-500 font-normal">• {rider.mobile}</span>
-            </div>
-            <div className="flex flex-wrap gap-2 text-xs text-gray-600">
-              <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700">
-                Status: {rider.status}
-              </span>
-              <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700">
-                KYC: {rider.kycStatus}
-              </span>
-              <span className="px-2.5 py-1 rounded-full bg-gray-100 text-gray-700">
-                Onboarding: {rider.onboardingStage}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Rider resolution state */}
-      {resolvingRider && (
-        <div className="flex items-center justify-center py-8">
-          <LoadingSpinner
-            size="md"
-            variant="default"
-            text="Resolving rider from search..."
-            className="text-blue-600"
-          />
-        </div>
-      )}
-
-      {!resolvingRider && !rider && hasSearch && (
-        <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm text-yellow-700">
-          {resolveError || "No rider found for this search."}
-        </div>
-      )}
+      <RiderSectionHeader
+        title="Penalties"
+        description="View and analyse rider penalties by service, status and date range."
+        rider={rider ? { id: rider.id, name: rider.name, mobile: rider.mobile } : null}
+        resolveLoading={resolvingRider}
+        error={resolveError}
+        hasSearch={hasSearch}
+        actionButtons={
+          rider ? (
+            <button
+              type="button"
+              onClick={() => fetchPenalties(rider)}
+              disabled={loading}
+              className="p-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 shrink-0"
+              title="Refresh penalties"
+              aria-label="Refresh penalties"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </button>
+          ) : undefined
+        }
+      />
 
       {/* Filters + table */}
       {rider && (
         <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 shadow-sm ring-1 ring-gray-900/5">
-          {/* Add Penalty + Filters + chips in same row */}
-          <div className="flex flex-wrap items-center justify-end gap-2 mb-5">
+          <div className="flex flex-wrap items-center justify-end gap-2 mb-4">
             {canAddPenaltyAny && (
               <button
                 type="button"
@@ -434,87 +428,161 @@ export function RiderPenaltiesClient() {
                 Add Penalty
               </button>
             )}
-            <div className="relative" ref={filterPopoverRef}>
-              {showFilters && (
-                <div
-                  className="absolute z-50 w-[280px] max-w-[calc(100vw-2rem)] sm:w-[300px] p-4 bg-white border border-gray-200 rounded-lg shadow-lg
-                    top-full right-0 mt-2
-                    md:top-0 md:right-full md:mt-0 md:mr-2"
-                >
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Service Type</label>
-                      <select
-                        value={serviceType}
-                        onChange={(e) => setServiceType(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
-                      >
-                        <option value="all">All</option>
-                        <option value="food">Food</option>
-                        <option value="parcel">Parcel</option>
-                        <option value="person_ride">Person Ride</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
-                      <select
-                        value={status}
-                        onChange={(e) => setStatus(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
-                      >
-                        <option value="all">All</option>
-                        <option value="active">Active</option>
-                        <option value="reversed">Reversed</option>
-                        <option value="paid">Paid</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">From Date</label>
-                      <input
-                        type="date"
-                        value={from}
-                        onChange={(e) => setFrom(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">To Date</label>
-                      <input
-                        type="date"
-                        value={to}
-                        onChange={(e) => setTo(e.target.value)}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Number of Records</label>
-                      <select
-                        value={limit}
-                        onChange={(e) => setLimit(Number(e.target.value))}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
-                      >
-                        <option value={10}>10</option>
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                      </select>
-                    </div>
-                  </div>
+          </div>
+          <CollapsibleTableFilters
+            label="Filters"
+            activeCount={penaltyFilterChips.length}
+            filterChipsSlot={
+              penaltyFilterChips.length > 0 ? (
+                <FilterChips
+                  inline
+                  chips={penaltyFilterChips}
+                  onRemove={removePenaltyFilter}
+                  onClearAll={clearAllPenaltyFilters}
+                />
+              ) : null
+            }
+            filterContent={
+              <>
+                <FilterSearchBar
+                  value={filterSearch}
+                  onChange={setFilterSearch}
+                  placeholder="Penalty ID, Order ID"
+                  hint="Match penalty ID or order ID"
+                  id="penalties-filter-search"
+                />
+                <div className="min-w-[120px]">
+                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Service Type</label>
+                  <select
+                    value={serviceType}
+                    onChange={(e) => setServiceType(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">All</option>
+                    <option value="food">Food</option>
+                    <option value="parcel">Parcel</option>
+                    <option value="person_ride">Person Ride</option>
+                  </select>
                 </div>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowFilters(!showFilters)}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200 bg-white"
-              >
-                <Filter className="h-4 w-4" />
-                Filters
-              </button>
-            </div>
-            {penaltyFilterChips.length > 0 && (
-              <FilterChips inline chips={penaltyFilterChips} onRemove={removePenaltyFilter} onClearAll={clearAllPenaltyFilters} />
+                <div className="min-w-[120px]">
+                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Status</label>
+                  <select
+                    value={status}
+                    onChange={(e) => setStatus(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">All</option>
+                    <option value="active">Active</option>
+                    <option value="reversed">Reversed</option>
+                    <option value="paid">Paid</option>
+                  </select>
+                </div>
+                <div className="min-w-[120px]">
+                  <label className="block text-xs font-medium text-gray-600 mb-0.5">From</label>
+                  <input
+                    type="date"
+                    value={from}
+                    onChange={(e) => setFrom(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="min-w-[120px]">
+                  <label className="block text-xs font-medium text-gray-600 mb-0.5">To</label>
+                  <input
+                    type="date"
+                    value={to}
+                    onChange={(e) => setTo(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={applyPenaltyFilters}
+                  className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors h-[34px]"
+                >
+                  Apply
+                </button>
+                <button type="button" onClick={clearAllPenaltyFilters} className="px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">
+                  Clear filters
+                </button>
+              </>
+            }
+          >
+          <div className="mt-4 relative">
+            {loading && penalties.length === 0 ? (
+              <div className="flex justify-center py-10">
+                <LoadingSpinner size="md" variant="default" text="Loading penalties..." className="text-blue-600" />
+              </div>
+            ) : error ? (
+              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+            ) : penalties.length === 0 ? (
+              <p className="text-gray-600 text-sm text-center py-6">No penalties found for selected filters.</p>
+            ) : (
+              <>
+                {loading && penalties.length > 0 && (
+                  <div className="absolute top-0 left-0 right-0 h-0.5 bg-gray-100 z-10">
+                    <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 px-3 sm:px-4 border-b border-gray-200 bg-gray-50/60">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">Rows per page</span>
+                    <select
+                      value={limit}
+                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                      className="h-8 min-w-[3.5rem] sm:min-w-[4rem] rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      aria-label="Rows per page"
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                    </select>
+                  </div>
+                  <TablePagination
+                    page={page}
+                    pageSize={limit}
+                    total={total}
+                    onPageChange={setPage}
+                    disabled={loading}
+                    ariaLabel="Penalties"
+                  />
+                </div>
+                <div className={`overflow-x-auto -mx-1 transition-opacity duration-200 ${loading && penalties.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
+                  <table className="w-full divide-y divide-gray-200 text-xs border-collapse">
+                    <thead className="bg-gray-50/80 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Dates</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">ID</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Order</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Service</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] whitespace-nowrap">Type</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] min-w-[100px]">Reason</th>
+                        <th className="px-2 py-2 text-right font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Amount</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] min-w-[120px]">Agent</th>
+                        <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Status</th>
+                        <th className="px-2 py-2 text-right font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {penalties.map((p) => (
+                        <PenaltyRow
+                          key={p.id}
+                          penalty={p}
+                          riderId={rider.id}
+                          onReverted={fetchPenalties.bind(null, rider)}
+                          revertingId={revertingId}
+                          onRevert={openRevertModal}
+                          canRevert={canRevertForService(p.serviceType)}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
+          </CollapsibleTableFilters>
 
           {/* Add Penalty modal */}
           {showAddPenalty && (
@@ -660,67 +728,6 @@ export function RiderPenaltiesClient() {
               </div>
             </div>
           )}
-
-          {/* Table */}
-          <div className="mt-4 relative">
-            {loading && penalties.length === 0 ? (
-              <div className="flex items-center justify-center py-10">
-                <LoadingSpinner
-                  size="md"
-                  variant="default"
-                  text="Loading penalties..."
-                  className="text-blue-600"
-                />
-              </div>
-            ) : error ? (
-              <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {error}
-              </div>
-            ) : penalties.length === 0 ? (
-              <p className="text-gray-600 text-sm text-center py-6">
-                No penalties found for selected filters.
-              </p>
-            ) : (
-              <>
-                {loading && penalties.length > 0 && (
-                  <div className="absolute top-0 left-0 right-0 h-0.5 bg-gray-100 z-10">
-                    <div className="h-full w-1/3 bg-blue-500 animate-pulse rounded-r" />
-                  </div>
-                )}
-                <div className={`overflow-x-auto -mx-1 transition-opacity duration-200 ${loading && penalties.length > 0 ? "opacity-70 pointer-events-none" : ""}`}>
-                <table className="w-full divide-y divide-gray-200 text-xs border-collapse">
-                  <thead className="bg-gray-50/80 sticky top-0 z-10">
-                    <tr>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Dates</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">ID</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Order</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Service</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] whitespace-nowrap">Type</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] min-w-[100px]">Reason</th>
-                      <th className="px-2 py-2 text-right font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Amount</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] min-w-[120px]">Agent</th>
-                      <th className="px-2 py-2 text-left font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Status</th>
-                      <th className="px-2 py-2 text-right font-medium text-gray-700 uppercase tracking-wider text-[10px] w-[1%] whitespace-nowrap">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {penalties.map((p) => (
-                      <PenaltyRow
-                        key={p.id}
-                        penalty={p}
-                        riderId={rider.id}
-                        onReverted={fetchPenalties.bind(null, rider)}
-                        revertingId={revertingId}
-                        onRevert={openRevertModal}
-                        canRevert={canRevertForService(p.serviceType)}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-                </div>
-              </>
-            )}
-          </div>
         </div>
       )}
     </div>

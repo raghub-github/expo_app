@@ -14,6 +14,8 @@ interface CollapsibleTableFiltersProps {
   activeCount?: number;
   /** Applied filter chips + Clear all, rendered in the same top bar as Filters (no new line) */
   filterChipsSlot?: React.ReactNode;
+  /** Optional: actions, rows-per-page, pagination etc. Rendered on the same top bar line (compact). */
+  trailingSlot?: React.ReactNode;
 }
 
 export function CollapsibleTableFilters({
@@ -22,40 +24,46 @@ export function CollapsibleTableFilters({
   label = "Filters",
   activeCount = 0,
   filterChipsSlot,
+  trailingSlot,
 }: CollapsibleTableFiltersProps) {
   const [open, setOpen] = useState(false);
 
   return (
     <div className="rounded-2xl border border-gray-200/90 bg-white overflow-hidden shadow-sm ring-1 ring-gray-900/5">
-      {/* Top bar: Filters + badge, chips, chevron (single row, wraps on small screens) */}
+      {/* Top bar: Filters + badge, chips, trailingSlot (actions, rows per page, pagination), chevron — single compact row */}
       <div className="border-b border-gray-200/80 bg-gray-50/60">
-        <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 px-3 py-2 sm:px-4 sm:py-2.5">
           <button
             type="button"
             onClick={() => setOpen((o) => !o)}
-            className="flex items-center gap-2 shrink-0 py-1 pr-1 text-left transition-colors hover:bg-gray-100/80 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
+            className="flex items-center gap-1.5 shrink-0 py-1 pr-1 text-left transition-colors hover:bg-gray-100/80 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
             aria-expanded={open}
             aria-controls="rider-table-filters-content"
             id="rider-table-filters-toggle"
           >
-            <SlidersHorizontal className="h-4 w-4 text-gray-500" aria-hidden />
-            <span className="text-sm font-medium text-gray-800">{label}</span>
+            <SlidersHorizontal className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-gray-500" aria-hidden />
+            <span className="text-xs sm:text-sm font-medium text-gray-800">{label}</span>
             {activeCount > 0 && (
-              <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold">
+              <span className="inline-flex items-center justify-center min-w-[18px] h-4.5 px-1 rounded-full bg-blue-100 text-blue-700 text-[10px] sm:text-xs font-semibold">
                 {activeCount}
               </span>
             )}
           </button>
           {filterChipsSlot != null && (
-            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
               {filterChipsSlot}
             </div>
           )}
-          <span className="flex items-center gap-1 text-gray-500 shrink-0 ml-auto">
+          {trailingSlot != null && (
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0 ml-auto">
+              {trailingSlot}
+            </div>
+          )}
+          <span className="flex items-center gap-1 text-gray-500 shrink-0">
             {open ? (
-              <ChevronUp className="h-4 w-4" aria-hidden />
+              <ChevronUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
             ) : (
-              <ChevronDown className="h-4 w-4" aria-hidden />
+              <ChevronDown className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
             )}
           </span>
         </div>

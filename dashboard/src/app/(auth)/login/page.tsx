@@ -239,6 +239,7 @@ export default function LoginPage() {
                     disabled={otpSent || loading}
                     placeholder="Enter your email"
                     className="block w-full rounded-lg border border-gray-300 bg-white py-3 pl-10 pr-4 text-sm placeholder-gray-400 shadow-sm transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 disabled:bg-gray-50 disabled:text-gray-500"
+                    suppressHydrationWarning
                   />
                 </div>
               </div>

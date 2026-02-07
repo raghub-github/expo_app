@@ -55,7 +55,11 @@ function getEffectiveNet(wallet: WalletRow, service: ServiceType): number {
 
 /**
  * Sync rider_negative_wallet_blocks for a rider based on current wallet.
- * Matches DB trigger: global (total_balance <= -200) blocks all; else block service when effective_net <= -50.
+ * Block only when total balance is 0 or negative. While wallet is positive, we never block
+ * (we only adjust balance); once balance becomes 0 or negative we apply per-service threshold
+ * and global emergency threshold.
+ * Matches DB trigger: no blocks when total_balance > 0; when total_balance <= 0: global if <= -200,
+ * else block service when effective_net <= -50.
  */
 export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
   const db = getDb();
@@ -75,6 +79,9 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
   const w = wallet as WalletRow;
   const totalBalance = Number(w.totalBalance ?? 0);
 
+  // Do not block any service while total wallet balance is positive
+  if (totalBalance > 0) return;
+
   if (totalBalance <= GLOBAL_BLOCK_THRESHOLD) {
     for (const service of SERVICES) {
       await db.insert(riderNegativeWalletBlocks).values({
@@ -86,6 +93,7 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
     return;
   }
 
+  // total_balance <= 0 but > -200: block only services where effective_net <= -50
   for (const service of SERVICES) {
     const effectiveNet = getEffectiveNet(w, service);
     if (effectiveNet <= NEGATIVE_WALLET_THRESHOLD) {
