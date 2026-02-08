@@ -154,10 +154,10 @@ export function DocumentEditModal({
 
         {/* Content */}
         <div className="p-4 sm:p-6 space-y-5 sm:space-y-6 flex-1 min-h-0">
-          {/* Document Number */}
+          {/* Document Number - optional for selfie, profile_photo, bank proof */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Document Number
+              Document number {["selfie", "profile_photo", "bank_proof", "vehicle_image", "upi_qr_proof"].includes(docType) ? "(optional — not required)" : "(optional)"}
             </label>
             <input
               type="text"
@@ -166,7 +166,7 @@ export function DocumentEditModal({
                 setDocNumber(e.target.value);
                 setErrors({ ...errors, docNumber: undefined });
               }}
-              placeholder={`Enter ${getDocTypeLabel(docType)} number`}
+              placeholder={["selfie", "profile_photo"].includes(docType) ? "Leave blank for selfie" : `Enter ${getDocTypeLabel(docType)} number`}
               className={`w-full px-4 py-2.5 sm:py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder:text-gray-400 text-base ${
                 errors.docNumber ? "border-red-500" : "border-gray-300"
               }`}

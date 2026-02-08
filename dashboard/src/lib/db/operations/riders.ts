@@ -268,48 +268,49 @@ export async function approveRiderDocument(
   let onboardingStage = (rider as any).onboardingStage;
   let status = (rider as any).status;
 
-  // Progressive status updates
-  // Stage 1: Identity docs verified → KYC APPROVED
+  // Onboarding flow: MOBILE_VERIFIED → KYC → APPROVAL (docs) → PAYMENT (fees) → ACTIVE
+  // Enum: MOBILE_VERIFIED | KYC | PAYMENT | APPROVAL | ACTIVE
+  //
+  // Stage 1: Identity docs verified (Aadhaar, PAN, selfie) → KYC approved, move to APPROVAL
+  //         (APPROVAL = docs approval phase: still verifying DL, RC, bank etc.)
   if (identityVerified && kycStatus === "PENDING") {
     kycStatus = "APPROVED";
-    onboardingStage = "KYC_APPROVED";
-    await db.update(riders).set({ 
-      kycStatus: kycStatus as any, 
+    onboardingStage = "APPROVAL";
+    await db.update(riders).set({
+      kycStatus: kycStatus as any,
       onboardingStage: onboardingStage as any,
-      updatedAt: new Date() 
+      updatedAt: new Date(),
     }).where(eq(riders.id, riderId));
   }
 
-  // Stage 2: All documents verified → DOCUMENTS_VERIFIED
+  // Stage 2: All required documents verified (identity + vehicle + bank)
+  //         → If rider already paid fees → ACTIVE (auto-approve)
+  //         → Else → PAYMENT (waiting for onboarding fees)
   if (allRequiredDocsVerified) {
-    onboardingStage = "DOCUMENTS_VERIFIED";
-    
-    // Check if payment is completed
     const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
-    
+
     if (paymentCompleted) {
-      // All complete → ACTIVE
+      // All docs verified + payment done → ACTIVE
       status = "ACTIVE";
       onboardingStage = "ACTIVE";
-      
-      // Update rider to ACTIVE status
-      await db.update(riders).set({ 
+      await db.update(riders).set({
         kycStatus: "APPROVED" as any,
         onboardingStage: "ACTIVE" as any,
         status: "ACTIVE" as any,
-        updatedAt: new Date() 
+        updatedAt: new Date(),
       }).where(eq(riders.id, riderId));
-      
+
       return { approved, riderState: { kycStatus: "APPROVED", onboardingStage: "ACTIVE", status: "ACTIVE" } };
-    } else {
-      // Waiting for payment
-      onboardingStage = "PAYMENT_PENDING";
-      await db.update(riders).set({ 
-        kycStatus: "APPROVED" as any,
-        onboardingStage: onboardingStage as any,
-        updatedAt: new Date() 
-      }).where(eq(riders.id, riderId));
     }
+
+    // All docs verified but payment not done → PAYMENT stage (waiting for fees)
+    onboardingStage = "PAYMENT";
+    kycStatus = "APPROVED";
+    await db.update(riders).set({
+      kycStatus: "APPROVED" as any,
+      onboardingStage: "PAYMENT" as any,
+      updatedAt: new Date(),
+    }).where(eq(riders.id, riderId));
   }
 
   return { approved, riderState: { kycStatus, onboardingStage, status } };

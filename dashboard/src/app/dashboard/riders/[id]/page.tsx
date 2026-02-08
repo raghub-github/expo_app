@@ -8,6 +8,7 @@ import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
 import { CheckCircle, ArrowLeft, User, Car, Wallet, FileText, CreditCard, Receipt } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 
 interface Rider {
   id: number;
@@ -469,7 +470,7 @@ export default function RiderDetailsPage() {
           </div>
           <div className="flex items-center gap-2">
             <span className={`inline-flex px-3 py-1.5 text-xs font-semibold rounded-full ${statusBadgeClass(rider.onboardingStage)}`}>
-              {rider.onboardingStage}
+              {ONBOARDING_STAGE_LABELS[rider.onboardingStage] ?? rider.onboardingStage}
             </span>
             <span className={`inline-flex px-3 py-1.5 text-xs font-semibold rounded-full ${statusBadgeClass(rider.kycStatus)}`}>
               {rider.kycStatus}

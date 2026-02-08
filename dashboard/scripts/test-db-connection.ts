@@ -64,7 +64,7 @@ import { getDb } from "../src/lib/db/client";
 import { systemUsers } from "../src/lib/db/schema";
 import { sql } from "drizzle-orm";
 
-async function testDatabaseConnection() {
+async function testDatabaseConnection(): Promise<void> {
   console.log("🔍 Testing database connection...\n");
 
   try {

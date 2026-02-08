@@ -2,6 +2,15 @@
  * Shared types for Rider Dashboard (and reusable for Customer/Merchant dashboards later).
  */
 
+/** Flow: MOBILE_VERIFIED → KYC → APPROVAL (docs) → PAYMENT (fees) → ACTIVE */
+export const ONBOARDING_STAGE_LABELS: Record<string, string> = {
+  MOBILE_VERIFIED: "Mobile verified",
+  KYC: "KYC",
+  APPROVAL: "Docs approval",
+  PAYMENT: "Payment (fees)",
+  ACTIVE: "Active",
+};
+
 export type RiderListEntry = {
   id: number;
   name: string | null;

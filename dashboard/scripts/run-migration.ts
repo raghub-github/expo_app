@@ -16,6 +16,11 @@ if (!DATABASE_URL) {
 }
 
 async function runMigration() {
+  // TypeScript type guard - DATABASE_URL is guaranteed to be defined here
+  if (!DATABASE_URL) {
+    throw new Error("DATABASE_URL is required");
+  }
+  
   const sql = postgres(DATABASE_URL, { max: 1 });
   
   try {
