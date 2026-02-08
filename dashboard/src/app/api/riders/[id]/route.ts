@@ -9,7 +9,7 @@ import { getRiderWithDocuments } from "@/lib/db/operations/riders";
 import { getSignedUrlFromKey } from "@/lib/services/r2";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
-import { riderWallet, walletLedger, riderPenalties, withdrawalRequests } from "@/lib/db/schema";
+import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
 
 export const runtime = 'nodejs';
@@ -127,6 +127,29 @@ export async function GET(
       .orderBy(desc(withdrawalRequests.createdAt))
       .limit(15);
 
+    // Onboarding payments (registration fees) – for wallet details and full details page
+    let onboardingPaymentsList: { id: number; riderId: number; amount: string; provider: string; refId: string; paymentId: string | null; status: string; createdAt: string }[] = [];
+    try {
+      const onboardingRows = await db
+        .select()
+        .from(onboardingPayments)
+        .where(eq(onboardingPayments.riderId, riderId))
+        .orderBy(desc(onboardingPayments.createdAt))
+        .limit(50);
+      onboardingPaymentsList = onboardingRows.map((r) => ({
+        id: r.id,
+        riderId: r.riderId,
+        amount: String(r.amount),
+        provider: r.provider,
+        refId: r.refId,
+        paymentId: r.paymentId ?? null,
+        status: r.status,
+        createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+      }));
+    } catch {
+      // Table may not exist in some envs
+    }
+
     const totalBal = walletRow ? Number(walletRow.totalBalance) : 0;
     const wallet = walletRow ? {
       totalBalance: walletRow.totalBalance,
@@ -227,6 +250,7 @@ export async function GET(
         recentLedger,
         recentPenalties,
         recentWithdrawals,
+        onboardingPayments: onboardingPaymentsList,
       },
     });
   } catch (error) {

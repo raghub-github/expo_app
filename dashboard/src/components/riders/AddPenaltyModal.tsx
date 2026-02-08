@@ -11,7 +11,7 @@ interface AddPenaltyModalProps {
 }
 
 const SERVICE_TYPES = [
-  { value: "", label: "Select service" },
+  { value: "", label: "— Not specified" },
   { value: "food", label: "Food" },
   { value: "parcel", label: "Parcel" },
   { value: "person_ride", label: "Person Ride" },
@@ -51,10 +51,6 @@ export function AddPenaltyModal({
       setError("Reason is required");
       return;
     }
-    if (!serviceType || !["food", "parcel", "person_ride"].includes(serviceType)) {
-      setError("Please select a service (Food, Parcel, or Person Ride).");
-      return;
-    }
     setLoading(true);
     try {
       const res = await fetch(`/api/riders/${riderId}/penalties`, {
@@ -63,7 +59,7 @@ export function AddPenaltyModal({
         body: JSON.stringify({
           amount: amt,
           reason: reason.trim(),
-          serviceType: serviceType as "food" | "parcel" | "person_ride",
+          serviceType: serviceType && ["food", "parcel", "person_ride"].includes(serviceType) ? serviceType : null,
           penaltyType,
           orderId: orderId.trim() ? parseInt(orderId, 10) : undefined,
         }),
@@ -108,7 +104,7 @@ export function AddPenaltyModal({
               min="0"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm text-gray-900 bg-white"
               required
             />
           </div>
@@ -118,34 +114,33 @@ export function AddPenaltyModal({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={2}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm text-gray-900 bg-white placeholder:text-gray-500"
               placeholder="e.g. Order mistake, wrong delivery, customer complaint"
               required
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Service *</label>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Service (optional)</label>
             <select
               value={serviceType}
               onChange={(e) => setServiceType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
-              required
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm text-gray-900 bg-white"
             >
               {SERVICE_TYPES.map((s) => (
-                <option key={s.value || "none"} value={s.value}>{s.label}</option>
+                <option key={s.value || "none"} value={s.value} className="text-gray-900 bg-white">{s.label}</option>
               ))}
             </select>
-            <p className="mt-0.5 text-xs text-gray-500">Select the service this penalty applies to (Food, Parcel, or Person Ride)</p>
+            <p className="mt-0.5 text-xs text-gray-500">Food, Parcel, or Person Ride — leave unspecified if not tied to a service</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Type</label>
             <select
               value={penaltyType}
               onChange={(e) => setPenaltyType(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm text-gray-900 bg-white"
             >
               {PENALTY_TYPES.map((p) => (
-                <option key={p.value} value={p.value}>{p.label}</option>
+                <option key={p.value} value={p.value} className="text-gray-900 bg-white">{p.label}</option>
               ))}
             </select>
           </div>
@@ -155,7 +150,7 @@ export function AddPenaltyModal({
               type="number"
               value={orderId}
               onChange={(e) => setOrderId(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm text-gray-900 bg-white placeholder:text-gray-500"
               placeholder="If related to an order"
             />
           </div>

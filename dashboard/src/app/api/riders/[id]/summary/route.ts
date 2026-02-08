@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
-import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, riderDocuments, systemUsers } from "@/lib/db/schema";
+import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, riderDocuments, systemUsers, onboardingPayments } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
@@ -474,6 +474,32 @@ export async function GET(
       .from(riderNegativeWalletBlocks)
       .where(eq(riderNegativeWalletBlocks.riderId, riderId));
 
+    // Onboarding payments (registration fees) – for display when rider not yet verified (home) and in wallet/full details
+    let onboardingFees: { totalPaid: string; transactions: { id: number; amount: string; provider: string; refId: string; status: string; createdAt: string }[] } = { totalPaid: "0", transactions: [] };
+    try {
+      const onboardingRows = await db
+        .select()
+        .from(onboardingPayments)
+        .where(eq(onboardingPayments.riderId, riderId))
+        .orderBy(desc(onboardingPayments.createdAt))
+        .limit(50);
+      const completed = onboardingRows.filter((r) => r.status === "completed");
+      const totalPaid = completed.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+      onboardingFees = {
+        totalPaid: totalPaid.toFixed(2),
+        transactions: onboardingRows.map((r) => ({
+          id: r.id,
+          amount: String(r.amount),
+          provider: r.provider,
+          refId: r.refId,
+          status: r.status,
+          createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+        })),
+      };
+    } catch {
+      // Table may not exist in some envs
+    }
+
     // Wallet (rider_wallet) – total balance, earnings, penalties, total_withdrawn
     const [walletRow] = await db
       .select()
@@ -677,6 +703,7 @@ export async function GET(
           };
         })() : null,
         orderMetrics,
+        onboardingFees,
       },
     });
   } catch (error) {

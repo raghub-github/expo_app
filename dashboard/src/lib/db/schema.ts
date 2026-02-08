@@ -1920,6 +1920,16 @@ export const riderWallet = pgTable(
     unblockAllocPersonRide: numeric("unblock_alloc_person_ride", { precision: 10, scale: 2 })
       .notNull()
       .default("0"),
+    // Service-level negative: amount of negative balance attributed to each service (threshold -50). Reset when total_balance >= 0.
+    negativeUsedFood: numeric("negative_used_food", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    negativeUsedParcel: numeric("negative_used_parcel", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    negativeUsedPersonRide: numeric("negative_used_person_ride", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
     // Withdrawals (from total balance, not per service)
     totalWithdrawn: numeric("total_withdrawn", { precision: 10, scale: 2 })
       .notNull()

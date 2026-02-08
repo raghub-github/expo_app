@@ -856,6 +856,9 @@ export default function RidersPage() {
                   <InfoInline label="City" value={rider.city || "—"} />
                   <InfoInline label="Status" value={(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? <span className="font-medium text-red-600">BLOCKED</span> : (riderSummary?.rider?.status ?? rider.status)} />
                   <InfoInline label="Onboarding" value={rider.onboarding_stage} />
+                  {needsVerification && riderSummary?.onboardingFees && Number(riderSummary.onboardingFees.totalPaid) > 0 && (
+                    <InfoInline label="Onboarding fee paid" value={<span className="font-medium text-emerald-700 tabular-nums">₹{Number(riderSummary.onboardingFees.totalPaid).toFixed(2)}</span>} />
+                  )}
                   <InfoInline
                     label="Online"
                     value={
@@ -2100,61 +2103,61 @@ export default function RidersPage() {
                             </div>
                           ) : (
                             <div className="overflow-auto border border-gray-200 rounded-lg max-h-[50vh] sm:max-h-[60vh] min-h-0">
-                              <table className="min-w-full text-sm">
+                              <table className="min-w-full text-sm border-collapse">
                                 <thead className="bg-gray-50 sticky top-0 z-10">
                                   <tr>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">ID</th>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Order</th>
-                                    <th className="px-3 py-2 text-right text-xs font-medium text-gray-600 uppercase">Amount</th>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Reason (request)</th>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Requested by</th>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Status</th>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Approved/Rejected by</th>
-                                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-600 uppercase">Review note</th>
-                                    <th className="px-3 py-2 text-right text-xs font-medium text-gray-600 uppercase min-w-[140px] sm:min-w-[180px]">Action</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">ID</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Order</th>
+                                    <th className="px-2 py-2 text-right text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Amount</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Reason</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Requested by</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Status</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Approved/Rejected by</th>
+                                    <th className="px-2 py-2 text-left text-[11px] font-semibold text-gray-600 uppercase tracking-wide">Review note</th>
+                                    <th className="px-2 py-2 text-right text-xs font-medium text-gray-600 uppercase whitespace-nowrap">Action</th>
                                   </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-100">
                                   {creditRequestsForRider.map((r) => (
                                     <tr key={r.id} className="text-gray-900 hover:bg-gray-50/50 transition-colors">
-                                      <td className="px-3 py-2 font-mono text-xs sm:text-sm align-top">{r.id}</td>
-                                      <td className="px-3 py-2 font-mono text-xs sm:text-sm align-top">{r.orderId ?? "—"}</td>
-                                      <td className="px-3 py-2 text-right font-medium text-xs sm:text-sm align-top">₹{Number(r.amount).toFixed(2)}</td>
-                                      <td className="px-3 py-2 max-w-[180px] sm:max-w-[220px] truncate text-gray-700 text-xs sm:text-sm align-top" title={r.reason}>{r.reason}</td>
-                                      <td className="px-3 py-2 align-top">
+                                      <td className="px-2 py-1.5 font-mono text-xs align-middle">{r.id}</td>
+                                      <td className="px-2 py-1.5 font-mono text-xs align-middle">{r.orderId ?? "—"}</td>
+                                      <td className="px-2 py-1.5 text-right font-medium text-xs align-middle">₹{Number(r.amount).toFixed(2)}</td>
+                                      <td className="px-2 py-1.5 max-w-[160px] truncate text-gray-700 text-xs align-middle" title={r.reason}>{r.reason}</td>
+                                      <td className="px-2 py-1.5 align-middle">
                                         <div className="flex flex-col leading-tight min-w-0">
-                                          <span className="text-gray-700 text-xs sm:text-sm truncate">{r.requestedByEmail ?? "—"}</span>
-                                          <span className="text-[11px] text-gray-500 mt-0.5">{new Date(r.requestedAt).toLocaleString()}</span>
+                                          <span className="text-gray-700 text-xs truncate">{r.requestedByEmail ?? "—"}</span>
+                                          <span className="text-[11px] text-gray-500">{new Date(r.requestedAt).toLocaleString()}</span>
                                         </div>
                                       </td>
-                                      <td className="px-3 py-2 align-top">
-                                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${r.status === "approved" ? "bg-green-100 text-green-800" : r.status === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
+                                      <td className="px-2 py-1.5 align-middle">
+                                        <span className={`inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${r.status === "approved" ? "bg-green-100 text-green-800" : r.status === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>
                                           {r.status}
                                         </span>
                                       </td>
-                                      <td className="px-3 py-2 align-top">
+                                      <td className="px-2 py-1.5 align-middle">
                                         <div className="flex flex-col leading-tight min-w-0">
-                                          <span className="text-gray-700 text-xs sm:text-sm truncate">{r.reviewedByEmail ?? "—"}</span>
-                                          <span className="text-[11px] text-gray-500 mt-0.5">{r.reviewedAt ? new Date(r.reviewedAt).toLocaleString() : "—"}</span>
+                                          <span className="text-gray-700 text-xs truncate">{r.reviewedByEmail ?? "—"}</span>
+                                          <span className="text-[11px] text-gray-500">{r.reviewedAt ? new Date(r.reviewedAt).toLocaleString() : "—"}</span>
                                         </div>
                                       </td>
-                                      <td className="px-3 py-2 max-w-[180px] sm:max-w-[220px] truncate text-gray-700 text-xs sm:text-sm align-top" title={r.reviewNote ?? ""}>{r.reviewNote ?? "—"}</td>
-                                      <td className="px-3 py-2 align-top">
-                                        <div className="flex items-center justify-end gap-1.5 sm:gap-2 flex-wrap">
+                                      <td className="px-2 py-1.5 max-w-[140px] truncate text-gray-700 text-xs align-middle" title={r.reviewNote ?? ""}>{r.reviewNote ?? "—"}</td>
+                                      <td className="px-2 py-1.5 align-middle">
+                                        <div className="flex items-center justify-end gap-1 flex-nowrap">
                                           {r.status === "pending" && canApproveRejectWalletCredit && (
                                             <>
                                               <button
                                                 type="button"
                                                 onClick={() => handleApproveCreditRequest(r.id)}
                                                 disabled={actioningCreditRequestId !== null || deletingCreditRequestId !== null}
-                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm min-h-[32px] sm:min-h-[36px]"
+                                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded disabled:opacity-50 transition-colors"
                                                 title="Approve request"
                                                 aria-label="Approve request"
                                               >
                                                 {actioningCreditRequestId === r.id ? (
-                                                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                                                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
                                                 ) : (
-                                                  <Check className="h-4 w-4 shrink-0" />
+                                                  <Check className="h-3.5 w-3.5 shrink-0" />
                                                 )}
                                                 <span>Approve</span>
                                               </button>
@@ -2162,33 +2165,33 @@ export default function RidersPage() {
                                                 type="button"
                                                 onClick={() => setRejectCreditRequestModal({ id: r.id, reason: "" })}
                                                 disabled={actioningCreditRequestId !== null || deletingCreditRequestId !== null}
-                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 transition-colors shadow-sm min-h-[32px] sm:min-h-[36px]"
+                                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 transition-colors"
                                                 title="Reject request"
                                                 aria-label="Reject request"
                                               >
-                                                <X className="h-4 w-4 shrink-0" />
+                                                <X className="h-3.5 w-3.5 shrink-0" />
                                                 <span>Reject</span>
                                               </button>
                                             </>
                                           )}
                                           {r.status === "pending" && !canApproveRejectWalletCredit && (
-                                            <span className="text-xs text-gray-500 italic">View only</span>
+                                            <span className="text-[11px] text-gray-500 italic">View only</span>
                                           )}
                                           {canDeleteCreditRequest(r) && (
                                             <button
                                               type="button"
                                               onClick={() => handleDeleteCreditRequest(r.id, r.orderId)}
                                               disabled={deletingCreditRequestId !== null || actioningCreditRequestId !== null}
-                                              className="inline-flex items-center gap-1 p-1.5 sm:p-2 rounded-lg text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors border border-transparent hover:border-red-200"
+                                              className="inline-flex items-center gap-0.5 p-1 rounded text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
                                               title="Delete request"
                                               aria-label="Delete request"
                                             >
                                               {deletingCreditRequestId === r.id ? (
-                                                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-red-400 border-t-transparent" />
+                                                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-red-400 border-t-transparent" />
                                               ) : (
-                                                <Trash2 className="h-4 w-4" />
+                                                <Trash2 className="h-3.5 w-3.5" />
                                               )}
-                                              <span className="text-xs font-medium hidden sm:inline">Delete</span>
+                                              <span className="text-[11px] font-medium">Del</span>
                                             </button>
                                           )}
                                         </div>
@@ -2318,9 +2321,9 @@ export default function RidersPage() {
                               <textarea rows={2} required value={addPenaltyForm.reason} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, reason: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900 placeholder:text-gray-500" placeholder="e.g. Order cancellation, fraud, extra charges..." />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">Service *</label>
-                              <select value={addPenaltyForm.serviceType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))} required className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 bg-white text-gray-900">
-                                <option value="" className="text-gray-900 bg-white">Select service</option>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Service (optional)</label>
+                              <select value={addPenaltyForm.serviceType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900">
+                                <option value="" className="text-gray-900 bg-white">— Not specified</option>
                                 <option value="food" className="text-gray-900 bg-white">Food</option>
                                 <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
                                 <option value="person_ride" className="text-gray-900 bg-white">Person Ride</option>
@@ -2328,7 +2331,7 @@ export default function RidersPage() {
                             </div>
                             <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">Penalty Type</label>
-                              <select value={addPenaltyForm.penaltyType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, penaltyType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 bg-white text-gray-900">
+                              <select value={addPenaltyForm.penaltyType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, penaltyType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900">
                                 {PENALTY_TYPES.map((t) => <option key={t} value={t} className="text-gray-900 bg-white">{t.replace(/_/g, ' ')}</option>)}
                               </select>
                             </div>

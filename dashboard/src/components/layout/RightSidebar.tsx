@@ -92,8 +92,18 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
         {/* Navigation Content - only the most specific (longest) matching route is active */}
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
           {(() => {
+            // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
+            const isWalletOrEarningsPath =
+              cleanPathname === "/dashboard/riders/wallet-history" ||
+              cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
+              cleanPathname === "/dashboard/riders/earnings" ||
+              cleanPathname.startsWith("/dashboard/riders/earnings/");
             const activeHref = currentSubRoutes
-              .filter((r) => cleanPathname === r.href || cleanPathname.startsWith(r.href + "/"))
+              .filter((r) => {
+                const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
+                const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
+                return exactOrPrefix || walletEarningsAlias;
+              })
               .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
             return currentSubRoutes.map((route) => {
               const isActive = activeHref === route.href;

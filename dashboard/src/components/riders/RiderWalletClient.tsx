@@ -38,6 +38,15 @@ interface LedgerRow {
   createdAt: string;
 }
 
+interface OnboardingPaymentRow {
+  id: number;
+  amount: string;
+  provider: string;
+  refId: string;
+  status: string;
+  createdAt: string;
+}
+
 export function RiderWalletClient() {
   const searchParams = useSearchParams();
   const riderContext = useRiderDashboardOptional();
@@ -52,6 +61,7 @@ export function RiderWalletClient() {
   const [addAmountOpen, setAddAmountOpen] = useState(false);
   const [recentLedger, setRecentLedger] = useState<LedgerRow[]>([]);
   const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [onboardingPayments, setOnboardingPayments] = useState<OnboardingPaymentRow[]>([]);
 
   const { data: riderAccess } = useRiderAccessQuery();
   const canAddPenalty =
@@ -118,9 +128,19 @@ export function RiderWalletClient() {
         penaltiesPersonRide: json.data.wallet.penaltiesPersonRide,
         totalWithdrawn: json.data.wallet.totalWithdrawn,
       } : null);
+      const payments = (json.data?.onboardingPayments ?? []).map((p: { id: number; amount: string; provider: string; refId: string; status: string; createdAt: string }) => ({
+        id: p.id,
+        amount: p.amount,
+        provider: p.provider,
+        refId: p.refId,
+        status: p.status,
+        createdAt: p.createdAt,
+      }));
+      setOnboardingPayments(payments);
     } catch (err: any) {
       setError(err?.message || "Failed to load wallet");
       setWallet(null);
+      setOnboardingPayments([]);
     } finally {
       setLoading(false);
     }
@@ -173,6 +193,7 @@ export function RiderWalletClient() {
       fetchRecentLedger(rider.id);
     } else {
       setRecentLedger([]);
+      setOnboardingPayments([]);
     }
   }, [rider, fetchWallet, fetchRecentLedger]);
 
@@ -220,7 +241,21 @@ export function RiderWalletClient() {
                       <div className="rounded-xl border border-gray-100 bg-red-50/50 p-3"><span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Penalties (Person Ride)</span><p className="font-semibold text-red-600 mt-1">₹{Number(wallet.penaltiesPersonRide).toFixed(2)}</p></div>
                       <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-3"><span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Withdrawn</span><p className="font-semibold text-gray-900 mt-1">₹{Number(wallet.totalWithdrawn).toFixed(2)}</p></div>
                     </div>
-                  ) : (
+                  ) : null}
+                  {onboardingPayments.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Onboarding fee paid</p>
+                      <p className="text-sm text-gray-700">
+                        <span className="font-semibold tabular-nums">₹{onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}</span>
+                        {" "}({onboardingPayments.filter((p) => p.status === "completed").length} transaction{onboardingPayments.filter((p) => p.status === "completed").length !== 1 ? "s" : ""})
+                        {" · "}
+                        <Link href={rider ? `/dashboard/riders/${rider.id}#onboarding-fees` : "#"} className="text-blue-600 hover:text-blue-800 font-medium">
+                          View transaction details
+                        </Link>
+                      </p>
+                    </div>
+                  )}
+                  {wallet ? null : (
                     <p className="text-gray-500 text-sm">No wallet record. Balance will show as ₹0.00 until ledger entries exist.</p>
                   )}
                 </div>

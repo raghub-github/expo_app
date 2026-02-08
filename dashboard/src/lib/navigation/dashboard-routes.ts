@@ -417,10 +417,18 @@ export function getCurrentPageName(pathname: string): string {
     return currentDashboard.name;
   }
   
-  // Check if we're on a sub-route
+  // Check if we're on a sub-route (most specific first: match longer hrefs so wallet-history → Wallet & Earnings)
   if (currentDashboard.subRoutes) {
-    for (const subRoute of currentDashboard.subRoutes) {
-      if (cleanPath === subRoute.href || cleanPath.startsWith(subRoute.href + "/")) {
+    const sortedSubRoutes = [...currentDashboard.subRoutes].sort((a, b) => b.href.length - a.href.length);
+    for (const subRoute of sortedSubRoutes) {
+      const exactOrPrefix = cleanPath === subRoute.href || cleanPath.startsWith(subRoute.href + "/");
+      const walletEarningsAlias =
+        subRoute.href === "/dashboard/riders/wallet" &&
+        (cleanPath === "/dashboard/riders/wallet-history" ||
+          cleanPath.startsWith("/dashboard/riders/wallet-history/") ||
+          cleanPath === "/dashboard/riders/earnings" ||
+          cleanPath.startsWith("/dashboard/riders/earnings/"));
+      if (exactOrPrefix || walletEarningsAlias) {
         return subRoute.name;
       }
     }

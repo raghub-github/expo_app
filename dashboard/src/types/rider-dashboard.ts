@@ -122,6 +122,18 @@ export interface RiderSummary {
       performedByName: string | null;
     } | null;
   } | null;
+  /** Onboarding (registration) fees paid by the rider – shown on home when not verified, and in wallet/full details */
+  onboardingFees?: {
+    totalPaid: string;
+    transactions: {
+      id: number;
+      amount: string;
+      provider: string;
+      refId: string;
+      status: string;
+      createdAt: string;
+    }[];
+  };
 }
 
 /** Minimal rider info for sub-pages (penalties, orders, etc.) */

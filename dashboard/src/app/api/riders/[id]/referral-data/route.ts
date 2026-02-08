@@ -13,6 +13,7 @@ import {
   referralOffers,
   referralFulfillments,
   orders,
+  ordersCore,
 } from "@/lib/db/schema";
 import { eq, and, desc, gte, lte, sql, inArray, or, isNull, ilike } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
@@ -111,24 +112,25 @@ export async function GET(
         ? parseInt(offerIdParam, 10)
         : null;
 
-    const conditions = [eq(referrals.referrerId, riderId)];
-    if (from) conditions.push(gte(referrals.createdAt, new Date(from)));
-    if (to) conditions.push(lte(referrals.createdAt, new Date(to)));
+    // Build conditions for referrals table query
+    const referralConditions = [eq(referrals.referrerId, riderId)];
+    if (from) referralConditions.push(gte(referrals.createdAt, new Date(from)));
+    if (to) referralConditions.push(lte(referrals.createdAt, new Date(to)));
     if (cityId !== null)
-      conditions.push(eq(referrals.referredCityId, cityId));
+      referralConditions.push(eq(referrals.referredCityId, cityId));
     if (cityNameParam)
-      conditions.push(ilike(referrals.referredCityName, `%${cityNameParam}%`));
-    if (offerId !== null) conditions.push(eq(referrals.offerId, offerId));
+      referralConditions.push(ilike(referrals.referredCityName, `%${cityNameParam}%`));
+    if (offerId !== null) referralConditions.push(eq(referrals.offerId, offerId));
     if (statusParam) {
       if (statusParam === "pending") {
-        conditions.push(
+        referralConditions.push(
           or(
             isNull(referralFulfillments.id),
             eq(referralFulfillments.status, "pending")
           )!
         );
       } else {
-        conditions.push(
+        referralConditions.push(
           eq(referralFulfillments.status, statusParam as "fulfilled" | "credited" | "expired" | "cancelled")
         );
       }
@@ -137,9 +139,9 @@ export async function GET(
       const num = parseInt(qParam, 10);
       const isNumeric = !Number.isNaN(num) && String(num) === qParam.trim();
       if (isNumeric) {
-        conditions.push(eq(riders.id, num));
+        referralConditions.push(eq(referrals.referredId, num));
       } else {
-        conditions.push(
+        referralConditions.push(
           or(
             ilike(riders.name, `%${qParam}%`),
             ilike(riders.mobile, `%${qParam}%`)
@@ -148,13 +150,14 @@ export async function GET(
       }
     }
 
+    // Query referrals table (primary source)
     const [filteredCountRow] = await db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({ count: sql<number>`count(distinct ${referrals.id})::int` })
       .from(referrals)
       .leftJoin(referralFulfillments, eq(referrals.id, referralFulfillments.referralId))
-      .innerJoin(riders, eq(referrals.referredId, riders.id))
-      .where(and(...conditions));
-    const totalFiltered = filteredCountRow?.count ?? 0;
+      .leftJoin(riders, eq(referrals.referredId, riders.id))
+      .where(and(...referralConditions));
+    const totalFilteredFromReferrals = filteredCountRow?.count ?? 0;
 
     const referralsList = await db
       .select({
@@ -196,13 +199,98 @@ export async function GET(
         referralFulfillments,
         eq(referrals.id, referralFulfillments.referralId)
       )
-      .innerJoin(riders, eq(referrals.referredId, riders.id))
-      .where(and(...conditions))
+      .leftJoin(riders, eq(referrals.referredId, riders.id))
+      .where(and(...referralConditions))
       .orderBy(desc(referrals.createdAt))
       .limit(limit + 1)
       .offset(offset);
 
-    const referredIds = referralsList.map((r) => r.referredId);
+    // Also query riders table where referred_by = riderId (fallback for missing referrals table data)
+    const ridersConditions = [eq(riders.referredBy, riderId)];
+    if (from) ridersConditions.push(gte(riders.createdAt, new Date(from)));
+    if (to) ridersConditions.push(lte(riders.createdAt, new Date(to)));
+    if (qParam) {
+      const num = parseInt(qParam, 10);
+      const isNumeric = !Number.isNaN(num) && String(num) === qParam.trim();
+      if (isNumeric) {
+        ridersConditions.push(eq(riders.id, num));
+      } else {
+        ridersConditions.push(
+          or(
+            ilike(riders.name, `%${qParam}%`),
+            ilike(riders.mobile, `%${qParam}%`)
+          )!
+        );
+      }
+    }
+
+    // Get referred riders from riders.referred_by that are NOT in referrals table
+    const referredRiderIdsFromReferrals = new Set(
+      referralsList.map((r) => r.referredId).filter((id): id is number => id != null)
+    );
+
+    // Get all referred riders from riders table
+    const allReferredRidersFromRidersTable = await db
+      .select({
+        id: riders.id,
+        name: riders.name,
+        mobile: riders.mobile,
+        createdAt: riders.createdAt,
+        city: riders.city,
+      })
+      .from(riders)
+      .where(and(...ridersConditions))
+      .orderBy(desc(riders.createdAt));
+
+    // Filter out riders already in referrals table
+    const referredRidersFromRidersTable = allReferredRidersFromRidersTable
+      .filter((rider) => !referredRiderIdsFromReferrals.has(rider.id))
+      .slice(0, limit + 1);
+
+    // Combine referrals table data with riders.referred_by data
+    const combinedReferralsList = [
+      ...referralsList,
+      ...referredRidersFromRidersTable.map((rider) => ({
+        referralId: null as number | null, // No referral record exists
+        referredId: rider.id,
+        offerId: null as number | null,
+        referralCodeUsed: null as string | null,
+        referredCityId: null as number | null,
+        referredCityName: rider.city ?? null,
+        createdAt: rider.createdAt,
+        offerCode: null as string | null,
+        offerName: null as string | null,
+        offerType: null as string | null,
+        minOrdersPerReferred: null as number | null,
+        termsAndConditions: null as string | null,
+        termsSnapshot: null as Record<string, unknown> | null,
+        referredName: rider.name,
+        referredMobile: rider.mobile,
+        fulfillmentId: null as number | null,
+        fulfillmentStatus: null as string | null,
+        ordersCompletedByReferred: null as number | null,
+        ordersCompletedFood: null as number | null,
+        ordersCompletedParcel: null as number | null,
+        ordersCompletedPersonRide: null as number | null,
+        amountCredited: null as string | null,
+        amountCreditedFood: null as string | null,
+        amountCreditedParcel: null as string | null,
+        amountCreditedPersonRide: null as string | null,
+        creditedAt: null as Date | null,
+        fulfilledAt: null as Date | null,
+        fulfillmentCityName: null as string | null,
+        fulfillmentTermsSnapshot: null as Record<string, unknown> | null,
+      })),
+    ].sort((a, b) => {
+      // Sort by createdAt descending
+      const dateA = a.createdAt?.getTime() ?? 0;
+      const dateB = b.createdAt?.getTime() ?? 0;
+      return dateB - dateA;
+    });
+
+    const totalFiltered = totalFilteredFromReferrals + referredRidersFromRidersTable.length;
+
+    const referredIds = combinedReferralsList.map((r) => r.referredId).filter((id): id is number => id != null);
     let orderCounts: Record<
       number,
       {
@@ -212,8 +300,44 @@ export async function GET(
         person_ride: number;
       }
     > = {};
+    const mergeCounts = (
+      acc: typeof orderCounts,
+      c: { riderId: number | null; total: number; food: number; parcel: number; personRide: number }
+    ) => {
+      if (c.riderId != null) {
+        const cur = acc[c.riderId] ?? { total: 0, food: 0, parcel: 0, person_ride: 0 };
+        acc[c.riderId] = {
+          total: cur.total + (c.total ?? 0),
+          food: cur.food + (c.food ?? 0),
+          parcel: cur.parcel + (c.parcel ?? 0),
+          person_ride: cur.person_ride + (c.personRide ?? 0),
+        };
+      }
+    };
     if (referredIds.length > 0) {
-      const counts = await db
+      // Count delivered orders from orders_core (primary) and orders (legacy) so all referred riders' orders are included
+      try {
+        const coreCounts = await db
+          .select({
+            riderId: ordersCore.riderId,
+            total: sql<number>`count(*)::int`,
+            food: sql<number>`count(*) filter (where ${ordersCore.orderType} = 'food')::int`,
+            parcel: sql<number>`count(*) filter (where ${ordersCore.orderType} = 'parcel')::int`,
+            personRide: sql<number>`count(*) filter (where ${ordersCore.orderType} = 'person_ride')::int`,
+          })
+          .from(ordersCore)
+          .where(
+            and(
+              inArray(ordersCore.riderId, referredIds),
+              eq(ordersCore.status, "delivered")
+            )
+          )
+          .groupBy(ordersCore.riderId);
+        coreCounts.forEach((c) => mergeCounts(orderCounts, c));
+      } catch {
+        // orders_core may not exist in some envs
+      }
+      const legacyCounts = await db
         .select({
           riderId: orders.riderId,
           total: sql<number>`count(*)::int`,
@@ -229,23 +353,32 @@ export async function GET(
           )
         )
         .groupBy(orders.riderId);
-
-      counts.forEach((c) => {
-        if (c.riderId != null) {
-          orderCounts[c.riderId] = {
-            total: c.total ?? 0,
-            food: c.food ?? 0,
-            parcel: c.parcel ?? 0,
-            person_ride: c.personRide ?? 0,
-          };
-        }
-      });
+      legacyCounts.forEach((c) => mergeCounts(orderCounts, c));
     }
 
-    const totalReferredCount = await db
-      .select({ count: sql<number>`count(*)::int` })
+    // Calculate total referred count from both sources (without filters)
+    // Get all referred IDs from referrals table
+    const allReferredFromReferrals = await db
+      .select({ referredId: referrals.referredId })
       .from(referrals)
       .where(eq(referrals.referrerId, riderId));
+
+    // Get all referred IDs from riders table
+    const allReferredFromRiders = await db
+      .select({ id: riders.id })
+      .from(riders)
+      .where(eq(riders.referredBy, riderId));
+
+    // Combine and deduplicate to get the actual total count
+    const allReferredIds = new Set<number>();
+    allReferredFromReferrals.forEach((r) => {
+      if (r.referredId != null) allReferredIds.add(r.referredId);
+    });
+    allReferredFromRiders.forEach((r) => {
+      if (r.id != null) allReferredIds.add(r.id);
+    });
+
+    const totalReferredCount = allReferredIds.size;
 
     const totalCredited = await db
       .select({
@@ -254,8 +387,9 @@ export async function GET(
       .from(referralFulfillments)
       .where(eq(referralFulfillments.referrerRiderId, riderId));
 
-    const items = referralsList.slice(0, limit).map((r) => {
-      const currentOrders = orderCounts[r.referredId] ?? {
+    const items = combinedReferralsList.slice(0, limit).map((r) => {
+      const referredId = r.referredId ?? 0;
+      const currentOrders = orderCounts[referredId] ?? {
         total: 0,
         food: 0,
         parcel: 0,
@@ -263,9 +397,9 @@ export async function GET(
       };
       return {
         referralId: r.referralId,
-        referredRiderId: r.referredId,
-        referredRiderName: r.referredName,
-        referredMobile: r.referredMobile,
+        referredRiderId: referredId,
+        referredRiderName: r.referredName ?? "Unknown",
+        referredMobile: r.referredMobile ?? "—",
         referredAt: r.createdAt,
         cityName: r.referredCityName ?? r.fulfillmentCityName ?? null,
         offerCode: r.offerCode,
@@ -295,7 +429,7 @@ export async function GET(
       };
     });
 
-    const hasMore = referralsList.length > limit;
+    const hasMore = combinedReferralsList.length > limit;
 
     return NextResponse.json({
       success: true,
@@ -307,7 +441,7 @@ export async function GET(
           referralCode: riderRow.referralCode,
           referredBy: riderRow.referredBy,
         },
-        totalReferredCount: totalReferredCount[0]?.count ?? 0,
+        totalReferredCount: totalReferredCount,
         totalAmountCredited: totalCredited[0]?.sum ?? "0",
         list: items,
         total: totalFiltered,

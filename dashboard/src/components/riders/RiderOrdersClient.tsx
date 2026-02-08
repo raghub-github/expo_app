@@ -350,24 +350,24 @@ export function RiderOrdersClient() {
                 <div className="min-w-[100px]">
                   <label className="block text-xs font-medium text-gray-600 mb-0.5">Service</label>
                   <select value={orderType} onChange={(e) => setOrderType(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    <option value="all">All</option>
-                    <option value="food">Food</option>
-                    <option value="parcel">Parcel</option>
-                    <option value="person_ride">Person Ride</option>
+                    <option value="all" className="text-gray-900 bg-white">All</option>
+                    <option value="food" className="text-gray-900 bg-white">Food</option>
+                    <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
+                    <option value="person_ride" className="text-gray-900 bg-white">Person Ride</option>
                   </select>
                 </div>
                 <div className="min-w-[120px]">
                   <label className="block text-xs font-medium text-gray-600 mb-0.5">Status</label>
                   <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                    <option value="all">All</option>
-                    <option value="assigned">Assigned</option>
-                    <option value="accepted">Accepted</option>
-                    <option value="reached_store">Reached Store</option>
-                    <option value="picked_up">Picked Up</option>
-                    <option value="in_transit">In Transit</option>
-                    <option value="delivered">Delivered</option>
-                    <option value="cancelled">Cancelled</option>
-                    <option value="failed">Failed</option>
+                    <option value="all" className="text-gray-900 bg-white">All</option>
+                    <option value="assigned" className="text-gray-900 bg-white">Assigned</option>
+                    <option value="accepted" className="text-gray-900 bg-white">Accepted</option>
+                    <option value="reached_store" className="text-gray-900 bg-white">Reached Store</option>
+                    <option value="picked_up" className="text-gray-900 bg-white">Picked Up</option>
+                    <option value="in_transit" className="text-gray-900 bg-white">In Transit</option>
+                    <option value="delivered" className="text-gray-900 bg-white">Delivered</option>
+                    <option value="cancelled" className="text-gray-900 bg-white">Cancelled</option>
+                    <option value="failed" className="text-gray-900 bg-white">Failed</option>
                   </select>
                 </div>
                 <div className="min-w-[120px]">

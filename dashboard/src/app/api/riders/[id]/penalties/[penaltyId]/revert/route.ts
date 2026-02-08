@@ -117,6 +117,14 @@ export async function POST(
 
     const [wallet] = await db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1);
     const balanceAfter = wallet ? Number(wallet.totalBalance) + amount : amount;
+    const nuf = Number((wallet as { negativeUsedFood?: string })?.negativeUsedFood ?? 0);
+    const nup = Number((wallet as { negativeUsedParcel?: string })?.negativeUsedParcel ?? 0);
+    const nur = Number((wallet as { negativeUsedPersonRide?: string })?.negativeUsedPersonRide ?? 0);
+    const reduceBy = (v: number) => Math.max(0, v - amount);
+    const newNuf = serviceType === "food" ? reduceBy(nuf) : nuf;
+    const newNup = serviceType === "parcel" ? reduceBy(nup) : nup;
+    const newNur = serviceType === "person_ride" ? reduceBy(nur) : nur;
+    const resetNegative = balanceAfter >= 0;
     await db.insert(walletLedger).values({
       riderId,
       entryType: "penalty_reversal",
@@ -131,7 +139,7 @@ export async function POST(
       performedById: systemUser?.id ?? null,
     });
 
-    // App is source of truth for penalty_reversal: decrease only this service's penalty so block is removed
+    // App is source of truth: decrease penalty and negative_used for this service; if balance >= 0 reset all negative_used and unblock_alloc (RULE 4)
     const pf = Number(wallet?.penaltiesFood ?? 0);
     const pp = Number(wallet?.penaltiesParcel ?? 0);
     const pr = Number(wallet?.penaltiesPersonRide ?? 0);
@@ -141,6 +149,12 @@ export async function POST(
         penaltiesFood: serviceType === "food" ? Math.max(0, pf - amount).toFixed(2) : (wallet?.penaltiesFood ?? "0"),
         penaltiesParcel: serviceType === "parcel" ? Math.max(0, pp - amount).toFixed(2) : (wallet?.penaltiesParcel ?? "0"),
         penaltiesPersonRide: serviceType === "person_ride" ? Math.max(0, pr - amount).toFixed(2) : (wallet?.penaltiesPersonRide ?? "0"),
+        negativeUsedFood: (resetNegative ? 0 : newNuf).toFixed(2),
+        negativeUsedParcel: (resetNegative ? 0 : newNup).toFixed(2),
+        negativeUsedPersonRide: (resetNegative ? 0 : newNur).toFixed(2),
+        unblockAllocFood: resetNegative ? "0" : (wallet as { unblockAllocFood?: string })?.unblockAllocFood ?? "0",
+        unblockAllocParcel: resetNegative ? "0" : (wallet as { unblockAllocParcel?: string })?.unblockAllocParcel ?? "0",
+        unblockAllocPersonRide: resetNegative ? "0" : (wallet as { unblockAllocPersonRide?: string })?.unblockAllocPersonRide ?? "0",
         totalBalance: balanceAfter.toFixed(2),
         lastUpdatedAt: new Date(),
       })

@@ -342,7 +342,7 @@ export function PendingActionsClient() {
                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Status</th>
                       <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wide">Reviewed By</th>
                       {(status === "pending" || requests.some((r) => r.status === "pending")) && (
-                        <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase tracking-wide w-32">Actions</th>
+                        <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase tracking-wide min-w-[180px] w-[180px]">Actions</th>
                       )}
                     </tr>
                   </thead>
@@ -383,16 +383,16 @@ export function PendingActionsClient() {
                             </div>
                           </td>
                           {(status === "pending" || requests.some((x) => x.status === "pending")) && (
-                            <td className="px-4 py-2 text-right">
+                            <td className="px-4 py-2 text-right align-middle min-w-[180px]">
                               {r.status === "pending" ? (
-                                <div className="flex items-center justify-end gap-1 flex-wrap">
+                                <div className="flex items-center justify-end gap-1.5 flex-nowrap">
                                   {canApproveRejectWalletCredit ? (
                                     <>
                                       <button
                                         type="button"
                                         onClick={() => handleApprove(r.id)}
                                         disabled={actioningId !== null}
-                                        className="px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded"
+                                        className="shrink-0 px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded"
                                       >
                                         {actioningId === r.id ? "..." : "Approve"}
                                       </button>
@@ -400,20 +400,20 @@ export function PendingActionsClient() {
                                         type="button"
                                         onClick={() => setRejectModal({ id: r.id, reason: "" })}
                                         disabled={actioningId !== null}
-                                        className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded"
+                                        className="shrink-0 px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded"
                                       >
                                         Reject
                                       </button>
                                     </>
                                   ) : (
-                                    <span className="text-xs text-gray-500">View only</span>
+                                    <span className="text-xs text-gray-500 shrink-0">View only</span>
                                   )}
                                   {canDeleteRequest(r) && (
                                     <button
                                       type="button"
                                       onClick={() => handleDelete(r.id)}
                                       disabled={deletingId !== null}
-                                      className="p-1.5 text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
+                                      className="shrink-0 p-1.5 text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
                                       title="Delete request"
                                       aria-label="Delete request"
                                     >

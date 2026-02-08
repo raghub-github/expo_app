@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
-import { CheckCircle, ArrowLeft, User, Car, Wallet, FileText, CreditCard } from 'lucide-react';
+import { CheckCircle, ArrowLeft, User, Car, Wallet, FileText, CreditCard, Receipt } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 
 interface Rider {
@@ -155,6 +155,17 @@ interface PaymentMethod {
   createdAt: string;
 }
 
+interface OnboardingPaymentEntry {
+  id: number;
+  riderId: number;
+  amount: string;
+  provider: string;
+  refId: string;
+  paymentId: string | null;
+  status: string;
+  createdAt: string;
+}
+
 interface RiderData {
   rider: Rider;
   documents: RiderDocument[];
@@ -165,6 +176,7 @@ interface RiderData {
   recentLedger?: LedgerEntry[];
   recentPenalties?: PenaltyEntry[];
   recentWithdrawals?: WithdrawalEntry[];
+  onboardingPayments?: OnboardingPaymentEntry[];
 }
 
 export default function RiderDetailsPage() {
@@ -515,6 +527,52 @@ export default function RiderDetailsPage() {
             {wallet.lastUpdatedAt && (
               <InfoRow label="Last Updated" value={new Date(wallet.lastUpdatedAt).toLocaleString()} valueClassName="text-gray-500" />
             )}
+          </div>
+        </section>
+      )}
+
+      {/* Onboarding Fees (registration fees paid during onboarding) */}
+      {riderData.onboardingPayments && riderData.onboardingPayments.length > 0 && (
+        <section id="onboarding-fees" className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5">
+          <div className="flex items-center gap-2 mb-4 sm:mb-5">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-100 text-violet-600 shrink-0">
+              <Receipt className="h-5 w-5" />
+            </div>
+            <h2 className="text-lg sm:text-xl font-bold text-gray-900">Onboarding Fees</h2>
+          </div>
+          <p className="text-sm text-gray-600 mb-4">
+            Total paid during registration: <span className="font-semibold text-gray-900 tabular-nums">₹{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}</span>
+          </p>
+          <div className="overflow-x-auto rounded-xl border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-2.5 text-left font-medium text-gray-700">Ref ID</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-gray-700">Amount</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-gray-700">Provider</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-gray-700">Status</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-gray-700">Payment ID</th>
+                  <th className="px-4 py-2.5 text-left font-medium text-gray-700">Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {riderData.onboardingPayments.map((p) => (
+                  <tr key={p.id}>
+                    <td className="px-4 py-2.5 font-mono text-gray-900">{p.refId || "—"}</td>
+                    <td className="px-4 py-2.5 font-medium tabular-nums">₹{Number(p.amount).toFixed(2)}</td>
+                    <td className="px-4 py-2.5 text-gray-600">{p.provider || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        p.status === "completed" ? "bg-emerald-100 text-emerald-800" :
+                        p.status === "failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
+                      }`}>{p.status}</span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-gray-600 text-xs">{p.paymentId || "—"}</td>
+                    <td className="px-4 py-2.5 text-gray-600">{new Date(p.createdAt).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       )}

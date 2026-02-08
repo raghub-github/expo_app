@@ -579,7 +579,7 @@ export function RiderPenaltiesClient() {
                   {/* Desktop: modern table (lg and up) */}
                   <div className="hidden lg:block rounded-xl border border-gray-200/80 overflow-hidden bg-white shadow-sm">
                     <div className="overflow-x-auto">
-                      <table className="w-full min-w-[800px] text-sm border-collapse">
+                      <table className="w-full min-w-[920px] text-sm border-collapse">
                         <thead>
                           <tr className="bg-gradient-to-r from-gray-50 to-gray-50/80 border-b border-gray-200">
                             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">ID</th>
@@ -588,6 +588,7 @@ export function RiderPenaltiesClient() {
                             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Type</th>
                             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider min-w-[130px]">Reason</th>
                             <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider">Amount</th>
+                            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider min-w-[120px]">Imposed</th>
                             <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider w-[100px]">Details</th>
                             <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600 uppercase tracking-wider w-28">Status</th>
                           </tr>
@@ -660,14 +661,13 @@ export function RiderPenaltiesClient() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Service *</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Service (optional)</label>
                     <select
                       value={addPenaltyForm.serviceType}
                       onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))}
-                      required
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900"
                     >
-                      <option value="" className="text-gray-900 bg-white">Select service</option>
+                      <option value="" className="text-gray-900 bg-white">— Not specified</option>
                       <option value="food" className="text-gray-900 bg-white">Food</option>
                       <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
                       <option value="person_ride" className="text-gray-900 bg-white">Person Ride</option>
@@ -878,6 +878,9 @@ function PenaltyRow({
       <td className="px-4 py-3.5 text-right font-semibold text-red-600 text-[15px] align-middle whitespace-nowrap">
         ₹{Number(penalty.amount || 0).toFixed(2)}
       </td>
+      <td className="px-4 py-3.5 text-gray-700 text-[14px] align-middle whitespace-nowrap" title={imposedBy ? `${imposedAtStr} by ${imposedBy}` : imposedAtStr}>
+        {imposedAtStr}
+      </td>
       <td className="px-4 py-3.5 align-middle w-[100px] overflow-visible">
         <div className="relative flex justify-center">
           <button
@@ -933,21 +936,49 @@ function PenaltyRow({
       </td>
       <td className="px-4 py-3.5 text-right align-middle">
         {canRevert ? (
-          <button
-            type="button"
-            onClick={() => onRevert(penalty.id)}
-            disabled={revertingId === penalty.id}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[14px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors disabled:opacity-50 border border-amber-200/60"
-          >
-            {revertingId === penalty.id ? "…" : "Revert"}
-          </button>
+          isRevertible ? (
+            <button
+              type="button"
+              onClick={() => onRevert(penalty.id)}
+              disabled={revertingId === penalty.id}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[14px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors disabled:opacity-50 border border-amber-200/60"
+            >
+              {revertingId === penalty.id ? "…" : "Revert"}
+            </button>
+          ) : (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
+              Reverted
+            </span>
+          )
         ) : (
-          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
-            Reverted
-          </span>
+          <StatusBadge status={penalty.status} />
         )}
       </td>
     </tr>
+  );
+}
+
+/** Status badge for penalty: Active, Paid, or Reverted based on actual status */
+function StatusBadge({ status }: { status: string }) {
+  const s = (status || "").toLowerCase();
+  if (s === "reversed") {
+    return (
+      <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
+        Reverted
+      </span>
+    );
+  }
+  if (s === "paid") {
+    return (
+      <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-blue-700 bg-blue-50">
+        Paid
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-amber-700 bg-amber-50">
+      Active
+    </span>
   );
 }
 
@@ -979,20 +1010,24 @@ function PenaltyCard({
           <span className="text-gray-500">·</span>
           <span className="text-[14px] text-gray-600 capitalize">{penalty.penaltyType.replace("_", " ")}</span>
         </div>
-        {canRevertAction ? (
-          <button
-            type="button"
-            onClick={() => onRevert(penalty.id)}
-            disabled={revertingId === penalty.id}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[14px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200/60 disabled:opacity-50"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            {revertingId === penalty.id ? "…" : "Revert"}
-          </button>
+        {canRevert ? (
+          isRevertible ? (
+            <button
+              type="button"
+              onClick={() => onRevert(penalty.id)}
+              disabled={revertingId === penalty.id}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[14px] font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200/60 disabled:opacity-50"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {revertingId === penalty.id ? "…" : "Revert"}
+            </button>
+          ) : (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
+              Reverted
+            </span>
+          )
         ) : (
-          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[14px] font-medium text-gray-500 bg-gray-100">
-            Reverted
-          </span>
+          <StatusBadge status={penalty.status} />
         )}
       </div>
       <div className="text-[18px] font-semibold text-red-600 mb-3">

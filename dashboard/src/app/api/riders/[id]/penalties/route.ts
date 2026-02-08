@@ -87,6 +87,17 @@ export async function POST(
     }
     const currentBalance = wallet ? Number(wallet.totalBalance) : 0;
     const balanceAfter = (currentBalance - amount).toFixed(2);
+    const newBalance = currentBalance - amount;
+
+    // Service-level negative tracking: only count negative after wallet goes below zero (RULE 2)
+    let negativeUsedDelta = 0;
+    if (newBalance < 0) {
+      if (currentBalance >= 0) {
+        negativeUsedDelta = amount - currentBalance; // portion that went negative
+      } else {
+        negativeUsedDelta = amount;
+      }
+    }
 
     const [penalty] = await db
       .insert(riderPenalties)
@@ -118,17 +129,22 @@ export async function POST(
       performedById: systemUser?.id ?? null,
     });
 
-    // App is source of truth for penalty: update only this service's penalty so block logic is correct
-    // (DB trigger skips penalty; see migration 0077)
+    // App is source of truth: update penalties_*, total_balance, and negative_used_* for this service (RULE 2)
     const pf = Number(wallet?.penaltiesFood ?? 0);
     const pp = Number(wallet?.penaltiesParcel ?? 0);
     const pr = Number(wallet?.penaltiesPersonRide ?? 0);
+    const nuf = Number((wallet as { negativeUsedFood?: string })?.negativeUsedFood ?? 0);
+    const nup = Number((wallet as { negativeUsedParcel?: string })?.negativeUsedParcel ?? 0);
+    const nur = Number((wallet as { negativeUsedPersonRide?: string })?.negativeUsedPersonRide ?? 0);
     await db
       .update(riderWallet)
       .set({
         penaltiesFood: serviceTypeForWallet === "food" ? (pf + amount).toFixed(2) : (wallet?.penaltiesFood ?? "0"),
         penaltiesParcel: serviceTypeForWallet === "parcel" ? (pp + amount).toFixed(2) : (wallet?.penaltiesParcel ?? "0"),
         penaltiesPersonRide: serviceTypeForWallet === "person_ride" ? (pr + amount).toFixed(2) : (wallet?.penaltiesPersonRide ?? "0"),
+        negativeUsedFood: (serviceTypeForWallet === "food" ? nuf + negativeUsedDelta : nuf).toFixed(2),
+        negativeUsedParcel: (serviceTypeForWallet === "parcel" ? nup + negativeUsedDelta : nup).toFixed(2),
+        negativeUsedPersonRide: (serviceTypeForWallet === "person_ride" ? nur + negativeUsedDelta : nur).toFixed(2),
         totalBalance: balanceAfter,
         lastUpdatedAt: new Date(),
       })

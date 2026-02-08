@@ -134,7 +134,7 @@ export function AddAmountModal({
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             >
               {SERVICE_OPTIONS.map((o) => (
-                <option key={o.value || "none"} value={o.value}>{o.label}</option>
+                <option key={o.value || "none"} value={o.value} className="text-gray-900 bg-white">{o.label}</option>
               ))}
             </select>
             <p className="mt-0.5 text-xs text-gray-500">For which service this credit applies (e.g. Food, Parcel, Person Ride)</p>

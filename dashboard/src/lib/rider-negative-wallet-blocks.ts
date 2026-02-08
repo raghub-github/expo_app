@@ -1,16 +1,18 @@
 /**
- * Temporary block when rider wallet (per service) is negative beyond threshold.
- * Global block: total_balance <= -200 blocks ALL services (unlock when >= 0).
- * Service block: effective_net = (earnings - penalties + unblock_alloc) <= -50.
- * FIFO: generic credits allocate to first blocked service first (applyFifoAllocation).
+ * Rider blacklist/whitelist by wallet: service-level negative tracking.
+ * - RULE 1: If wallet >= 0 after event → no block, no threshold; reset negative_used when balance >= 0.
+ * - RULE 2: Threshold -50 per service: block only when (negative_used - unblock_alloc) > 50 for that service.
+ * - RULE 3: total_balance <= -200 → block ALL (global_emergency); when >= 0 → unblock all and reset negative_used.
+ * - RULE 4: Auto recalc on penalty, revert, add balance (sync blocks + optional reset).
+ * See backend/docs/schema/BLACKLIST_WHITELIST_REDESIGN.md
  */
 
 import { getDb } from "@/lib/db/client";
 import { riderWallet, riderNegativeWalletBlocks } from "@/lib/db/schema";
 import { eq, and, asc } from "drizzle-orm";
 
-/** Service block when effective_net <= -50. */
-export const NEGATIVE_WALLET_THRESHOLD = -50;
+/** Service block when effective_negative = (negative_used - unblock_alloc) > 50. */
+export const NEGATIVE_WALLET_THRESHOLD = 50;
 /** Global block when total_balance <= -200; unlock when total_balance >= 0. */
 export const GLOBAL_BLOCK_THRESHOLD = -200;
 
@@ -20,46 +22,36 @@ type ServiceType = (typeof SERVICES)[number];
 
 interface WalletRow {
   totalBalance: string | null;
-  earningsFood: string;
-  earningsParcel: string;
-  earningsPersonRide: string;
-  penaltiesFood: string;
-  penaltiesParcel: string;
-  penaltiesPersonRide: string;
+  negativeUsedFood?: string;
+  negativeUsedParcel?: string;
+  negativeUsedPersonRide?: string;
   unblockAllocFood?: string;
   unblockAllocParcel?: string;
   unblockAllocPersonRide?: string;
 }
 
-function getEffectiveNet(wallet: WalletRow, service: ServiceType): number {
-  const earnings =
+/** effective_negative = negative_used - unblock_alloc; block when > NEGATIVE_WALLET_THRESHOLD (50). */
+function getEffectiveNegative(wallet: WalletRow, service: ServiceType): number {
+  const used =
     service === "food"
-      ? Number(wallet.earningsFood)
+      ? Number(wallet.negativeUsedFood ?? 0)
       : service === "parcel"
-        ? Number(wallet.earningsParcel)
-        : Number(wallet.earningsPersonRide);
-  const penalties =
-    service === "food"
-      ? Number(wallet.penaltiesFood)
-      : service === "parcel"
-        ? Number(wallet.penaltiesParcel)
-        : Number(wallet.penaltiesPersonRide);
+        ? Number(wallet.negativeUsedParcel ?? 0)
+        : Number(wallet.negativeUsedPersonRide ?? 0);
   const alloc =
     service === "food"
       ? Number(wallet.unblockAllocFood ?? 0)
       : service === "parcel"
         ? Number(wallet.unblockAllocParcel ?? 0)
         : Number(wallet.unblockAllocPersonRide ?? 0);
-  return earnings - penalties + alloc;
+  return used - alloc;
 }
 
 /**
- * Sync rider_negative_wallet_blocks for a rider based on current wallet.
- * Block only when total balance is 0 or negative. While wallet is positive, we never block
- * (we only adjust balance); once balance becomes 0 or negative we apply per-service threshold
- * and global emergency threshold.
- * Matches DB trigger: no blocks when total_balance > 0; when total_balance <= 0: global if <= -200,
- * else block service when effective_net <= -50.
+ * Sync rider_negative_wallet_blocks for a rider.
+ * - total_balance > 0: remove all blocks and reset negative_used + unblock_alloc to 0.
+ * - total_balance <= -200: block all services (global_emergency).
+ * - else: block only services where effective_negative (negative_used - unblock_alloc) > 50.
  */
 export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
   const db = getDb();
@@ -79,9 +71,24 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
   const w = wallet as WalletRow;
   const totalBalance = Number(w.totalBalance ?? 0);
 
-  // Do not block any service while total wallet balance is positive
-  if (totalBalance > 0) return;
+  // RULE 1 & 3: Positive wallet → no blocks; reset negative_used and unblock_alloc so threshold restarts when they go negative again
+  if (totalBalance > 0) {
+    await db
+      .update(riderWallet)
+      .set({
+        negativeUsedFood: "0",
+        negativeUsedParcel: "0",
+        negativeUsedPersonRide: "0",
+        unblockAllocFood: "0",
+        unblockAllocParcel: "0",
+        unblockAllocPersonRide: "0",
+        lastUpdatedAt: new Date(),
+      })
+      .where(eq(riderWallet.riderId, riderId));
+    return;
+  }
 
+  // RULE 3: Extreme negative → block all
   if (totalBalance <= GLOBAL_BLOCK_THRESHOLD) {
     for (const service of SERVICES) {
       await db.insert(riderNegativeWalletBlocks).values({
@@ -93,10 +100,10 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
     return;
   }
 
-  // total_balance <= 0 but > -200: block only services where effective_net <= -50
+  // RULE 2: Block only services where effective_negative > 50
   for (const service of SERVICES) {
-    const effectiveNet = getEffectiveNet(w, service);
-    if (effectiveNet <= NEGATIVE_WALLET_THRESHOLD) {
+    const effectiveNegative = getEffectiveNegative(w, service);
+    if (effectiveNegative > NEGATIVE_WALLET_THRESHOLD) {
       await db.insert(riderNegativeWalletBlocks).values({
         riderId,
         serviceType: service,
@@ -129,9 +136,8 @@ export async function isRiderBlockedForServiceDueToNegativeWallet(
 }
 
 /**
- * Apply generic credit in FIFO order: allocate to first blocked service (by created_at) until effective_net > -50, then next.
- * Updates rider_wallet (total_balance already updated by caller; this updates unblock_alloc_* and then triggers sync).
- * Call after inserting ledger entry for generic manual_add (no service_type).
+ * Apply generic credit in FIFO order: allocate to first blocked service until effective_negative <= 50, then next.
+ * Uses effective_negative = negative_used - unblock_alloc. Call after caller has updated total_balance.
  */
 export async function applyFifoAllocation(
   riderId: number,
@@ -159,29 +165,25 @@ export async function applyFifoAllocation(
   let allocPerson = Number(w.unblockAllocPersonRide ?? 0);
   let remaining = amount;
 
-  const getEffective = (s: ServiceType) => {
-    const base = getEffectiveNet(w, s);
-    const extra =
+  const getEffectiveNeg = (s: ServiceType) => {
+    const used =
       s === "food"
-        ? allocFood - Number(w.unblockAllocFood ?? 0)
+        ? Number(w.negativeUsedFood ?? 0)
         : s === "parcel"
-          ? allocParcel - Number(w.unblockAllocParcel ?? 0)
-          : allocPerson - Number(w.unblockAllocPersonRide ?? 0);
-    return base + extra;
+          ? Number(w.negativeUsedParcel ?? 0)
+          : Number(w.negativeUsedPersonRide ?? 0);
+    const alloc =
+      s === "food" ? allocFood : s === "parcel" ? allocParcel : allocPerson;
+    return used - alloc;
   };
 
   for (const b of blocks) {
     if (remaining <= 0) break;
     const service = b.serviceType as ServiceType;
     if (!SERVICES.includes(service)) continue;
-    const effective =
-      service === "food"
-        ? getEffective("food")
-        : service === "parcel"
-          ? getEffective("parcel")
-          : getEffective("person_ride");
-    const deficit = Math.max(0, -49 - effective);
-    const alloc = Math.min(remaining, deficit);
+    const effectiveNeg = getEffectiveNeg(service);
+    const needToUnblock = Math.max(0, effectiveNeg - NEGATIVE_WALLET_THRESHOLD);
+    const alloc = Math.min(remaining, needToUnblock);
     if (alloc <= 0) continue;
     if (service === "food") allocFood += alloc;
     else if (service === "parcel") allocParcel += alloc;
