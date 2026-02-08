@@ -80,7 +80,7 @@ export function RiderBlacklistClient() {
   const [blacklistLoadingService, setBlacklistLoadingService] = useState<string | null>(null);
 
   type ActionFilter = "all" | "blacklist" | "whitelist";
-  type ServiceFilter = "all" | "food" | "parcel" | "person_ride" | "all_services";
+  type ServiceFilter = "all" | "food" | "parcel" | "person_ride";
   const [historyActionFilter, setHistoryActionFilter] = useState<ActionFilter>("all");
   const [historyServiceFilter, setHistoryServiceFilter] = useState<ServiceFilter>("all");
   const [historyFiltersOpen, setHistoryFiltersOpen] = useState(false);
@@ -228,8 +228,8 @@ export function RiderBlacklistClient() {
       if (historyActionFilter === "whitelist" && h.banned) return false;
     }
     if (historyServiceFilter !== "all") {
-      const svc = h.serviceType === "all" ? "all_services" : h.serviceType;
-      if (svc !== historyServiceFilter) return false;
+      // Direct comparison - no need to convert "all" to "all_services"
+      if (h.serviceType !== historyServiceFilter) return false;
     }
     return true;
   });
@@ -398,11 +398,10 @@ export function RiderBlacklistClient() {
                     onChange={(e) => setHistoryServiceFilter(e.target.value as ServiceFilter)}
                     className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-w-[140px]"
                   >
-                    <option value="all">All</option>
+                    <option value="all">All Services</option>
                     <option value="food">Food</option>
                     <option value="parcel">Parcel</option>
                     <option value="person_ride">Person Ride</option>
-                    <option value="all_services">All Services</option>
                   </select>
                 </div>
               </div>

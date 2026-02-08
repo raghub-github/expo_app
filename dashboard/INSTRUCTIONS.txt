@@ -1,0 +1,63 @@
+================================================================================
+STEP-BY-STEP INSTRUCTIONS - READ CAREFULLY
+================================================================================
+
+STEP 1: Check Your Database Enum Values
+----------------------------------------
+File: dashboard/CHECK_ENUMS_FIRST.sql
+
+1. Open the file
+2. Copy EVERYTHING
+3. Paste into Supabase SQL Editor
+4. Click Run
+5. LOOK AT THE OUTPUT - it will show you what vehicle_type values your database has
+
+Example output you might see:
+  - bike
+  - car  
+  - auto
+  - bicycle
+  - scooter
+
+IMPORTANT: If you see "ev_bike" in the list, you can use FINAL_SQL_SCRIPT.sql
+           If you DON'T see "ev_bike", use SIMPLE_TEST_DATA.sql instead
+
+STEP 2A: If "ev_bike" EXISTS in Step 1 output
+----------------------------------------------
+Run: dashboard/FIX_ENUMS_FIRST.sql (to add any missing values)
+Then: dashboard/FINAL_SQL_SCRIPT.sql (creates 7 test riders)
+
+STEP 2B: If "ev_bike" DOES NOT EXIST in Step 1 output  
+------------------------------------------------------
+Run: dashboard/SIMPLE_TEST_DATA.sql (creates 3 test riders using only basic values)
+
+This creates riders with:
+  - bike (not ev_bike)
+  - car
+  - auto
+
+STEP 3: Install Dependencies
+-----------------------------
+Open terminal in dashboard folder:
+  npm install
+
+STEP 4: Test the System
+-----------------------
+Navigate to: http://localhost:3000/dashboard/riders/[ID]/onboarding
+
+Replace [ID] with the rider ID from SQL output
+
+Click green checkmarks to approve documents
+Watch the status update automatically!
+
+================================================================================
+QUICK REFERENCE
+================================================================================
+
+If ev_bike EXISTS in your database:
+  → Run: FIX_ENUMS_FIRST.sql, then FINAL_SQL_SCRIPT.sql
+
+If ev_bike DOES NOT exist in your database:
+  → Run: SIMPLE_TEST_DATA.sql
+
+================================================================================

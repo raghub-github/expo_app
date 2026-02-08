@@ -391,24 +391,16 @@ export default function RiderDetailsPage() {
 
   return (
     <div className="space-y-4 sm:space-y-5 lg:space-y-6 w-full max-w-full overflow-x-hidden px-1 sm:px-0">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-          <button
-            onClick={() => router.push('/dashboard/riders')}
-            className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors shrink-0 py-1 -ml-1 rounded-lg hover:bg-gray-100 px-2"
-            aria-label="Back to Riders"
-          >
-            <ArrowLeft className="h-5 w-5 shrink-0" />
-            <span className="text-sm font-medium hidden sm:inline">Back to Riders</span>
-          </button>
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900 truncate">
-              Rider Details
-            </h1>
-            <p className="text-sm text-gray-500 font-mono mt-0.5">GMR{rider.id}</p>
-          </div>
-        </div>
+      {/* Compact Header - Just back button and verify button */}
+      <div className="flex items-center justify-between gap-4">
+        <button
+          onClick={() => router.push('/dashboard/riders')}
+          className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors py-2 px-3 rounded-lg hover:bg-gray-100 -ml-1"
+          aria-label="Back to Riders"
+        >
+          <ArrowLeft className="h-5 w-5 shrink-0" />
+          <span className="text-sm font-medium">Back to Riders</span>
+        </button>
         {needsVerification && (
           <button
             onClick={() => router.push(`/dashboard/riders/${rider.id}/onboarding`)}
@@ -420,13 +412,72 @@ export default function RiderDetailsPage() {
         )}
       </div>
 
+      {/* Onboarding Fees Alert for Unverified Riders */}
+      {needsVerification && riderData.onboardingPayments && riderData.onboardingPayments.length > 0 && (
+        <section className="rounded-2xl border-2 border-purple-300 bg-gradient-to-br from-purple-50 to-pink-50 p-4 sm:p-5 lg:p-6 shadow-md ring-2 ring-purple-200">
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-purple-600 text-white shrink-0">
+              <Receipt className="h-6 w-6" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-lg font-bold text-purple-900 mb-2">Registration Fee Paid</h3>
+              <p className="text-sm text-gray-700 mb-3">
+                This rider has paid the onboarding fee. Please verify their documents to complete onboarding.
+              </p>
+              <div className="flex items-center gap-6 flex-wrap">
+                <div className="bg-white rounded-lg px-4 py-2 shadow-sm border border-purple-200">
+                  <p className="text-xs text-gray-500 mb-1">Total Paid</p>
+                  <p className="text-xl font-bold text-purple-900 tabular-nums">
+                    ₹{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}
+                  </p>
+                </div>
+                <div className="bg-white rounded-lg px-4 py-2 shadow-sm border border-purple-200">
+                  <p className="text-xs text-gray-500 mb-1">Payment Status</p>
+                  <p className="text-sm font-semibold">
+                    {riderData.onboardingPayments.filter(p => p.status === "completed").length} completed,{' '}
+                    {riderData.onboardingPayments.filter(p => p.status === "failed").length} failed
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    const feesSection = document.getElementById('onboarding-fees');
+                    if (feesSection) {
+                      feesSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                  }}
+                  className="text-sm text-purple-700 hover:text-purple-900 font-medium underline"
+                >
+                  View Payment Details →
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Core Information */}
       <section className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm ring-1 ring-gray-900/5">
-        <div className="flex items-center gap-2 mb-4 sm:mb-5">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-600 shrink-0">
-            <User className="h-5 w-5" />
+        <div className="flex items-center justify-between mb-4 sm:mb-5">
+          <div className="flex items-center gap-2">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-600 shrink-0">
+              <User className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-lg sm:text-xl font-bold text-gray-900">Rider Information</h2>
+              <p className="text-xs text-gray-500 font-mono">GMR{rider.id}</p>
+            </div>
           </div>
-          <h2 className="text-lg sm:text-xl font-bold text-gray-900">Core Information</h2>
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex px-3 py-1.5 text-xs font-semibold rounded-full ${statusBadgeClass(rider.onboardingStage)}`}>
+              {rider.onboardingStage}
+            </span>
+            <span className={`inline-flex px-3 py-1.5 text-xs font-semibold rounded-full ${statusBadgeClass(rider.kycStatus)}`}>
+              {rider.kycStatus}
+            </span>
+            <span className={`inline-flex px-3 py-1.5 text-xs font-semibold rounded-full ${statusBadgeClass(rider.status)}`}>
+              {rider.status}
+            </span>
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-4 sm:gap-5">
           <InfoRow label="Name" value={rider.name || "—"} />
@@ -440,11 +491,6 @@ export default function RiderDetailsPage() {
           <InfoRow label="State" value={rider.state || "—"} />
           <InfoRow label="Pincode" value={rider.pincode || "—"} />
           <InfoRow label="Address" value={displayAddress} className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-4" />
-          <div className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-4 flex flex-wrap gap-2">
-            <span className={`inline-flex px-2.5 py-1 text-xs font-medium rounded-full ${statusBadgeClass(rider.onboardingStage)}`}>Onboarding: {rider.onboardingStage}</span>
-            <span className={`inline-flex px-2.5 py-1 text-xs font-medium rounded-full ${statusBadgeClass(rider.kycStatus)}`}>KYC: {rider.kycStatus}</span>
-            <span className={`inline-flex px-2.5 py-1 text-xs font-medium rounded-full ${statusBadgeClass(rider.status)}`}>Status: {rider.status}</span>
-          </div>
           <InfoRow label="Referral Code" value={rider.referralCode || "—"} />
           <InfoRow label="Referred By" value={rider.referredBy ? `GMR${rider.referredBy}` : "—"} />
           <InfoRow label="Default Language" value={rider.defaultLanguage} />
@@ -557,18 +603,18 @@ export default function RiderDetailsPage() {
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
                 {riderData.onboardingPayments.map((p) => (
-                  <tr key={p.id}>
-                    <td className="px-4 py-2.5 font-mono text-gray-900">{p.refId || "—"}</td>
-                    <td className="px-4 py-2.5 font-medium tabular-nums">₹{Number(p.amount).toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-gray-600">{p.provider || "—"}</td>
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-2.5 font-mono text-gray-900 text-sm">{p.refId || "—"}</td>
+                    <td className="px-4 py-2.5 font-bold text-gray-900 tabular-nums text-base">₹{Number(p.amount).toFixed(2)}</td>
+                    <td className="px-4 py-2.5 text-gray-700 text-sm">{p.provider || "—"}</td>
                     <td className="px-4 py-2.5">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
                         p.status === "completed" ? "bg-emerald-100 text-emerald-800" :
                         p.status === "failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
                       }`}>{p.status}</span>
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-gray-600 text-xs">{p.paymentId || "—"}</td>
-                    <td className="px-4 py-2.5 text-gray-600">{new Date(p.createdAt).toLocaleString()}</td>
+                    <td className="px-4 py-2.5 font-mono text-gray-700 text-xs">{p.paymentId || "—"}</td>
+                    <td className="px-4 py-2.5 text-gray-700 text-sm">{new Date(p.createdAt).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>

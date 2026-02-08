@@ -209,6 +209,8 @@ export async function GET(
     const ridersConditions = [eq(riders.referredBy, riderId)];
     if (from) ridersConditions.push(gte(riders.createdAt, new Date(from)));
     if (to) ridersConditions.push(lte(riders.createdAt, new Date(to)));
+    // Apply city name filter to riders.city column
+    if (cityNameParam) ridersConditions.push(ilike(riders.city, `%${cityNameParam}%`));
     if (qParam) {
       const num = parseInt(qParam, 10);
       const isNumeric = !Number.isNaN(num) && String(num) === qParam.trim();
@@ -242,10 +244,17 @@ export async function GET(
       .where(and(...ridersConditions))
       .orderBy(desc(riders.createdAt));
 
-    // Filter out riders already in referrals table
-    const referredRidersFromRidersTable = allReferredRidersFromRidersTable
-      .filter((rider) => !referredRiderIdsFromReferrals.has(rider.id))
-      .slice(0, limit + 1);
+    // Filter out riders already in referrals table and apply status filter
+    let filteredRidersFromRidersTable = allReferredRidersFromRidersTable
+      .filter((rider) => !referredRiderIdsFromReferrals.has(rider.id));
+
+    // Apply status filter: riders from riders table have no fulfillment, so they're all "pending"
+    if (statusParam && statusParam !== "pending") {
+      // If filtering for fulfilled/credited/expired/cancelled, exclude riders from riders table
+      filteredRidersFromRidersTable = [];
+    }
+
+    const referredRidersFromRidersTable = filteredRidersFromRidersTable.slice(0, limit + 1);
 
     // Combine referrals table data with riders.referred_by data
     const combinedReferralsList = [
@@ -288,7 +297,8 @@ export async function GET(
       return dateB - dateA;
     });
 
-    const totalFiltered = totalFilteredFromReferrals + referredRidersFromRidersTable.length;
+    // Calculate total filtered count properly including status filter
+    const totalFiltered = totalFilteredFromReferrals + filteredRidersFromRidersTable.length;
 
     const referredIds = combinedReferralsList.map((r) => r.referredId).filter((id): id is number => id != null);
     let orderCounts: Record<

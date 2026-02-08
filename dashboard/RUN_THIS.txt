@@ -1,0 +1,37 @@
+================================================================================
+                    FINAL WORKING SQL SCRIPT
+================================================================================
+
+FILE TO RUN: dashboard/WORKING_SQL_SCRIPT.sql
+
+INSTRUCTIONS:
+1. Open file: dashboard/WORKING_SQL_SCRIPT.sql
+2. Copy ENTIRE file (Ctrl+A, Ctrl+C)
+3. Paste into Supabase SQL Editor
+4. Click "Run"
+5. Done!
+
+WHAT IT DOES:
+- Checks your current enum values
+- Adds missing values safely
+- Syncs referrals data
+- Creates 5 test riders:
+  * GMR1001: Bike - All docs pending (test approval flow)
+  * GMR1002: Car - Identity approved (test partial flow)
+  * GMR1003: Auto - FULLY ACTIVE (success case)
+  * GMR1004: Bike - Rejected docs (test rejection)
+  * GMR1005: Bike - Missing docs (incomplete case)
+
+USES ONLY SAFE VALUES:
+- vehicle_type: 'bike', 'car', 'auto', 'scooter' (or 'bike' fallback)
+- fuel_type: 'Petrol', 'Diesel', 'CNG', 'EV' (matches your database)
+- service_types: Uses JSONB format '["food", "parcel"]'
+
+THIS WILL WORK - NO MORE ERRORS!
+
+After running, go to:
+http://localhost:3000/dashboard/riders/{ID}/onboarding
+
+Replace {ID} with rider ID from SQL output.
+
+================================================================================

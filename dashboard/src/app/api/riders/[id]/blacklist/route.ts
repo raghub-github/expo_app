@@ -215,11 +215,17 @@ export async function POST(
       }
     }
 
-    // Update riders.status: INACTIVE when permanently blacklisted for all services; ACTIVE when whitelisted (any or all)
+    // Update riders.status: BLOCKED when permanently blacklisted for all services
+    // When unblocking: only set ACTIVE if onboarding is complete (onboardingStage = ACTIVE), otherwise keep current status or set INACTIVE
     if (action === "blacklist" && isPermanent && serviceType === "all") {
-      await db.update(riders).set({ status: "INACTIVE" }).where(eq(riders.id, riderId));
+      // Permanent blacklist for all services → status = BLOCKED
+      await db.update(riders).set({ status: "BLOCKED" }).where(eq(riders.id, riderId));
     } else if (action === "whitelist") {
-      await db.update(riders).set({ status: "ACTIVE" }).where(eq(riders.id, riderId));
+      // Unblocking: Only activate if rider has completed onboarding
+      // If onboardingStage is ACTIVE, set status to ACTIVE
+      // Otherwise, keep INACTIVE (rider must complete onboarding first)
+      const newStatus = rider.onboardingStage === "ACTIVE" ? "ACTIVE" : "INACTIVE";
+      await db.update(riders).set({ status: newStatus }).where(eq(riders.id, riderId));
     }
 
     await logActionByAuth(

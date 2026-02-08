@@ -375,7 +375,7 @@ export function RiderWithdrawalsClient() {
                   onChange={setFilterSearch}
                   onSubmit={applyFilters}
                   placeholder="Withdrawal ID, amount"
-                  hint="Match withdrawal ID or amount"
+                  // hint="Match withdrawal ID or amount"
                   id="withdrawals-filter-search"
                 />
                 <div className="min-w-[120px] w-full sm:w-auto">
@@ -398,7 +398,7 @@ export function RiderWithdrawalsClient() {
                   <label className="block text-xs font-medium text-gray-700 mb-0.5">To</label>
                   <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500" />
                 </div>
-                <button type="button" onClick={applyFilters} className="w-full sm:w-auto px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 h-[34px] shrink-0">Apply</button>
+                {/* <button type="button" onClick={applyFilters} className="w-full sm:w-auto px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 h-[34px] shrink-0">Apply</button> */}
                 <button type="button" onClick={clearAllWithdrawalFilters} className="w-full sm:w-auto px-4 py-1.5 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors h-[34px] shrink-0">Clear filters</button>
               </div>
             }

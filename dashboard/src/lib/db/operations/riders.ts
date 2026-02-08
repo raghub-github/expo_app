@@ -223,12 +223,16 @@ export async function approveRiderDocument(
 ): Promise<{ approved: Record<string, unknown>; riderState: { kycStatus: string; onboardingStage: string; status: string } } | null> {
   const db = getDb();
 
+  // Update document with verification details
   const [approved] = await db
     .update(riderDocuments)
     .set({
       verified: true,
+      verificationStatus: "approved",
+      verifiedAt: new Date(),
       verifierUserId: agentId,
       rejectedReason: null,
+      updatedAt: new Date(),
     })
     .where(eq(riderDocuments.id, docId))
     .returning();
@@ -237,34 +241,121 @@ export async function approveRiderDocument(
 
   const riderId = approved.riderId as number;
   const rider = await getRiderById(riderId);
-  const fallbackState = { kycStatus: (rider as any)?.kycStatus ?? "PENDING", onboardingStage: (rider as any)?.onboardingStage ?? "KYC", status: (rider as any)?.status ?? "INACTIVE" };
+  const fallbackState = { kycStatus: (rider as any)?.kycStatus ?? "PENDING", onboardingStage: (rider as any)?.onboardingStage ?? "MOBILE_VERIFIED", status: (rider as any)?.status ?? "INACTIVE" };
   if (!rider) return { approved, riderState: fallbackState };
 
-  const identityOnlyVerified = await checkIdentityDocumentsVerified(riderId);
-  const allDocsVerified = await checkAllRequiredDocumentsVerified(riderId);
+  // Get all documents and vehicle info for complete verification check
+  const allDocs = await db
+    .select()
+    .from(riderDocuments)
+    .where(eq(riderDocuments.riderId, riderId));
 
-  // 1) Identity docs only (aadhaar + selfie; pan optional) → KYC stage, KYC approved, status INACTIVE
-  if (identityOnlyVerified && !allDocsVerified) {
-    await updateRiderKycAndStage(riderId, "APPROVED", "KYC");
-    return { approved, riderState: { kycStatus: "APPROVED", onboardingStage: "KYC", status: "INACTIVE" } };
+  const vehicles = await db
+    .select()
+    .from(riderVehicles)
+    .where(eq(riderVehicles.riderId, riderId))
+    .limit(1);
+
+  const vehicle = vehicles[0];
+
+  // Check verification states
+  const identityVerified = checkIdentityDocsVerifiedFromList(allDocs);
+  const vehicleDocsVerified = checkVehicleDocsVerifiedFromList(allDocs, vehicle?.vehicleType);
+  const bankProofVerified = allDocs.some((d: any) => d.docType === 'bank_proof' && d.verified);
+  const allRequiredDocsVerified = identityVerified && vehicleDocsVerified && bankProofVerified;
+
+  let kycStatus = (rider as any).kycStatus;
+  let onboardingStage = (rider as any).onboardingStage;
+  let status = (rider as any).status;
+
+  // Progressive status updates
+  // Stage 1: Identity docs verified → KYC APPROVED
+  if (identityVerified && kycStatus === "PENDING") {
+    kycStatus = "APPROVED";
+    onboardingStage = "KYC_APPROVED";
+    await db.update(riders).set({ 
+      kycStatus: kycStatus as any, 
+      onboardingStage: onboardingStage as any,
+      updatedAt: new Date() 
+    }).where(eq(riders.id, riderId));
   }
 
-  // 2) All docs verified (identity + vehicle by type) → APPROVAL stage; if payment done → ACTIVE
-  if (!allDocsVerified) {
-    return { approved, riderState: { kycStatus: (rider as any).kycStatus, onboardingStage: (rider as any).onboardingStage, status: (rider as any).status } };
+  // Stage 2: All documents verified → DOCUMENTS_VERIFIED
+  if (allRequiredDocsVerified) {
+    onboardingStage = "DOCUMENTS_VERIFIED";
+    
+    // Check if payment is completed
+    const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
+    
+    if (paymentCompleted) {
+      // All complete → ACTIVE
+      status = "ACTIVE";
+      onboardingStage = "ACTIVE";
+      
+      // Update rider to ACTIVE status
+      await db.update(riders).set({ 
+        kycStatus: "APPROVED" as any,
+        onboardingStage: "ACTIVE" as any,
+        status: "ACTIVE" as any,
+        updatedAt: new Date() 
+      }).where(eq(riders.id, riderId));
+      
+      return { approved, riderState: { kycStatus: "APPROVED", onboardingStage: "ACTIVE", status: "ACTIVE" } };
+    } else {
+      // Waiting for payment
+      onboardingStage = "PAYMENT_PENDING";
+      await db.update(riders).set({ 
+        kycStatus: "APPROVED" as any,
+        onboardingStage: onboardingStage as any,
+        updatedAt: new Date() 
+      }).where(eq(riders.id, riderId));
+    }
   }
 
-  await updateRiderKycAndStage(riderId, "APPROVED", "APPROVAL");
-  const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
-  const riderAfterApproval = { ...rider, kycStatus: "APPROVED" as const, onboardingStage: "APPROVAL" as const };
-  const onboardingState = await checkOnboardingComplete(riderId, riderAfterApproval);
+  return { approved, riderState: { kycStatus, onboardingStage, status } };
+}
 
-  if (onboardingState.isComplete && paymentCompleted) {
-    await updateRiderOnboardingStage(riderId, "ACTIVE");
-    return { approved, riderState: { kycStatus: "APPROVED", onboardingStage: "ACTIVE", status: "ACTIVE" } };
+// Helper function to check identity docs from list
+function checkIdentityDocsVerifiedFromList(docs: any[]): boolean {
+  // Aadhaar: front OR back is enough (but preferably both)
+  const hasAadhaarFront = docs.some(d => d.docType === 'aadhaar_front' && d.verified);
+  const hasAadhaarBack = docs.some(d => d.docType === 'aadhaar_back' && d.verified);
+  const hasAadhaarSingle = docs.some(d => d.docType === 'aadhaar' && d.verified);
+  const hasAadhaar = hasAadhaarFront || hasAadhaarBack || hasAadhaarSingle;
+  
+  const hasSelfie = docs.some(d => d.docType === 'selfie' && d.verified);
+  const hasPan = docs.some(d => d.docType === 'pan' && d.verified);
+  
+  return hasAadhaar && hasSelfie && hasPan;
+}
+
+// Helper function to check vehicle docs from list
+function checkVehicleDocsVerifiedFromList(docs: any[], vehicleType?: string): boolean {
+  // DL: front OR back is enough (but preferably both)
+  const hasDLFront = docs.some(d => d.docType === 'dl_front' && d.verified);
+  const hasDLBack = docs.some(d => d.docType === 'dl_back' && d.verified);
+  const hasDLSingle = docs.some(d => d.docType === 'dl' && d.verified);
+  const hasDL = hasDLFront || hasDLBack || hasDLSingle;
+  
+  const hasRC = docs.some(d => d.docType === 'rc' && d.verified);
+  const hasRentalProof = docs.some(d => d.docType === 'rental_proof' && d.verified);
+  const hasEVProof = docs.some(d => d.docType === 'ev_proof' && d.verified);
+  
+  // DL is always required
+  if (!hasDL) return false;
+  
+  // RC or Rental Proof required (at least one)
+  if (!hasRC && !hasRentalProof) return false;
+  
+  // For EV vehicles, EV proof is also required (or rental proof covers it)
+  const isEV = vehicleType?.toLowerCase().includes('ev') || 
+               vehicleType?.toLowerCase().includes('electric');
+  
+  if (isEV && !hasEVProof && !hasRentalProof) {
+    return false;
   }
-
-  return { approved, riderState: { kycStatus: "APPROVED", onboardingStage: "APPROVAL", status: "INACTIVE" } };
+  
+  return true;
 }
 
 /**
@@ -281,11 +372,29 @@ export async function rejectRiderDocument(
     .update(riderDocuments)
     .set({
       verified: false,
+      verificationStatus: "rejected",
       verifierUserId: agentId,
       rejectedReason: reason,
+      verifiedAt: null,
+      updatedAt: new Date(),
     })
     .where(eq(riderDocuments.id, docId))
     .returning();
+  
+  // Update rider KYC status to PENDING or REJECTED if identity docs are rejected
+  if (rejected) {
+    const riderId = (rejected as any).riderId;
+    const docType = (rejected as any).docType;
+    
+    // If critical identity documents are rejected, update KYC status
+    const criticalDocs = ['aadhaar', 'aadhaar_front', 'pan', 'selfie'];
+    if (criticalDocs.includes(docType)) {
+      await db.update(riders).set({
+        kycStatus: "REJECTED" as any,
+        updatedAt: new Date(),
+      }).where(eq(riders.id, riderId));
+    }
+  }
   
   return rejected || null;
 }

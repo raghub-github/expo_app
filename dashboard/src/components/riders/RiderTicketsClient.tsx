@@ -237,7 +237,7 @@ export function RiderTicketsClient() {
                   onChange={setFilterSearch}
                   onSubmit={applyFilters}
                   placeholder="Ticket ID, Order ID, title…"
-                  hint="Match ticket ID, order ID, or title/message"
+                  // hint="Match ticket ID, order ID, or title/message"
                   id="tickets-filter-search"
                 />
                 <div className="min-w-[110px]">

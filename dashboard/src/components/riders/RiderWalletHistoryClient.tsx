@@ -268,7 +268,7 @@ export function RiderWalletHistoryClient() {
                   onChange={setFilterSearch}
                   onSubmit={() => applyFilters()}
                   placeholder="Amount, ref, description…"
-                  hint="Match amount, ref, or description"
+                  // hint="Match amount, ref, or description"
                   id="ledger-filter-search"
                 />
                 <div className="min-w-[100px]">

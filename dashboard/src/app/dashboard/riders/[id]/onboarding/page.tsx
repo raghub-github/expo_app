@@ -55,26 +55,45 @@ interface Document {
   createdAt: string;
 }
 
+interface OnboardingPayment {
+  id: number;
+  riderId: number;
+  amount: string;
+  provider: string;
+  refId: string;
+  paymentId: string | null;
+  status: string;
+  createdAt: string;
+}
+
 interface RiderData {
   rider: Rider;
   documents: Document[];
   vehicle?: VehicleInfo | null;
+  onboardingPayments?: OnboardingPayment[];
 }
 
 const DOCUMENT_LABELS: Record<string, string> = {
-  aadhaar: "Aadhaar Card",
+  aadhaar_front: "Aadhaar Card (Front)",
+  aadhaar_back: "Aadhaar Card (Back)",
   pan: "PAN Card",
-  dl: "Driving License (DL)",
+  dl_front: "Driving License (Front)",
+  dl_back: "Driving License (Back)",
   rc: "RC (Registration Certificate)",
-  selfie: "Selfie",
+  selfie: "Selfie / Profile Photo",
   rental_proof: "Rental Proof (EV Bikes)",
-  ev_proof: "EV Proof",
+  ev_proof: "EV Ownership Proof",
+  bank_proof: "Bank Proof (Passbook/Statement/Cheque)",
+  insurance: "Insurance Certificate",
+  vehicle_image: "Vehicle Photo",
+  upi_qr_proof: "UPI QR Code Proof",
+  other: "Other Document",
 };
 
 const DOCUMENT_SECTIONS = {
-  identity: ["aadhaar", "pan", "selfie"],
-  vehicle: ["dl", "rc"],
-  additional: ["rental_proof", "ev_proof"],
+  identity: ["aadhaar_front", "aadhaar_back", "pan", "selfie"],
+  vehicle: ["dl_front", "dl_back", "rc"],
+  additional: ["rental_proof", "ev_proof", "bank_proof", "insurance", "vehicle_image", "upi_qr_proof"],
 };
 
 export default function RiderOnboardingPage() {
@@ -463,6 +482,9 @@ export default function RiderOnboardingPage() {
     );
   }
 
+  const isAlreadyVerified = riderData.rider.onboardingStage === "ACTIVE" && riderData.rider.kycStatus === "APPROVED";
+  const isBlocked = riderData.rider.status === "BLOCKED" || riderData.rider.status === "BANNED";
+
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden p-6">
       {/* Header */}
@@ -480,6 +502,37 @@ export default function RiderOnboardingPage() {
           Back
         </button>
       </div>
+
+      {/* Warning Banners */}
+      {isAlreadyVerified && (
+        <div className="rounded-xl border-2 border-green-200 bg-green-50 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold text-green-900">Rider Already Verified</h3>
+              <p className="text-sm text-green-800 mt-1">
+                This rider has completed onboarding and all documents have been verified. 
+                The verification process should not be repeated unless re-verification is required.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isBlocked && (
+        <div className="rounded-xl border-2 border-red-200 bg-red-50 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold text-red-900">Rider Account Blocked</h3>
+              <p className="text-sm text-red-800 mt-1">
+                This rider's account is currently blocked. Please unblock the rider from the main dashboard 
+                before attempting to verify documents. Status: <span className="font-semibold">{riderData.rider.status}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Rider Info Summary */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
@@ -564,6 +617,105 @@ export default function RiderOnboardingPage() {
         </div>
       </div>
 
+      {/* Onboarding Fees Section */}
+      {riderData.onboardingPayments && riderData.onboardingPayments.length > 0 && (
+        <div className="rounded-xl border-2 border-purple-200/80 bg-gradient-to-br from-purple-50 to-pink-50 p-6 shadow-md">
+          <h2 className="text-lg font-bold mb-4 text-purple-900 flex items-center gap-2">
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+            Onboarding Fees / Registration Payment
+          </h2>
+          <div className="mb-4 p-4 bg-white rounded-lg shadow-sm border border-purple-100">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Total Paid:</span>
+              <span className="text-2xl font-bold text-purple-900 tabular-nums">
+                ₹{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}
+              </span>
+            </div>
+            {riderData.onboardingPayments.some(p => p.status !== "completed") && (
+              <div className="mt-2 text-xs text-amber-600">
+                Note: Some payments are pending or failed
+              </div>
+            )}
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-purple-100">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+              <thead className="bg-purple-50">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Ref ID</th>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Amount</th>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Provider</th>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Status</th>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Payment ID</th>
+                  <th className="px-3 py-2 text-left font-medium text-gray-700 text-xs">Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {riderData.onboardingPayments.map((p) => (
+                  <tr key={p.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-mono text-gray-900 text-xs">{p.refId || "—"}</td>
+                    <td className="px-3 py-2 font-bold text-gray-900 tabular-nums">₹{Number(p.amount).toFixed(2)}</td>
+                    <td className="px-3 py-2 text-gray-600 text-xs">{p.provider || "—"}</td>
+                    <td className="px-3 py-2">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        p.status === "completed" ? "bg-emerald-100 text-emerald-800" :
+                        p.status === "failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
+                      }`}>
+                        {p.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-gray-600 text-xs">{p.paymentId || "—"}</td>
+                    <td className="px-3 py-2 text-gray-600 text-xs">{new Date(p.createdAt).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Verification Progress Summary */}
+      <div className="rounded-xl border-2 border-blue-200/80 bg-gradient-to-br from-blue-50 to-indigo-50 p-6 shadow-md">
+        <h2 className="text-lg font-bold mb-4 text-blue-900">Verification Progress</h2>
+        <div className="space-y-3">
+          {(() => {
+            const allDocs = riderData.documents || [];
+            const identityDocs = allDocs.filter(d => DOCUMENT_SECTIONS.identity.includes(d.docType));
+            const identityVerified = identityDocs.filter(d => d.verified).length;
+            const identityTotal = DOCUMENT_SECTIONS.identity.length;
+            
+            const vehicleDocs = allDocs.filter(d => DOCUMENT_SECTIONS.vehicle.includes(d.docType));
+            const vehicleVerified = vehicleDocs.filter(d => d.verified).length;
+            const vehicleTotal = DOCUMENT_SECTIONS.vehicle.length;
+            
+            const additionalDocs = allDocs.filter(d => DOCUMENT_SECTIONS.additional.includes(d.docType));
+            const additionalVerified = additionalDocs.filter(d => d.verified).length;
+            
+            const allRequiredVerified = identityVerified === identityTotal && vehicleVerified === vehicleTotal;
+            
+            return (
+              <>
+                <ProgressBar label="Identity Documents" current={identityVerified} total={identityTotal} />
+                <ProgressBar label="Vehicle Documents" current={vehicleVerified} total={vehicleTotal} />
+                {additionalDocs.length > 0 && (
+                  <ProgressBar label="Additional Documents" current={additionalVerified} total={additionalDocs.length} />
+                )}
+                
+                {allRequiredVerified && (
+                  <div className="mt-4 p-4 bg-green-100 border-2 border-green-300 rounded-lg shadow-sm">
+                    <p className="text-sm font-semibold text-green-900 flex items-center gap-2">
+                      <CheckCircle className="h-5 w-5" />
+                      All required documents verified! Rider ready for activation.
+                    </p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      </div>
+
       {/* Identity Documents */}
       <div className="rounded-xl border border-gray-200/90 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold mb-4 text-gray-800">Identity Documents</h2>
@@ -577,10 +729,11 @@ export default function RiderOnboardingPage() {
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
                 onView={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key && handleViewDocument(doc)}
-                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && handleEditDocument(doc)}
-                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && handleApproveDocument(doc)}
-                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && handleRejectDocument(doc)}
+                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
+                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
+                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
                 isLoading={actionLoading === doc?.id}
+                isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
               />
             );
@@ -601,10 +754,11 @@ export default function RiderOnboardingPage() {
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
                 onView={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key && handleViewDocument(doc)}
-                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && handleEditDocument(doc)}
-                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && handleApproveDocument(doc)}
-                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && handleRejectDocument(doc)}
+                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
+                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
+                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
                 isLoading={actionLoading === doc?.id}
+                isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
               />
             );
@@ -625,10 +779,11 @@ export default function RiderOnboardingPage() {
                 document={doc}
                 imageRefreshKey={doc ? imageRefreshKeys[doc.id] : undefined}
                 onView={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && doc.r2Key && handleViewDocument(doc)}
-                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && handleEditDocument(doc)}
-                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && handleApproveDocument(doc)}
-                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && handleRejectDocument(doc)}
+                onEdit={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !isBlocked && handleEditDocument(doc)}
+                onApprove={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleApproveDocument(doc)}
+                onReject={() => doc && doc.verificationMethod === "MANUAL_UPLOAD" && !doc.verified && !isBlocked && handleRejectDocument(doc)}
                 isLoading={actionLoading === doc?.id}
+                isDisabled={isBlocked}
                 allVersions={getDocumentsByType(docType)}
               />
             );
@@ -699,6 +854,7 @@ interface DocumentCardProps {
   onApprove: () => void;
   onReject: () => void;
   isLoading: boolean;
+  isDisabled?: boolean;
   allVersions: Document[];
 }
 
@@ -711,6 +867,7 @@ function DocumentCard({
   onApprove,
   onReject,
   isLoading,
+  isDisabled = false,
   allVersions,
 }: DocumentCardProps) {
   const hasMultipleVersions = allVersions.length > 1;
@@ -832,9 +989,9 @@ function DocumentCard({
               )}
               <button
                 onClick={onEdit}
-                disabled={isLoading}
-                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 rounded hover:bg-blue-100 transition-colors disabled:opacity-50"
-                title="Edit document number or upload new image"
+                disabled={isLoading || isDisabled}
+                className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 rounded hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title={isDisabled ? "Cannot edit - rider is blocked" : "Edit document number or upload new image"}
               >
                 <Edit className="h-3.5 w-3.5" />
               </button>
@@ -842,9 +999,9 @@ function DocumentCard({
                 <>
                   <button
                     onClick={onApprove}
-                    disabled={isLoading}
-                    className="px-3 py-1.5 text-xs font-medium text-green-700 bg-green-50 rounded hover:bg-green-100 transition-colors disabled:opacity-50"
-                    title="Approve this document"
+                    disabled={isLoading || isDisabled}
+                    className="px-3 py-1.5 text-xs font-medium text-green-700 bg-green-50 rounded hover:bg-green-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={isDisabled ? "Cannot approve - rider is blocked" : "Approve this document"}
                   >
                     {isLoading ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -854,9 +1011,9 @@ function DocumentCard({
                   </button>
                   <button
                     onClick={onReject}
-                    disabled={isLoading}
-                    className="px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 rounded hover:bg-red-100 transition-colors disabled:opacity-50"
-                    title="Reject this document"
+                    disabled={isLoading || isDisabled}
+                    className="px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 rounded hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={isDisabled ? "Cannot reject - rider is blocked" : "Reject this document"}
                   >
                     <XCircle className="h-3.5 w-3.5" />
                   </button>
@@ -947,6 +1104,44 @@ function RejectModal({
           </LoadingButton>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Progress Bar Component for Verification Progress
+function ProgressBar({ label, current, total }: { label: string; current: number; total: number }) {
+  const percentage = total > 0 ? (current / total) * 100 : 0;
+  const isComplete = current === total && total > 0;
+  
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-1.5">
+        <span className="text-sm font-medium text-gray-700">{label}</span>
+        <span className={`text-sm font-bold ${isComplete ? 'text-green-600' : 'text-gray-900'}`}>
+          {current}/{total}
+          {isComplete && ' ✓'}
+        </span>
+      </div>
+      <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden shadow-inner">
+        <div
+          className={`h-3 rounded-full transition-all duration-500 ${
+            isComplete ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-blue-500 to-indigo-500'
+          }`}
+          style={{ width: `${percentage}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Vehicle Info Item Component  
+function VehicleInfoItem({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <div className="bg-white rounded-lg p-3 shadow-sm border border-violet-100">
+      <p className="text-xs text-gray-500 mb-1 uppercase tracking-wide">{label}</p>
+      <p className={`text-sm font-semibold truncate ${highlight ? 'text-violet-900 font-bold font-mono' : 'text-gray-900'}`}>
+        {value}
+      </p>
     </div>
   );
 }

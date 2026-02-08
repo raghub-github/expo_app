@@ -464,7 +464,7 @@ export function RiderReferralsClient() {
                   onChange={(v) => setFilters((f) => ({ ...f, q: v }))}
                   onSubmit={() => applyFilters()}
                   placeholder="Name, mobile, or rider ID"
-                  hint="Search referred riders"
+                  // hint="Search referred riders"
                   id="referral-search"
                   className="min-w-0 flex-1"
                 />

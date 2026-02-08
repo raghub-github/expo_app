@@ -344,7 +344,7 @@ export function RiderOrdersClient() {
                   onChange={setFilterSearch}
                   onSubmit={applyFilters}
                   placeholder="Order ID"
-                  hint="Filter by order ID"
+                  // hint="Filter by order ID"
                   id="orders-filter-search"
                 />
                 <div className="min-w-[100px]">
