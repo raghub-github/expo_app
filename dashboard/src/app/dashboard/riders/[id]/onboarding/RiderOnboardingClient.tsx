@@ -2,8 +2,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
+import { invalidateRiderSummary } from "@/lib/cache-invalidation";
+import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { DocumentStatusBadge } from "@/components/riders/DocumentStatusBadge";
 import { DocumentViewer } from "@/components/riders/DocumentViewer";
 import { DocumentEditModal } from "@/components/riders/DocumentEditModal";
@@ -109,6 +112,8 @@ export default function RiderOnboardingClient() {
 
   const params = useParams();
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const riderDashboard = useRiderDashboardOptional();
   const riderId = parseInt(params.id as string);
 
   const [riderData, setRiderData] = useState<RiderData | null>(null);
@@ -130,6 +135,38 @@ export default function RiderOnboardingClient() {
     (d) => d.dashboardType === "RIDER" && d.isActive
   ) ?? false;
 
+  const syncDashboardStateFromRider = useCallback(
+    (r: Rider | null) => {
+      if (!riderDashboard || !r) return;
+      if (riderDashboard.riderSummary) {
+        riderDashboard.setRiderSummary({
+          ...riderDashboard.riderSummary,
+          rider: {
+            ...riderDashboard.riderSummary.rider,
+            onboardingStage: r.onboardingStage,
+            kycStatus: r.kycStatus,
+            status: r.status,
+          },
+        });
+      }
+      if (riderDashboard.riders?.length) {
+        riderDashboard.setRiders(
+          riderDashboard.riders.map((entry, idx) =>
+            idx === 0
+              ? {
+                  ...entry,
+                  onboarding_stage: r.onboardingStage,
+                  kyc_status: r.kycStatus,
+                  status: r.status,
+                }
+              : entry
+          )
+        );
+      }
+    },
+    [riderDashboard]
+  );
+
   // Full fetch with loading state (initial load only)
   const fetchRiderData = useCallback(async () => {
     try {
@@ -150,13 +187,15 @@ export default function RiderOnboardingClient() {
       }
 
       setRiderData(result.data ?? null);
+      syncDashboardStateFromRider(result.data?.rider ?? null);
+      syncDashboardStateFromRider(result.data?.rider ?? null);
     } catch (err) {
       console.error("Error fetching rider data:", err);
       setError(err instanceof Error ? err.message : "Failed to fetch rider data");
     } finally {
       setLoading(false);
     }
-  }, [riderId]);
+  }, [riderId, syncDashboardStateFromRider]);
 
   // Silent refetch without full-page loading ? use after approve/reject/edit so UI doesn?t flash
   const refetchRiderDataInBackground = useCallback(async () => {
@@ -171,13 +210,14 @@ export default function RiderOnboardingClient() {
       }
       if (result.success && result.data) {
         setRiderData(result.data);
+        syncDashboardStateFromRider(result.data?.rider ?? null);
         setError(null);
       }
     } catch (err) {
       console.error("Error refetching rider data:", err);
       // Don?t set error state on background refetch ? user already saw success
     }
-  }, [riderId]);
+  }, [riderId, syncDashboardStateFromRider]);
 
   // Fetch rider data
   useEffect(() => {
@@ -366,6 +406,13 @@ export default function RiderOnboardingClient() {
             ),
           };
         });
+        syncDashboardStateFromRider({
+          ...riderData.rider,
+          kycStatus: data.kycStatus ?? riderData.rider.kycStatus,
+          onboardingStage: data.onboardingStage ?? riderData.rider.onboardingStage,
+          status: data.status ?? riderData.rider.status,
+        });
+        invalidateRiderSummary(queryClient, riderId);
       }
       // No refetch after approve: response already has final kycStatus, onboardingStage, status
     } catch (err) {
@@ -431,6 +478,7 @@ export default function RiderOnboardingClient() {
       setRejectingDoc(null);
       setRejectReason("");
       refetchRiderDataInBackground();
+      invalidateRiderSummary(queryClient, riderId);
     } catch (err) {
       console.error("Error rejecting document:", err);
       alert(err instanceof Error ? err.message : "Failed to reject document");
@@ -497,7 +545,7 @@ export default function RiderOnboardingClient() {
           </p>
         </div>
         <button
-          onClick={() => router.back()}
+          onClick={() => router.push("/dashboard/riders")}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
         >
           Back

@@ -21,6 +21,8 @@ export async function middleware(request: NextRequest) {
 
   try {
     // Create Supabase client for middleware
+    // Note: Disable autoRefreshToken in middleware to avoid Edge Runtime fetch failures
+    // Token refresh should happen in Server Components/API routes, not middleware
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -37,28 +39,118 @@ export async function middleware(request: NextRequest) {
           },
         },
         auth: {
-          autoRefreshToken: true,
+          autoRefreshToken: false, // Disabled in middleware to prevent Edge Runtime fetch failures
           persistSession: true,
+          detectSessionInUrl: false, // Middleware doesn't handle OAuth redirects
         },
       }
     );
 
     // Get current Supabase session (suppress expected errors, handle invalid token)
+    // First check if auth cookies exist to avoid unnecessary network calls
+    const hasAuthCookie = request.cookies.has("sb-access-token") || 
+                          request.cookies.has("sb-refresh-token") ||
+                          request.cookies.getAll().some(c => c.name.startsWith("sb-"));
+    
     let session = null;
     let sessionError: { message?: string; code?: string } | null = null;
-    try {
-      const sessionResult = await supabase.auth.getSession();
-      session = sessionResult.data?.session || null;
-      sessionError = sessionResult.error as { message?: string; code?: string } | null;
+    
+    // Only call getSession if we have auth cookies (avoids network calls when no session exists)
+    if (hasAuthCookie) {
+      try {
+        // Temporarily suppress console.error to prevent Supabase internal fetch errors from polluting logs
+        // These errors are expected in Edge Runtime when tokens are invalid/expired and are handled gracefully
+        const originalConsoleError = console.error;
+        let errorSuppressed = false;
+        console.error = (...args: any[]) => {
+          const errorStr = String(args[0] || '');
+          const fullErrorStr = args.map(a => String(a)).join(' ');
+          // Suppress known Supabase fetch errors in Edge Runtime (these are handled gracefully below)
+          if ((errorStr.includes('fetch failed') || fullErrorStr.includes('fetch failed')) && 
+              (fullErrorStr.includes('SupabaseAuthClient') || 
+               fullErrorStr.includes('_refreshAccessToken') ||
+               fullErrorStr.includes('_callRefreshToken') ||
+               fullErrorStr.includes('__loadSession') ||
+               fullErrorStr.includes('_useSession') ||
+               fullErrorStr.includes('_emitInitialSession') ||
+               fullErrorStr.includes('context.fetch'))) {
+            errorSuppressed = true;
+            return; // Suppress this specific error
+          }
+          // Allow all other errors through
+          originalConsoleError.apply(console, args);
+        };
 
+        try {
+          // Wrap getSession in a promise that catches all errors, including internal Supabase errors
+          const getSessionPromise = supabase.auth.getSession().catch((err: any) => {
+            // Catch and suppress fetch errors from Supabase's internal token refresh attempts
+            const errorMsg = String(err?.message || err || '');
+            if (errorMsg.includes('fetch failed') || err?.name === 'TypeError') {
+              // Return a safe error response instead of throwing
+              return { data: { session: null }, error: { message: "Session check failed", code: "FETCH_ERROR" } };
+            }
+            // Re-throw other errors
+            throw err;
+          });
+
+          // Use getSession with a timeout to prevent hanging on network failures
+          const sessionResult = await Promise.race([
+            getSessionPromise,
+            new Promise<{ data: { session: null }; error: { message: string; code: string } }>((resolve) =>
+              setTimeout(() => resolve({ data: { session: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
+            ),
+          ]) as { data?: { session: any }; error?: any };
+          session = sessionResult.data?.session || null;
+          sessionError = sessionResult.error as { message?: string; code?: string } | null;
+          
+          // If fetch failed (Edge Runtime network issue), treat as no session
+          if (sessionError && (sessionError.message?.includes("fetch failed") || sessionError.code === "TIMEOUT" || sessionError.code === "FETCH_ERROR")) {
+            if (process.env.NODE_ENV === "development" && !errorSuppressed) {
+              console.log("[middleware] Session check failed (network/timeout), treating as no session");
+            }
+            session = null;
+            sessionError = null;
+          }
+        } finally {
+          // Always restore original console.error
+          console.error = originalConsoleError;
+        }
+      } catch (err) {
+        // Handle Edge Runtime fetch failures gracefully
+        const error = err as { message?: string; code?: string; name?: string };
+        const isFetchError = 
+          error.name === "TypeError" ||
+          error.message?.includes("fetch failed") ||
+          error.message?.includes("network") ||
+          error.code === "ECONNREFUSED";
+        
+        if (isFetchError) {
+          // Network/fetch failure - treat as no session
+          if (process.env.NODE_ENV === "development") {
+            console.log("[middleware] Fetch error during session check (network issue), treating as no session");
+          }
+          session = null;
+          sessionError = null;
+        } else {
+          // Other errors - store for token validation below
+          sessionError = error;
+        }
+      }
+    } else {
+      // No auth cookies = no session, skip network call entirely
+      session = null;
+    }
+
+    // Check for token errors (refresh token not found, invalid, etc.)
+    if (sessionError) {
       const isRefreshTokenNotFound =
-        sessionError?.code === "refresh_token_not_found" ||
-        sessionError?.message?.includes("refresh_token_not_found");
+        sessionError.code === "refresh_token_not_found" ||
+        sessionError.message?.includes("refresh_token_not_found");
       const isInvalidOrUsedRefreshToken =
-        sessionError &&
-        (sessionError.code === "refresh_token_already_used" ||
-          sessionError.message?.includes("refresh_token_already_used") ||
-          sessionError.message?.toLowerCase().includes("invalid refresh token"));
+        sessionError.code === "refresh_token_already_used" ||
+        sessionError.message?.includes("refresh_token_already_used") ||
+        sessionError.message?.toLowerCase().includes("invalid refresh token");
 
       // Refresh token not found or invalid: clear auth cookies once, then treat as no session
       if (isRefreshTokenNotFound || isInvalidOrUsedRefreshToken) {
@@ -80,38 +172,6 @@ export async function middleware(request: NextRequest) {
           );
         }
         // Allow /login and /auth/callback to load so user can sign in or complete OAuth
-        if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
-          const redirectUrl = request.nextUrl.clone();
-          redirectUrl.pathname = "/login";
-          redirectUrl.searchParams.set("redirect", pathname);
-          redirectUrl.searchParams.set("reason", "session_invalid");
-          return NextResponse.redirect(redirectUrl);
-        }
-      }
-    } catch (err) {
-      sessionError = err as { message?: string; code?: string };
-      const isRefreshTokenNotFound =
-        sessionError?.code === "refresh_token_not_found" ||
-        sessionError?.message?.includes("refresh_token_not_found");
-      const isInvalidOrUsedRefreshToken =
-        sessionError &&
-        (sessionError.code === "refresh_token_already_used" ||
-          sessionError.message?.includes("refresh_token_already_used"));
-
-      if (isRefreshTokenNotFound || isInvalidOrUsedRefreshToken) {
-        try {
-          await supabase.auth.signOut();
-        } catch {
-          // ignore
-        }
-        session = null;
-        sessionError = null;
-        if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
-            { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-            { status: 401, headers: { "Content-Type": "application/json" } }
-          );
-        }
         if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
           const redirectUrl = request.nextUrl.clone();
           redirectUrl.pathname = "/login";

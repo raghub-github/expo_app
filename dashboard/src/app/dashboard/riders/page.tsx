@@ -12,6 +12,7 @@ import { invalidateRiderSummary } from '@/lib/cache-invalidation';
 import { useRiderSummaryQuery } from '@/hooks/queries/useRiderSummaryQuery';
 import { useRiderAccessQuery } from '@/hooks/queries/useRiderAccessQuery';
 import type { RiderListEntry, RiderSummary } from '@/types/rider-dashboard';
+import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import type { RiderSummaryParams } from '@/lib/queryKeys';
 import Link from 'next/link';
 import { CheckCircle, Circle, Filter, ChevronDown, ChevronUp, ShieldCheck, ShieldOff, Clock, User, Wallet, Lock, Unlock, History, Plus, RotateCcw, RefreshCw, MoreVertical, Banknote, Trash2, Check, X } from 'lucide-react';
@@ -855,7 +856,7 @@ export default function RidersPage() {
               <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5 text-sm">
                   <InfoInline label="City" value={rider.city || "—"} />
                   <InfoInline label="Status" value={(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? <span className="font-medium text-red-600">BLOCKED</span> : (riderSummary?.rider?.status ?? rider.status)} />
-                  <InfoInline label="Onboarding" value={rider.onboarding_stage} />
+                  <InfoInline label="Onboarding" value={ONBOARDING_STAGE_LABELS[rider.onboarding_stage] ?? rider.onboarding_stage} />
                   {needsVerification && riderSummary?.onboardingFees && Number(riderSummary.onboardingFees.totalPaid) > 0 && (
                     <InfoInline label="Onboarding fee paid" value={<span className="font-medium text-emerald-700 tabular-nums">₹{Number(riderSummary.onboardingFees.totalPaid).toFixed(2)}</span>} />
                   )}

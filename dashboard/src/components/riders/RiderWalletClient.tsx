@@ -206,7 +206,7 @@ export function RiderWalletClient() {
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <RiderSectionHeader
         title="Wallet & Earnings"
-        description="Use the search in the nav bar to select a rider. View balance, earnings by service, and penalties. Add penalty or view full wallet history."
+        description="View balance, earnings by service, and penalties. Add penalty or view full wallet history."
         rider={rider}
         resolveLoading={resolveLoading}
         error={error}

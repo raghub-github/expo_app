@@ -271,15 +271,15 @@ export function RiderReferralsClient() {
 
   const applyFilters = useCallback(
     (overrides?: Partial<typeof filters>) => {
-      const next = overrides ?? filters;
+      const next = { ...filters, ...overrides };
       setPage(1);
       const urlParams = new URLSearchParams();
       if (searchValue) urlParams.set("search", searchValue);
       if (next.from) urlParams.set("from", next.from);
       if (next.to) urlParams.set("to", next.to);
-      if (next.cityName.trim()) urlParams.set("cityName", next.cityName.trim());
+      if (next.cityName && next.cityName.trim()) urlParams.set("cityName", next.cityName.trim());
       if (next.status) urlParams.set("status", next.status);
-      if (next.q.trim()) urlParams.set("q", next.q.trim());
+      if (next.q && next.q.trim()) urlParams.set("q", next.q.trim());
       router.push(`/dashboard/riders/referrals?${urlParams.toString()}`);
       if (overrides) setFilters(next);
     },
@@ -332,7 +332,7 @@ export function RiderReferralsClient() {
     <div className="space-y-3 sm:space-y-4 w-full max-w-full overflow-x-hidden">
       <RiderSectionHeader
         title="Referral Data"
-        description="Use the search in the nav bar to select a rider. View referral code, referred-by, total referred count, and detailed referral history with order counts and credited amounts."
+        description="View referral code, and detailed referral history with order counts and credited amounts."
         rider={rider}
         resolveLoading={resolveLoading}
         error={error}

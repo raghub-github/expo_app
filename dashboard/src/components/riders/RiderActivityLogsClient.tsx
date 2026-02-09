@@ -313,7 +313,7 @@ export function RiderActivityLogsClient() {
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <RiderSectionHeader
         title="Activity Logs"
-        description="Rider login time, service, orders completed/cancelled, and earnings (orders, offers, incentives). Use filters by period, service, and date range."
+        description="Rider login time, service, orders completed/cancelled, and earnings."
         rider={rider}
         resolveLoading={resolveLoading}
         error={error}
@@ -422,13 +422,13 @@ export function RiderActivityLogsClient() {
                     className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                <button
+                {/* <button
                   type="button"
                   onClick={() => applyFilters()}
                   className="px-4 py-1.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors h-[34px] shrink-0"
                 >
                   Apply
-                </button>
+                </button> */}
                 <button
                   type="button"
                   onClick={clearAllActivityFilters}

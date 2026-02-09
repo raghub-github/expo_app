@@ -307,7 +307,7 @@ export function RiderOrdersClient() {
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <RiderSectionHeader
         title="Rider Orders"
-        description="Use the search in the nav bar to select a rider. Filter by service, status, and date. Add penalty from order actions."
+        description="Filter by service, status, and date. Add penalty from order actions."
         rider={rider}
         resolveLoading={resolveLoading}
         error={error}
