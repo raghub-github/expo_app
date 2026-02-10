@@ -9,6 +9,8 @@ export interface TicketFilters {
   statuses?: string[];
   priorities?: string[];
   ticketCategory?: string;
+  /** Multi-select: "me", "unassigned", or numeric user IDs */
+  assignedToIds?: string[];
   assignedTo?: string;
   sourceRoles?: string[];
   groupIds?: number[];
@@ -78,7 +80,8 @@ export function useTickets(filters: TicketFilters = {}) {
       if (filters.statuses?.length) params.set("status", filters.statuses.join(","));
       if (filters.priorities?.length) params.set("priority", filters.priorities.join(","));
       if (filters.ticketCategory) params.set("ticketCategory", filters.ticketCategory);
-      if (filters.assignedTo) params.set("assignedTo", filters.assignedTo);
+      if (filters.assignedToIds?.length) params.set("assignedToIds", filters.assignedToIds.join(","));
+      else if (filters.assignedTo) params.set("assignedTo", filters.assignedTo);
       if (filters.sourceRoles?.length) params.set("sourceRole", filters.sourceRoles.join(","));
       if (filters.groupIds?.length) params.set("groupIds", filters.groupIds.join(","));
       if (filters.skill) params.set("skill", filters.skill);

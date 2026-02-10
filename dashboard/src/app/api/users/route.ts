@@ -12,7 +12,7 @@ import { logAPICall, logUserAction } from "@/lib/auth/activity-tracker";
 import { logUserCreation } from "@/lib/audit/audit-logger";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, areaManagers } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 
@@ -167,6 +167,9 @@ export async function POST(request: NextRequest) {
       manager_name,
       dashboardAccess: dashboardAccessData,
       accessPoints: accessPointsData,
+      area_code,
+      locality_code,
+      city,
     } = body;
 
     // Normalize mobile numbers
@@ -248,6 +251,24 @@ export async function POST(request: NextRequest) {
       created_by: systemUser.id,
       created_by_name: systemUser.fullName,
     });
+
+    // If Area Manager role, auto-create area_managers row (super admin / admin create karte hi isi table me save)
+    if (
+      primary_role === "AREA_MANAGER_MERCHANT" ||
+      primary_role === "AREA_MANAGER_RIDER"
+    ) {
+      const db = getDb();
+      const managerType =
+        primary_role === "AREA_MANAGER_MERCHANT" ? "MERCHANT" : "RIDER";
+      await db.insert(areaManagers).values({
+        userId: newUser.id,
+        managerType,
+        areaCode: area_code?.trim() || null,
+        localityCode: locality_code?.trim() || null,
+        city: city?.trim() || null,
+        status: "ACTIVE",
+      });
+    }
 
     // Log activity
     await logUserAction(

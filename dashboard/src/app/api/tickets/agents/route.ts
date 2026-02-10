@@ -16,24 +16,21 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
     const hasTicketAccess = await hasDashboardAccessByAuth(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email!,
       "TICKET"
     );
 
@@ -85,8 +82,9 @@ export async function GET() {
       WHERE current_assignee_user_id IS NOT NULL
     `;
     const assignedAgentIds = assignedAgentsResult
-      .map((r: any) => r.current_assignee_user_id)
-      .filter((id: any): id is number => id !== null && typeof id === 'number');
+      .map((r: { current_assignee_user_id: unknown }) => r.current_assignee_user_id)
+      .filter((id): id is number => id != null && (typeof id === "number" || typeof id === "bigint"))
+      .map((id) => Number(id));
     
     // Merge assigned agents with access-based agents
     userIds = [...new Set([...userIds, ...assignedAgentIds])];
@@ -116,11 +114,16 @@ export async function GET() {
       email: u.email ?? "",
     }));
 
-    console.log("[GET /api/tickets/agents] Returning agents:", agents.length, agents.map(a => a.name || a.email));
+    console.log("[GET /api/tickets/agents] Returning agents:", agents.length, agents.map((a) => a.name || a.email));
+
+    const currentUser = {
+      id: systemUser.id,
+      name: systemUser.fullName ?? systemUser.email ?? "Me",
+    };
 
     return NextResponse.json({
       success: true,
-      data: { agents },
+      data: { agents, currentUser },
     });
   } catch (error) {
     console.error("[GET /api/tickets/agents] Error:", error);

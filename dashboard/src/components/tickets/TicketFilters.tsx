@@ -44,6 +44,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
   const isDrawer = variant === "drawer";
 
   const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string }>>([]);
+  const [currentUserName, setCurrentUserName] = useState<string>("Me");
   const [referenceData, setReferenceData] = useState<{
     groups: Array<{ id: number; groupCode: string; groupName: string }>;
     statuses: Array<{ value: string; label: string }>;
@@ -62,11 +63,16 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
         return r.json();
       })
       .then((d) => {
-        if (d.success && d.data?.agents) {
-          console.log("[TicketFilters] Loaded agents:", d.data.agents.length, d.data.agents.map((a: any) => a.name || a.email));
-          setAgents(d.data.agents);
+        if (d.success && d.data) {
+          if (d.data.agents) {
+            setAgents(d.data.agents);
+          } else {
+            setAgents([]);
+          }
+          if (d.data.currentUser?.name) {
+            setCurrentUserName(d.data.currentUser.name);
+          }
         } else {
-          console.error("[TicketFilters] Agents API returned error:", d.error || "Unknown error");
           setAgents([]);
         }
       })
@@ -222,7 +228,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
             placeholder="All Agents"
             selectedValues={filters.assignedToIds}
             options={[
-              { value: "me", label: "Me" },
+              { value: "me", label: currentUserName },
               { value: "unassigned", label: "Unassigned" },
               ...agents.map((a) => ({ 
                 value: String(a.id), 

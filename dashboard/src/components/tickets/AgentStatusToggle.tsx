@@ -84,7 +84,7 @@ export function AgentStatusToggle() {
     );
   }
 
-  const menuContent = isMenuOpen && typeof document !== "undefined" && (
+  const menuContent = (
     <>
       <div
         role="button"

@@ -211,8 +211,13 @@ export function Header() {
         <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
       </div>
 
+<<<<<<< HEAD
       {/* Dashboard Search - Center (Desktop only; hidden on Tickets where search is in nav) */}
       {!pathname.startsWith("/dashboard/tickets") && (
+=======
+      {/* Dashboard Search - Center (Desktop only for now) - Hide on Area Manager dashboard page */}
+      {pathname !== "/dashboard/area-managers" && (
+>>>>>>> 4c04771 (am db ui done)
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
           <DashboardSearch compact={true} />
         </div>

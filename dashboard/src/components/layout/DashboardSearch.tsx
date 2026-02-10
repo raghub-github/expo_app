@@ -95,9 +95,10 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
               className={`border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 transition-all duration-200 ${
                 compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
               }`}
+              style={{ color: '#111827' }}
             >
-              <option value="child">Child Merchant</option>
-              <option value="parent">Parent Merchant</option>
+              <option value="child" style={{ color: '#111827' }}>Child Merchant</option>
+              <option value="parent" style={{ color: '#111827' }}>Parent Merchant</option>
             </select>
             <input
               type="text"

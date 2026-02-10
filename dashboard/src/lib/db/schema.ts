@@ -430,6 +430,28 @@ export const systemUserStatusEnum = pgEnum("system_user_status", [
   "LOCKED",
 ]);
 
+export const areaManagerTypeEnum = pgEnum("area_manager_type", [
+  "MERCHANT",
+  "RIDER",
+]);
+
+export const areaManagerStatusEnum = pgEnum("area_manager_status", [
+  "ACTIVE",
+  "INACTIVE",
+]);
+
+export const storeStatusEnum = pgEnum("store_status", [
+  "VERIFIED",
+  "PENDING",
+  "REJECTED",
+]);
+
+export const riderAvailabilityStatusEnum = pgEnum("rider_availability_status", [
+  "ONLINE",
+  "BUSY",
+  "OFFLINE",
+]);
+
 /**
  * System Users table - Internal dashboard users (admins, agents, etc.)
  */
@@ -485,6 +507,77 @@ export const systemUsers = pgTable(
     primaryRoleIdx: index("system_users_primary_role_idx").on(table.primaryRole),
     statusIdx: index("system_users_status_idx").on(table.status),
     reportsToIdx: index("system_users_reports_to_idx").on(table.reportsToId),
+  })
+);
+
+/**
+ * Area Managers - Links system users to area/locality and manager type (Merchant vs Rider)
+ */
+export const areaManagers = pgTable(
+  "area_managers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => systemUsers.id, { onDelete: "cascade" }),
+    managerType: areaManagerTypeEnum("manager_type").notNull(),
+    areaCode: text("area_code"),
+    localityCode: text("locality_code"),
+    city: text("city"),
+    status: areaManagerStatusEnum("status").notNull().default("ACTIVE"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: uniqueIndex("area_managers_user_id_idx").on(table.userId),
+    managerTypeIdx: index("area_managers_manager_type_idx").on(table.managerType),
+    areaCodeIdx: index("area_managers_area_code_idx").on(table.areaCode),
+    localityCodeIdx: index("area_managers_locality_code_idx").on(table.localityCode),
+    cityIdx: index("area_managers_city_idx").on(table.city),
+    statusIdx: index("area_managers_status_idx").on(table.status),
+  })
+);
+
+/**
+ * Stores - Merchant stores onboarded by Area Managers (Option A: standalone table)
+ */
+export const stores = pgTable(
+  "stores",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    storeId: text("store_id").notNull().unique(),
+    name: text("name").notNull(),
+    ownerPhone: text("owner_phone").notNull(),
+    areaManagerId: integer("area_manager_id")
+      .notNull()
+      .references(() => areaManagers.id, { onDelete: "restrict" }),
+    parentStoreId: integer("parent_store_id").references((): any => stores.id, { onDelete: "set null" }),
+    status: storeStatusEnum("status").notNull().default("PENDING"),
+    localityCode: text("locality_code"),
+    areaCode: text("area_code"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBy: integer("deleted_by"),
+    createdBy: integer("created_by"),
+    updatedBy: integer("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    areaManagerIdIdx: index("stores_area_manager_id_idx").on(table.areaManagerId),
+    parentStoreIdIdx: index("stores_parent_store_id_idx").on(table.parentStoreId),
+    statusIdx: index("stores_status_idx").on(table.status),
+    storeIdIdx: index("stores_store_id_idx").on(table.storeId),
+    nameIdx: index("stores_name_idx").on(table.name),
+    ownerPhoneIdx: index("stores_owner_phone_idx").on(table.ownerPhone),
+    deletedAtIdx: index("stores_deleted_at_idx").on(table.deletedAt),
   })
 );
 
@@ -630,6 +723,29 @@ export const actionAuditLog = pgTable(
     actionTypeIdx: index("action_audit_log_action_type_idx").on(
       table.actionType
     ),
+  })
+);
+
+/**
+ * Activity logs - Who onboarded/verified/rejected; area manager actions (dedicated table per spec)
+ */
+export const activityLogs = pgTable(
+  "activity_logs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    actorId: integer("actor_id").references((): any => systemUsers.id, { onDelete: "set null" }),
+    action: text("action").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: bigint("entity_id", { mode: "number" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    actorIdIdx: index("activity_logs_actor_id_idx").on(table.actorId),
+    entityTypeIdx: index("activity_logs_entity_type_idx").on(table.entityType),
+    entityIdIdx: index("activity_logs_entity_id_idx").on(table.entityId),
+    createdAtIdx: index("activity_logs_created_at_idx").on(table.createdAt),
   })
 );
 
@@ -851,6 +967,9 @@ const ridersTable = pgTable(
     vehicleChoice: text("vehicle_choice"), // 'EV' or 'Petrol'
     // Preferred service types (array stored as JSONB)
     preferredServiceTypes: jsonb("preferred_service_types").default([]), // ['food', 'parcel', 'person_ride']
+    areaManagerId: integer("area_manager_id").references((): any => areaManagers.id, { onDelete: "set null" }),
+    localityCode: text("locality_code"),
+    availabilityStatus: riderAvailabilityStatusEnum("availability_status").notNull().default("OFFLINE"),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     deletedBy: integer("deleted_by"),
     createdBy: integer("created_by"),
@@ -871,6 +990,9 @@ const ridersTable = pgTable(
     statusIdx: index("riders_status_idx").on(table.status),
     cityIdx: index("riders_city_idx").on(table.city),
     kycStatusIdx: index("riders_kyc_status_idx").on(table.kycStatus),
+    areaManagerIdIdx: index("riders_area_manager_id_idx").on(table.areaManagerId),
+    localityCodeIdx: index("riders_locality_code_idx").on(table.localityCode),
+    availabilityStatusIdx: index("riders_availability_status_idx").on(table.availabilityStatus),
   })
 );
 
@@ -2636,6 +2758,10 @@ export const adminActionLogs = pgTable(
 // ============================================================================
 
 export const ridersRelations = relations(riders, ({ one, many }) => ({
+  areaManager: one(areaManagers, {
+    fields: [riders.areaManagerId],
+    references: [areaManagers.id],
+  }),
   referredByRider: one(riders, {
     fields: [riders.referredBy],
     references: [riders.id],
@@ -2671,6 +2797,35 @@ export const ridersRelations = relations(riders, ({ one, many }) => ({
   referralsAsReferred: many(referrals, { relationName: "referred" }),
   dailyAnalytics: many(riderDailyAnalytics),
   fraudLogs: many(fraudLogs),
+}));
+
+export const areaManagersRelations = relations(areaManagers, ({ one, many }) => ({
+  user: one(systemUsers, {
+    fields: [areaManagers.userId],
+    references: [systemUsers.id],
+  }),
+  stores: many(stores),
+  riders: many(riders),
+}));
+
+export const storesRelations = relations(stores, ({ one, many }) => ({
+  areaManager: one(areaManagers, {
+    fields: [stores.areaManagerId],
+    references: [areaManagers.id],
+  }),
+  parentStore: one(stores, {
+    fields: [stores.parentStoreId],
+    references: [stores.id],
+    relationName: "storeChildren",
+  }),
+  childStores: many(stores, { relationName: "storeChildren" }),
+}));
+
+export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
+  actor: one(systemUsers, {
+    fields: [activityLogs.actorId],
+    references: [systemUsers.id],
+  }),
 }));
 
 export const riderDocumentsRelations = relations(
