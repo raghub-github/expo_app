@@ -11,6 +11,8 @@ import {
   type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { usePermission } from "@/hooks/usePermission";
+import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -21,6 +23,7 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const riderCtx = useRiderDashboardOptional();
+  const { hasDashboardAccess, isSuperAdmin } = usePermission();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -38,6 +41,11 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   );
   const isAreaManagerDashboard =
     currentDashboard?.dashboardType === "AREA_MANAGER";
+  const isOrderDashboard = 
+    currentDashboard?.dashboardType === "ORDER_FOOD" ||
+    currentDashboard?.dashboardType === "ORDER_PARCEL" ||
+    currentDashboard?.dashboardType === "ORDER_PERSON_RIDE" ||
+    cleanPathname.startsWith("/dashboard/orders");
   const [areaManagerType, setAreaManagerType] =
     useState<AreaManagerTypeFilter | null>(null);
 
@@ -58,14 +66,31 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   }, [isAreaManagerDashboard]);
 
   const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
-    if (!isAreaManagerDashboard || !rawSubRoutes.length) return rawSubRoutes;
-    if (areaManagerType === null) return rawSubRoutes;
-    return rawSubRoutes.filter((r) => {
-      const allowed = r.areaManagerType;
-      if (!allowed || allowed === "BOTH") return true;
-      return allowed === areaManagerType;
-    });
-  }, [isAreaManagerDashboard, rawSubRoutes, areaManagerType]);
+    let filtered = rawSubRoutes;
+    
+    // Filter Area Manager routes
+    if (isAreaManagerDashboard && rawSubRoutes.length) {
+      if (areaManagerType !== null) {
+        filtered = rawSubRoutes.filter((r) => {
+          const allowed = r.areaManagerType;
+          if (!allowed || allowed === "BOTH") return true;
+          return allowed === areaManagerType;
+        });
+      }
+    }
+    
+    // Filter Order dashboard routes based on permissions
+    if (isOrderDashboard && rawSubRoutes.length) {
+      filtered = rawSubRoutes.filter((route) => {
+        if (isSuperAdmin) return true;
+        const dashboardType = getDashboardTypeFromPath(route.href);
+        if (!dashboardType) return true;
+        return hasDashboardAccess(dashboardType);
+      });
+    }
+    
+    return filtered;
+  }, [isAreaManagerDashboard, isOrderDashboard, rawSubRoutes, areaManagerType, hasDashboardAccess, isSuperAdmin]);
 
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");

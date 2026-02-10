@@ -1,4 +1,5 @@
 import { requireSuperAdminAccess, checkDashboardAccess } from "@/lib/permissions/page-protection";
+import { redirect } from "next/navigation";
 import Link from "next/link";
 import { UtensilsCrossed, Car, Package } from "lucide-react";
 
@@ -13,9 +14,25 @@ export default async function OrdersPage() {
     await requireSuperAdminAccess();
   }
 
+  // Determine default dashboard: Food first, then Parcel, then Person Ride
+  let defaultDashboard = null;
+  if (hasFoodAccess) {
+    defaultDashboard = "/dashboard/orders/food";
+  } else if (hasParcelAccess) {
+    defaultDashboard = "/dashboard/orders/parcel";
+  } else if (hasRideAccess) {
+    defaultDashboard = "/dashboard/orders/person-ride";
+  }
+
+  // Redirect to default dashboard if available
+  if (defaultDashboard) {
+    redirect(defaultDashboard);
+  }
+
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-
+      <h1 className="text-3xl font-bold text-gray-900">Orders</h1>
+      
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Food Orders Card */}
         {hasFoodAccess && (
@@ -32,7 +49,7 @@ export default async function OrdersPage() {
                   <h2 className="text-xl font-semibold text-gray-900">Food Orders</h2>
                 </div>
                 <p className="text-sm text-gray-600 mb-4">
-                  Manage food delivery orders, track preparation time, and handle restaurant-related operations
+                  Manage food delivery orders, track preparation time, and handle restaurant-related operations.
                 </p>
                 <div className="flex items-center text-sm font-medium text-blue-600 group-hover:text-blue-700">
                   View Food Orders
@@ -70,7 +87,7 @@ export default async function OrdersPage() {
                   <h2 className="text-xl font-semibold text-gray-900">Person Ride Orders</h2>
                 </div>
                 <p className="text-sm text-gray-600 mb-4">
-                  Manage person ride bookings, track passenger details, and handle ride-related operations
+                  Manage person ride bookings, track passenger details, and handle ride-related operations.
                 </p>
                 <div className="flex items-center text-sm font-medium text-blue-600 group-hover:text-blue-700">
                   View Ride Orders
@@ -108,7 +125,7 @@ export default async function OrdersPage() {
                   <h2 className="text-xl font-semibold text-gray-900">Parcel Orders</h2>
                 </div>
                 <p className="text-sm text-gray-600 mb-4">
-                  Manage parcel delivery orders, track COD collections, and handle package-related operations
+                  Manage parcel delivery orders, track COD collections, and handle package-related operations.
                 </p>
                 <div className="flex items-center text-sm font-medium text-blue-600 group-hover:text-blue-700">
                   View Parcel Orders

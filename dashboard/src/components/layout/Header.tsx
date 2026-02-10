@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { LogOut, User, Bell } from "lucide-react";
+import { LogOut, User, Bell, Search, ChevronDown } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
@@ -10,6 +10,114 @@ import Link from "next/link";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
+
+// Order Search Bar Component
+function OrderSearchBar() {
+  const [searchType, setSearchType] = useState("Order Id");
+  const [searchValue, setSearchValue] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const MINT_GREEN = "#4EE5C1";
+
+  // All search items from the 3 dashboards
+  const searchItems = [
+    "Order Id",
+    "Merchant Id",
+    "Customer Mobile",
+    "Third Party Order Id",
+    "ONDC Order Id",
+    "Client Reference Id",
+    "Partner Order Id",
+    "Internal Order Id",
+    "Rider Mobile",
+    "Tracking Order Id",
+    "Client Name",
+  ];
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    if (showDropdown) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showDropdown]);
+
+  const handleSearch = () => {
+    // Handle search logic here
+    console.log("Search:", searchType, searchValue);
+  };
+
+  return (
+    <div className="flex items-center w-full max-w-md rounded-lg border" style={{ borderColor: "#D9DCE0" }}>
+      {/* Dropdown Section */}
+      <div ref={dropdownRef} className="relative">
+        <button
+          onClick={() => setShowDropdown(!showDropdown)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-lg text-xs font-medium text-gray-700 cursor-pointer"
+          style={{ backgroundColor: "#F0F2F5" }}
+        >
+          <span className="whitespace-nowrap">{searchType}</span>
+          <ChevronDown className="h-3.5 w-3.5 text-gray-600" />
+        </button>
+        {showDropdown && (
+          <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-80 overflow-y-auto">
+            {searchItems.map((item) => (
+              <button
+                key={item}
+                onClick={() => {
+                  setSearchType(item);
+                  setShowDropdown(false);
+                }}
+                onMouseEnter={() => setHoveredItem(item)}
+                onMouseLeave={() => setHoveredItem(null)}
+                className="w-full text-left px-3 py-1.5 text-xs cursor-pointer transition-colors"
+                style={{
+                  color: hoveredItem === item ? "#000000" : "#000000",
+                  backgroundColor: hoveredItem === item ? MINT_GREEN : "transparent",
+                }}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      
+      {/* Input Section */}
+      <input
+        type="text"
+        value={searchValue}
+        onChange={(e) => setSearchValue(e.target.value)}
+        placeholder="Search here..."
+        className="flex-1 px-2.5 py-1.5 border-l border-r text-xs focus:outline-none"
+        style={{ borderColor: "#D9DCE0" }}
+        onKeyPress={(e) => {
+          if (e.key === "Enter") {
+            handleSearch();
+          }
+        }}
+      />
+      
+      {/* Search Button */}
+      <button
+        onClick={handleSearch}
+        className="px-2.5 py-1.5 rounded-r-lg flex items-center justify-center cursor-pointer"
+        style={{ backgroundColor: MINT_GREEN }}
+      >
+        <Search className="h-3.5 w-3.5 text-gray-900" />
+      </button>
+    </div>
+  );
+}
 
 export function Header() {
   const pathname = usePathname();
@@ -45,6 +153,21 @@ export function Header() {
 
   // Get avatar URL - check multiple sources
   useEffect(() => {
+    let isMounted = true;
+    let timeoutIds: NodeJS.Timeout[] = [];
+    let imageInstances: HTMLImageElement[] = [];
+
+    const cleanup = () => {
+      isMounted = false;
+      timeoutIds.forEach(id => clearTimeout(id));
+      timeoutIds = [];
+      imageInstances.forEach(img => {
+        img.onload = null;
+        img.onerror = null;
+      });
+      imageInstances = [];
+    };
+
     if (userEmail) {
       // Check Supabase session user data for avatar (from Google OAuth)
       const sessionUser = sessionData?.session?.user;
@@ -91,10 +214,14 @@ export function Header() {
 
       // Helper function to try Gravatar fallback
       const tryGravatarFallback = (email: string, metadata: any, failedUrl: string | null) => {
+        if (!isMounted) return;
+        
         // Ensure we're in the browser before using Image constructor
         if (typeof window === "undefined" || typeof Image === "undefined") {
-          setAvatarError(true);
-          setAvatarUrl(null);
+          if (isMounted) {
+            setAvatarError(true);
+            setAvatarUrl(null);
+          }
           return;
         }
 
@@ -103,21 +230,26 @@ export function Header() {
           try {
             const gravatarImg = new window.Image();
             gravatarImg.crossOrigin = "anonymous";
+            imageInstances.push(gravatarImg);
             
             const gravatarTimeout = setTimeout(() => {
+              if (!isMounted) return;
               gravatarImg.onload = null;
               gravatarImg.onerror = null;
               setAvatarError(true);
               setAvatarUrl(null);
             }, 3000);
+            timeoutIds.push(gravatarTimeout);
             
             gravatarImg.onload = () => {
+              if (!isMounted) return;
               clearTimeout(gravatarTimeout);
               setAvatarUrl(gravatarUrl);
               setAvatarError(false);
             };
             
             gravatarImg.onerror = () => {
+              if (!isMounted) return;
               clearTimeout(gravatarTimeout);
               setAvatarError(true);
               setAvatarUrl(null);
@@ -126,27 +258,34 @@ export function Header() {
             gravatarImg.src = gravatarUrl;
           } catch (error) {
             console.error("[Header] Error creating Image for Gravatar:", error);
+            if (isMounted) {
+              setAvatarError(true);
+              setAvatarUrl(null);
+            }
+          }
+        } else {
+          if (isMounted) {
             setAvatarError(true);
             setAvatarUrl(null);
           }
-        } else {
-          setAvatarError(true);
-          setAvatarUrl(null);
         }
       };
 
       if (urlToTry) {
         // Ensure we're in the browser before using Image constructor
         if (typeof window === "undefined" || typeof Image === "undefined") {
-          setAvatarError(true);
-          setAvatarUrl(null);
-          return;
+          if (isMounted) {
+            setAvatarError(true);
+            setAvatarUrl(null);
+          }
+          return cleanup;
         }
 
         try {
           // Verify the image exists by trying to load it with timeout
           const img = new window.Image();
           img.crossOrigin = "anonymous"; // Allow CORS for external images
+          imageInstances.push(img);
           
           // Suppress console errors for image loading (429, 404, CORS, etc.)
           const originalError = console.error;
@@ -159,16 +298,19 @@ export function Header() {
           
           // Set a timeout to prevent hanging on slow/failed requests (like 429 errors)
           const timeoutId = setTimeout(() => {
+            if (!isMounted) return;
             restoreErrors();
             img.onload = null;
             img.onerror = null;
             // Timeout reached (likely 429 or network issue), try Gravatar fallback silently
             tryGravatarFallback(userEmail, userMetadata, urlToTry);
           }, 2000); // 2 second timeout for faster fallback on 429 errors
+          timeoutIds.push(timeoutId);
           
           suppressErrors(); // Suppress errors during image load
           
           img.onload = () => {
+            if (!isMounted) return;
             restoreErrors();
             clearTimeout(timeoutId);
             setAvatarUrl(urlToTry);
@@ -176,6 +318,7 @@ export function Header() {
           };
           
           img.onerror = () => {
+            if (!isMounted) return;
             restoreErrors();
             clearTimeout(timeoutId);
             // Image failed to load (could be 429, 404, CORS, etc.)
@@ -193,6 +336,8 @@ export function Header() {
         tryGravatarFallback(userEmail, userMetadata, null);
       }
     }
+
+    return cleanup;
   }, [userEmail, userMetadata, sessionData]);
 
   const openLogoutConfirm = () => {
@@ -220,12 +365,16 @@ export function Header() {
         <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
       </div>
 
-      {/* Dashboard Search - Center (Desktop only for now) - Hide on Area Manager dashboard page */}
-      {pathname !== "/dashboard/area-managers" && (
+      {/* Order Search Bar - Show on orders pages */}
+      {pathname.startsWith("/dashboard/orders") ? (
+        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+          <OrderSearchBar />
+        </div>
+      ) : pathname !== "/dashboard/area-managers" ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
           <DashboardSearch compact={true} />
         </div>
-      )}
+      ) : null}
 
       <div className="flex items-center space-x-2 sm:space-x-4 flex-shrink-0">
         <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100">
