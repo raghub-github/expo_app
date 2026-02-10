@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
+  type DashboardSubRoute,
+  type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 
@@ -29,11 +31,41 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
     [cleanPathname]
   );
 
-  // Get sub-routes for current dashboard
-  const currentSubRoutes = useMemo(
+  // Sub-routes for current dashboard (may be filtered for Area Managers)
+  const rawSubRoutes = useMemo(
     () => getCurrentDashboardSubRoutes(cleanPathname),
     [cleanPathname]
   );
+  const isAreaManagerDashboard =
+    currentDashboard?.dashboardType === "AREA_MANAGER";
+  const [areaManagerType, setAreaManagerType] =
+    useState<AreaManagerTypeFilter | null>(null);
+
+  useEffect(() => {
+    if (!isAreaManagerDashboard) return;
+    let cancelled = false;
+    fetch("/api/area-manager/me")
+      .then((r) => r.json())
+      .then((body) => {
+        if (cancelled || !body?.success) return;
+        const t = body?.data?.managerType;
+        if (t === "MERCHANT" || t === "RIDER") setAreaManagerType(t);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAreaManagerDashboard]);
+
+  const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
+    if (!isAreaManagerDashboard || !rawSubRoutes.length) return rawSubRoutes;
+    if (areaManagerType === null) return rawSubRoutes;
+    return rawSubRoutes.filter((r) => {
+      const allowed = r.areaManagerType;
+      if (!allowed || allowed === "BOTH") return true;
+      return allowed === areaManagerType;
+    });
+  }, [isAreaManagerDashboard, rawSubRoutes, areaManagerType]);
 
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");

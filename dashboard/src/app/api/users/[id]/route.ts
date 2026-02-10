@@ -25,8 +25,9 @@ import {
 } from "@/lib/audit/audit-logger";
 import { logActionByAuth } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, areaManagers } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
+import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 
 export const runtime = 'nodejs';
 
@@ -93,6 +94,14 @@ export async function GET(
           primaryRole: reportsToUser.primaryRole,
         };
       }
+    }
+
+    // Include area_managers data if user is an Area Manager
+    const areaManager = await getAreaManagerByUserId(userId);
+    if (areaManager) {
+      (user as any).areaCode = areaManager.areaCode;
+      (user as any).localityCode = areaManager.localityCode;
+      (user as any).city = areaManager.city;
     }
 
     // Include reportsTo user in response
@@ -190,6 +199,9 @@ export async function PUT(
       subrole,
       subrole_other,
       suspension_expires_at,
+      area_code,
+      locality_code,
+      city,
       ...updates 
     } = body;
     
@@ -290,6 +302,38 @@ export async function PUT(
         { success: false, error: "Failed to update user" },
         { status: 500 }
       );
+    }
+
+    // Update area_managers if this user is an Area Manager and area_code/locality_code/city provided
+    const isAreaManager =
+      updatedUser.primaryRole === "AREA_MANAGER_MERCHANT" ||
+      updatedUser.primaryRole === "AREA_MANAGER_RIDER";
+    if (
+      isAreaManager &&
+      (area_code !== undefined || locality_code !== undefined || city !== undefined)
+    ) {
+      const db = getDb();
+      const existing = await getAreaManagerByUserId(userId);
+      const managerType =
+        updatedUser.primaryRole === "AREA_MANAGER_MERCHANT" ? "MERCHANT" : "RIDER";
+      if (existing) {
+        const amUpdates: { areaCode?: string | null; localityCode?: string | null; city?: string | null; updatedAt: Date } = {
+          updatedAt: new Date(),
+        };
+        if (area_code !== undefined) amUpdates.areaCode = area_code?.trim() || null;
+        if (locality_code !== undefined) amUpdates.localityCode = locality_code?.trim() || null;
+        if (city !== undefined) amUpdates.city = city?.trim() || null;
+        await db.update(areaManagers).set(amUpdates).where(eq(areaManagers.userId, userId));
+      } else {
+        await db.insert(areaManagers).values({
+          userId,
+          managerType,
+          areaCode: area_code?.trim() || null,
+          localityCode: locality_code?.trim() || null,
+          city: city?.trim() || null,
+          status: "ACTIVE",
+        });
+      }
     }
 
     // Calculate changed fields
