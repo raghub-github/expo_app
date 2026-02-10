@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
     for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
       const result = await supabase.auth.getUser();
-      user = result.data?.user ?? null;
+      user = result.data?.user ? { ...result.data.user, id: result.data.user.id, email: result.data.user.email } : null;
       userError = result.error ?? null;
 
       if (!userError && user) break;
@@ -57,7 +57,14 @@ export async function GET(request: NextRequest) {
         { status: 401 }
       );
     }
-    const sessionToReturn = session ?? { user, access_token: "", refresh_token: "", expires_at: 0, expires_in: 0, token_type: "bearer" };
+    
+    // Only return session if it exists and is valid
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: "No active session", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      );
+    }
 
     // Get user permissions
     const permissions = await getUserPermissions(user.id, user.email || "");
@@ -65,7 +72,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        session: sessionToReturn,
+        session,
         permissions,
       },
     });

@@ -138,17 +138,38 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
     );
   }
 
+  // Helper function to detect if search is Customer ID or mobile number
+  const isCustomerIdOrMobile = (searchTerm: string): boolean => {
+    const trimmed = searchTerm.trim();
+    // Check if it's a Customer ID (GM followed by numbers, case insensitive)
+    const isCustomerId = /^GM\d+$/i.test(trimmed);
+    // Check if it's a mobile number (10+ digits, optionally with +91 or 91 prefix)
+    const isMobile = /^(\+?91)?\d{10,}$/.test(trimmed);
+    return isCustomerId || isMobile;
+  };
+
   // Render standard search for other dashboards
   return (
     <div className={`flex items-center gap-2 ${compact ? "w-full max-w-md" : "w-full max-w-lg"}`}>
-      <form onSubmit={(e) => {
+      <form onSubmit={async (e) => {
         e.preventDefault();
         const value = localSearchValue.trim();
         if (!value) return;
+        
+        // For customer dashboard, route directly to /all with search params
+        // For other dashboards, use the base path
         const params = new URLSearchParams();
         params.set("search", value);
-        const basePath = currentDashboard?.href || "/dashboard";
-        router.push(`${basePath}?${params.toString()}`);
+        
+        let targetPath: string;
+        if (dashboardType === "CUSTOMER") {
+          // Always route to /all for customer searches
+          targetPath = "/dashboard/customers/all";
+        } else {
+          targetPath = currentDashboard?.href || "/dashboard";
+        }
+        
+        router.push(`${targetPath}?${params.toString()}`);
       }} className="flex-1 flex gap-2">
         <input
           type="text"

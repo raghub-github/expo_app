@@ -65,3 +65,28 @@ body {
 .mapboxgl-popup-close-button {
   display: none;
 }
+
+/* Global Input Text Colors */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="tel"],
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"],
+input[type="search"],
+input[type="url"],
+textarea,
+select {
+  color: rgb(17, 24, 39) !important; /* text-gray-900 */
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgb(156, 163, 175) !important; /* text-gray-400 */
+}
+
+select option {
+  color: rgb(17, 24, 39) !important; /* text-gray-900 */
+}

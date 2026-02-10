@@ -1,92 +1,128 @@
-import { requireDashboardAccess } from "@/lib/permissions/page-protection";
+"use client";
 
-export default async function ParcelCustomersPage() {
-  await requireDashboardAccess("CUSTOMER_PARCEL");
+import { useState, useEffect, Suspense, useRef } from "react";
+import { useSearchParams } from "next/navigation";
+import { CustomerTable } from "@/components/customers/CustomerTable";
+import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
+import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
+import { Search, AlertCircle } from "lucide-react";
 
-  return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+function ParcelCustomersPageContent() {
+  const searchParams = useSearchParams();
+  const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const prevSearchParamRef = useRef<string | null>(null);
 
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <div className="space-y-4">
-          {/* Filters */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-              <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                <option value="">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-                <option value="suspended">Suspended</option>
-                <option value="blocked">Blocked</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
-              <input
-                type="text"
-                placeholder="Customer ID / Name / Mobile"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date From</label>
-              <input
-                type="date"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date To</label>
-              <input
-                type="date"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-          </div>
+  // Sync search with URL search params (for main search bar)
+  useEffect(() => {
+    const searchParam = searchParams.get("search");
+    if (searchParam !== prevSearchParamRef.current) {
+      prevSearchParamRef.current = searchParam;
+      setSearch(searchParam || "");
+      setPage(1);
+    }
+  }, [searchParams]);
 
-          {/* Customer Table */}
-          <div className="mt-6 overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Customer ID
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Mobile
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Parcel Orders
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Total Spent
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Last Order
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {/* Table rows will be populated dynamically */}
-                <tr>
-                  <td colSpan={8} className="px-6 py-4 text-center text-gray-500">
-                    No customers found. Data will be loaded here.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+  // Only fetch if super admin OR if there's a search query
+  const shouldFetch = isSuperAdmin || !!search;
+  const { data, isLoading, error } = useCustomersQuery({
+    page,
+    limit: 20,
+    search: search || undefined,
+    orderType: "parcel", // Always filter by parcel orders
+    enabled: shouldFetch && !permissionsLoading,
+  });
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
+
+  // Show loading while checking permissions
+  if (permissionsLoading) {
+    return (
+      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+        <div className="rounded-lg border border-gray-200 bg-white p-6">
+          <div className="flex items-center justify-center py-8">
+            <div className="text-gray-500">Loading...</div>
           </div>
         </div>
       </div>
+    );
+  }
+
+  // Show search prompt for non-super-admins when no search query
+  if (!isSuperAdmin && !search) {
+    return (
+      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+        <div className="rounded-lg border border-gray-200 bg-white p-6">
+          <div className="flex flex-col items-center justify-center py-12 space-y-4">
+            <div className="rounded-full bg-blue-100 p-4">
+              <Search className="h-8 w-8 text-blue-600" />
+            </div>
+            <div className="text-center space-y-2">
+              <h2 className="text-xl font-semibold text-gray-900">Search for Parcel Customer</h2>
+              <p className="text-sm text-gray-600 max-w-md">
+                Please use the search bar in the header to search for a parcel customer by ID, name, or phone number.
+                Customer details will be displayed after you search.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <div className="rounded-lg border border-gray-200 bg-white p-6">
+        <div className="space-y-4">
+          {/* Page Header */}
+          <div className="flex items-center justify-between">
+            <h1 className="text-2xl font-semibold text-gray-900">Parcel Customers</h1>
+          </div>
+
+          {/* Customer Table */}
+          {error && (
+            <div className="rounded-lg bg-red-50 border border-red-200 p-4">
+              <p className="text-sm text-red-800">
+                Error loading customers: {error instanceof Error ? error.message : "Unknown error"}
+              </p>
+            </div>
+          )}
+
+          {!isSuperAdmin && search && (!data?.customers || data.customers.length === 0) && !isLoading && (
+            <div className="rounded-lg bg-yellow-50 border border-yellow-200 p-4">
+              <div className="flex items-start space-x-3">
+                <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-yellow-800">No customers found</p>
+                  <p className="text-sm text-yellow-700 mt-1">
+                    No parcel customers match your search query. Please try a different search term.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <CustomerTable
+            customers={data?.customers || []}
+            loading={isLoading}
+            pageType="parcel"
+            onPageChange={handlePageChange}
+            currentPage={data?.pagination?.page || 1}
+            totalPages={data?.pagination?.totalPages || 1}
+          />
+        </div>
+      </div>
     </div>
+  );
+}
+
+export default function ParcelCustomersPage() {
+  return (
+    <Suspense fallback={<div className="p-6">Loading...</div>}>
+      <ParcelCustomersPageContent />
+    </Suspense>
   );
 }

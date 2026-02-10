@@ -112,22 +112,7 @@ async function verifyMigration() {
     console.log("\n🧪 Testing basic operations...");
     
     try {
-      // Test INSERT into dashboard_access (will rollback)
-      await sql.begin(async (tx) => {
-        const result = await tx`
-          INSERT INTO dashboard_access (system_user_id, dashboard_type, access_level, granted_by)
-          VALUES (999999, 'TEST', 'VIEW_ONLY', 1)
-          RETURNING id;
-        `;
-        await tx`ROLLBACK`;
-        console.log("   ✅ INSERT test passed");
-      });
-    } catch (error) {
-      console.error("   ❌ INSERT test failed:", error);
-    }
-    
-    try {
-      // Test SELECT
+      // Test SELECT (read-only operation, safe for verification)
       const count = await sql`SELECT COUNT(*) as count FROM dashboard_access`;
       console.log(`   ✅ SELECT test passed (${count[0].count} rows)`);
     } catch (error) {

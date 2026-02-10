@@ -336,6 +336,47 @@ export const paymentStatusEnum = pgEnum("payment_status", [
   "refunded",
 ]);
 
+// Customer Domain Enums
+export const customerGenderEnum = pgEnum("customer_gender", [
+  "male",
+  "female",
+  "other",
+  "prefer_not_to_say",
+]);
+
+export const customerStatusEnum = pgEnum("customer_status", [
+  "ACTIVE",
+  "INACTIVE",
+  "SUSPENDED",
+  "BLOCKED",
+  "DELETED",
+]);
+
+export const riskLevelEnum = pgEnum("risk_level", [
+  "LOW",
+  "MEDIUM",
+  "HIGH",
+  "CRITICAL",
+]);
+
+export const walletTransactionTypeEnum = pgEnum("wallet_transaction_type", [
+  "CREDIT",
+  "DEBIT",
+  "REFUND",
+  "BONUS",
+  "CASHBACK",
+  "REVERSAL",
+]);
+
+export const ticketStatusCustomerEnum = pgEnum("ticket_status_customer", [
+  "OPEN",
+  "IN_PROGRESS",
+  "WAITING_FOR_CUSTOMER",
+  "RESOLVED",
+  "CLOSED",
+  "ESCALATED",
+]);
+
 export const offerScopeEnum = pgEnum("offer_scope", [
   "global",
   "city",
@@ -1935,6 +1976,194 @@ export const orderRouteSnapshots = pgTable(
 );
 
 // ============================================================================
+// CUSTOMER DOMAIN TABLES
+// ============================================================================
+
+/**
+ * Customers - Core customer profile table
+ */
+export const customers = pgTable(
+  "customers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: text("customer_id").notNull().unique(),
+    fullName: text("full_name").notNull(),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+    email: text("email").unique(),
+    emailVerified: boolean("email_verified").default(false),
+    primaryMobile: text("primary_mobile").notNull().unique(),
+    primaryMobileNormalized: text("primary_mobile_normalized"),
+    primaryMobileCountryCode: text("primary_mobile_country_code").default("+91"),
+    mobileVerified: boolean("mobile_verified").default(true),
+    alternateMobile: text("alternate_mobile"),
+    whatsappNumber: text("whatsapp_number"),
+    gender: customerGenderEnum("gender"),
+    dateOfBirth: date("date_of_birth"),
+    profileImageUrl: text("profile_image_url"),
+    bio: text("bio"),
+    preferredLanguage: text("preferred_language").default("en"),
+    referralCode: text("referral_code").unique(),
+    referredBy: text("referred_by"),
+    referrerCustomerId: bigint("referrer_customer_id", { mode: "number" }),
+    accountStatus: customerStatusEnum("account_status").notNull().default("ACTIVE"),
+    statusReason: text("status_reason"),
+    riskFlag: riskLevelEnum("risk_flag").default("LOW"),
+    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
+    walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),
+    walletLockedAmount: numeric("wallet_locked_amount", { precision: 12, scale: 2 }).default("0.0"),
+    isIdentityVerified: boolean("is_identity_verified").default(false),
+    isEmailVerified: boolean("is_email_verified").default(false),
+    isMobileVerified: boolean("is_mobile_verified").default(true),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    lastOrderAt: timestamp("last_order_at", { withTimezone: true }),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBy: integer("deleted_by"),
+    deletionReason: text("deletion_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdVia: text("created_via").default("app"),
+    updatedBy: text("updated_by"),
+  },
+  (table) => ({
+    customerIdIdx: index("customers_customer_id_idx").on(table.customerId),
+    primaryMobileIdx: index("customers_primary_mobile_idx").on(table.primaryMobile),
+    emailIdx: index("customers_email_idx").on(table.email),
+    referralCodeIdx: index("customers_referral_code_idx").on(table.referralCode),
+    accountStatusIdx: index("customers_account_status_idx").on(table.accountStatus),
+    riskFlagIdx: index("customers_risk_flag_idx").on(table.riskFlag),
+    isActiveIdx: index("customers_is_active_idx").on(table.accountStatus),
+    createdAtIdx: index("customers_created_at_idx").on(table.createdAt),
+    lastOrderAtIdx: index("customers_last_order_at_idx").on(table.lastOrderAt),
+    activeIdx: index("customers_active_idx").on(table.accountStatus, table.createdAt),
+  })
+);
+
+/**
+ * Customer Wallet - Customer wallet information
+ */
+export const customerWallet = pgTable(
+  "customer_wallet",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .unique()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    currentBalance: numeric("current_balance", { precision: 12, scale: 2 }).default("0.0"),
+    lockedAmount: numeric("locked_amount", { precision: 12, scale: 2 }).default("0.0"),
+    availableBalance: numeric("available_balance", { precision: 12, scale: 2 }).default("0.0"),
+    maxBalance: numeric("max_balance", { precision: 12, scale: 2 }).default("10000.0"),
+    minTransactionAmount: numeric("min_transaction_amount", { precision: 10, scale: 2 }).default("1.0"),
+    maxTransactionAmount: numeric("max_transaction_amount", { precision: 10, scale: 2 }).default("10000.0"),
+    isActive: boolean("is_active").default(true),
+    kycVerified: boolean("kyc_verified").default(false),
+    lastTransactionAt: timestamp("last_transaction_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_wallet_customer_id_idx").on(table.customerId),
+    isActiveIdx: index("customer_wallet_is_active_idx").on(table.isActive),
+  })
+);
+
+/**
+ * Customer Wallet Transactions - Wallet transaction history
+ */
+export const customerWalletTransactions = pgTable(
+  "customer_wallet_transactions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    transactionId: text("transaction_id").notNull().unique(),
+    transactionType: walletTransactionTypeEnum("transaction_type").notNull(),
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    balanceBefore: numeric("balance_before", { precision: 12, scale: 2 }).notNull(),
+    balanceAfter: numeric("balance_after", { precision: 12, scale: 2 }).notNull(),
+    referenceId: text("reference_id"),
+    referenceType: text("reference_type"),
+    description: text("description").notNull(),
+    status: text("status").default("COMPLETED"),
+    pgTransactionId: text("pg_transaction_id"),
+    pgResponse: jsonb("pg_response").default({}),
+    transactionMetadata: jsonb("transaction_metadata").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_wallet_transactions_customer_id_idx").on(table.customerId),
+    transactionIdIdx: index("customer_wallet_transactions_transaction_id_idx").on(table.transactionId),
+    transactionTypeIdx: index("customer_wallet_transactions_transaction_type_idx").on(table.transactionType),
+    referenceIdx: index("customer_wallet_transactions_reference_idx").on(table.referenceId, table.referenceType),
+    createdAtIdx: index("customer_wallet_transactions_created_at_idx").on(table.createdAt),
+    statusIdx: index("customer_wallet_transactions_status_idx").on(table.status),
+    customerCreatedIdx: index("customer_wallet_transactions_customer_created_idx").on(table.customerId, table.createdAt),
+  })
+);
+
+/**
+ * Customer Tickets - Customer support tickets
+ */
+export const customerTickets = pgTable(
+  "customer_tickets",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    ticketId: text("ticket_id").notNull().unique(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    orderId: bigint("order_id", { mode: "number" }),
+    serviceType: serviceTypeEnum("service_type"),
+    issueCategory: text("issue_category").notNull(),
+    issueSubcategory: text("issue_subcategory"),
+    subject: text("subject").notNull(),
+    description: text("description").notNull(),
+    attachments: text("attachments").array(),
+    priority: text("priority").notNull().default("MEDIUM"),
+    status: ticketStatusCustomerEnum("status").notNull().default("OPEN"),
+    assignedToAgentId: integer("assigned_to_agent_id"),
+    assignedToAgentName: text("assigned_to_agent_name"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }),
+    resolution: text("resolution"),
+    resolutionTimeMinutes: integer("resolution_time_minutes"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedBy: integer("resolved_by"),
+    customerSatisfactionRating: smallint("customer_satisfaction_rating"),
+    followUpRequired: boolean("follow_up_required").default(false),
+    followUpDate: timestamp("follow_up_date", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_tickets_customer_id_idx").on(table.customerId),
+    ticketIdIdx: index("customer_tickets_ticket_id_idx").on(table.ticketId),
+    orderIdIdx: index("customer_tickets_order_id_idx").on(table.orderId),
+    statusIdx: index("customer_tickets_status_idx").on(table.status),
+    priorityIdx: index("customer_tickets_priority_idx").on(table.priority),
+    assignedToAgentIdIdx: index("customer_tickets_assigned_to_agent_id_idx").on(table.assignedToAgentId),
+    openIdx: index("customer_tickets_open_idx").on(table.status, table.createdAt),
+  })
+);
+
+// ============================================================================
 // ORDER ACTIONS & EVENTS (legacy orders table)
 // ============================================================================
 
@@ -3098,5 +3327,44 @@ export const referralsRelations = relations(referrals, ({ one }) => ({
     fields: [referrals.referredId],
     references: [riders.id],
     relationName: "referred",
+  }),
+}));
+
+// Customer Relations
+export const customersRelations = relations(customers, ({ one, many }) => ({
+  referrer: one(customers, {
+    fields: [customers.referrerCustomerId],
+    references: [customers.id],
+    relationName: "referrer",
+  }),
+  wallet: one(customerWallet, {
+    fields: [customers.id],
+    references: [customerWallet.customerId],
+  }),
+  walletTransactions: many(customerWalletTransactions),
+  tickets: many(customerTickets),
+}));
+
+export const customerWalletRelations = relations(customerWallet, ({ one }) => ({
+  customer: one(customers, {
+    fields: [customerWallet.customerId],
+    references: [customers.id],
+  }),
+}));
+
+export const customerWalletTransactionsRelations = relations(
+  customerWalletTransactions,
+  ({ one }) => ({
+    customer: one(customers, {
+      fields: [customerWalletTransactions.customerId],
+      references: [customers.id],
+    }),
+  })
+);
+
+export const customerTicketsRelations = relations(customerTickets, ({ one }) => ({
+  customer: one(customers, {
+    fields: [customerTickets.customerId],
+    references: [customers.id],
   }),
 }));

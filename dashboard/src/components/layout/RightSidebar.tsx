@@ -130,11 +130,14 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
               cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
               cleanPathname === "/dashboard/riders/earnings" ||
               cleanPathname.startsWith("/dashboard/riders/earnings/");
+            // Special handling for customer dashboard - highlight "All Customers" when on /dashboard/customers
+            const isCustomerDashboardHome = cleanPathname === "/dashboard/customers";
             const activeHref = currentSubRoutes
               .filter((r) => {
                 const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
                 const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
-                return exactOrPrefix || walletEarningsAlias;
+                const customerHomeAlias = isCustomerDashboardHome && r.href === "/dashboard/customers/all";
+                return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
               })
               .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
             return currentSubRoutes.map((route) => {
