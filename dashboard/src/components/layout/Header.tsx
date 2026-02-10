@@ -149,24 +149,35 @@ export function Header() {
           const img = new window.Image();
           img.crossOrigin = "anonymous"; // Allow CORS for external images
           
+          // Suppress console errors for image loading (429, 404, CORS, etc.)
+          const originalError = console.error;
+          const suppressErrors = () => {
+            console.error = () => {}; // Suppress errors temporarily
+          };
+          const restoreErrors = () => {
+            console.error = originalError;
+          };
+          
           // Set a timeout to prevent hanging on slow/failed requests (like 429 errors)
           const timeoutId = setTimeout(() => {
+            restoreErrors();
             img.onload = null;
             img.onerror = null;
             // Timeout reached (likely 429 or network issue), try Gravatar fallback silently
             tryGravatarFallback(userEmail, userMetadata, urlToTry);
-          }, 3000); // 3 second timeout for faster fallback
+          }, 2000); // 2 second timeout for faster fallback on 429 errors
+          
+          suppressErrors(); // Suppress errors during image load
           
           img.onload = () => {
+            restoreErrors();
             clearTimeout(timeoutId);
-            if (process.env.NODE_ENV === "development") {
-              console.log("[Header] Avatar loaded successfully:", urlToTry);
-            }
             setAvatarUrl(urlToTry);
             setAvatarError(false);
           };
           
           img.onerror = () => {
+            restoreErrors();
             clearTimeout(timeoutId);
             // Image failed to load (could be 429, 404, CORS, etc.)
             // Silently try Gravatar fallback without logging to reduce console noise
@@ -175,8 +186,7 @@ export function Header() {
           
           img.src = urlToTry;
         } catch (error) {
-          console.error("[Header] Error creating Image:", error);
-          // Fallback to Gravatar on error
+          // Fallback to Gravatar on error (suppress error logging)
           tryGravatarFallback(userEmail, userMetadata, urlToTry);
         }
       } else {
@@ -289,6 +299,7 @@ export function Header() {
               </div>
             </div>
           )}
+
         </div>
       </div>
 

@@ -21,6 +21,16 @@ export const queryKeys = {
     detail: (id: number | string) => ["users", "detail", id] as const,
   },
   
+  // Customers
+  customers: {
+    all: () => ["customers"] as const,
+    lists: () => ["customers", "list"] as const,
+    list: (filters: Record<string, unknown>) => ["customers", "list", filters] as const,
+    details: () => ["customers", "detail"] as const,
+    detail: (id: number | string) => ["customers", "detail", id] as const,
+    stats: (filters: Record<string, unknown>) => ["customers", "stats", filters] as const,
+  },
+  
   // Service Points
   servicePoints: {
     all: () => ["service-points"] as const,

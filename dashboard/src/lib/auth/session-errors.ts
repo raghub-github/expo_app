@@ -9,8 +9,11 @@ export function isInvalidRefreshToken(err: unknown): boolean {
   const e = err as { message?: string; code?: string };
   return (
     e.code === "refresh_token_already_used" ||
+    e.code === "refresh_token_not_found" ||
     e.message?.includes("refresh_token_already_used") ||
-    (e.message ?? "").toLowerCase().includes("invalid refresh token")
+    e.message?.includes("refresh_token_not_found") ||
+    (e.message ?? "").toLowerCase().includes("invalid refresh token") ||
+    (e.message ?? "").toLowerCase().includes("refresh token not found")
   );
 }
 

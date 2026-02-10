@@ -7,13 +7,13 @@
 import {
   LayoutDashboard,
   User,
-  Package,
+  Bike,
   ShoppingCart,
   Store,
   Ticket,
   Settings,
   BarChart3,
-  UserCog,
+  Shield,
   MapPin,
   Wallet,
   DollarSign,
@@ -24,7 +24,7 @@ import {
   Zap,
   CreditCard,
   AlertCircle,
-  Users,
+  UserCircle,
   UtensilsCrossed,
   Car,
   Box,
@@ -131,10 +131,10 @@ export const riderDashboardRoutes: DashboardSubRoute[] = [
  */
 export const customerDashboardRoutes: DashboardSubRoute[] = [
   {
-    name: "All Customers",
+    name: "Overall Stats",
     href: "/dashboard/customers/all",
-    icon: Users,
-    description: "View all customers",
+    icon: UserCircle,
+    description: "View overall customer statistics",
   },
   {
     name: "Food Customers",
@@ -247,13 +247,13 @@ export const ticketDashboardRoutes: DashboardSubRoute[] = [
   {
     name: "Customer Tickets",
     href: "/dashboard/tickets/customer",
-    icon: Users,
+    icon: UserCircle,
     description: "Customer support tickets",
   },
   {
     name: "Rider Tickets",
     href: "/dashboard/tickets/rider",
-    icon: Package,
+    icon: Bike,
     description: "Rider support tickets",
   },
   {
@@ -309,7 +309,7 @@ export const areaManagerDashboardRoutes: DashboardSubRoute[] = [
   {
     name: "Riders",
     href: "/dashboard/area-managers/riders",
-    icon: Package,
+    icon: Bike,
     description: "Riders in your locality (Rider AM)",
     areaManagerType: "RIDER",
   },
@@ -350,20 +350,20 @@ export const mainNavigation: MainNavItem[] = [
   {
     name: "Super Admin",
     href: "/dashboard/super-admin",
-    icon: UserCog,
+    icon: Shield,
     requiresSuperAdmin: true,
   },
   {
     name: "Customers",
     href: "/dashboard/customers",
-    icon: Users,
+    icon: UserCircle,
     dashboardType: "CUSTOMER",
     subRoutes: customerDashboardRoutes,
   },
   {
     name: "Riders",
     href: "/dashboard/riders",
-    icon: Package,
+    icon: Bike,
     dashboardType: "RIDER",
     subRoutes: riderDashboardRoutes,
   },

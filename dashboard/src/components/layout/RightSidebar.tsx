@@ -133,72 +133,65 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
           )}
         </div>
 
-        {/* Navigation - hidden on Tickets dashboard; show filters only */}
-        {!isTicketsDashboard && (
-          <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-2 shrink-0">
-            {(() => {
-              const isWalletOrEarningsPath =
-                cleanPathname === "/dashboard/riders/wallet-history" ||
-                cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
-                cleanPathname === "/dashboard/riders/earnings" ||
-                cleanPathname.startsWith("/dashboard/riders/earnings/");
-              const activeHref = currentSubRoutes
-                .filter((r) => {
-                  const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
-                  const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
-                  return exactOrPrefix || walletEarningsAlias;
-                })
-                .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
-              return currentSubRoutes.map((route) => {
-                const isActive = activeHref === route.href;
-                const Icon = route.icon;
-                return (
-                  <Link
-                    key={route.href}
-                    href={appendRiderSearch(route.href)}
-                    className={`group relative flex items-center rounded-lg transition-all duration-200 ${
-                      isOpen 
-                        ? `space-x-2 px-2 py-1.5 text-xs font-medium ${
-                            isActive
-                              ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/20"
-                              : "text-gray-700 hover:bg-gray-200/80 hover:text-gray-900"
-                          }`
-                        : `justify-center p-2 ${
-                            isActive
-                              ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg"
-                              : "text-gray-700 hover:bg-gray-200/80 hover:text-gray-900"
-                          }`
-                    }`}
-                    title={!isOpen ? route.name : route.description}
-                  >
-                    <Icon className={`flex-shrink-0 ${isOpen ? "h-4 w-4" : "h-5 w-5"}`} />
-                    {isOpen && (
-                      <>
-                        <span className="flex-1 truncate">{route.name}</span>
-                        {isActive && (
-                          <div className="absolute right-2 h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
-                        )}
-                      </>
+        {/* Navigation Content - only the most specific (longest) matching route is active */}
+        <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
+          {(() => {
+            // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
+            const isWalletOrEarningsPath =
+              cleanPathname === "/dashboard/riders/wallet-history" ||
+              cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
+              cleanPathname === "/dashboard/riders/earnings" ||
+              cleanPathname.startsWith("/dashboard/riders/earnings/");
+            const activeHref = currentSubRoutes
+              .filter((r) => {
+                const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
+                const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
+                return exactOrPrefix || walletEarningsAlias;
+              })
+              .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
+            return currentSubRoutes.map((route) => {
+              const isActive = activeHref === route.href;
+              const Icon = route.icon;
+            return (
+              <Link
+                key={route.href}
+                href={appendRiderSearch(route.href)}
+                className={`group relative flex items-center rounded-lg transition-all duration-200 ${
+                  isOpen 
+                    ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
+                        isActive
+                          ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
+                          : "text-gray-300 hover:bg-gray-800/80 hover:text-white hover:-translate-x-1"
+                      }`
+                    : `justify-center px-2 py-2.5 ${
+                        isActive
+                          ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
+                          : "text-gray-300 hover:bg-gray-800/80 hover:text-white"
+                      }`
+                }`}
+                title={!isOpen ? route.name : route.description}
+              >
+                <Icon className={`flex-shrink-0 ${isOpen ? "h-4 w-4" : "h-5 w-5"}`} />
+                {isOpen && (
+                  <>
+                    <span className="flex-1 truncate">{route.name}</span>
+                    {isActive && (
+                      <div className="absolute right-2 h-2 w-2 rounded-full bg-white animate-pulse shadow-lg shadow-white/50"></div>
                     )}
-                    {!isOpen && (
-                      <div className="absolute right-full mr-2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
-                        {route.name}
-                        <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-800" />
-                      </div>
-                    )}
-                  </Link>
-                );
-              });
-            })()}
-          </nav>
-        )}
-
-        {/* Tickets: filters only (no nav); fills remaining space */}
-        {isTicketsDashboard && isOpen && (
-          <div className="flex-1 min-h-0 flex flex-col border-t border-gray-300/30">
-            <TicketFilters variant="sidebar" dark={false} />
-          </div>
-        )}
+                  </>
+                )}
+                {/* Tooltip for collapsed state */}
+                {!isOpen && (
+                  <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                    {route.name}
+                    <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900"></div>
+                  </div>
+                )}
+              </Link>
+            );
+          });
+          })()}
+        </nav>
 
         {/* Sidebar Footer with Toggle Button */}
         <div className="border-t border-gray-300/30 bg-gray-200/30 backdrop-blur-sm p-2">

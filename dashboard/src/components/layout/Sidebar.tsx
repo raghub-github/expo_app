@@ -5,8 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
-  Users,
-  Package,
+  UserCircle,
+  Bike,
   ShoppingCart,
   Store,
   Ticket,
@@ -14,7 +14,7 @@ import {
   Gift,
   Settings,
   BarChart3,
-  UserCog,
+  Shield,
   MapPin,
 } from "lucide-react";
 import { Logo } from "@/components/brand/Logo";
@@ -31,9 +31,9 @@ interface NavItem {
 
 const navigation: NavItem[] = [
   { name: "Home", href: "/dashboard", icon: LayoutDashboard },
-  { name: "Super Admin", href: "/dashboard/super-admin", icon: UserCog, requiresSuperAdmin: true },
-  { name: "Customers", href: "/dashboard/customers", icon: Users, dashboardType: "CUSTOMER" },
-  { name: "Riders", href: "/dashboard/riders", icon: Package, dashboardType: "RIDER" },
+  { name: "Super Admin", href: "/dashboard/super-admin", icon: Shield, requiresSuperAdmin: true },
+  { name: "Customers", href: "/dashboard/customers", icon: UserCircle, dashboardType: "CUSTOMER" },
+  { name: "Riders", href: "/dashboard/riders", icon: Bike, dashboardType: "RIDER" },
   { name: "Merchants", href: "/dashboard/merchants", icon: Store, dashboardType: "MERCHANT" },
   { name: "Orders", href: "/dashboard/orders", icon: ShoppingCart, dashboardType: "ORDER_FOOD" }, // Check for any order type access
   { name: "Area Managers", href: "/dashboard/area-managers", icon: MapPin, dashboardType: "AREA_MANAGER" },
