@@ -11,9 +11,14 @@ import {
   type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+<<<<<<< HEAD
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
 import { usePermission } from "@/hooks/usePermission";
+=======
+import { usePermission } from "@/hooks/usePermission";
+import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
+>>>>>>> origin/feature-AM
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -24,6 +29,7 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const riderCtx = useRiderDashboardOptional();
+  const { hasDashboardAccess, isSuperAdmin } = usePermission();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -41,6 +47,14 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   );
   const isAreaManagerDashboard =
     currentDashboard?.dashboardType === "AREA_MANAGER";
+<<<<<<< HEAD
+=======
+  const isOrderDashboard = 
+    currentDashboard?.dashboardType === "ORDER_FOOD" ||
+    currentDashboard?.dashboardType === "ORDER_PARCEL" ||
+    currentDashboard?.dashboardType === "ORDER_PERSON_RIDE" ||
+    cleanPathname.startsWith("/dashboard/orders");
+>>>>>>> origin/feature-AM
   const [areaManagerType, setAreaManagerType] =
     useState<AreaManagerTypeFilter | null>(null);
 
@@ -61,6 +75,7 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
   }, [isAreaManagerDashboard]);
 
   const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
+<<<<<<< HEAD
     if (!isAreaManagerDashboard || !rawSubRoutes.length) return rawSubRoutes;
     if (areaManagerType === null) return rawSubRoutes;
     return rawSubRoutes.filter((r) => {
@@ -69,6 +84,33 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
       return allowed === areaManagerType;
     });
   }, [isAreaManagerDashboard, rawSubRoutes, areaManagerType]);
+=======
+    let filtered = rawSubRoutes;
+    
+    // Filter Area Manager routes
+    if (isAreaManagerDashboard && rawSubRoutes.length) {
+      if (areaManagerType !== null) {
+        filtered = rawSubRoutes.filter((r) => {
+          const allowed = r.areaManagerType;
+          if (!allowed || allowed === "BOTH") return true;
+          return allowed === areaManagerType;
+        });
+      }
+    }
+    
+    // Filter Order dashboard routes based on permissions
+    if (isOrderDashboard && rawSubRoutes.length) {
+      filtered = rawSubRoutes.filter((route) => {
+        if (isSuperAdmin) return true;
+        const dashboardType = getDashboardTypeFromPath(route.href);
+        if (!dashboardType) return true;
+        return hasDashboardAccess(dashboardType);
+      });
+    }
+    
+    return filtered;
+  }, [isAreaManagerDashboard, isOrderDashboard, rawSubRoutes, areaManagerType, hasDashboardAccess, isSuperAdmin]);
+>>>>>>> origin/feature-AM
 
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");
@@ -142,11 +184,14 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
               cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
               cleanPathname === "/dashboard/riders/earnings" ||
               cleanPathname.startsWith("/dashboard/riders/earnings/");
+            // Special handling for customer dashboard - highlight "All Customers" when on /dashboard/customers
+            const isCustomerDashboardHome = cleanPathname === "/dashboard/customers";
             const activeHref = currentSubRoutes
               .filter((r) => {
                 const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
                 const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
-                return exactOrPrefix || walletEarningsAlias;
+                const customerHomeAlias = isCustomerDashboardHome && r.href === "/dashboard/customers/all";
+                return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
               })
               .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
             return currentSubRoutes.map((route) => {

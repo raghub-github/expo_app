@@ -242,7 +242,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4">
             <div className="space-y-1">
               {filteredNavigation.map((item) => {
-                const isActive = cleanPathname === item.href;
+                // For Orders, check if pathname starts with /dashboard/orders
+                const isActive = cleanPathname === item.href || 
+                  (item.href === "/dashboard/orders" && cleanPathname.startsWith("/dashboard/orders"));
                 const Icon = item.icon;
                 return (
                   <Link
@@ -252,6 +254,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                       setIsMobileMenuOpen(false);
                     }}
                     className={`group relative flex items-center rounded-lg transition-all duration-200 ${
+<<<<<<< HEAD
                       isOpen 
                         ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
                             isActive
@@ -264,6 +267,20 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                               : "text-white/90 hover:bg-white/10 hover:text-white"
                           }`
                     }`}
+=======
+                        isOpen 
+                          ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
+                              isActive
+                                ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
+                                : "text-gray-300 hover:bg-gray-800/80 hover:text-white hover:translate-x-1"
+                            }`
+                          : `justify-center px-2 py-2.5 ${
+                              isActive
+                                ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
+                                : "text-gray-300 hover:bg-gray-800/80 hover:text-white"
+                            }`
+                      }`}
+>>>>>>> origin/feature-AM
                     title={!isOpen ? item.name : undefined}
                   >
                     <Icon className={`flex-shrink-0 ${isOpen ? "h-4 w-4" : "h-5 w-5"}`} />
@@ -395,7 +412,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           {!isInSpecificDashboard && (
             <div className="space-y-1">
               {filteredNavigation.map((item) => {
-                const isActive = cleanPathname === item.href;
+                // For Orders, check if pathname starts with /dashboard/orders
+                const isActive = cleanPathname === item.href || 
+                  (item.href === "/dashboard/orders" && cleanPathname.startsWith("/dashboard/orders"));
                 const Icon = item.icon;
                 return (
                   <Link

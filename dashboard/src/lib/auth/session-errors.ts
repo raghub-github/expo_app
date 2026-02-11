@@ -7,13 +7,21 @@
 export function isInvalidRefreshToken(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { message?: string; code?: string };
+  const message = (e.message ?? "").toLowerCase();
   return (
     e.code === "refresh_token_already_used" ||
     e.code === "refresh_token_not_found" ||
     e.message?.includes("refresh_token_already_used") ||
     e.message?.includes("refresh_token_not_found") ||
+<<<<<<< HEAD
     (e.message ?? "").toLowerCase().includes("invalid refresh token") ||
     (e.message ?? "").toLowerCase().includes("refresh token not found")
+=======
+    message.includes("invalid refresh token") ||
+    message.includes("refresh token not found") ||
+    message.includes("already used") ||
+    (message.includes("invalid") && message.includes("refresh") && message.includes("token"))
+>>>>>>> origin/feature-AM
   );
 }
 
