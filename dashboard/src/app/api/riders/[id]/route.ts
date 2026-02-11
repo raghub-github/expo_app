@@ -11,6 +11,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getDb } from "@/lib/db/client";
 import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 export const runtime = 'nodejs';
 
@@ -24,14 +25,29 @@ export async function GET(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-
-    if (sessionError || !session) {
+    
+    // Use getUser() instead of getSession() to avoid triggering token refresh unnecessarily
+    // This prevents "refresh token already used" errors when multiple API calls happen simultaneously
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    
+    if (userError || !user) {
+      // Check if it's an invalid refresh token error
+      if (isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json(
+          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+          { status: 401 }
+        );
+      }
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
+    
+    // Create a session-like object for compatibility with existing code
+    // We use getUser() instead of getSession() to avoid refresh token race conditions
+    const session = { user };
 
     // Check if user is super admin or has RIDER dashboard access
     const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);

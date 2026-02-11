@@ -10,6 +10,7 @@ import Link from "next/link";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
+import { TicketSearchInHeader } from "@/components/tickets/TicketSearchInHeader";
 
 export function Header() {
   const pathname = usePathname();
@@ -210,13 +211,19 @@ export function Header() {
         <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
       </div>
 
-      {/* Dashboard Search - Center (Desktop only for now) */}
-      <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
-        <DashboardSearch compact={true} />
-      </div>
+      {/* Dashboard Search - Center (Desktop only; hidden on Tickets where search is in nav) */}
+      {!pathname.startsWith("/dashboard/tickets") && (
+        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+          <DashboardSearch compact={true} />
+        </div>
+      )}
 
-      <div className="flex items-center space-x-2 sm:space-x-4 flex-shrink-0">
-        <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100">
+      <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+        {/* Tickets: collapsible global search beside notification */}
+        {pathname.startsWith("/dashboard/tickets") && (
+          <TicketSearchInHeader />
+        )}
+        <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
           <Bell className="h-5 w-5" />
         </button>
 

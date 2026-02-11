@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Users, CreditCard, Gift, UserCog } from "lucide-react";
+import { Users, CreditCard, Gift, UserCog, FolderGit2 } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -48,6 +48,14 @@ const adminOptions: AdminOption[] = [
     description: "Track all agent actions and performance metrics",
     color: "text-orange-600",
     bgColor: "bg-orange-50 hover:bg-orange-100",
+  },
+  {
+    name: "Ticket settings",
+    href: "/dashboard/super-admin/ticket-settings",
+    icon: FolderGit2,
+    description: "Manage ticket groups, tags, and reference data for the ticket dashboard",
+    color: "text-indigo-600",
+    bgColor: "bg-indigo-50 hover:bg-indigo-100",
   },
 ];
 

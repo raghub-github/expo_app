@@ -1,6 +1,5 @@
 import { requireSuperAdminAccess, checkDashboardAccess } from "@/lib/permissions/page-protection";
-import Link from "next/link";
-import { UtensilsCrossed, Car, Package, Ticket, Users, UserCog, Store } from "lucide-react";
+import { TicketDashboardClient } from "@/components/tickets/TicketDashboardClient";
 
 export default async function TicketsPage() {
   // Check if user has access to TICKET dashboard
@@ -11,17 +10,5 @@ export default async function TicketsPage() {
     await requireSuperAdminAccess();
   }
 
-  return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <p className="text-gray-600">
-          The ticket dashboard now uses a unified view with filtering options. Access to specific ticket types, sections, and actions is controlled through granular access points configured in your user profile.
-        </p>
-        <p className="mt-4 text-sm text-gray-500">
-          Filtering and access control will be implemented in the ticket list component based on your assigned access points.
-        </p>
-      </div>
-    </div>
-  );
+  return <TicketDashboardClient />;
 }

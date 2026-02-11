@@ -86,7 +86,7 @@ export default function DashboardLayout({
 
   return (
     <AuthProvider>
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: '#E6F6F5' }}>
       <HierarchicalSidebar 
         isOpen={isLeftSidebarOpen}
         onToggle={handleLeftSidebarToggle}
@@ -113,7 +113,8 @@ export default function DashboardLayout({
         <Header />
         <div className="flex flex-1 overflow-hidden relative w-full">
           <main 
-            className="flex-1 overflow-y-auto bg-gray-50 p-3 sm:p-4 transition-all duration-300 w-full"
+            className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full"
+            style={{ backgroundColor: '#FFFFFF' }}
           >
             <div className="w-full max-w-full min-w-0">
               {showSkeleton ? <DashboardLayoutSkeleton /> : children}

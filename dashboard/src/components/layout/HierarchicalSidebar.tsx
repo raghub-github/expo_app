@@ -70,16 +70,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const isLoading = accessLoading || permissionsLoading;
   const hasError = Boolean(accessError || permissionsError);
   const useFallback = isLoading && skeletonExpired;
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'HierarchicalSidebar.tsx:70',message:'Sidebar loading state',data:{accessLoading,permissionsLoading,isLoading,skeletonExpired,useFallback,dashboardsCount:dashboards.length,hasError},timestamp:Date.now(),runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
 
   // null = show all items; Set = filter by access. While loading (useFallback) show all so sidebar isn't empty.
   const accessibleDashboards = useMemo(() => {
     if (hasError) return null;
-    if (useFallback) return null; // Still loading: show full nav so options appear; filter once data loads
+    if (useFallback) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'HierarchicalSidebar.tsx:77',message:'useFallback=true: showing all items (FLASH CAUSE)',data:{useFallback,isLoading,skeletonExpired,accessLoading,permissionsLoading},timestamp:Date.now(),runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      return null; // Still loading: show full nav so options appear; filter once data loads
+    }
     if (dashboards.length === 0) return null;
-    return new Set(
+    const filtered = new Set(
       dashboards.filter((d) => d.isActive).map((d) => d.dashboardType)
     );
-  }, [dashboards, useFallback, hasError]);
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'HierarchicalSidebar.tsx:82',message:'Permissions loaded: filtering sidebar',data:{dashboardsCount:dashboards.length,accessibleDashboardsCount:filtered.size},timestamp:Date.now(),runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    return filtered;
+  }, [dashboards, useFallback, hasError, isLoading, skeletonExpired, accessLoading, permissionsLoading]);
 
   const effectiveSuperAdmin = hasError || useFallback ? true : isSuperAdmin;
 
@@ -111,18 +124,18 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const showSkeleton = isLoading && !skeletonExpired;
   if (showSkeleton) {
     return (
-      <aside className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 shadow-2xl transition-all duration-300 ease-in-out ${
+      <aside className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col shadow-2xl transition-all duration-300 ease-in-out ${
         isOpen ? "w-56" : "w-16"
-      }`}>
-        <div className="flex h-14 items-center justify-between border-b border-gray-700 px-2">
+      }`} style={{ backgroundColor: '#12344D' }}>
+        <div className="flex h-14 items-center justify-between border-b border-white/20 px-2">
           {isOpen ? (
             <div className="flex items-center justify-center flex-1">
-              <div className="h-11 w-11 bg-gray-700 rounded animate-pulse" />
-              <div className="ml-2 h-4 w-24 bg-gray-700 rounded animate-pulse" />
+              <div className="h-11 w-11 bg-white/20 rounded animate-pulse" />
+              <div className="ml-2 h-4 w-24 bg-white/20 rounded animate-pulse" />
             </div>
           ) : (
             <div className="flex items-center justify-center w-full">
-              <div className="h-10 w-10 bg-gray-700 rounded animate-pulse" />
+              <div className="h-10 w-10 bg-white/20 rounded animate-pulse" />
             </div>
           )}
         </div>
@@ -137,19 +150,19 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 isOpen ? "space-x-2" : ""
               }`}
             >
-              <div className="h-4 w-4 bg-gray-700 rounded animate-pulse flex-shrink-0" />
+              <div className="h-4 w-4 bg-white/20 rounded animate-pulse flex-shrink-0" />
               {isOpen && (
-                <div className="h-3 w-20 bg-gray-700 rounded animate-pulse" />
+                <div className="h-3 w-20 bg-white/20 rounded animate-pulse" />
               )}
             </div>
           ))}
         </nav>
-        <div className="border-t border-gray-700/50 bg-gray-800/50 backdrop-blur-sm p-2">
-          <div className={`flex w-full items-center justify-center rounded-lg bg-gray-700/80 ${
+        <div className="border-t border-white/20 bg-white/5 backdrop-blur-sm p-2">
+          <div className={`flex w-full items-center justify-center rounded-lg bg-white/10 ${
             isOpen ? "space-x-2 px-3 py-2.5" : "p-2.5"
           }`}>
-            <div className="h-4 w-4 bg-gray-600 rounded animate-pulse" />
-            {isOpen && <div className="h-3 w-8 bg-gray-600 rounded animate-pulse" />}
+            <div className="h-4 w-4 bg-white/30 rounded animate-pulse" />
+            {isOpen && <div className="h-3 w-8 bg-white/30 rounded animate-pulse" />}
           </div>
         </div>
       </aside>
@@ -175,12 +188,13 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
 
         {/* Collapsible Left Sidebar - Icon-only when closed, full when open */}
         <aside
-          className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 shadow-2xl transition-all duration-300 ease-in-out ${
+          className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col shadow-2xl transition-all duration-300 ease-in-out ${
             isOpen ? "w-56" : "w-16"
           }`}
+          style={{ backgroundColor: '#12344D' }}
         >
           {/* Sidebar Header */}
-          <div className="flex h-14 items-center justify-between border-b border-gray-700 px-2">
+          <div className="flex h-14 items-center justify-between border-b border-white/20 px-2">
             {isOpen ? (
               <>
                 <Link
@@ -200,7 +214,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 </Link>
                 <button
                   onClick={onToggle}
-                  className="rounded-lg p-1 text-gray-400 transition-colors hover:bg-gray-700 hover:text-white lg:hidden"
+                  className="rounded-lg p-1 text-white/70 transition-colors hover:bg-white/10 hover:text-white lg:hidden"
                   aria-label="Close sidebar"
                 >
                   <X className="h-4 w-4" />
@@ -242,12 +256,12 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                         ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
                             isActive
                               ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
-                              : "text-gray-300 hover:bg-gray-800/80 hover:text-white hover:translate-x-1"
+                              : "text-white/90 hover:bg-white/10 hover:text-white hover:translate-x-1"
                           }`
                         : `justify-center px-2 py-2.5 ${
                             isActive
                               ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
-                              : "text-gray-300 hover:bg-gray-800/80 hover:text-white"
+                              : "text-white/90 hover:bg-white/10 hover:text-white"
                           }`
                     }`}
                     title={!isOpen ? item.name : undefined}
@@ -263,9 +277,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                     )}
                     {/* Tooltip for collapsed state */}
                     {!isOpen && (
-                      <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                      <div className="absolute left-full ml-2 px-2 py-1 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg" style={{ backgroundColor: '#12344D' }}>
                         {item.name}
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 border-4 border-transparent border-r-gray-900"></div>
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 border-4 border-transparent" style={{ borderRightColor: '#12344D' }}></div>
                       </div>
                     )}
                   </Link>
@@ -275,7 +289,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           </nav>
 
           {/* Sidebar Footer with Toggle Button */}
-          <div className="border-t border-gray-700/50 bg-gray-800/50 backdrop-blur-sm p-2">
+          <div className="border-t border-white/20 bg-white/5 backdrop-blur-sm p-2">
             {/* {isOpen && (
               <div className="text-xs mb-2 px-2">
                 <p className="font-semibold text-gray-200 mb-1">Main Dashboard</p>
@@ -284,7 +298,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
             )} */}
             <button
               onClick={onToggle}
-              className={`flex w-full items-center justify-center rounded-lg bg-gradient-to-r from-gray-700/80 to-gray-600/80 text-white transition-all hover:from-gray-600 hover:to-gray-500 hover:shadow-lg hover:scale-105 ${
+              className={`flex w-full items-center justify-center rounded-lg bg-white/10 text-white transition-all hover:bg-white/20 hover:shadow-lg hover:scale-105 ${
                 isOpen ? "space-x-2 px-3 py-2.5" : "p-2.5"
               }`}
               title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
@@ -325,10 +339,10 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
 
       {/* Sidebar - Main Dashboard */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 shadow-2xl transition-all duration-300 ease-in-out ${
+        className={`fixed inset-y-0 left-0 z-40 flex h-screen flex-col shadow-2xl transition-all duration-300 ease-in-out ${
           isOpen ? "w-56" : "w-16"
         }`}
-        style={{ scrollbarWidth: 'thin', scrollbarColor: '#4B5563 #1F2937' }}
+        style={{ backgroundColor: '#12344D', scrollbarWidth: 'thin', scrollbarColor: '#4B5563 #12344D' }}
       >
         {/* Sidebar Header */}
         <div className="flex h-14 items-center justify-between border-b border-gray-700 px-2">
@@ -393,12 +407,12 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                         ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
                             isActive
                               ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
-                              : "text-gray-300 hover:bg-gray-800/80 hover:text-white hover:translate-x-1"
+                              : "text-white/90 hover:bg-white/10 hover:text-white hover:translate-x-1"
                           }`
                         : `justify-center px-2 py-2.5 ${
                             isActive
                               ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
-                              : "text-gray-300 hover:bg-gray-800/80 hover:text-white"
+                              : "text-white/90 hover:bg-white/10 hover:text-white"
                           }`
                     }`}
                     title={!isOpen ? item.name : undefined}
@@ -414,9 +428,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                     )}
                     {/* Tooltip for collapsed state */}
                     {!isOpen && (
-                      <div className="absolute left-full ml-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                      <div className="absolute left-full ml-2 px-2 py-1 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg" style={{ backgroundColor: '#12344D' }}>
                         {item.name}
-                        <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 border-4 border-transparent border-r-gray-900"></div>
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1 border-4 border-transparent" style={{ borderRightColor: '#12344D' }}></div>
                       </div>
                     )}
                   </Link>

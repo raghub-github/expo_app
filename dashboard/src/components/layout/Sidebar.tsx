@@ -95,8 +95,8 @@ export function Sidebar() {
   // Don't render navigation while loading (to prevent flash)
   if (accessLoading || permissionsLoading) {
     return (
-      <div className="flex h-screen w-full flex-col bg-gray-900 sm:w-64">
-        <div className="flex h-16 items-center justify-center border-b border-gray-800 px-4">
+      <div className="flex h-screen w-full flex-col sm:w-64" style={{ backgroundColor: '#12344D' }}>
+        <div className="flex h-16 items-center justify-center border-b border-white/20 px-4">
           <Link href="/dashboard" className="flex items-center justify-center">
             <Logo 
               variant="icon-only" 
@@ -107,16 +107,16 @@ export function Sidebar() {
           </Link>
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4">
-          <div className="px-3 py-2 text-sm text-gray-400">Loading...</div>
+          <div className="px-3 py-2 text-sm text-white/90">Loading...</div>
         </nav>
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen w-full flex-col bg-gray-900 sm:w-64">
+    <div className="flex h-screen w-full flex-col sm:w-64" style={{ backgroundColor: '#12344D' }}>
       {/* Sidebar Header with Logo - Icon only with text */}
-      <div className="flex h-16 items-center justify-center border-b border-gray-800 px-4">
+      <div className="flex h-16 items-center justify-center border-b border-white/20 px-4">
         <Link href="/dashboard" className="flex items-center justify-center">
           <Logo 
             variant="icon-only" 
@@ -136,8 +136,8 @@ export function Sidebar() {
               href={item.href}
               className={`flex items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 ${
                 isActive
-                  ? "bg-gray-800 text-white shadow-md"
-                  : "text-gray-300 hover:bg-gray-800 hover:text-white"
+                  ? "bg-white/20 text-white shadow-md"
+                  : "text-white/90 hover:bg-white/10 hover:text-white"
               }`}
             >
               <Icon className="h-5 w-5 flex-shrink-0" />
