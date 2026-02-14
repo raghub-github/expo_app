@@ -85,10 +85,10 @@ export async function GET() {
         WHERE is_active = true
         ORDER BY display_order ASC NULLS LAST, group_name ASC
       `;
-      groups = (groupRows || []).map((r: { id: bigint; group_code: string; group_name: string }) => ({
+      groups = (groupRows || []).map((r: Record<string, unknown>) => ({
         id: Number(r.id),
-        groupCode: r.group_code ?? "",
-        groupName: r.group_name ?? "",
+        groupCode: String(r.group_code ?? r.groupCode ?? ""),
+        groupName: String(r.group_name ?? r.groupName ?? r.group_code ?? r.groupCode ?? ""),
       }));
     } catch {
       groups = [];

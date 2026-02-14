@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { Clock, User, AlertCircle, FolderGit2 } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Clock, User, AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 
@@ -56,6 +57,7 @@ export interface TicketGridCardProps {
   groupOptions: Option[];
   agentOptions: Array<{ value: string; label: string }>;
   statusOptions: Option[];
+  currentUserId?: number;
 }
 
 export function TicketGridCard({
@@ -70,11 +72,40 @@ export function TicketGridCard({
   groupOptions,
   agentOptions,
   statusOptions,
+  currentUserId,
 }: TicketGridCardProps) {
   const isSlaBreached =
     ticket.slaDueAt &&
     new Date(ticket.slaDueAt) < new Date() &&
     !["closed", "resolved"].includes(ticket.status);
+
+  const [groupAgentOpen, setGroupAgentOpen] = useState(false);
+  const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
+  const [searchGroup, setSearchGroup] = useState("");
+  const [searchAgent, setSearchAgent] = useState("");
+  const groupAgentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onOutside = (e: MouseEvent) => {
+      if (groupAgentRef.current && !groupAgentRef.current.contains(e.target as Node)) setGroupAgentOpen(false);
+    };
+    if (groupAgentOpen) document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, [groupAgentOpen]);
+
+  const groupLabel = ticket.group?.name ?? "—";
+  const agentLabel = ticket.assignee
+    ? currentUserId != null && ticket.assignee.id === currentUserId
+      ? "Me"
+      : ticket.assignee.name ?? ticket.assignee.email ?? `Agent ${ticket.assignee.id}`
+    : "Unassigned";
+  const displaySummary = `${groupLabel} / ${agentLabel}`;
+  const filteredGroupOptions = searchGroup.trim()
+    ? groupOptions.filter((o) => o.label.toLowerCase().includes(searchGroup.toLowerCase()))
+    : groupOptions;
+  const filteredAgentOptions = searchAgent.trim()
+    ? agentOptions.filter((o) => o.label.toLowerCase().includes(searchAgent.toLowerCase()))
+    : agentOptions;
 
   return (
     <div
@@ -98,14 +129,16 @@ export function TicketGridCard({
               aria-label={`Select ${ticket.ticketNumber}`}
             />
           </div>
-          <Link
-            href={`/dashboard/tickets/${ticket.id}`}
-            className="flex-1 min-w-0 flex flex-col gap-1"
-          >
+          <div className="flex-1 min-w-0 flex flex-col gap-1">
+            {/* Ticket ID + status row - only ticket number is clickable */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-mono text-xs font-medium text-gray-700">
+              <Link
+                href={`/dashboard/tickets/${ticket.id}`}
+                className="font-mono text-xs font-medium text-gray-700 hover:text-blue-600 hover:underline"
+                aria-label={`Open ticket ${ticket.ticketNumber}`}
+              >
                 {ticket.ticketNumber}
-              </span>
+              </Link>
               <span
                 className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${
                   statusColors[ticket.status] || statusColors.open
@@ -125,9 +158,14 @@ export function TicketGridCard({
                 </span>
               )}
             </div>
-            <h3 className="font-medium text-gray-900 text-sm line-clamp-2 leading-tight">
+            {/* Title - clickable */}
+            <Link
+              href={`/dashboard/tickets/${ticket.id}`}
+              className="font-medium text-gray-900 text-sm line-clamp-2 leading-tight hover:text-blue-600 hover:underline block"
+            >
               {ticket.subject}
-            </h3>
+            </Link>
+            {/* Description and meta - not clickable */}
             <p className="text-xs text-gray-500 line-clamp-2">
               {ticket.description}
             </p>
@@ -147,7 +185,7 @@ export function TicketGridCard({
                 <span className="text-gray-400">Unassigned</span>
               )}
             </div>
-          </Link>
+          </div>
         </div>
 
         {/* Right section: Priority · Group/Agent · Status (same as list row) */}
@@ -169,32 +207,90 @@ export function TicketGridCard({
               }
             />
           </div>
-          <div className="flex items-center w-full gap-0">
-            <div className="flex items-center min-w-0 flex-1">
-              <InlineSearchableSelect
-                value={ticket.group ? String(ticket.group.id) : ""}
-                options={groupOptions}
-                onChange={(v) => onUpdateGroup(ticket.id, v ? parseInt(v, 10) : null)}
-                leadingIcon={<FolderGit2 className="h-3 w-3 text-gray-500 shrink-0" />}
-                placeholder="—"
-                allowUnset
-                unsetLabel="—"
-              />
-            </div>
-            <span className="shrink-0 text-gray-400 text-[10px] mx-0.5 leading-none">/</span>
-            <div className="flex items-center min-w-0 flex-1">
-              <InlineSearchableSelect
-                value={ticket.assignee ? String(ticket.assignee.id) : ""}
-                options={agentOptions}
-                onChange={(v) => onUpdateAssignee(ticket.id, v ? parseInt(v, 10) : null)}
-                leadingIcon={<User className="h-3 w-3 text-gray-500 shrink-0" />}
-                placeholder="—"
-                allowUnset
-                unsetLabel="—"
-                assignedAgentId={ticket.assignee?.id}
-                fallbackLabel={ticket.assignee?.name || undefined}
-              />
-            </div>
+          <div className="relative w-full" ref={groupAgentRef}>
+            <button
+              type="button"
+              onClick={() => setGroupAgentOpen((o) => !o)}
+              className="flex w-full items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[28px]"
+              aria-expanded={groupAgentOpen}
+              aria-haspopup="dialog"
+            >
+              <FolderGit2 className="h-3 w-3 text-gray-500 shrink-0" />
+              <span className="truncate flex-1 min-w-0">
+                {groupLabel === "—" && agentLabel === "Unassigned" ? "— / —" : displaySummary}
+              </span>
+              <ChevronDown className={`h-3 w-3 text-gray-400 shrink-0 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
+            </button>
+            {groupAgentOpen && (
+              <div className="absolute left-0 right-0 top-full z-50 mt-1 w-64 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
+                <div className="flex border-b border-gray-200">
+                  <button
+                    type="button"
+                    onClick={() => setGroupAgentTab("group")}
+                    className={`flex-1 px-3 py-2 text-xs font-semibold ${
+                      groupAgentTab === "group" ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50" : "text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    GROUP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGroupAgentTab("agent")}
+                    className={`flex-1 px-3 py-2 text-xs font-semibold ${
+                      groupAgentTab === "agent" ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50" : "text-gray-600 hover:bg-gray-50"
+                    }`}
+                  >
+                    AGENT
+                  </button>
+                </div>
+                {groupAgentTab === "group" && (
+                  <div className="p-2">
+                    <div className="flex items-center justify-between gap-2 rounded bg-gray-100 px-2 py-1.5 text-xs">
+                      <span className="truncate font-medium text-gray-800">{groupLabel}</span>
+                      <button type="button" onClick={() => { onUpdateGroup(ticket.id, null); setSearchGroup(""); }} className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100" aria-label="Remove group"><X className="h-3.5 w-3.5" /></button>
+                    </div>
+                    <p className="mt-1 text-[10px] text-gray-500">Change group</p>
+                    <div className="relative mt-1">
+                      <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
+                      <input type="text" value={searchGroup} onChange={(e) => setSearchGroup(e.target.value)} placeholder="Search groups..." className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                    </div>
+                    <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200">
+                      {filteredGroupOptions.map((opt) => (
+                        <li key={opt.value}>
+                          <button type="button" onClick={() => { onUpdateGroup(ticket.id, parseInt(opt.value, 10)); setGroupAgentOpen(false); }} className="w-full px-2 py-1.5 text-left text-xs hover:bg-gray-50">{opt.label}</button>
+                        </li>
+                      ))}
+                      {filteredGroupOptions.length === 0 && <li className="px-2 py-2 text-xs text-gray-500">No groups found</li>}
+                    </ul>
+                  </div>
+                )}
+                {groupAgentTab === "agent" && (
+                  <div className="p-2">
+                    <div className="flex items-center justify-between gap-2 rounded bg-gray-100 px-2 py-1.5 text-xs">
+                      <span className="truncate font-medium text-gray-800">{agentLabel}</span>
+                      {ticket.assignee && <button type="button" onClick={() => { onUpdateAssignee(ticket.id, null); setSearchAgent(""); }} className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100" aria-label="Unassign agent"><X className="h-3.5 w-3.5" /></button>}
+                    </div>
+                    <p className="mt-1 text-[10px] text-gray-500">Reassign or unassign</p>
+                    <div className="relative mt-1">
+                      <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
+                      <input type="text" value={searchAgent} onChange={(e) => setSearchAgent(e.target.value)} placeholder="Search agents..." className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+                    </div>
+                    <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200">
+                      {filteredAgentOptions.map((opt) => (
+                        <li key={opt.value}>
+                          <button type="button" onClick={() => {
+                          const id = opt.value === "me" && currentUserId != null ? currentUserId : opt.value ? parseInt(opt.value, 10) : null;
+                          onUpdateAssignee(ticket.id, id != null && !Number.isNaN(id) ? id : null);
+                          setGroupAgentOpen(false);
+                        }} className="w-full px-2 py-1.5 text-left text-xs hover:bg-gray-50">{opt.label}</button>
+                        </li>
+                      ))}
+                      {filteredAgentOptions.length === 0 && <li className="px-2 py-2 text-xs text-gray-500">No agents found</li>}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="w-full flex items-center min-h-[28px]">
             <InlineSearchableSelect

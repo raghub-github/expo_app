@@ -56,6 +56,7 @@ export const queryKeys = {
     list: (filters: Record<string, unknown>) => ["tickets", "list", filters] as const,
     details: () => ["tickets", "detail"] as const,
     detail: (id: number | string) => ["tickets", "detail", id] as const,
+    activities: (id: number | string) => ["tickets", "activities", id] as const,
   },
   
   // Analytics

@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get session (for tokens); refresh if needed so session stays valid
+    // Get session (for tokens) - only place we call getSession() so client gets full session once; avoids parallel refresh with middleware/other APIs
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     if (sessionError && isInvalidRefreshToken(sessionError)) {
       await supabase.auth.signOut();

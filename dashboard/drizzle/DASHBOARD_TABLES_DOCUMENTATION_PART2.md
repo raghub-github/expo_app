@@ -1,9 +1,9 @@
-# Dashboard Tables Documentation — Part 2 (Migrations 0080–0086 & Enterprise Ticket System)
+# Dashboard Tables Documentation — Part 2 (Migrations 0080–0093 & Enterprise Ticket System)
 
-This document continues **[DASHBOARD_TABLES_DOCUMENTATION.md](DASHBOARD_TABLES_DOCUMENTATION.md)** and covers migrations 0080 through 0086, new tables introduced in that range, and a reference to the Enterprise Ticket System (backend 0055–0056).
+This document continues **[DASHBOARD_TABLES_DOCUMENTATION.md](DASHBOARD_TABLES_DOCUMENTATION.md)** and covers migrations 0080 through 0093, new tables and schema changes in that range, and a reference to the Enterprise Ticket System (backend 0055–0056).
 
-**Last Updated**: February 8, 2026  
-**Migration Files Covered**: 0080, 0081, 0082, 0083, 0084, 0085, 0086  
+**Last Updated**: February 11, 2026  
+**Migration Files Covered**: 0080, 0081, 0082, 0083, 0084, 0085, 0086, 0087, 0088, 0089, 0090, 0091, 0092, 0093  
 **Backend Reference**: 0055 (Enterprise Ticket System), 0056 (migrate unified tickets to enterprise)
 
 ---
@@ -18,6 +18,7 @@ This document continues **[DASHBOARD_TABLES_DOCUMENTATION.md](DASHBOARD_TABLES_D
 6. [Migration 0086 – Rider domain dummy data](#6-migration-0086--rider-domain-dummy-data)
 7. [Enterprise Ticket System (Backend 0055–0056)](#7-enterprise-ticket-system-backend-00555056)
 8. [Summary and migration quick reference](#8-summary-and-migration-quick-reference)
+9. [Remaining migrations (0087–0093)](#9-remaining-migrations-00870093)
 
 ---
 
@@ -363,12 +364,116 @@ Dashboard tables documentation Part 1 continues to describe the **unified** tick
 | **0085** | Rider onboarding redesign: vehicle_type (taxi, e_rickshaw, ev_car), rider_documents (fraud_flags, duplicate_document_id, requires_manual_review), rider_vehicles (ownership_type, limitation_flags, is_commercial), rider_service_activation, onboarding_status_transitions, onboarding_rule_policies, vehicle_service_mapping seed. |
 | **0086** | Rider domain dummy data (idempotent seed). |
 | **0055–0056** | Enterprise Ticket System (backend): 11 tables; see backend docs. |
+| **0087** | Referral offers & fulfillments: `referral_offers`, `referral_offer_city_rules`, `referral_fulfillments`; extend `referrals`. |
+| **0088** | `rider_penalties.service_type` optional (nullable). |
+| **0089** | `rider_wallet`: add `negative_used_food`, `negative_used_parcel`, `negative_used_person_ride`; index for negative balance. |
+| **0090** | Sync referrals from `riders.referred_by` into `referrals` (idempotent data migration). |
+| **0091** | Fix rider blocking status logic (diagnostic + repair; no new tables). |
+| **0092** | Area Manager system: `area_managers`, `activity_logs`; add `area_manager_id`/`locality_code`/`availability_status` to riders, merchant_stores, merchant_parents. |
+| **0093** | Ticket groups enhancements: `ticket_groups.ticket_category`, `ticket_groups.source_role`; index. |
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: February 8, 2026  
+## 9. Remaining migrations (0087–0093)
+
+These migrations are **not yet fully documented in Part 2** in the same detail as 0080–0086. Below is a concise reference of **tables and schema changes** that remain after 0086.
+
+### 9.1 Migration 0087 – Referral offers and fulfillments
+
+**File**: `0087_referral_offers_and_fulfillments.sql`
+
+**Purpose**: Referral campaign/offer definitions with city-wise overrides and per-referral fulfillment tracking.
+
+| Table | Purpose |
+|-------|---------|
+| `referral_offers` | Offer definitions: offer_code, name, offer_type (fixed_per_referral, per_order_bonus, tiered, custom), amount, amount_config, service_types[], min_orders_per_referred, max_referrals_per_referrer, terms, valid_from/to, city_ids[], is_active. FK: created_by → system_users. |
+| `referral_offer_city_rules` | City-wise overrides for an offer: amount, min_orders_per_referred, max_referrals_per_referrer, terms. UNIQUE(offer_id, city_id). FK: offer_id → referral_offers, city_id → cities. |
+| `referral_fulfillments` | One row per referral: referral_id, offer_id, referrer_rider_id, referred_rider_id, status (pending, fulfilled, credited, expired, cancelled), order counts per service, amount_credited, wallet_ledger_id, credited_at, fulfilled_at. UNIQUE(referral_id). |
+
+**Enums**: `referral_offer_type`, `referral_fulfillment_status`.
+
+**Changes to existing**: `referrals` — ADD COLUMN offer_id, referral_code_used, referred_city_id, referred_city_name (if not exist).
+
+---
+
+### 9.2 Migration 0088 – Penalty service type optional
+
+**File**: `0088_penalty_service_type_optional.sql`
+
+**Purpose**: Allow `rider_penalties.service_type` to be NULL so agents can record penalties without mandating a service; wallet allocation for unspecified penalties uses parcel.
+
+| Table | Change |
+|-------|--------|
+| `rider_penalties` | ALTER COLUMN `service_type` DROP NOT NULL |
+
+---
+
+### 9.3 Migration 0089 – Rider wallet negative used (service-level)
+
+**File**: `0089_rider_wallet_negative_used_service_level.sql`
+
+**Purpose**: Service-level negative contribution for blocking (negative_used_* only counted after wallet goes negative; threshold -50 per service). See backend BLACKLIST_WHITELIST_REDESIGN.
+
+| Table | Change |
+|-------|--------|
+| `rider_wallet` | ADD COLUMN `negative_used_food`, `negative_used_parcel`, `negative_used_person_ride` (NUMERIC, default 0). Index `rider_wallet_negative_balance_idx` on rider_id WHERE total_balance < 0. Optional backfill for existing negative-balance riders. |
+
+---
+
+### 9.4 Migration 0090 – Sync referrals from riders.referred_by
+
+**File**: `0090_sync_referrals_from_riders_referred_by.sql`
+
+**Purpose**: Idempotent data migration: insert into `referrals` for riders that have `referred_by` set but no matching referral row. ON CONFLICT (referred_id) DO NOTHING. No new tables.
+
+---
+
+### 9.5 Migration 0091 – Fix rider blocking status
+
+**Files**: `0091_fix_rider_blocking_status.sql`, `0091_fix_rider_blocking_status_SAFE.sql`, `0091_test_before_migration.sql`
+
+**Purpose**: Repair rider status update logic when blocking/unblocking services (diagnostic queries + conditional updates). No new tables or columns.
+
+---
+
+### 9.6 Migration 0092 – Area Manager system
+
+**File**: `0092_area_manager_system.sql`
+
+**Purpose**: Area Manager dashboard: link system users (AREA_MANAGER_MERCHANT / AREA_MANAGER_RIDER) to stores and riders; activity logging.
+
+| Table | Purpose |
+|-------|---------|
+| `area_managers` | id, user_id (FK system_users, UNIQUE), manager_type (MERCHANT, RIDER), area_code, locality_code, city, status (ACTIVE, INACTIVE). One row per Area Manager. |
+| `activity_logs` | id, actor_id (FK system_users), action, entity_type, entity_id, created_at. Audit log for AM actions. |
+
+**Enums**: `area_manager_type`, `area_manager_status`, `rider_availability_status`.
+
+**Changes to existing**:
+- `merchant_stores`: ADD COLUMN `area_manager_id` (FK area_managers).
+- `merchant_parents`: ADD COLUMN `area_manager_id`, `created_by_name`.
+- `riders`: ADD COLUMN `area_manager_id`, `locality_code`, `availability_status` (ONLINE, BUSY, OFFLINE).
+
+---
+
+### 9.7 Migration 0093 – Ticket groups and titles enhancements
+
+**File**: `0093_ticket_groups_titles_enhancements.sql`
+
+**Purpose**: Super Admin Ticket Settings: add order-related vs non-order and source-of-ticket to groups; support multiple titles per group in UI/API.
+
+| Table | Change |
+|-------|--------|
+| `ticket_groups` | ADD COLUMN `ticket_category` (ticket_category: order_related, non_order, other). ADD COLUMN `source_role` (ticket_source_role: customer, rider, merchant, system, etc.). Index `ticket_groups_category_source_idx` on (ticket_category, source_role). |
+
+**Note**: `ticket_titles` already has `group_id`; 0093 does not create new tables. Dashboard API and UI create/update titles under groups using existing `ticket_titles` table.
+
+---
+
+**Document Version**: 1.1  
+**Last Updated**: February 11, 2026  
 **Maintained By**: Development Team
 
-**Changelog (v1.0)**:
-- Initial Part 2: migrations 0080–0086 documented in full; Enterprise Ticket System (0055–0056) summarized with pointer to backend docs.
+**Changelog**:
+- **v1.0**: Initial Part 2: migrations 0080–0086 documented in full; Enterprise Ticket System (0055–0056) summarized.
+- **v1.1**: Added Section 9 – remaining migrations 0087–0093 (tables and schema changes summary); updated header, TOC, and quick reference table.

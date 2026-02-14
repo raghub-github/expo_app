@@ -2,15 +2,16 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { LogOut, User, Bell, Search, ChevronDown } from "lucide-react";
+import Link from "next/link";
+import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
-import Link from "next/link";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
-import { TicketSearchInHeader } from "@/components/tickets/TicketSearchInHeader";
+import { GlobalSearch } from "@/components/search/GlobalSearch";
+import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
 
 // Order Search Bar Component
 function OrderSearchBar() {
@@ -124,10 +125,12 @@ export function Header() {
   const pathname = usePathname();
   const pageName = useMemo(() => getCurrentPageName(pathname), [pathname]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showNewDropdown, setShowNewDropdown] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const newMenuRef = useRef<HTMLDivElement>(null);
   const { data: sessionData, isLoading } = useSessionQuery();
   const logoutMutation = useLogout();
 
@@ -143,6 +146,18 @@ export function Header() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showDropdown]);
+
+  useEffect(() => {
+    if (!showNewDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const el = newMenuRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setShowNewDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showNewDropdown]);
 
   // Extract user info from session
   const userEmail = sessionData?.session?.user?.email || null;
@@ -296,40 +311,22 @@ export function Header() {
           const restoreErrors = () => {
             console.error = originalError;
           };
-          
-          // Suppress console errors for image loading (429, 404, CORS, etc.)
-          const originalError = console.error;
-          const suppressErrors = () => {
-            console.error = () => {}; // Suppress errors temporarily
-          };
-          const restoreErrors = () => {
-            console.error = originalError;
-          };
-          
+
           // Set a timeout to prevent hanging on slow/failed requests (like 429 errors)
           const timeoutId = setTimeout(() => {
-<<<<<<< HEAD
-=======
             if (!isMounted) return;
->>>>>>> origin/feature-AM
             restoreErrors();
             img.onload = null;
             img.onerror = null;
             // Timeout reached (likely 429 or network issue), try Gravatar fallback silently
             tryGravatarFallback(userEmail, userMetadata, urlToTry);
           }, 2000); // 2 second timeout for faster fallback on 429 errors
-<<<<<<< HEAD
-=======
           timeoutIds.push(timeoutId);
->>>>>>> origin/feature-AM
-          
+
           suppressErrors(); // Suppress errors during image load
           
           img.onload = () => {
-<<<<<<< HEAD
-=======
             if (!isMounted) return;
->>>>>>> origin/feature-AM
             restoreErrors();
             clearTimeout(timeoutId);
             setAvatarUrl(urlToTry);
@@ -337,10 +334,7 @@ export function Header() {
           };
           
           img.onerror = () => {
-<<<<<<< HEAD
-=======
             if (!isMounted) return;
->>>>>>> origin/feature-AM
             restoreErrors();
             clearTimeout(timeoutId);
             // Image failed to load (could be 429, 404, CORS, etc.)
@@ -385,32 +379,95 @@ export function Header() {
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
         <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
+        {/* Online/Offline toggle - only on Tickets dashboard, left of center */}
+        {pathname.startsWith("/dashboard/tickets") && (
+          <AgentStatusToggle />
+        )}
       </div>
 
-<<<<<<< HEAD
-      {/* Dashboard Search - Center (Desktop only; hidden on Tickets and Area Managers where search is in nav) */}
-      {!pathname.startsWith("/dashboard/tickets") && pathname !== "/dashboard/area-managers" && (
-        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
-          <DashboardSearch compact={true} />
-        </div>
-      )}
-=======
-      {/* Order Search Bar - Show on orders pages */}
+      {/* Center: Order Search on orders; Dashboard Search when not Tickets/Area Managers */}
       {pathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
           <OrderSearchBar />
         </div>
-      ) : pathname !== "/dashboard/area-managers" ? (
+      ) : !pathname.startsWith("/dashboard/tickets") && pathname !== "/dashboard/area-managers" ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
           <DashboardSearch compact={true} />
         </div>
       ) : null}
->>>>>>> origin/feature-AM
 
-      <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
-        {/* Tickets: collapsible global search beside notification */}
+      <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
+        {/* Global search and + New: only on Tickets dashboard */}
         {pathname.startsWith("/dashboard/tickets") && (
-          <TicketSearchInHeader />
+          <>
+            <div className="w-full min-w-0 max-w-[160px] sm:max-w-[220px] md:max-w-[280px]">
+              <GlobalSearch />
+            </div>
+            <div ref={newMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setShowNewDropdown((prev) => !prev)}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-400 transition-colors"
+                aria-expanded={showNewDropdown}
+                aria-haspopup="true"
+              >
+                <Plus className="h-4 w-4" />
+                <span>New</span>
+                <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showNewDropdown ? "rotate-180" : ""}`} />
+              </button>
+              {showNewDropdown && (
+                <div
+                  className="absolute right-0 top-full z-[100] mt-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg ring-1 ring-black/5"
+                  role="menu"
+                >
+                  <Link
+                    href="/dashboard/tickets/new"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+                      <Ticket className="h-4 w-4" />
+                    </div>
+                    <span>Ticket</span>
+                  </Link>
+                  <Link
+                    href="/dashboard/email"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
+                      <Mail className="h-4 w-4" />
+                    </div>
+                    <span>Email</span>
+                  </Link>
+                  <Link
+                    href="/dashboard/contacts/new"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+                      <UserPlus className="h-4 w-4" />
+                    </div>
+                    <span>Contact</span>
+                  </Link>
+                  <Link
+                    href="/dashboard/companies/new"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
+                      <Building2 className="h-4 w-4" />
+                    </div>
+                    <span>Company</span>
+                  </Link>
+                </div>
+              )}
+            </div>
+          </>
         )}
         <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
           <Bell className="h-5 w-5" />

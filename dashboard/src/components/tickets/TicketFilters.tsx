@@ -8,6 +8,8 @@ const FILTER_ITEMS: Array<{ key: string; label: string }> = [
   { key: "agent", label: "Agent" },
   { key: "group", label: "Group" },
   { key: "created", label: "Created" },
+  { key: "resolved", label: "Resolved at" },
+  { key: "closed", label: "Closed at" },
   { key: "due", label: "Due by" },
   { key: "status", label: "Status" },
   { key: "priority", label: "Priority" },
@@ -31,6 +33,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
     filters,
     updateFilter,
     resetFilters,
+    applyFilters,
     activeFilterCount,
     updateStatuses,
     updateServiceTypes,
@@ -54,7 +57,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
   } | null>(null);
 
   useEffect(() => {
-    fetch("/api/tickets/agents")
+    fetch("/api/tickets/agents", { credentials: "include" })
       .then((r) => {
         if (!r.ok) {
           console.error("[TicketFilters] Failed to fetch agents:", r.status, r.statusText);
@@ -82,7 +85,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
       });
   }, []);
   useEffect(() => {
-    fetch("/api/tickets/reference-data")
+    fetch("/api/tickets/reference-data", { credentials: "include" })
       .then((r) => {
         if (!r.ok) {
           console.error("[TicketFilters] Failed to fetch reference data:", r.status, r.statusText);
@@ -251,7 +254,10 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
             label="Group"
             placeholder="All Groups"
             selectedValues={filters.groupIds.map(String)}
-            options={(referenceData?.groups || []).map((g) => ({ value: String(g.id), label: g.groupName }))}
+            options={(referenceData?.groups || []).map((g) => ({
+              value: String(g.id),
+              label: g.groupName || g.groupCode || `Group ${g.id}`,
+            }))}
             onChange={(vals) => updateGroupIds(vals.map((v) => parseInt(v, 10)).filter((n) => !Number.isNaN(n)))}
             dark={dark}
             inputBase={inputBase}
@@ -279,20 +285,114 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
             />
             {filters.createdPreset === "custom" && (
               <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="date"
-                  value={filters.dateFrom}
-                  onChange={(e) => updateFilter("dateFrom", e.target.value)}
-                  className={`${inputBase} ${inputSizes}`}
-                  style={{ border: "none", boxShadow: "none" }}
-                />
-                <input
-                  type="date"
-                  value={filters.dateTo}
-                  onChange={(e) => updateFilter("dateTo", e.target.value)}
-                  className={`${inputBase} ${inputSizes}`}
-                  style={{ border: "none", boxShadow: "none" }}
-                />
+                <div>
+                  <span className={`${labelCls} block mb-1`}>From</span>
+                  <input
+                    type="date"
+                    value={filters.dateFrom}
+                    onChange={(e) => updateFilter("dateFrom", e.target.value)}
+                    className={`${inputBase} ${inputSizes} w-full`}
+                    style={{ border: "none", boxShadow: "none" }}
+                  />
+                </div>
+                <div>
+                  <span className={`${labelCls} block mb-1`}>To</span>
+                  <input
+                    type="date"
+                    value={filters.dateTo}
+                    onChange={(e) => updateFilter("dateTo", e.target.value)}
+                    className={`${inputBase} ${inputSizes} w-full`}
+                    style={{ border: "none", boxShadow: "none" }}
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {isVisible("Resolved at") && (
+          <>
+            <FilterSelect
+              label="Resolved at"
+              value={filters.resolvedPreset}
+              onChange={(v) => updateFilter("resolvedPreset", v)}
+              options={[
+                { value: "any", label: "Any time" },
+                { value: "last_24h", label: "Last 24 hours" },
+                { value: "last_7d", label: "Last 7 days" },
+                { value: "last_30d", label: "Last 30 days" },
+                { value: "custom", label: "Custom range" },
+              ]}
+              dark={dark}
+              inputCls={`${inputBase} ${inputSizes}`}
+              labelCls={labelCls}
+            />
+            {filters.resolvedPreset === "custom" && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className={`${labelCls} block mb-1`}>From</span>
+                  <input
+                    type="date"
+                    value={filters.resolvedFrom}
+                    onChange={(e) => updateFilter("resolvedFrom", e.target.value)}
+                    className={`${inputBase} ${inputSizes} w-full`}
+                    style={{ border: "none", boxShadow: "none" }}
+                  />
+                </div>
+                <div>
+                  <span className={`${labelCls} block mb-1`}>To</span>
+                  <input
+                    type="date"
+                    value={filters.resolvedTo}
+                    onChange={(e) => updateFilter("resolvedTo", e.target.value)}
+                    className={`${inputBase} ${inputSizes} w-full`}
+                    style={{ border: "none", boxShadow: "none" }}
+                  />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {isVisible("Closed at") && (
+          <>
+            <FilterSelect
+              label="Closed at"
+              value={filters.closedPreset}
+              onChange={(v) => updateFilter("closedPreset", v)}
+              options={[
+                { value: "any", label: "Any time" },
+                { value: "last_24h", label: "Last 24 hours" },
+                { value: "last_7d", label: "Last 7 days" },
+                { value: "last_30d", label: "Last 30 days" },
+                { value: "custom", label: "Custom range" },
+              ]}
+              dark={dark}
+              inputCls={`${inputBase} ${inputSizes}`}
+              labelCls={labelCls}
+            />
+            {filters.closedPreset === "custom" && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className={`${labelCls} block mb-1`}>From</span>
+                  <input
+                    type="date"
+                    value={filters.closedFrom}
+                    onChange={(e) => updateFilter("closedFrom", e.target.value)}
+                    className={`${inputBase} ${inputSizes} w-full`}
+                    style={{ border: "none", boxShadow: "none" }}
+                  />
+                </div>
+                <div>
+                  <span className={`${labelCls} block mb-1`}>To</span>
+                  <input
+                    type="date"
+                    value={filters.closedTo}
+                    onChange={(e) => updateFilter("closedTo", e.target.value)}
+                    className={`${inputBase} ${inputSizes} w-full`}
+                    style={{ border: "none", boxShadow: "none" }}
+                  />
+                </div>
               </div>
             )}
           </>
@@ -464,6 +564,25 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
             </label>
           </div>
         )}
+      </div>
+
+      {/* Sticky Apply filters button - apply on submit only */}
+      <div
+        className={`shrink-0 sticky bottom-0 left-0 right-0 border-t px-2.5 py-2.5 ${
+          dark ? "border-gray-700 bg-gray-800" : "border-gray-200 bg-white"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={applyFilters}
+          className={`w-full rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+            dark
+              ? "bg-blue-600 text-white hover:bg-blue-500"
+              : "bg-blue-600 text-white hover:bg-blue-700"
+          }`}
+        >
+          Apply filters
+        </button>
       </div>
     </div>
   );

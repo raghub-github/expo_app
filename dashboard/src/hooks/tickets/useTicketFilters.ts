@@ -25,6 +25,12 @@ export interface TicketFilterState {
   dateFrom: string;
   dateTo: string;
   createdPreset: string;
+  resolvedFrom: string;
+  resolvedTo: string;
+  resolvedPreset: string;
+  closedFrom: string;
+  closedTo: string;
+  closedPreset: string;
   dueFrom: string;
   dueTo: string;
   duePreset: string;
@@ -50,6 +56,12 @@ const defaultFilters: TicketFilterState = {
   dateFrom: "",
   dateTo: "",
   createdPreset: "any",
+  resolvedFrom: "",
+  resolvedTo: "",
+  resolvedPreset: "any",
+  closedFrom: "",
+  closedTo: "",
+  closedPreset: "any",
   dueFrom: "",
   dueTo: "",
   duePreset: "any",
@@ -91,6 +103,50 @@ function applyCreatedPreset(state: TicketFilterState, preset: string) {
     return { ...state, createdPreset: preset, dateFrom: toDateInput(from), dateTo: toDateInput(now) };
   }
   return { ...state, createdPreset: "custom" };
+}
+
+function applyResolvedPreset(state: TicketFilterState, preset: string) {
+  if (preset === "any") {
+    return { ...state, resolvedPreset: "any", resolvedFrom: "", resolvedTo: "" };
+  }
+  if (preset === "last_24h") {
+    const now = new Date();
+    const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    return { ...state, resolvedPreset: preset, resolvedFrom: toDateInput(from), resolvedTo: toDateInput(now) };
+  }
+  if (preset === "last_7d") {
+    const now = new Date();
+    const from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return { ...state, resolvedPreset: preset, resolvedFrom: toDateInput(from), resolvedTo: toDateInput(now) };
+  }
+  if (preset === "last_30d") {
+    const now = new Date();
+    const from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return { ...state, resolvedPreset: preset, resolvedFrom: toDateInput(from), resolvedTo: toDateInput(now) };
+  }
+  return { ...state, resolvedPreset: "custom" };
+}
+
+function applyClosedPreset(state: TicketFilterState, preset: string) {
+  if (preset === "any") {
+    return { ...state, closedPreset: "any", closedFrom: "", closedTo: "" };
+  }
+  if (preset === "last_24h") {
+    const now = new Date();
+    const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    return { ...state, closedPreset: preset, closedFrom: toDateInput(from), closedTo: toDateInput(now) };
+  }
+  if (preset === "last_7d") {
+    const now = new Date();
+    const from = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return { ...state, closedPreset: preset, closedFrom: toDateInput(from), closedTo: toDateInput(now) };
+  }
+  if (preset === "last_30d") {
+    const now = new Date();
+    const from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return { ...state, closedPreset: preset, closedFrom: toDateInput(from), closedTo: toDateInput(now) };
+  }
+  return { ...state, closedPreset: "custom" };
 }
 
 function applyDuePreset(state: TicketFilterState, preset: string) {
@@ -140,6 +196,12 @@ function initFilters(searchParams: URLSearchParams): TicketFilterState {
     dateFrom: searchParams.get("dateFrom") || defaultFilters.dateFrom,
     dateTo: searchParams.get("dateTo") || defaultFilters.dateTo,
     createdPreset: searchParams.get("createdPreset") || defaultFilters.createdPreset,
+    resolvedFrom: searchParams.get("resolvedFrom") || defaultFilters.resolvedFrom,
+    resolvedTo: searchParams.get("resolvedTo") || defaultFilters.resolvedTo,
+    resolvedPreset: searchParams.get("resolvedPreset") || defaultFilters.resolvedPreset,
+    closedFrom: searchParams.get("closedFrom") || defaultFilters.closedFrom,
+    closedTo: searchParams.get("closedTo") || defaultFilters.closedTo,
+    closedPreset: searchParams.get("closedPreset") || defaultFilters.closedPreset,
     dueFrom: searchParams.get("dueFrom") || defaultFilters.dueFrom,
     dueTo: searchParams.get("dueTo") || defaultFilters.dueTo,
     duePreset: searchParams.get("duePreset") || defaultFilters.duePreset,
@@ -167,11 +229,23 @@ function reducer(state: TicketFilterState, action: FilterAction): TicketFilterSt
   if (action.key === "createdPreset") {
     return applyCreatedPreset(state, action.value);
   }
+  if (action.key === "resolvedPreset") {
+    return applyResolvedPreset(state, action.value);
+  }
+  if (action.key === "closedPreset") {
+    return applyClosedPreset(state, action.value);
+  }
   if (action.key === "duePreset") {
     return applyDuePreset(state, action.value);
   }
   if (action.key === "dateFrom" || action.key === "dateTo") {
     return { ...state, [action.key]: action.value, createdPreset: "custom" };
+  }
+  if (action.key === "resolvedFrom" || action.key === "resolvedTo") {
+    return { ...state, [action.key]: action.value, resolvedPreset: "custom" };
+  }
+  if (action.key === "closedFrom" || action.key === "closedTo") {
+    return { ...state, [action.key]: action.value, closedPreset: "custom" };
   }
   if (action.key === "dueFrom" || action.key === "dueTo") {
     return { ...state, [action.key]: action.value, duePreset: "custom", slaBreach: "all" };
@@ -211,6 +285,12 @@ function buildSearchParams(filters: TicketFilterState) {
   if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
   if (filters.dateTo) params.set("dateTo", filters.dateTo);
   if (filters.createdPreset && filters.createdPreset !== "any") params.set("createdPreset", filters.createdPreset);
+  if (filters.resolvedFrom) params.set("resolvedFrom", filters.resolvedFrom);
+  if (filters.resolvedTo) params.set("resolvedTo", filters.resolvedTo);
+  if (filters.resolvedPreset && filters.resolvedPreset !== "any") params.set("resolvedPreset", filters.resolvedPreset);
+  if (filters.closedFrom) params.set("closedFrom", filters.closedFrom);
+  if (filters.closedTo) params.set("closedTo", filters.closedTo);
+  if (filters.closedPreset && filters.closedPreset !== "any") params.set("closedPreset", filters.closedPreset);
   if (filters.dueFrom) params.set("dueFrom", filters.dueFrom);
   if (filters.dueTo) params.set("dueTo", filters.dueTo);
   if (filters.duePreset && filters.duePreset !== "any") params.set("duePreset", filters.duePreset);
@@ -228,61 +308,43 @@ export function useTicketFilters() {
   const [filters, dispatch] = useReducer(reducer, searchParams, initFilters);
   const lastParamsRef = useRef<string>("");
   const filtersRef = useRef(filters);
-  const isInitialMount = useRef(true);
   const isUpdatingRef = useRef(false);
+
+  /** Applied filters (from URL) - use for the ticket list so it only updates on Apply */
+  const appliedFilters = useMemo(
+    () => initFilters(searchParams),
+    [searchParams.toString()]
+  );
 
   // Keep filters ref in sync
   useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
 
+  // Sync draft from URL when URL changes (after apply or browser back/forward)
+  const prevParamsRef = useRef(searchParams.toString());
   useEffect(() => {
-    const currentParams = searchParams.toString();
+    const current = searchParams.toString();
+    if (current !== prevParamsRef.current && !isUpdatingRef.current) {
+      prevParamsRef.current = current;
+      dispatch({ type: "setMany", values: initFilters(searchParams) });
+    }
+    prevParamsRef.current = current;
+  }, [searchParams]);
+
+  // Apply filters on submit only (no auto-sync)
+  const applyFilters = useCallback(() => {
     const filtersParams = buildSearchParams(filtersRef.current).toString();
-
-    // On initial mount, just store the current params
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      lastParamsRef.current = currentParams;
-      return;
-    }
-
-    // If URL changed externally (browser back/forward), sync filters
-    if (currentParams !== lastParamsRef.current && !isUpdatingRef.current) {
-      const newFilters = initFilters(searchParams);
-      // Only update if filters actually differ
-      const newFiltersParams = buildSearchParams(newFilters).toString();
-      if (newFiltersParams !== filtersParams) {
-        dispatch({ type: "setMany", values: newFilters });
-      }
-      lastParamsRef.current = currentParams;
-      return;
-    }
-
-    // If filters changed from user action, update URL
-    if (filtersParams !== currentParams && !isUpdatingRef.current) {
-      isUpdatingRef.current = true;
-      lastParamsRef.current = filtersParams;
-      const query = filtersParams ? `?${filtersParams}` : "";
-
-      startTransition(() => {
-        try {
-          // router.replace in Next.js App Router may not return a Promise
-          // Use a callback approach instead
-          router.replace(`/dashboard/tickets${query}`, { scroll: false });
-          // Reset the flag after navigation (use setTimeout to ensure it happens after)
-          setTimeout(() => {
-            isUpdatingRef.current = false;
-          }, 0);
-        } catch (error) {
-          console.error("Error updating URL with filters:", error);
-          // Reset on error
-          lastParamsRef.current = currentParams;
-          isUpdatingRef.current = false;
-        }
-      });
-    }
-  }, [filters, router, searchParams]);
+    const query = filtersParams ? `?${filtersParams}` : "";
+    isUpdatingRef.current = true;
+    lastParamsRef.current = filtersParams;
+    startTransition(() => {
+      router.replace(`/dashboard/tickets${query}`, { scroll: false });
+      setTimeout(() => {
+        isUpdatingRef.current = false;
+      }, 0);
+    });
+  }, [router]);
 
   const updateFilter = useCallback((key: keyof TicketFilterState, value: string) => {
     dispatch({ type: "set", key, value });
@@ -329,6 +391,8 @@ export function useTicketFilters() {
     if (filters.tags) count++;
     if (filters.company) count++;
     if (filters.dateFrom || filters.dateTo) count++;
+    if (filters.resolvedFrom || filters.resolvedTo) count++;
+    if (filters.closedFrom || filters.closedTo) count++;
     if (filters.dueFrom || filters.dueTo) count++;
     if (filters.searchQuery) count++;
     if (filters.isHighValue === "true") count++;
@@ -337,7 +401,10 @@ export function useTicketFilters() {
   }, [filters]);
 
   return {
+    /** Draft filters (form state) - use in filter panel */
     filters,
+    /** Applied filters (from URL) - use for ticket list so it only updates on Apply */
+    appliedFilters,
     updateFilter,
     updateFilters,
     updateStatuses,
@@ -347,6 +414,7 @@ export function useTicketFilters() {
     updateAssignedToIds,
     updateGroupIds,
     resetFilters,
+    applyFilters,
     activeFilterCount,
   };
 }

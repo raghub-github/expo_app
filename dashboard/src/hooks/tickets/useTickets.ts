@@ -70,6 +70,8 @@ export interface TicketsResponse {
   offset: number;
 }
 
+const TICKETS_FETCH_TIMEOUT_MS = 60_000; // 60s so slow DB doesn't hang the UI forever
+
 export function useTickets(filters: TicketFilters = {}) {
   return useQuery<TicketsResponse>({
     queryKey: queryKeys.tickets.list(filters),
@@ -99,16 +101,30 @@ export function useTickets(filters: TicketFilters = {}) {
       params.set("limit", String(filters.limit || 50));
       params.set("offset", String(filters.offset || 0));
 
-      const response = await fetch(`/api/tickets?${params.toString()}`);
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Failed to fetch tickets: ${response.status} ${response.statusText}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), TICKETS_FETCH_TIMEOUT_MS);
+
+      try {
+        const response = await fetch(`/api/tickets?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `Failed to fetch tickets: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        if (!data.success) {
+          throw new Error(data.error || "Failed to fetch tickets");
+        }
+        return data.data;
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (err instanceof Error && err.name === "AbortError") {
+          throw new Error("Request timed out. The server may be slow. Try again.");
+        }
+        throw err;
       }
-      const data = await response.json();
-      if (!data.success) {
-        throw new Error(data.error || "Failed to fetch tickets");
-      }
-      return data.data;
     },
     staleTime: 30000, // 30 seconds
   });

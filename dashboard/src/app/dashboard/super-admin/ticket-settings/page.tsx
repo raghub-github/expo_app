@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, FolderGit2, Tag, Plus, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, FolderGit2, Tag, Plus, Pencil, Trash2, X } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useRouter } from "next/navigation";
+
+type TitleRow = { id?: number; titleCode: string; titleText: string };
 
 type Group = {
   id: number;
@@ -15,8 +17,40 @@ type Group = {
   displayOrder: number | null;
   serviceType: string | null;
   ticketSection: string | null;
+  ticketCategory: string | null;
+  sourceRole: string | null;
   isActive: boolean;
+  titles?: Array<{ id: number; titleCode: string; titleText: string; displayOrder: number | null }>;
 };
+
+const SERVICE_TYPES = [
+  { value: "food", label: "Food" },
+  { value: "parcel", label: "Parcel" },
+  { value: "person_ride", label: "Person ride" },
+  { value: "other", label: "Other" },
+];
+const TICKET_CATEGORIES = [
+  { value: "order_related", label: "Order related" },
+  { value: "non_order", label: "Non-order related" },
+  { value: "other", label: "Other" },
+];
+const USER_TYPES = [
+  { value: "customer", label: "Customer" },
+  { value: "rider", label: "Rider" },
+  { value: "merchant", label: "Merchant" },
+  { value: "system", label: "System" },
+  { value: "other", label: "Others" },
+];
+const SOURCE_ROLES = [
+  { value: "customer", label: "Customer" },
+  { value: "rider", label: "Rider" },
+  { value: "merchant", label: "Merchant" },
+  { value: "system", label: "System" },
+  { value: "customer_pickup", label: "Customer (pickup)" },
+  { value: "customer_drop", label: "Customer (drop)" },
+  { value: "rider_3pl", label: "Rider 3PL" },
+  { value: "provider", label: "Provider" },
+];
 
 type TagRecord = {
   id: number;
@@ -34,7 +68,7 @@ export default function TicketSettingsPage() {
   const [tags, setTags] = useState<TagRecord[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [activeTab, setActiveTab] = useState<"groups" | "tags">("groups");
-  const [groupForm, setGroupForm] = useState<Partial<Group> & { groupCode: string; groupName: string } | null>(null);
+  const [groupForm, setGroupForm] = useState<Partial<Group> & { groupCode: string; groupName: string; titles?: TitleRow[] } | null>(null);
   const [tagForm, setTagForm] = useState<Partial<TagRecord> & { tagCode: string; tagName: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +105,7 @@ export default function TicketSettingsPage() {
     setSaving(true);
     setError(null);
     try {
+      const titles = (groupForm.titles ?? []).filter((t) => t.titleCode?.trim() && t.titleText?.trim());
       const res = await fetch("/api/tickets/reference-data/groups", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -82,6 +117,9 @@ export default function TicketSettingsPage() {
           displayOrder: groupForm.displayOrder ?? null,
           serviceType: groupForm.serviceType || null,
           ticketSection: groupForm.ticketSection || null,
+          ticketCategory: groupForm.ticketCategory || null,
+          sourceRole: groupForm.sourceRole || null,
+          titles: titles.map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() })),
         }),
       });
       const data = await res.json();
@@ -95,14 +133,20 @@ export default function TicketSettingsPage() {
     }
   };
 
-  const updateGroup = async (id: number, updates: Partial<Group>) => {
+  const updateGroup = async (id: number, updates: Partial<Group> & { titles?: TitleRow[] }) => {
     setSaving(true);
     setError(null);
     try {
+      const payload: Record<string, unknown> = { ...updates };
+      if (Array.isArray(updates.titles)) {
+        payload.titles = updates.titles
+          .filter((t) => t.titleCode?.trim() && t.titleText?.trim())
+          .map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() }));
+      }
       const res = await fetch(`/api/tickets/reference-data/groups/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error || "Failed");
@@ -260,15 +304,69 @@ export default function TicketSettingsPage() {
             <h2 className="text-lg font-semibold text-gray-800">Ticket groups</h2>
             <button
               type="button"
-              onClick={() => setGroupForm({ groupCode: "", groupName: "" })}
+              onClick={() => setGroupForm({ groupCode: "", groupName: "", titles: [] })}
               className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
             >
               <Plus className="h-4 w-4" /> Add group
             </button>
           </div>
           {groupForm && !groupForm.id && (
-            <div className="mb-6 p-4 rounded-lg border border-gray-200 bg-gray-50 space-y-3">
+            <div className="mb-6 p-4 rounded-lg border border-gray-200 bg-gray-50 space-y-4">
               <h3 className="font-medium text-gray-800">New group</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Service type</label>
+                  <select
+                    value={groupForm.serviceType ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, serviceType: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {SERVICE_TYPES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Order related</label>
+                  <select
+                    value={groupForm.ticketCategory ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, ticketCategory: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {TICKET_CATEGORIES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Source of ticket</label>
+                  <select
+                    value={groupForm.sourceRole ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, sourceRole: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {SOURCE_ROLES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">User type</label>
+                  <select
+                    value={groupForm.ticketSection ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, ticketSection: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {USER_TYPES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">Code</label>
@@ -276,7 +374,7 @@ export default function TicketSettingsPage() {
                     type="text"
                     value={groupForm.groupCode}
                     onChange={(e) => setGroupForm((f) => f && { ...f, groupCode: e.target.value })}
-                    placeholder="e.g. ORDER_ISSUES"
+                    placeholder="e.g. gatmitra_non_order_rider_food"
                     className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
                   />
                 </div>
@@ -286,7 +384,7 @@ export default function TicketSettingsPage() {
                     type="text"
                     value={groupForm.groupName}
                     onChange={(e) => setGroupForm((f) => f && { ...f, groupName: e.target.value })}
-                    placeholder="e.g. Order issues"
+                    placeholder="e.g. Rider non-order (Food)"
                     className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
                   />
                 </div>
@@ -299,6 +397,54 @@ export default function TicketSettingsPage() {
                   onChange={(e) => setGroupForm((f) => f && { ...f, groupDescription: e.target.value || undefined })}
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
                 />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-medium text-gray-600">Titles (multiple per group)</label>
+                  <button
+                    type="button"
+                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "" }] })}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    + Add title
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {(groupForm.titles ?? []).map((t, i) => (
+                    <div key={i} className="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        value={t.titleCode}
+                        onChange={(e) => {
+                          const next = [...(groupForm?.titles ?? [])];
+                          next[i] = { ...next[i], titleCode: e.target.value };
+                          setGroupForm((f) => f && { ...f, titles: next });
+                        }}
+                        placeholder="Code (e.g. penalty_issue)"
+                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
+                      />
+                      <input
+                        type="text"
+                        value={t.titleText}
+                        onChange={(e) => {
+                          const next = [...(groupForm?.titles ?? [])];
+                          next[i] = { ...next[i], titleText: e.target.value };
+                          setGroupForm((f) => f && { ...f, titles: next });
+                        }}
+                        placeholder="Display text (e.g. Penalty issue)"
+                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setGroupForm((f) => f && { ...f, titles: (f.titles ?? []).filter((_, j) => j !== i) })}
+                        className="p-1.5 rounded text-gray-500 hover:bg-red-50 hover:text-red-600"
+                        title="Remove"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="flex gap-2">
                 <button
@@ -319,21 +465,25 @@ export default function TicketSettingsPage() {
               </div>
             </div>
           )}
-          <div className="rounded-lg border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="rounded-lg border border-gray-200 overflow-x-auto">
+            <table className="w-full text-sm min-w-[800px]">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   <th className="text-left py-2 px-3 font-medium text-gray-700">Code</th>
                   <th className="text-left py-2 px-3 font-medium text-gray-700">Name</th>
-                  <th className="text-left py-2 px-3 font-medium text-gray-700">Description</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Service</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Order</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Source</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">User type</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Titles</th>
                   <th className="text-left py-2 px-3 font-medium text-gray-700">Active</th>
-                  <th className="w-24" />
+                  <th className="w-24">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {groups.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="py-6 text-center text-gray-500">
+                    <td colSpan={9} className="py-6 text-center text-gray-500">
                       No groups yet. Add one above.
                     </td>
                   </tr>
@@ -342,13 +492,20 @@ export default function TicketSettingsPage() {
                     <tr key={g.id} className="border-b border-gray-100 hover:bg-gray-50/50">
                       <td className="py-2 px-3 font-mono text-gray-700">{g.groupCode}</td>
                       <td className="py-2 px-3 text-gray-800">{g.groupName}</td>
-                      <td className="py-2 px-3 text-gray-600">{g.groupDescription ?? "—"}</td>
+                      <td className="py-2 px-3 text-gray-600">{g.serviceType ?? "—"}</td>
+                      <td className="py-2 px-3 text-gray-600">{g.ticketCategory ?? "—"}</td>
+                      <td className="py-2 px-3 text-gray-600">{g.sourceRole ?? "—"}</td>
+                      <td className="py-2 px-3 text-gray-600">{g.ticketSection ?? "—"}</td>
+                      <td className="py-2 px-3 text-gray-600">{(g.titles?.length ?? 0)}</td>
                       <td className="py-2 px-3">{g.isActive ? "Yes" : "No"}</td>
                       <td className="py-2 px-3">
                         <div className="flex gap-1">
                           <button
                             type="button"
-                            onClick={() => setGroupForm({ ...g })}
+                            onClick={() => setGroupForm({
+                              ...g,
+                              titles: (g.titles ?? []).map((t) => ({ titleCode: t.titleCode, titleText: t.titleText })),
+                            })}
                             className="p-1.5 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700"
                             title="Edit"
                           >
@@ -372,8 +529,62 @@ export default function TicketSettingsPage() {
             </table>
           </div>
           {groupForm?.id != null && (
-            <div className="mt-6 p-4 rounded-lg border border-gray-200 bg-gray-50 space-y-3">
+            <div className="mt-6 p-4 rounded-lg border border-gray-200 bg-gray-50 space-y-4">
               <h3 className="font-medium text-gray-800">Edit group</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Service type</label>
+                  <select
+                    value={groupForm.serviceType ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, serviceType: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {SERVICE_TYPES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Order related</label>
+                  <select
+                    value={groupForm.ticketCategory ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, ticketCategory: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {TICKET_CATEGORIES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Source of ticket</label>
+                  <select
+                    value={groupForm.sourceRole ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, sourceRole: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {SOURCE_ROLES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">User type</label>
+                  <select
+                    value={groupForm.ticketSection ?? ""}
+                    onChange={(e) => setGroupForm((f) => f && { ...f, ticketSection: e.target.value || null })}
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
+                  >
+                    <option value="">— Select —</option>
+                    {USER_TYPES.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">Code</label>
@@ -403,10 +614,67 @@ export default function TicketSettingsPage() {
                   className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
                 />
               </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-medium text-gray-600">Titles</label>
+                  <button
+                    type="button"
+                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "" }] })}
+                    className="text-xs text-blue-600 hover:underline"
+                  >
+                    + Add title
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {(groupForm.titles ?? []).map((t, i) => (
+                    <div key={i} className="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        value={t.titleCode}
+                        onChange={(e) => {
+                          const next = [...(groupForm?.titles ?? [])];
+                          next[i] = { ...next[i], titleCode: e.target.value };
+                          setGroupForm((f) => f && { ...f, titles: next });
+                        }}
+                        placeholder="Code"
+                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
+                      />
+                      <input
+                        type="text"
+                        value={t.titleText}
+                        onChange={(e) => {
+                          const next = [...(groupForm?.titles ?? [])];
+                          next[i] = { ...next[i], titleText: e.target.value };
+                          setGroupForm((f) => f && { ...f, titles: next });
+                        }}
+                        placeholder="Display text"
+                        className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setGroupForm((f) => f && { ...f, titles: (f.titles ?? []).filter((_, j) => j !== i) })}
+                        className="p-1.5 rounded text-gray-500 hover:bg-red-50 hover:text-red-600"
+                        title="Remove"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => groupForm.id && updateGroup(groupForm.id, { groupCode: groupForm.groupCode, groupName: groupForm.groupName, groupDescription: groupForm.groupDescription ?? null })}
+                  onClick={() => groupForm.id && updateGroup(groupForm.id, {
+                    groupCode: groupForm.groupCode,
+                    groupName: groupForm.groupName,
+                    groupDescription: groupForm.groupDescription ?? null,
+                    serviceType: groupForm.serviceType ?? null,
+                    ticketSection: groupForm.ticketSection ?? null,
+                    ticketCategory: groupForm.ticketCategory ?? null,
+                    sourceRole: groupForm.sourceRole ?? null,
+                    titles: groupForm.titles,
+                  })}
                   disabled={saving}
                   className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                 >

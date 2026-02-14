@@ -20,9 +20,10 @@ export const runtime = "nodejs";
  */
 export async function GET(request: NextRequest) {
   try {
+    console.log("[GET /api/tickets] Request received");
     const supabase = await createServerSupabaseClient();
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    
+
     if (sessionError || !session) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
@@ -39,6 +40,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
     }
 
+    console.log("[GET /api/tickets] Auth OK, building query");
     const db = getDb();
     const { searchParams } = new URL(request.url);
 
@@ -59,6 +61,10 @@ export async function GET(request: NextRequest) {
     const tagsParam = (searchParams.get("tags") || "").trim();
     const dateFrom = searchParams.get("dateFrom");
     const dateTo = searchParams.get("dateTo");
+    const resolvedFrom = searchParams.get("resolvedFrom");
+    const resolvedTo = searchParams.get("resolvedTo");
+    const closedFrom = searchParams.get("closedFrom");
+    const closedTo = searchParams.get("closedTo");
     const dueFrom = searchParams.get("dueFrom");
     const dueTo = searchParams.get("dueTo");
     const searchQuery = (searchParams.get("q") || "").trim();
@@ -67,10 +73,8 @@ export async function GET(request: NextRequest) {
     const sortByParam = (searchParams.get("sortBy") || "created_at").toLowerCase();
     const sortOrderParam = (searchParams.get("sortOrder") || "desc").toLowerCase();
 
-    const sortBy =
-      sortByParam === "updated_at" || sortByParam === "sla_due_at"
-        ? sortByParam
-        : "created_at";
+    const allowedSortColumns = ["created_at", "updated_at", "sla_due_at", "priority", "status"];
+    const sortBy = allowedSortColumns.includes(sortByParam) ? sortByParam : "created_at";
     const sortOrder = sortOrderParam === "asc" ? "ASC" : "DESC";
     const orderByClause = `${sortBy} ${sortOrder}`;
 
@@ -167,12 +171,28 @@ export async function GET(request: NextRequest) {
       )`);
     }
 
-    // Date range filter
+    // Created date range filter
     if (dateFrom) {
-      whereConditions.push(sql`created_at >= ${dateFrom}`);
+      whereConditions.push(sql`created_at >= ${dateFrom}::date`);
     }
     if (dateTo) {
-      whereConditions.push(sql`created_at <= ${dateTo}`);
+      whereConditions.push(sql`created_at <= (${dateTo}::date + interval '1 day')`);
+    }
+
+    // Resolved at date range filter
+    if (resolvedFrom) {
+      whereConditions.push(sql`resolved_at IS NOT NULL AND resolved_at >= ${resolvedFrom}::date`);
+    }
+    if (resolvedTo) {
+      whereConditions.push(sql`resolved_at IS NOT NULL AND resolved_at < (${resolvedTo}::date + interval '1 day')`);
+    }
+
+    // Closed at date range filter
+    if (closedFrom) {
+      whereConditions.push(sql`closed_at IS NOT NULL AND closed_at >= ${closedFrom}::date`);
+    }
+    if (closedTo) {
+      whereConditions.push(sql`closed_at IS NOT NULL AND closed_at < (${closedTo}::date + interval '1 day')`);
     }
 
     // SLA due range filter
@@ -283,6 +303,7 @@ export async function GET(request: NextRequest) {
       }
     } catch (queryError) {
       console.error("[GET /api/tickets] Query execution error:", queryError);
+      console.error("[GET /api/tickets] If columns are missing, ensure DB has enterprise tickets table (ticket_number, service_type, etc.)");
       console.error("[GET /api/tickets] Error details:", {
         message: queryError instanceof Error ? queryError.message : String(queryError),
         stack: queryError instanceof Error ? queryError.stack : undefined,
