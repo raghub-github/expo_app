@@ -1859,6 +1859,8 @@ export const ticketGroups = pgTable(
     displayOrder: integer("display_order").default(0),
     serviceType: ticketServiceTypeEnum("service_type"),
     ticketSection: ticketSectionEnum("ticket_section"),
+    ticketCategory: ticketCategoryEnum("ticket_category"),
+    sourceRole: ticketSourceRoleEnum("source_role"),
     isActive: boolean("is_active").notNull().default(true),
     metadata: jsonb("metadata").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })

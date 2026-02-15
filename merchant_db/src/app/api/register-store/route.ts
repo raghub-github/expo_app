@@ -1,0 +1,540 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+function getSupabaseAdmin() {
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
+export async function POST(req: NextRequest) {
+        // Validate required document fields before DB insert
+        function validateDocuments(documentUrls: any[]): { valid: boolean, errors: Record<string, string> } {
+          const errors: Record<string, string> = {};
+          for (const doc of documentUrls) {
+            const docType = doc.type;
+            if (docType === 'PAN' || docType === 'PAN_IMAGE') {
+              if (!doc.number) errors.pan_number = 'PAN number is required.';
+              if (!doc.file && !doc.url) errors.pan_image = 'PAN image is required.';
+            } else if (docType === 'AADHAAR' || docType === 'AADHAR_FRONT' || docType === 'AADHAR_BACK') {
+              if (!doc.number) errors.aadhar_number = 'Aadhaar number is required.';
+              if (!doc.file && !doc.url) errors.aadhar_image = 'Aadhaar image is required.';
+            } else if (docType === 'GST' || docType === 'GST_IMAGE') {
+              if (!doc.number) errors.gst_number = 'GST number is required.';
+              if (!doc.file && !doc.url) errors.gst_image = 'GST image is required.';
+            } else if (docType === 'FSSAI' || docType === 'FSSAI_IMAGE') {
+              if (!doc.number) errors.fssai_number = 'FSSAI number is required.';
+              if (!doc.file && !doc.url) errors.fssai_image = 'FSSAI image is required.';
+            } else if (docType === 'DRUG_LICENSE' || docType === 'PHARMACIST_CERTIFICATE' || docType === 'PHARMACY_COUNCIL_REGISTRATION') {
+              if (!doc.number) errors.pharma_number = 'Pharma document number is required.';
+              if (!doc.file && !doc.url) errors.pharma_image = 'Pharma document image is required.';
+            } else if (docType === 'OTHER' || docType === 'OTHER_IMAGE') {
+              if (doc.otherType || doc.number || doc.file) {
+                if (!doc.otherType) errors.other_document_type = 'Other document type is required.';
+                if (!doc.number) errors.other_document_number = 'Other document number is required.';
+                if (!doc.file && !doc.url) errors.other_document_file = 'Other document file is required.';
+              }
+            }
+          }
+          return { valid: Object.keys(errors).length === 0, errors };
+        }
+  // Import R2 helpers
+  const { uploadToR2 } = await import('@/lib/r2');
+  // Define document types and folders
+  const docFolders = {
+    PAN: 'PAN',
+    GST: 'GST',
+    AADHAAR: 'AADHAAR',
+    FSSAI: 'FSSAI',
+    PHARMA: 'PHARMA',
+    BANNERS: 'BANNERS',
+    GALLERY: 'GALLERY',
+    OTHERS: 'OTHERS',
+  };
+  try {
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return NextResponse.json(
+        { error: 'Server misconfiguration: Supabase service role not set' },
+        { status: 500 }
+      );
+    }
+    const body = await req.json();
+    const { step1, step2, storeSetup, documents, logoUrl, bannerUrl, galleryUrls, menuAssets, documentUrls, parentInfo, agreementAcceptance } = body;
+    const composedFullAddress = [
+      step2?.unit_number,
+      step2?.floor_number,
+      step2?.building_name,
+      step2?.address_line1,
+      step2?.full_address,
+    ]
+      .filter((part: unknown) => typeof part === 'string' && part.trim().length > 0)
+      .join(', ');
+  // If store_type is OTHERS, save 'OTHERS' in store_type and custom type in store_description
+  const storeTypeValue = step1.store_type === 'OTHERS' ? 'OTHERS' : step1.store_type;
+  const storeDescriptionValue = step1.store_type === 'OTHERS' && step1.custom_store_type
+    ? `${step1.store_description || ''} (Custom type: ${step1.custom_store_type})`
+    : step1.store_description;
+
+    // Always use parentInfo.id (numeric) for parent_id
+    const parentId = parentInfo?.id;
+    const parentMerchantId = parentInfo?.parent_merchant_id || step1.parent_merchant_id;
+    if (!parentId || !parentMerchantId) throw new Error('Parent info missing');
+
+    const db = getSupabaseAdmin();
+
+    // 1. Generate storeId (global sequence, always GMMC{number})
+    // Find the highest numeric part of existing store_ids
+    const { data: existingStores, error: idError } = await db
+      .from('merchant_stores')
+      .select('store_id');
+    let maxNum = 1000;
+    if (existingStores && Array.isArray(existingStores)) {
+      for (const s of existingStores) {
+        const match = typeof s.store_id === 'string' && s.store_id.match(/^GMMC(\d+)$/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxNum) maxNum = num;
+        }
+      }
+    }
+    const storeId = `GMMC${maxNum + 1}`;
+    // Create directory structure (R2 is flat, so prefix keys)
+    const r2Base = `store-documents/${storeId}`;
+    // Map all possible frontend keys to valid enum values for document_type_merchant
+    // Valid enum values: PAN, GST, AADHAR, FSSAI, PHARMACIST_CERTIFICATE, PHARMACY_COUNCIL_REGISTRATION, DRUG_LICENSE, SHOP_ESTABLISHMENT, TRADE_LICENSE, UDYAM, OTHER
+    const typeMap: Record<string, string> = {
+      PAN_IMAGE: 'PAN',
+      PAN: 'PAN',
+      GST_IMAGE: 'GST',
+      GST: 'GST',
+      AADHAR_FRONT: 'AADHAAR',
+      AADHAR_BACK: 'AADHAAR',
+      AADHAR: 'AADHAAR',
+      AADHAAR_FRONT: 'AADHAAR',
+      AADHAAR_BACK: 'AADHAAR',
+      AADHAAR: 'AADHAAR',
+      FSSAI_IMAGE: 'FSSAI',
+      FSSAI: 'FSSAI',
+      PHARMACIST_CERTIFICATE: 'PHARMACIST_CERTIFICATE',
+      PHARMACY_COUNCIL_REGISTRATION: 'PHARMACY_COUNCIL_REGISTRATION',
+      DRUG_LICENSE_IMAGE: 'DRUG_LICENSE',
+      DRUG_LICENSE: 'DRUG_LICENSE',
+      SHOP_ESTABLISHMENT_IMAGE: 'SHOP_ESTABLISHMENT',
+      SHOP_ESTABLISHMENT: 'SHOP_ESTABLISHMENT',
+      TRADE_LICENSE_IMAGE: 'TRADE_LICENSE',
+      TRADE_LICENSE: 'TRADE_LICENSE',
+      UDYAM_IMAGE: 'UDYAM',
+      UDYAM: 'UDYAM',
+      OTHER_IMAGE: 'OTHER',
+      OTHER: 'OTHER',
+      // Add more mappings as needed
+    };
+    // --- R2 Document Upload Logic (after storeId and typeMap are defined) ---
+    if (documentUrls && documentUrls.length > 0) {
+      for (const doc of documentUrls) {
+        const docType: string = typeMap[doc.type] || doc.type;
+        let folder = docFolders[docType as keyof typeof docFolders] || 'OTHERS';
+        // For pharma, group pharmacist and council under PHARMA
+        if (docType === 'PHARMACIST_CERTIFICATE' || docType === 'PHARMACY_COUNCIL_REGISTRATION' || docType === 'DRUG_LICENSE') {
+          folder = 'PHARMA';
+        }
+        // For banners and gallery
+        if (docType === 'BANNER') folder = 'BANNERS';
+        if (docType === 'GALLERY') folder = 'GALLERY';
+        // Compose R2 key
+        const fileName = `${Date.now()}_${doc.name}`;
+        const r2Key = `${r2Base}/${folder}/${fileName}`;
+        // Upload file to R2
+        if (doc.file) {
+          await uploadToR2(doc.file, r2Key);
+          doc.url = r2Key; // Save R2 key as URL for DB
+        }
+      }
+    }
+
+    // 2. Insert or update draft store (one row per child store)
+    const draftStoreDbId = step1?.__draftStoreDbId ? Number(step1.__draftStoreDbId) : null;
+    const storePayload = {
+      parent_id: parentId,
+      store_name: step1.store_name,
+      store_display_name: step1.store_display_name,
+      store_description: storeDescriptionValue,
+      store_email: step1.store_email,
+      store_phones: step1.store_phones,
+      full_address: composedFullAddress || step2.full_address,
+      landmark: step2.landmark,
+      city: step2.city,
+      state: step2.state,
+      postal_code: step2.postal_code,
+      country: step2.country,
+      latitude: step2.latitude,
+      longitude: step2.longitude,
+      logo_url: logoUrl,
+      banner_url: bannerUrl,
+      gallery_images: galleryUrls,
+      cuisine_types: storeSetup.cuisine_types,
+      food_categories: storeSetup.food_categories,
+      avg_preparation_time_minutes: storeSetup.avg_preparation_time_minutes,
+      min_order_amount: storeSetup.min_order_amount,
+      delivery_radius_km: storeSetup.delivery_radius_km,
+      is_pure_veg: storeSetup.is_pure_veg,
+      accepts_online_payment: storeSetup.accepts_online_payment,
+      accepts_cash: storeSetup.accepts_cash,
+      status: 'INACTIVE',
+      approval_status: 'SUBMITTED',
+      store_type: storeTypeValue,
+      is_active: false,
+      is_accepting_orders: false,
+      is_available: false,
+      operational_status: 'CLOSED',
+      onboarding_completed: true,
+      onboarding_completed_at: new Date().toISOString(),
+      current_onboarding_step: 9,
+    };
+
+    let storeData: any = null;
+    if (draftStoreDbId) {
+      const { data, error } = await db
+        .from('merchant_stores')
+        .update(storePayload)
+        .eq('id', draftStoreDbId)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      storeData = data;
+    } else {
+      const { data, error } = await db
+        .from('merchant_stores')
+        .insert([{ store_id: storeId, ...storePayload }])
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      storeData = data;
+    }
+
+    // 2.a Persist menu upload references for frequent updates (if media table exists)
+    const menuImageUrls: string[] = Array.isArray(menuAssets?.imageUrls) ? menuAssets.imageUrls.filter(Boolean) : [];
+    const menuSpreadsheetUrl: string | null = menuAssets?.spreadsheetUrl || null;
+    if (menuImageUrls.length > 0 || menuSpreadsheetUrl) {
+      const mediaRows: any[] = [];
+      menuImageUrls.forEach((url, idx) => {
+        mediaRows.push({
+          store_id: storeData.id,
+          media_scope: 'MENU_REFERENCE',
+          source_entity: 'ONBOARDING_MENU_IMAGE',
+          source_entity_id: null,
+          original_file_name: `menu_image_${idx + 1}`,
+          r2_key: typeof url === 'string' ? url.split('/').slice(3).join('/') || url : null,
+          public_url: url,
+          mime_type: 'image/*',
+          is_active: true,
+        });
+      });
+      if (menuSpreadsheetUrl) {
+        mediaRows.push({
+          store_id: storeData.id,
+          media_scope: 'MENU_REFERENCE',
+          source_entity: 'ONBOARDING_MENU_SHEET',
+          source_entity_id: null,
+          original_file_name: 'menu_spreadsheet',
+          r2_key: typeof menuSpreadsheetUrl === 'string' ? menuSpreadsheetUrl.split('/').slice(3).join('/') || menuSpreadsheetUrl : null,
+          public_url: menuSpreadsheetUrl,
+          mime_type: 'application/octet-stream',
+          is_active: true,
+        });
+      }
+      if (mediaRows.length > 0) {
+        const { error: mediaInsertError } = await db
+          .from('merchant_store_media_files')
+          .insert(mediaRows);
+        if (mediaInsertError) {
+          console.warn('merchant_store_media_files insert skipped:', mediaInsertError.message);
+        }
+      }
+    }
+
+    // 3. Insert operating hours (one row per store)
+    const hours = storeSetup.store_hours || {};
+    const parseMinutes = (v: string | null | undefined) => {
+      if (!v) return null;
+      const [h, m] = String(v).split(':').map(Number);
+      if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+      return h * 60 + m;
+    };
+    const dayDuration = (d: any) => {
+      const closed = !!d?.closed;
+      if (closed) return 0;
+      const s1 = parseMinutes(d?.slot1_open ?? d?.open);
+      const e1 = parseMinutes(d?.slot1_close ?? d?.close);
+      const s2 = parseMinutes(d?.slot2_open);
+      const e2 = parseMinutes(d?.slot2_close);
+      const first = s1 != null && e1 != null && e1 > s1 ? e1 - s1 : 0;
+      const second = s2 != null && e2 != null && e2 > s2 ? e2 - s2 : 0;
+      return first + second;
+    };
+    const dayRow = (d: any) => {
+      const closed = !!d?.closed;
+      const slot1Start = closed ? null : d?.slot1_open ?? d?.open ?? null;
+      const slot1End = closed ? null : d?.slot1_close ?? d?.close ?? null;
+      const slot2Start = closed ? null : d?.slot2_open ?? null;
+      const slot2End = closed ? null : d?.slot2_close ?? null;
+      return {
+        open: !!(slot1Start && slot1End),
+        slot1Start,
+        slot1End,
+        slot2Start,
+        slot2End,
+        duration: dayDuration(d),
+        closed,
+      };
+    };
+    const monday = dayRow(hours.monday);
+    const tuesday = dayRow(hours.tuesday);
+    const wednesday = dayRow(hours.wednesday);
+    const thursday = dayRow(hours.thursday);
+    const friday = dayRow(hours.friday);
+    const saturday = dayRow(hours.saturday);
+    const sunday = dayRow(hours.sunday);
+    const closedDays = ([
+      ['monday', monday.closed],
+      ['tuesday', tuesday.closed],
+      ['wednesday', wednesday.closed],
+      ['thursday', thursday.closed],
+      ['friday', friday.closed],
+      ['saturday', saturday.closed],
+      ['sunday', sunday.closed],
+    ] as const)
+      .filter(([, isClosed]) => isClosed)
+      .map(([day]) => day);
+    const sameForAllDays =
+      JSON.stringify(monday) === JSON.stringify(tuesday) &&
+      JSON.stringify(monday) === JSON.stringify(wednesday) &&
+      JSON.stringify(monday) === JSON.stringify(thursday) &&
+      JSON.stringify(monday) === JSON.stringify(friday) &&
+      JSON.stringify(monday) === JSON.stringify(saturday) &&
+      JSON.stringify(monday) === JSON.stringify(sunday);
+    const is24Hours = [monday, tuesday, wednesday, thursday, friday, saturday, sunday].every(
+      (d) => !d.closed && d.slot1Start === '00:00' && d.slot1End === '23:59' && !d.slot2Start && !d.slot2End
+    );
+    const opRow = {
+      store_id: storeData.id,
+      monday_open: monday.open,
+      monday_slot1_start: monday.slot1Start,
+      monday_slot1_end: monday.slot1End,
+      monday_slot2_start: monday.slot2Start,
+      monday_slot2_end: monday.slot2End,
+      monday_total_duration_minutes: monday.duration,
+      tuesday_open: tuesday.open,
+      tuesday_slot1_start: tuesday.slot1Start,
+      tuesday_slot1_end: tuesday.slot1End,
+      tuesday_slot2_start: tuesday.slot2Start,
+      tuesday_slot2_end: tuesday.slot2End,
+      tuesday_total_duration_minutes: tuesday.duration,
+      wednesday_open: wednesday.open,
+      wednesday_slot1_start: wednesday.slot1Start,
+      wednesday_slot1_end: wednesday.slot1End,
+      wednesday_slot2_start: wednesday.slot2Start,
+      wednesday_slot2_end: wednesday.slot2End,
+      wednesday_total_duration_minutes: wednesday.duration,
+      thursday_open: thursday.open,
+      thursday_slot1_start: thursday.slot1Start,
+      thursday_slot1_end: thursday.slot1End,
+      thursday_slot2_start: thursday.slot2Start,
+      thursday_slot2_end: thursday.slot2End,
+      thursday_total_duration_minutes: thursday.duration,
+      friday_open: friday.open,
+      friday_slot1_start: friday.slot1Start,
+      friday_slot1_end: friday.slot1End,
+      friday_slot2_start: friday.slot2Start,
+      friday_slot2_end: friday.slot2End,
+      friday_total_duration_minutes: friday.duration,
+      saturday_open: saturday.open,
+      saturday_slot1_start: saturday.slot1Start,
+      saturday_slot1_end: saturday.slot1End,
+      saturday_slot2_start: saturday.slot2Start,
+      saturday_slot2_end: saturday.slot2End,
+      saturday_total_duration_minutes: saturday.duration,
+      sunday_open: sunday.open,
+      sunday_slot1_start: sunday.slot1Start,
+      sunday_slot1_end: sunday.slot1End,
+      sunday_slot2_start: sunday.slot2Start,
+      sunday_slot2_end: sunday.slot2End,
+      sunday_total_duration_minutes: sunday.duration,
+      is_24_hours: is24Hours,
+      same_for_all_days: sameForAllDays,
+      closed_days: closedDays,
+    };
+    const { error: opError } = await db
+      .from('merchant_store_operating_hours')
+      .insert([opRow]);
+    if (opError) throw new Error(opError.message);
+
+    // 4. Insert documents (one row per store)
+    if (documentUrls && documentUrls.length > 0) {
+      // For each document, if a document number is provided, save all related data for that document type
+      const typeMap: Record<string, string> = {
+        PAN_IMAGE: 'PAN', PAN: 'PAN',
+        GST_IMAGE: 'GST', GST: 'GST',
+        AADHAR_FRONT: 'AADHAAR', AADHAR_BACK: 'AADHAAR', AADHAR: 'AADHAAR',
+        AADHAAR_FRONT: 'AADHAAR', AADHAAR_BACK: 'AADHAAR', AADHAAR: 'AADHAAR',
+        FSSAI_IMAGE: 'FSSAI', FSSAI: 'FSSAI',
+        PHARMACIST_CERTIFICATE: 'PHARMACIST_CERTIFICATE',
+        PHARMACY_COUNCIL_REGISTRATION: 'PHARMACY_COUNCIL_REGISTRATION',
+        DRUG_LICENSE_IMAGE: 'DRUG_LICENSE', DRUG_LICENSE: 'DRUG_LICENSE',
+        SHOP_ESTABLISHMENT_IMAGE: 'SHOP_ESTABLISHMENT', SHOP_ESTABLISHMENT: 'SHOP_ESTABLISHMENT',
+        TRADE_LICENSE_IMAGE: 'TRADE_LICENSE', TRADE_LICENSE: 'TRADE_LICENSE',
+        UDYAM_IMAGE: 'UDYAM', UDYAM: 'UDYAM',
+        OTHER_IMAGE: 'OTHER', OTHER: 'OTHER',
+        BANK_PROOF: 'BANK_PROOF',
+      };
+      // Merge all document data into a single object for this store
+      const docRow: any = { store_id: storeData.id };
+      documentUrls.forEach((doc: any) => {
+        const docType = typeMap[doc.type] || doc.type;
+        if (docType === 'PAN' && (doc.number || doc.pan_number || doc.url)) {
+          docRow.pan_document_number = doc.number || doc.pan_number || null;
+          docRow.pan_document_url = doc.url || null;
+          docRow.pan_document_name = doc.name || null;
+        }
+        if (docType === 'GST' && (doc.number || doc.gst_number || doc.url)) {
+          docRow.gst_document_number = doc.number || doc.gst_number || null;
+          docRow.gst_document_url = doc.url || null;
+          docRow.gst_document_name = doc.name || null;
+        }
+        if (docType === 'AADHAAR' && (doc.number || doc.aadhar_number || doc.aadhaar_number || doc.url)) {
+          docRow.aadhaar_document_number = doc.number || doc.aadhar_number || doc.aadhaar_number || null;
+          docRow.aadhaar_document_url = doc.url || null;
+          docRow.aadhaar_document_name = doc.name || null;
+        }
+        if (docType === 'FSSAI' && (doc.number || doc.url)) {
+          docRow.fssai_document_number = doc.number || null;
+          docRow.fssai_document_url = doc.url || null;
+          docRow.fssai_document_name = doc.name || null;
+          docRow.fssai_issued_date = doc.issued_date || null;
+          docRow.fssai_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'TRADE_LICENSE' && (doc.number || doc.url)) {
+          docRow.trade_license_document_number = doc.number || null;
+          docRow.trade_license_document_url = doc.url || null;
+          docRow.trade_license_document_name = doc.name || null;
+          docRow.trade_license_issued_date = doc.issued_date || null;
+          docRow.trade_license_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'DRUG_LICENSE' && (doc.number || doc.url)) {
+          docRow.drug_license_document_number = doc.number || null;
+          docRow.drug_license_document_url = doc.url || null;
+          docRow.drug_license_document_name = doc.name || null;
+          docRow.drug_license_type = doc.drug_license_type || null;
+          docRow.drug_license_issued_date = doc.issued_date || null;
+          docRow.drug_license_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'SHOP_ESTABLISHMENT' && (doc.number || doc.url)) {
+          docRow.shop_establishment_document_number = doc.number || null;
+          docRow.shop_establishment_document_url = doc.url || null;
+          docRow.shop_establishment_document_name = doc.name || null;
+          docRow.shop_establishment_issued_date = doc.issued_date || null;
+          docRow.shop_establishment_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'UDYAM' && (doc.number || doc.url)) {
+          docRow.udyam_document_number = doc.number || null;
+          docRow.udyam_document_url = doc.url || null;
+          docRow.udyam_document_name = doc.name || null;
+          docRow.udyam_issued_date = doc.issued_date || null;
+          docRow.udyam_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'PHARMACIST_CERTIFICATE' && (doc.number || doc.url)) {
+          docRow.pharmacist_certificate_document_number = doc.number || null;
+          docRow.pharmacist_certificate_document_url = doc.url || null;
+          docRow.pharmacist_certificate_document_name = doc.name || null;
+          docRow.pharmacist_certificate_issued_date = doc.issued_date || null;
+          docRow.pharmacist_certificate_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'PHARMACY_COUNCIL_REGISTRATION' && (doc.number || doc.url)) {
+          docRow.pharmacy_council_registration_document_number = doc.number || null;
+          docRow.pharmacy_council_registration_document_url = doc.url || null;
+          docRow.pharmacy_council_registration_document_name = doc.name || null;
+          docRow.pharmacy_council_registration_type = doc.pharmacy_council_registration_type || null;
+          docRow.pharmacy_council_registration_issued_date = doc.issued_date || null;
+          docRow.pharmacy_council_registration_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'BANK_PROOF' && (doc.number || doc.url)) {
+          docRow.bank_proof_document_number = doc.number || null;
+          docRow.bank_proof_document_url = doc.url || null;
+          docRow.bank_proof_document_name = doc.name || null;
+          docRow.bank_proof_issued_date = doc.issued_date || null;
+          docRow.bank_proof_expiry_date = doc.expiry_date || null;
+        }
+        if (docType === 'OTHER' && (doc.number || doc.url)) {
+          docRow.other_document_number = doc.number || null;
+          docRow.other_document_url = doc.url || null;
+          docRow.other_document_name = doc.name || null;
+          docRow.other_document_type = doc.otherType || doc.type || 'OTHER';
+          docRow.other_issued_date = doc.issued_date || null;
+          docRow.other_expiry_date = doc.expiry_date || null;
+        }
+      });
+      // Upsert (insert or update) one row per store_id
+      if (Object.keys(docRow).length > 1) {
+        const { error: docError } = await db
+          .from('merchant_store_documents')
+          .upsert([docRow], { onConflict: 'store_id' });
+        if (docError) throw new Error(docError.message);
+      }
+    }
+
+    // 5. Persist agreement acceptance with digital signature
+    if (agreementAcceptance && agreementAcceptance.signatureDataUrl) {
+      const signatureHash = crypto
+        .createHash('sha256')
+        .update(String(agreementAcceptance.signatureDataUrl))
+        .digest('hex');
+      const templateSnapshot = {
+        title: agreementAcceptance.templateTitle || 'Merchant Partner Agreement',
+        version: agreementAcceptance.templateVersion || 'v1',
+        content: agreementAcceptance.templateContentSnapshot || null,
+        pdf_url: agreementAcceptance.templatePdfUrl || null,
+      };
+      const ipAddress =
+        req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+        req.headers.get('x-real-ip') ||
+        null;
+      const userAgent = req.headers.get('user-agent') || null;
+
+      const { error: agreementError } = await db
+        .from('merchant_store_agreement_acceptances')
+        .upsert(
+          [
+            {
+              store_id: storeData.id,
+              template_id: agreementAcceptance.templateId || null,
+              template_key: agreementAcceptance.templateKey || 'DEFAULT_CHILD_ONBOARDING_AGREEMENT',
+              template_version: agreementAcceptance.templateVersion || 'v1',
+              template_snapshot: templateSnapshot,
+              contract_pdf_url: agreementAcceptance.templatePdfUrl || null,
+              signer_name: agreementAcceptance.signerName || null,
+              signer_email: agreementAcceptance.signerEmail || null,
+              signer_phone: agreementAcceptance.signerPhone || null,
+              signature_data_url: agreementAcceptance.signatureDataUrl,
+              signature_hash: signatureHash,
+              terms_accepted: !!agreementAcceptance.agreedToTerms,
+              contract_read_confirmed: !!agreementAcceptance.agreedToContract,
+              accepted_at: new Date().toISOString(),
+              accepted_ip: ipAddress,
+              user_agent: userAgent,
+              acceptance_source: 'CHILD_ONBOARDING',
+            },
+          ],
+          { onConflict: 'store_id' }
+        );
+      if (agreementError) throw new Error(agreementError.message);
+    }
+
+    return NextResponse.json({ success: true, storeId });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message || 'Registration failed' }, { status: 500 });
+  }
+}
