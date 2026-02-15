@@ -242,9 +242,10 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4">
             <div className="space-y-1">
               {filteredNavigation.map((item) => {
-                // For Orders, check if pathname starts with /dashboard/orders
-                const isActive = cleanPathname === item.href || 
-                  (item.href === "/dashboard/orders" && cleanPathname.startsWith("/dashboard/orders"));
+                // For Orders/Tickets, keep item active when inside any sub-route
+                const isActive = cleanPathname === item.href ||
+                  (item.href === "/dashboard/orders" && cleanPathname.startsWith("/dashboard/orders")) ||
+                  (item.href === "/dashboard/tickets" && cleanPathname.startsWith("/dashboard/tickets"));
                 const Icon = item.icon;
                 return (
                   <Link
@@ -397,9 +398,10 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           {!isInSpecificDashboard && (
             <div className="space-y-1">
               {filteredNavigation.map((item) => {
-                // For Orders, check if pathname starts with /dashboard/orders
-                const isActive = cleanPathname === item.href || 
-                  (item.href === "/dashboard/orders" && cleanPathname.startsWith("/dashboard/orders"));
+                // For Orders/Tickets, keep item active when inside any sub-route
+                const isActive = cleanPathname === item.href ||
+                  (item.href === "/dashboard/orders" && cleanPathname.startsWith("/dashboard/orders")) ||
+                  (item.href === "/dashboard/tickets" && cleanPathname.startsWith("/dashboard/tickets"));
                 const Icon = item.icon;
                 return (
                   <Link

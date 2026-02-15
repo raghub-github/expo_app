@@ -49,7 +49,15 @@ export async function GET(request: NextRequest) {
     }
 
     // Get session (for tokens) - only place we call getSession() so client gets full session once; avoids parallel refresh with middleware/other APIs
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    let session: { user: { id: string; email?: string; [key: string]: unknown }; [key: string]: unknown } | null = null;
+    let sessionError: unknown = null;
+    try {
+      const result = await supabase.auth.getSession();
+      session = result.data?.session ?? null;
+      sessionError = result.error ?? null;
+    } catch (err) {
+      sessionError = err;
+    }
     if (sessionError && isInvalidRefreshToken(sessionError)) {
       await supabase.auth.signOut();
       return NextResponse.json(
@@ -57,7 +65,7 @@ export async function GET(request: NextRequest) {
         { status: 401 }
       );
     }
-    
+
     // Only return session if it exists and is valid
     if (!session) {
       return NextResponse.json(

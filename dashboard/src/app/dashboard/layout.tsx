@@ -160,10 +160,10 @@ function DashboardLayoutContent({
           <Header />
           <div className="flex flex-1 overflow-hidden relative w-full">
             <main
-              className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full"
+              className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full flex flex-col min-h-0"
               style={{ backgroundColor: "#FFFFFF" }}
             >
-              <div className="w-full max-w-full min-w-0">
+              <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0">
                 {showSkeleton ? <DashboardLayoutSkeleton /> : children}
               </div>
             </main>

@@ -8,20 +8,28 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
 async function requireSuperAdmin() {
   const supabase = await createServerSupabaseClient();
-  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-  if (sessionError || !session) {
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError) {
+    if (isInvalidRefreshToken(userError)) {
+      await supabase.auth.signOut();
+      return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
+    }
     return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
   }
-  const systemUser = await getSystemUserByEmail(session.user.email!);
+  if (!user) {
+    return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+  }
+  const systemUser = await getSystemUserByEmail(user.email!);
   if (!systemUser) {
     return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
   }
-  const ok = await isSuperAdmin(session.user.id, session.user.email!);
+  const ok = await isSuperAdmin(user.id, user.email!);
   if (!ok) {
     return NextResponse.json({ success: false, error: "Super admin only" }, { status: 403 });
   }

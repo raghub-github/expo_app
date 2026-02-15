@@ -9,11 +9,13 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
 const STATUS_OPTIONS = [
   { value: "open", label: "Open" },
+  { value: "open_frt", label: "Mark FRT" },
   { value: "assigned", label: "Assigned" },
   { value: "in_progress", label: "In Progress" },
   { value: "resolved", label: "Resolved" },
@@ -21,7 +23,8 @@ const STATUS_OPTIONS = [
   { value: "rejected", label: "Rejected" },
   { value: "reopened", label: "Reopened" },
   { value: "pending", label: "Pending" },
-  { value: "open_frt", label: "Open FRT" },
+  { value: "waiting_for_user", label: "Waiting for User" },
+  { value: "provisionally_resolved", label: "Provisionally Resolved" },
 ];
 
 const SERVICE_OPTIONS = [
@@ -49,26 +52,26 @@ const SOURCE_OPTIONS = [
 export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError) {
+      if (isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
+      }
+      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    }
+    if (!user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(
-      session.user.id,
-      session.user.email!,
-      "TICKET"
-    );
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
+    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
 
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });

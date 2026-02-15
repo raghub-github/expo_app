@@ -20,6 +20,7 @@ interface TicketActionBarProps {
   ticketNumber: string;
   showActivities: boolean;
   onToggleActivities: () => void;
+  onReplyClick?: () => void;
 }
 
 export function TicketActionBar({
@@ -27,6 +28,7 @@ export function TicketActionBar({
   ticketNumber,
   showActivities,
   onToggleActivities,
+  onReplyClick,
 }: TicketActionBarProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
@@ -41,43 +43,52 @@ export function TicketActionBar({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const handleReply = () => {
+    onReplyClick?.();
+    if (typeof window !== "undefined") {
+      window.location.hash = "reply";
+      setTimeout(() => document.getElementById("reply")?.scrollIntoView({ behavior: "smooth" }), 100);
+    }
+  };
+
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {/* Reply - single button, no dropdown (options moved to message input area below) */}
-      <Link
-        href={`/dashboard/tickets/${ticketId}#reply`}
-        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+    <div className="flex flex-wrap items-center gap-1.5">
+      {/* Reply: shows reply section and scrolls to it */}
+      <button
+        type="button"
+        onClick={handleReply}
+        className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
       >
-        <MessageSquare className="h-4 w-4" />
+        <MessageSquare className="h-3.5 w-3.5" />
         Reply
-      </Link>
+      </button>
 
       <Link
         href={`/dashboard/tickets/${ticketId}#note`}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
       >
-        <StickyNote className="h-4 w-4" />
+        <StickyNote className="h-3.5 w-3.5" />
         Add note
       </Link>
       <button
         type="button"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
       >
-        <Forward className="h-4 w-4" />
+        <Forward className="h-3.5 w-3.5" />
         Forward
       </button>
       <button
         type="button"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
       >
-        <GitMerge className="h-4 w-4" />
+        <GitMerge className="h-3.5 w-3.5" />
         Merge
       </button>
       <button
         type="button"
-        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+        className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
       >
-        <XCircle className="h-4 w-4" />
+        <XCircle className="h-3.5 w-3.5" />
         Close
       </button>
 
@@ -86,10 +97,10 @@ export function TicketActionBar({
         <button
           type="button"
           onClick={() => setMoreOpen((v) => !v)}
-          className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white p-2 text-gray-600 hover:bg-gray-50"
+          className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white p-1.5 text-gray-600 hover:bg-gray-50"
           aria-label="More actions"
         >
-          <MoreHorizontal className="h-4 w-4" />
+          <MoreHorizontal className="h-3.5 w-3.5" />
         </button>
         {moreOpen && (
           <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
@@ -115,11 +126,11 @@ export function TicketActionBar({
       <button
         type="button"
         onClick={onToggleActivities}
-        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium ${
+        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium ${
           showActivities ? "bg-gray-200 text-gray-800" : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
         }`}
       >
-        <Activity className="h-4 w-4" />
+        <Activity className="h-3.5 w-3.5" />
         {showActivities ? "Hide activities" : "Show activities"}
       </button>
 

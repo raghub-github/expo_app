@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Reduce chunk load errors with Turbopack (Next 16)
+  experimental: {
+    optimizePackageImports: ["lucide-react"],
+  },
   // Mapbox is loaded from CDN, no webpack config needed
 };
 

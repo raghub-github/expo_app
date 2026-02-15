@@ -1,94 +1,108 @@
 "use client";
 
-import { Clock, AlertCircle } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import type { TicketDetail } from "@/hooks/tickets/useTicketDetail";
 
-const STATUS_COLORS: Record<string, string> = {
-  open: "bg-blue-100 text-blue-800",
-  assigned: "bg-indigo-100 text-indigo-800",
-  in_progress: "bg-amber-100 text-amber-800",
-  resolved: "bg-green-100 text-green-800",
-  closed: "bg-gray-100 text-gray-800",
-  rejected: "bg-red-100 text-red-800",
-  reopened: "bg-orange-100 text-orange-800",
-};
-
-const PRIORITY_COLORS: Record<string, string> = {
-  low: "bg-gray-100 text-gray-700",
-  medium: "bg-blue-100 text-blue-700",
-  high: "bg-orange-100 text-orange-700",
-  urgent: "bg-red-100 text-red-700",
-  critical: "bg-red-200 text-red-900",
-};
-
-function formatTimeAgo(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-  if (diffMins < 1) return "just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
+/** Icon letter by ticket source: Merchant → M, Rider → R, User/Customer → C. */
+function sourceIconLetter(sourceRole: string): string {
+  const s = (sourceRole || "").toLowerCase().trim();
+  if (s.includes("merchant")) return "M";
+  if (s.includes("rider")) return "R";
+  return "C"; // customer, user, portal, system, etc.
 }
 
-function formatSla(slaDueAt: string | null): string {
-  if (!slaDueAt) return "";
-  const due = new Date(slaDueAt);
-  const now = new Date();
-  if (due < now) return `Overdue ${formatTimeAgo(slaDueAt)}`;
-  const diffMs = due.getTime() - now.getTime();
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffMins = Math.floor((diffMs % 3600000) / 60000);
-  if (diffHours >= 24) return `Due in ${Math.floor(diffHours / 24)}d`;
-  return `Due in ${diffHours}h ${diffMins}m`;
+export interface TicketHeaderProps {
+  ticket: TicketDetail;
+  /** When > 0, show chip badge "N update(s)" to the right of subject (new ticket/updates received). */
+  newUpdatesCount?: number;
+  onDismissUpdates?: () => void;
 }
 
-export function TicketHeader({ ticket }: { ticket: TicketDetail }) {
-  const statusKey = (ticket.status || "open").toLowerCase().replace(/\s+/g, "_");
-  const priorityKey = (ticket.priority || "medium").toLowerCase();
-  const isSlaBreached =
-    ticket.slaDueAt &&
-    new Date(ticket.slaDueAt) < new Date() &&
-    !["closed", "resolved"].includes((ticket.status || "").toLowerCase());
-
-  const sourceLabel =
-    ticket.sourceRole != null
-      ? String(ticket.sourceRole).replace(/_/g, " ")
-      : "—";
-  const sectionLabel =
-    ticket.ticketSection != null
-      ? String(ticket.ticketSection).charAt(0).toUpperCase() + String(ticket.ticketSection).slice(1)
-      : "";
+/** Reference layout: compact ticket title with source icon (M/R/C), "Created by X", tags and store info — data from Supabase only. */
+export function TicketHeader({ ticket, newUpdatesCount = 0, onDismissUpdates }: TicketHeaderProps) {
+  const createdBy =
+    ticket.raisedByName && String(ticket.raisedByName).trim()
+      ? ticket.raisedByName
+      : ticket.sourceRole && String(ticket.sourceRole).trim()
+        ? String(ticket.sourceRole).replace(/_/g, " ").toUpperCase()
+        : "System";
+  const showChip = newUpdatesCount > 0;
+  const iconLetter = sourceIconLetter(ticket.sourceRole);
+  const displayTags = (ticket.tags ?? []).slice(0, 3);
+  const isOverdue = Boolean(ticket.slaDueAt && new Date(ticket.slaDueAt) < new Date());
+  const isMerchant = (ticket.sourceRole ?? "").toLowerCase().includes("merchant");
+  const storeParentParts = [
+    ticket.storeId != null && ticket.storeId !== "" && `Store ID ${ticket.storeId}`,
+    ticket.storeNumber != null && ticket.storeNumber !== "" && `Store #${ticket.storeNumber}`,
+    ticket.storeParentId != null && `Parent ID ${ticket.storeParentId}`,
+    ticket.parentMerchantId != null && ticket.parentMerchantId !== "" && `Parent ${ticket.parentMerchantId}`,
+    ticket.storePhone != null && ticket.storePhone !== "" && ticket.storePhone,
+    ticket.parentPhone != null && ticket.parentPhone !== "" && ticket.parentPhone,
+    ticket.storeEmail != null && ticket.storeEmail !== "" && ticket.storeEmail,
+  ].filter(Boolean) as string[];
+  const hasStoreInfo = isMerchant && storeParentParts.length > 0;
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
-      <h1 className="text-lg font-semibold text-gray-900">
-        {ticket.subject || ticket.title?.titleText || "No subject"}
-      </h1>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <span className="font-mono text-sm text-gray-500">#{ticket.ticketNumber || ticket.id}</span>
-        <span className={`rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[statusKey] ?? "bg-gray-100 text-gray-700"}`}>
-          {(ticket.status || "open").toUpperCase().replace(/_/g, " ")}
-        </span>
-        <span className={`rounded px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[priorityKey] ?? "bg-gray-100 text-gray-700"}`}>
-          {(ticket.priority || "medium").toUpperCase()}
-        </span>
-      </div>
-      <div className="mt-2 flex flex-wrap items-center gap-4 text-sm text-gray-600">
-        <span>Created {formatTimeAgo(ticket.createdAt)}</span>
-        {sectionLabel && <span>via {sectionLabel}</span>}
-        {sourceLabel && sourceLabel !== "—" && <span>Source: {sourceLabel}</span>}
-        {ticket.slaDueAt && (
-          <span className={isSlaBreached ? "flex items-center gap-1 font-medium text-red-600" : "flex items-center gap-1"}>
-            {isSlaBreached && <AlertCircle className="h-4 w-4" />}
-            <Clock className="h-4 w-4" />
-            {formatSla(ticket.slaDueAt)}
-          </span>
-        )}
+    <div className="bg-white">
+      <div className="flex items-start gap-2">
+        <div className="shrink-0 w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-xs font-semibold text-gray-600">
+          {iconLetter}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h1 className="text-base font-bold text-gray-900 leading-tight">
+              {ticket.subject || ticket.title?.titleText || "No subject"}
+            </h1>
+            <span className="text-xs font-mono text-gray-500">
+              #{ticket.ticketNumber || ticket.id}
+            </span>
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="text-xs text-gray-500">
+              Created by {createdBy}
+            </p>
+            {isOverdue && (
+              <>
+                <span className="text-gray-300">·</span>
+                <span className="inline-flex rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
+                  Overdue
+                </span>
+              </>
+            )}
+            {displayTags.length > 0 && (
+              <>
+                <span className="text-gray-300">·</span>
+                {displayTags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </>
+            )}
+            {hasStoreInfo && (
+              <>
+                <span className="text-gray-300">·</span>
+                <span className="text-[10px] text-gray-500">
+                  {storeParentParts.join(" · ")}
+                </span>
+              </>
+            )}
+          </div>
+          {showChip && (
+            <button
+              type="button"
+              onClick={onDismissUpdates}
+              className="mt-1 inline-flex items-center gap-1 rounded-full border border-blue-700 bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-blue-800 hover:bg-gray-200 transition-colors"
+              aria-label={`${newUpdatesCount} update${newUpdatesCount !== 1 ? "s" : ""}`}
+            >
+              <RefreshCw className="h-2.5 w-2.5" />
+              {newUpdatesCount} update{newUpdatesCount !== 1 ? "s" : ""}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

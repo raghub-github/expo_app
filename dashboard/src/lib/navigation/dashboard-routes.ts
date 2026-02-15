@@ -32,6 +32,7 @@ import {
   CheckCircle,
   UserPlus,
   History,
+  Layers,
 } from "lucide-react";
 
 /** For Area Manager sidebar: show only routes allowed for this manager type. */
@@ -261,6 +262,12 @@ export const ticketDashboardRoutes: DashboardSubRoute[] = [
     href: "/dashboard/tickets/merchant",
     icon: Store,
     description: "Merchant support tickets",
+  },
+  {
+    name: "Unified Tickets",
+    href: "/dashboard/tickets/unified",
+    icon: Layers,
+    description: "Tickets from unified_tickets table",
   },
 ];
 

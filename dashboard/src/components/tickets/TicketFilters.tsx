@@ -57,60 +57,45 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
   } | null>(null);
 
   useEffect(() => {
-    fetch("/api/tickets/agents", { credentials: "include" })
-      .then((r) => {
-        if (!r.ok) {
-          console.error("[TicketFilters] Failed to fetch agents:", r.status, r.statusText);
-          return { success: false, error: `HTTP ${r.status}` };
-        }
-        return r.json();
-      })
-      .then((d) => {
+    let cancelled = false;
+    async function loadAgents() {
+      try {
+        const r = await fetch("/api/tickets/agents", { credentials: "include" });
+        const d = r.ok ? await r.json().catch(() => ({ success: false })) : { success: false };
+        if (cancelled) return;
         if (d.success && d.data) {
-          if (d.data.agents) {
-            setAgents(d.data.agents);
-          } else {
-            setAgents([]);
-          }
-          if (d.data.currentUser?.name) {
-            setCurrentUserName(d.data.currentUser.name);
-          }
+          setAgents(d.data.agents ?? []);
+          if (d.data.currentUser?.name) setCurrentUserName(d.data.currentUser.name);
         } else {
           setAgents([]);
         }
-      })
-      .catch((err) => {
-        console.error("[TicketFilters] Error fetching agents:", err);
-        setAgents([]);
-      });
-  }, []);
-  useEffect(() => {
-    fetch("/api/tickets/reference-data", { credentials: "include" })
-      .then((r) => {
-        if (!r.ok) {
-          console.error("[TicketFilters] Failed to fetch reference data:", r.status, r.statusText);
-          return { success: false, error: `HTTP ${r.status}` };
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("[TicketFilters] Agents fetch failed:", err);
+          setAgents([]);
         }
-        return r.json();
-      })
-      .then((d) => {
+      }
+    }
+    loadAgents();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRefData() {
+      try {
+        const r = await fetch("/api/tickets/reference-data", { credentials: "include" });
+        const d = r.ok ? await r.json().catch(() => ({ success: false })) : { success: false };
+        if (cancelled) return;
         if (d.success && d.data) {
-          console.log("[TicketFilters] Loaded reference data:", {
-            groups: d.data.groups?.length || 0,
-            statuses: d.data.statuses?.length || 0,
-            services: d.data.services?.length || 0,
-            priorities: d.data.priorities?.length || 0,
-            sources: d.data.sources?.length || 0,
-          });
           setReferenceData({
-            groups: d.data.groups || [],
-            statuses: d.data.statuses || [],
-            services: d.data.services || [],
-            priorities: d.data.priorities || [],
-            sources: d.data.sources || [],
+            groups: d.data.groups ?? [],
+            statuses: d.data.statuses ?? [],
+            services: d.data.services ?? [],
+            priorities: d.data.priorities ?? [],
+            sources: d.data.sources ?? [],
           });
         } else {
-          console.error("[TicketFilters] Reference data API returned error:", d.error || "Unknown error");
           setReferenceData({
             groups: [],
             statuses: [],
@@ -119,17 +104,21 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
             sources: [],
           });
         }
-      })
-      .catch((err) => {
-        console.error("[TicketFilters] Error fetching reference data:", err);
-        setReferenceData({
-          groups: [],
-          statuses: [],
-          services: [],
-          priorities: [],
-          sources: [],
-        });
-      });
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("[TicketFilters] Reference data fetch failed:", err);
+          setReferenceData({
+            groups: [],
+            statuses: [],
+            services: [],
+            priorities: [],
+            sources: [],
+          });
+        }
+      }
+    }
+    loadRefData();
+    return () => { cancelled = true; };
   }, []);
 
   const visibleLabels = useMemo(() => {
@@ -153,16 +142,16 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header: FILTERS + count | Clear, Search (collapsible at top right) */}
+      {/* Header: Filters + count | Clear, Search */}
       <div
-        className={`flex items-center justify-between gap-2 shrink-0 px-2.5 py-2 border-b ${
-          dark ? "border-gray-700" : "border-gray-200"
+        className={`flex items-center justify-between gap-2 shrink-0 px-3 py-2.5 border-b ${
+          dark ? "border-gray-700 bg-gray-800/50" : "border-gray-200 bg-slate-50/80"
         }`}
       >
-        <div className="flex items-center gap-1.5 min-w-0">
-          <Filter className={`h-4 w-4 shrink-0 ${dark ? "text-gray-400" : "text-gray-600"}`} />
-          <span className={`text-xs font-semibold truncate ${dark ? "text-gray-200" : "text-gray-800"}`}>
-            FILTERS
+        <div className="flex items-center gap-2 min-w-0">
+          <Filter className={`h-4 w-4 shrink-0 ${dark ? "text-gray-400" : "text-slate-600"}`} />
+          <span className={`text-sm font-semibold truncate ${dark ? "text-gray-200" : "text-slate-800"}`}>
+            Filters
           </span>
           {activeFilterCount > 0 && (
             <span
@@ -575,10 +564,10 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
         <button
           type="button"
           onClick={applyFilters}
-          className={`w-full rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+          className={`w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors shadow-sm ${
             dark
               ? "bg-blue-600 text-white hover:bg-blue-500"
-              : "bg-blue-600 text-white hover:bg-blue-700"
+              : "bg-blue-600 text-white hover:bg-blue-700 hover:shadow-md"
           }`}
         >
           Apply filters

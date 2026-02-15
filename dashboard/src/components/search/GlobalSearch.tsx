@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { Search, X, Settings, Ticket, User } from "lucide-react";
 
 const STORAGE_RECENT_SEARCHES = "global-search-recent";
@@ -82,6 +82,8 @@ function clearRecentViewed() {
 
 export function GlobalSearch() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
   const [expanded, setExpanded] = useState(false);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SearchTab>("all");
@@ -94,6 +96,14 @@ export function GlobalSearch() {
   const [recentViewed, setRecentViewed] = useState<RecentViewedItem[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Sync search input from URL when on tickets page (e.g. landed with ?q=foo) so search bar works correctly
+  useEffect(() => {
+    if (pathname?.startsWith("/dashboard/tickets")) {
+      const urlQ = searchParams?.get("q") ?? "";
+      setQuery((prev) => (urlQ !== prev ? urlQ : prev));
+    }
+  }, [pathname, searchParams?.toString()]);
 
   const loadStorage = useCallback(() => {
     setRecentSearches(getRecentSearches());
@@ -209,7 +219,7 @@ export function GlobalSearch() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search Tickets, Contacts, Solutions, Forums"
+              placeholder="Search tickets, contacts…"
               className="flex-1 min-w-0 bg-transparent text-sm text-gray-900 placeholder-gray-400 focus:outline-none py-0.5"
               autoComplete="off"
               aria-label="Global search"
@@ -433,7 +443,7 @@ export function GlobalSearch() {
           aria-label="Open search"
         >
           <Search className="h-4 w-4 sm:h-5 sm:w-5 text-gray-400 shrink-0" />
-          <span className="hidden sm:inline text-sm text-gray-500 truncate">Search Tickets, Contacts, Solutions, Forums</span>
+          <span className="hidden sm:inline text-sm text-gray-500 truncate">Search tickets, contacts</span>
         </button>
       )}
     </div>

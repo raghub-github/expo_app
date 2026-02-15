@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets } from "@/hooks/tickets/useTickets";
+import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
 import { TicketCard } from "./TicketCard";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
@@ -42,7 +43,15 @@ export function TicketList() {
   const rightSidebar = useRightSidebar();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
-  const [viewMode, setViewMode] = useState<TicketViewMode>("list");
+  const [viewMode, setViewModeState] = useState<TicketViewMode>("list");
+  const setViewMode = useCallback((mode: TicketViewMode) => {
+    setViewModeState(mode);
+    try { localStorage.setItem("dashboard-tickets-view-mode", mode); } catch {}
+  }, []);
+  useLayoutEffect(() => {
+    const s = localStorage.getItem("dashboard-tickets-view-mode");
+    if (s === "grid" || s === "list") setViewModeState(s);
+  }, []);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [pageSizeDropdownOpen, setPageSizeDropdownOpen] = useState(false);
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
@@ -61,61 +70,64 @@ export function TicketList() {
   const [refData, setRefData] = useState<{ statuses: Option[]; priorities: Option[]; groups: Array<{ id: number; groupCode: string; groupName: string }> } | null>(null);
 
   useEffect(() => {
-    fetch("/api/tickets/agents", { credentials: "include" })
-      .then((r) => {
-        if (!r.ok) {
-          console.error("[TicketList] Failed to fetch agents:", r.status, r.statusText);
-          return { success: false, error: `HTTP ${r.status}` };
-        }
-        return r.json();
-      })
-      .then((d) => {
+    let cancelled = false;
+    async function loadAgents() {
+      try {
+        const r = await fetch("/api/tickets/agents", { credentials: "include" });
+        const d = r.ok
+          ? await r.json().catch(() => ({ success: false }))
+          : { success: false };
+        if (cancelled) return;
         if (d.success && d.data) {
-          if (d.data.agents) {
-            setAgents(d.data.agents);
-          } else {
-            setAgents([]);
-          }
-          if (d.data.currentUser) {
-            setCurrentUser({ id: d.data.currentUser.id, name: d.data.currentUser.name || "Me" });
-          } else {
-            setCurrentUser(null);
-          }
+          setAgents(d.data.agents ?? []);
+          setCurrentUser(
+            d.data.currentUser
+              ? { id: d.data.currentUser.id, name: d.data.currentUser.name || "Me" }
+              : null
+          );
         } else {
           setAgents([]);
           setCurrentUser(null);
         }
-      })
-      .catch((err) => {
-        console.error("[TicketList] Error fetching agents:", err);
-        setAgents([]);
-        setCurrentUser(null);
-      });
-  }, []);
-  useEffect(() => {
-    fetch("/api/tickets/reference-data", { credentials: "include" })
-      .then((r) => {
-        if (!r.ok) {
-          console.error("[TicketList] Failed to fetch reference data:", r.status, r.statusText);
-          return { success: false, error: `HTTP ${r.status}` };
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("[TicketList] Agents fetch failed:", err);
+          setAgents([]);
+          setCurrentUser(null);
         }
-        return r.json();
-      })
-      .then((d) => {
+      }
+    }
+    loadAgents();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRefData() {
+      try {
+        const r = await fetch("/api/tickets/reference-data", { credentials: "include" });
+        const d = r.ok
+          ? await r.json().catch(() => ({ success: false }))
+          : { success: false };
+        if (cancelled) return;
         if (d.success && d.data) {
           setRefData({
-            statuses: d.data.statuses || [],
-            priorities: d.data.priorities || [],
-            groups: d.data.groups || [],
+            statuses: d.data.statuses ?? [],
+            priorities: d.data.priorities ?? [],
+            groups: d.data.groups ?? [],
           });
         } else {
           setRefData({ statuses: [], priorities: [], groups: [] });
         }
-      })
-      .catch((err) => {
-        console.error("[TicketList] Error fetching reference data:", err);
-        setRefData({ statuses: [], priorities: [], groups: [] });
-      });
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("[TicketList] Reference data fetch failed:", err);
+          setRefData({ statuses: [], priorities: [], groups: [] });
+        }
+      }
+    }
+    loadRefData();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -155,7 +167,14 @@ export function TicketList() {
     [appliedFilters, limit, offset]
   );
 
-  const { data, isLoading, error } = useTickets(queryFilters);
+  const { data, isLoading, error, refetch } = useTickets(queryFilters);
+  const currentTotal = data?.total ?? 0;
+  const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(currentTotal);
+
+  const handleLoadNewTickets = () => {
+    refetch();
+    clearNewTickets();
+  };
 
   // All hooks must be called before any conditional returns
   // Match filter sidebar: Unassigned + Me (current user) + all API agents
@@ -292,16 +311,28 @@ export function TicketList() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar - sticky at top when scrolling, compact height */}
-      <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-1.5 border-b border-gray-200 bg-white px-3 py-1.5 sm:px-4 shadow-sm">
+    <div className="flex flex-col h-full min-h-0 bg-white overflow-hidden">
+      {/* Toolbar */}
+      <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-gray-200/90 bg-white px-3 py-2">
+        {/* New Updated badge - when realtime reports new/updated tickets */}
+        {hasNewTickets && (
+          <button
+            type="button"
+            onClick={handleLoadNewTickets}
+            className="inline-flex items-center gap-1 rounded-full border border-blue-600 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800 hover:bg-blue-100 transition-colors shrink-0"
+            aria-label="Load new tickets"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            New Updated{newTicketsCount > 1 ? ` (${newTicketsCount})` : ""}
+          </button>
+        )}
         {/* Sort by: combined dropdown (criteria + order) */}
         <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600" ref={sortDropdownRef}>
           <span className="hidden sm:inline font-medium text-gray-700">Sort by:</span>
           <button
             type="button"
             onClick={() => setSortDropdownOpen((o) => !o)}
-            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
             aria-expanded={sortDropdownOpen}
             aria-haspopup="listbox"
             aria-label="Sort options"
@@ -374,32 +405,37 @@ export function TicketList() {
           )}
         </div>
 
-        <div className="flex items-center gap-1.5 text-xs sm:text-sm text-gray-600">
-          <div className="flex items-center rounded border border-gray-200 bg-white p-0.5">
+        <div className="flex items-center gap-2 text-sm text-gray-600">
+          <span className="text-xs text-gray-600 tabular-nums whitespace-nowrap" aria-live="polite">
+            Page {page} of {Math.max(1, Math.ceil(currentTotal / pageSize) || 1)}
+            {" · "}
+            Showing {currentTotal === 0 ? "0" : `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, currentTotal)}`} of {currentTotal}
+          </span>
+          <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50/80 p-0.5">
             <button
               type="button"
               onClick={() => setViewMode("list")}
-              className={`rounded p-1 ${viewMode === "list" ? "bg-blue-100 text-blue-700" : "text-gray-500 hover:bg-gray-50"}`}
+              className={`rounded-md p-1.5 transition-colors ${viewMode === "list" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
               title="List view"
               aria-label="List view"
             >
-              <LayoutList className="h-3.5 w-3.5" />
+              <LayoutList className="h-4 w-4" />
             </button>
             <button
               type="button"
               onClick={() => setViewMode("grid")}
-              className={`rounded p-1 ${viewMode === "grid" ? "bg-blue-100 text-blue-700" : "text-gray-500 hover:bg-gray-50"}`}
+              className={`rounded-md p-1.5 transition-colors ${viewMode === "grid" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
               title="Grid view"
               aria-label="Grid view"
             >
-              <LayoutGrid className="h-3.5 w-3.5" />
+              <LayoutGrid className="h-4 w-4" />
             </button>
           </div>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-1.5 py-1 text-xs text-gray-700 hover:bg-gray-50"
+            className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
           >
-            <Download className="h-3 w-3" />
+            <Download className="h-3.5 w-3.5" />
             Export
           </button>
           {/* Right sidebar toggle */}
@@ -407,7 +443,7 @@ export function TicketList() {
             <button
               type="button"
               onClick={rightSidebar.onToggle}
-              className="inline-flex items-center gap-1 rounded border border-gray-200 bg-white px-1.5 py-1 text-xs text-gray-700 hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
               title={rightSidebar.isOpen ? "Hide filters" : "Open filters"}
             >
               {rightSidebar.isOpen ? (
@@ -426,9 +462,9 @@ export function TicketList() {
         </div>
       </div>
 
-      {/* Bulk actions bar - sticky below toolbar when visible */}
+      {/* Bulk actions bar when visible */}
       {someSelected && (
-        <div className="sticky top-12 z-10 flex flex-wrap items-center gap-2 border-b border-blue-200 bg-blue-50/90 px-3 py-1.5 text-sm shadow-sm">
+        <div className="flex-shrink-0 flex flex-wrap items-center gap-2 border-b border-blue-200 bg-blue-50/90 px-3 py-1.5 text-sm">
           <input
             type="checkbox"
             checked={allSelected}
@@ -589,28 +625,27 @@ export function TicketList() {
         </div>
       )}
 
-      {/* Ticket List or Grid - list: full width; grid: 4 columns, select-all header */}
+      {/* Ticket List or Grid - scrollable area */}
       <div
-        className={`flex-1 overflow-y-auto min-h-0 ${viewMode === "grid" ? "p-4" : ""}`}
-        style={{ overflowX: "visible" }}
+        className={`flex-1 min-h-0 overflow-y-auto overflow-x-visible ${viewMode === "grid" ? "p-4" : ""}`}
       >
         {viewMode === "list" ? (
           <div className="w-full relative" style={{ overflow: "visible" }}>
-            {/* List header row - select all + column hints */}
-            <div className="flex items-center gap-3 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600">
-              <div className="shrink-0 w-[18px] flex justify-center">
+            {/* List header row - compact, single line */}
+            <div className="flex items-center gap-1.5 border-b border-gray-200 bg-slate-50/90 pl-2 pr-1 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
+              <div className="shrink-0 w-[14px] flex justify-center">
                 <input
                   type="checkbox"
                   checked={allSelected}
                   onChange={(e) => selectAll(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   aria-label="Select all on page"
                 />
               </div>
-              <div className="w-8 shrink-0" />
-              <div className="flex-1 min-w-0">Ticket</div>
-              <div className="shrink-0 w-[180px] text-left">
-                <span className="text-gray-500 text-xs">Priority · Group/Agent · Status</span>
+              <div className="w-6 shrink-0" />
+              <div className="flex-1 min-w-0 truncate">Ticket</div>
+              <div className="shrink-0 w-[260px] min-w-[260px] mr-6 text-left">
+                <span className="text-gray-500 text-[11px] font-medium">Priority · Group/Agent · Status</span>
               </div>
             </div>
             {data.tickets.map((ticket) => (
@@ -650,7 +685,7 @@ export function TicketList() {
               )}
             </div>
             <div
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3"
               style={{ overflow: "visible" }}
             >
               {data.tickets.map((ticket) => (
@@ -675,14 +710,14 @@ export function TicketList() {
         )}
       </div>
 
-      {/* Bottom pagination - sticky at bottom when scrolling, compact height */}
-      <div className="sticky bottom-0 z-10 flex shrink-0 items-center justify-between gap-3 border-t border-gray-200 bg-white px-3 py-2 shadow-[0_-2px_6px_rgba(0,0,0,0.06)]">
+      {/* Pagination footer - fixed at very bottom of ticket list area */}
+      <div className="flex-shrink-0 flex items-center justify-between gap-4 border-t border-gray-200 bg-white px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.08)] rounded-b-lg">
         {/* Left: Showing X / page dropdown */}
         <div className="relative" ref={pageSizeDropdownRef}>
           <button
             type="button"
             onClick={() => setPageSizeDropdownOpen((o) => !o)}
-            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
             aria-expanded={pageSizeDropdownOpen}
             aria-haspopup="listbox"
             aria-label="Items per page"
@@ -726,7 +761,7 @@ export function TicketList() {
             type="button"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
             aria-label="Previous page"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
@@ -746,10 +781,10 @@ export function TicketList() {
                   key={item}
                   type="button"
                   onClick={() => setPage(item)}
-                  className={`flex h-8 min-w-[2rem] items-center justify-center rounded-md border text-xs font-medium ${
+                  className={`flex h-9 min-w-[2.25rem] items-center justify-center rounded-lg border text-sm font-medium transition-colors ${
                     page === item
-                      ? "border-blue-600 bg-blue-600 text-white"
-                      : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                      ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+                      : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
                   }`}
                   aria-label={page === item ? `Page ${item} (current)` : `Go to page ${item}`}
                   aria-current={page === item ? "page" : undefined}
@@ -763,7 +798,7 @@ export function TicketList() {
             type="button"
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page === totalPages || totalPages === 0}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
             aria-label="Next page"
           >
             <ChevronRight className="h-3.5 w-3.5" />

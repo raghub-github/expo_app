@@ -70,10 +70,15 @@ export function TicketListRow({
   statusOptions,
   currentUserId,
 }: TicketListRowProps) {
+  const isResolvedOrClosed = ["closed", "resolved"].includes(ticket.status);
   const isSlaBreached =
     ticket.slaDueAt &&
     new Date(ticket.slaDueAt) < new Date() &&
-    !["closed", "resolved"].includes(ticket.status);
+    !isResolvedOrClosed;
+  const isOverdue15 =
+    !isResolvedOrClosed &&
+    Date.now() - new Date(ticket.createdAt).getTime() > 15 * 60 * 1000;
+  const showOverdue = isSlaBreached || isOverdue15;
 
   const initial = (ticket.subject || "T").charAt(0).toUpperCase();
   const sourceLabel = ticket.sourceRole ? ticket.sourceRole.charAt(0).toUpperCase() + ticket.sourceRole.slice(1) : "—";
@@ -103,9 +108,7 @@ export function TicketListRow({
 
   const groupLabel = ticket.group?.name ?? "—";
   const agentLabel = ticket.assignee
-    ? currentUserId != null && ticket.assignee.id === currentUserId
-      ? "Me"
-      : ticket.assignee.name ?? ticket.assignee.email ?? `Agent ${ticket.assignee.id}`
+    ? (ticket.assignee.name ?? ticket.assignee.email ?? `Agent ${ticket.assignee.id}`).trim() || "Unassigned"
     : "Unassigned";
   const displaySummary = `${groupLabel} / ${agentLabel}`;
 
@@ -117,84 +120,88 @@ export function TicketListRow({
     : agentOptions;
 
   return (
-    <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-3 py-2.5 hover:bg-gray-50/80 transition-colors min-h-[72px] relative" style={{ overflow: 'visible' }}>
+    <div className="flex items-center gap-1.5 border-b border-gray-100 bg-white pl-2 pr-1 py-2 hover:bg-slate-50/80 transition-colors min-h-0 relative group" style={{ overflow: "visible" }}>
       {/* Checkbox - prevent navigation */}
       <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
         <input
           type="checkbox"
           checked={selected}
           onChange={(e) => onSelect(e.target.checked)}
-          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
           aria-label={`Select ticket ${ticket.ticketNumber}`}
         />
       </div>
 
-      {/* Avatar - clickable (ticket icon) */}
+      {/* Avatar - clickable */}
       <Link
         href={`/dashboard/tickets/${ticket.id}`}
-        className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-sm font-semibold hover:opacity-90 transition-opacity"
+        className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm hover:shadow-md hover:scale-[1.02] transition-all"
         aria-label={`Open ticket ${ticket.ticketNumber}`}
       >
         {initial}
       </Link>
 
-      {/* Main content - only title and ticket ID open detail */}
-      <div className="flex-1 min-w-0 flex flex-col gap-0.5 py-0.5">
-        {/* Line 1: Priority + group/section/service/category chips - not clickable */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {isSlaBreached && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
-              <AlertCircle className="h-3 w-3" />
+      {/* Main content - compact */}
+      <div className="flex-1 min-w-0 flex flex-col gap-0.5 py-0">
+        {/* Line 1: Priority + section/service/category chips */}
+        <div className="flex flex-wrap items-center gap-1">
+          {showOverdue && (
+            <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
+              <AlertCircle className="h-2.5 w-2.5" />
               Overdue
             </span>
           )}
-          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700 capitalize">
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
             {ticket.priority}
           </span>
           {sectionLabel && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700">
               {sectionLabel}
             </span>
           )}
           {serviceLabel && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700">
               {serviceLabel}
             </span>
           )}
           {categoryLabel && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700">
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800">
               {categoryLabel}
             </span>
           )}
         </div>
 
-        {/* Line 2: Subject + Ticket ID - both clickable */}
+        {/* Line 2: Subject + Ticket ID */}
         <Link
           href={`/dashboard/tickets/${ticket.id}`}
-          className="flex items-baseline gap-2 flex-wrap hover:underline underline-offset-1"
+          className="flex items-baseline gap-1.5 flex-wrap hover:underline underline-offset-1"
         >
-          <span className="font-medium text-gray-900 text-sm truncate max-w-[320px]" title={ticket.subject}>
+          <span className="font-medium text-gray-900 text-xs truncate max-w-[300px]" title={ticket.subject}>
             {ticket.subject}
           </span>
-          <span className="text-xs text-gray-500 font-mono shrink-0">#{ticket.id}</span>
+          <span className="text-[11px] text-gray-500 font-mono shrink-0">#{ticket.ticketNumber || ticket.id}</span>
         </Link>
 
-        {/* Line 3: Company/source, updated time, overdue - not clickable */}
-        <div className="flex items-center gap-3 text-[11px] text-gray-500">
-          <span>{sourceLabel}</span>
+        {/* Line 3: Agent · Created At · Updated At (no Group) */}
+        <div className="flex items-center gap-2 text-[10px] text-gray-500 flex-wrap">
+          <span><span className="text-gray-600 font-medium">Agent:</span> {agentLabel}</span>
+          <span aria-hidden>·</span>
+          <span>Created {formatTimeAgo(ticket.createdAt)}</span>
+          <span aria-hidden>·</span>
           <span>Updated {formatTimeAgo(ticket.updatedAt)}</span>
-          {isSlaBreached && ticket.slaDueAt && (
-            <span className="text-red-600 font-medium">
-              Overdue by: {formatOverdue(ticket.slaDueAt)}
-            </span>
+          {showOverdue && ticket.slaDueAt && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="text-red-600 font-medium">Overdue {formatOverdue(ticket.slaDueAt)}</span>
+            </>
           )}
         </div>
       </div>
 
-      {/* Right: Priority, Group/Agent, Status - stacked vertically, left-aligned (Freshdesk-style) */}
-      <div className="flex flex-col gap-0.5 shrink-0 items-start w-[180px]" onClick={(e) => e.stopPropagation()}>
+      {/* Right: Priority, Group/Agent, Status - stacked vertically; same width as header column, shifted left */}
+      <div className="flex flex-col gap-0.5 shrink-0 items-start w-[260px] min-w-[260px] mr-6" onClick={(e) => e.stopPropagation()}>
         {/* Priority */}
-        <div className="w-full flex items-center">
+        <div className="w-full flex items-center min-h-[26px]">
           <InlineSearchableSelect
             value={ticket.priority}
             options={priorityOptions}
@@ -207,18 +214,21 @@ export function TicketListRow({
             }
           />
         </div>
-        {/* Group / Agent - ONE dropdown; opens panel with GROUP (remove/change) and AGENT (reassign/unassign) */}
+        {/* Group / Agent - ONE dropdown */}
         <div className="relative w-full" ref={groupAgentRef}>
           <button
             type="button"
             onClick={() => setGroupAgentOpen((o) => !o)}
-            className="flex w-full items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[28px]"
+            className="flex w-full items-center gap-1.5 rounded border border-gray-300 bg-white px-1.5 py-1 text-left text-[11px] text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[24px]"
             aria-expanded={groupAgentOpen}
             aria-haspopup="dialog"
+            title={`G - ${groupLabel} · A - ${agentLabel}`}
           >
             <FolderGit2 className="h-3 w-3 text-gray-500 shrink-0" />
-            <span className="truncate flex-1 min-w-0">
-              {groupLabel === "—" && agentLabel === "Unassigned" ? "— / —" : displaySummary}
+            <span className="flex-1 min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">
+              G - {groupLabel}
+              <span className="text-gray-400 mx-1" aria-hidden>·</span>
+              A - {agentLabel}
             </span>
             <ChevronDown className={`h-3 w-3 text-gray-400 shrink-0 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
           </button>
@@ -277,7 +287,7 @@ export function TicketListRow({
                       className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
-                  <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200">
+                  <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200 bg-white">
                     {filteredGroupOptions.map((opt) => (
                       <li key={opt.value}>
                         <button
@@ -286,7 +296,7 @@ export function TicketListRow({
                             onUpdateGroup(ticket.id, parseInt(opt.value, 10));
                             setGroupAgentOpen(false);
                           }}
-                          className="w-full px-2 py-1.5 text-left text-xs hover:bg-gray-50"
+                          className="w-full px-2 py-1.5 text-left text-xs text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
                         >
                           {opt.label}
                         </button>
@@ -328,7 +338,7 @@ export function TicketListRow({
                       className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
-                  <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200">
+                  <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200 bg-white">
                     {filteredAgentOptions.map((opt) => (
                       <li key={opt.value}>
                         <button
@@ -338,7 +348,7 @@ export function TicketListRow({
                             onUpdateAssignee(ticket.id, Number.isNaN(id as number) ? null : id);
                             setGroupAgentOpen(false);
                           }}
-                          className="w-full px-2 py-1.5 text-left text-xs hover:bg-gray-50"
+                          className="w-full px-2 py-1.5 text-left text-xs text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
                         >
                           {opt.label}
                         </button>

@@ -6,58 +6,59 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getDb, getSql } from "@/lib/db/client";
+import { getSql } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
-import { eq, and, or, desc, gte, lte, isNotNull, isNull, ilike, sql, inArray } from "drizzle-orm";
-import { systemUsers, tickets } from "@/lib/db/schema";
+import { sql } from "drizzle-orm";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
 /**
  * GET /api/tickets
- * List tickets with advanced filtering
+ * List tickets from public.unified_tickets only. Response shape matches existing UI (Ticket type).
  */
 export async function GET(request: NextRequest) {
   try {
     console.log("[GET /api/tickets] Request received");
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError) {
+      if (isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
+      }
+      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    }
+    if (!user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(session.user.id, session.user.email!, "TICKET");
-    
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
+    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
     }
 
-    console.log("[GET /api/tickets] Auth OK, building query");
-    const db = getDb();
+    console.log("[GET /api/tickets] Auth OK, querying unified_tickets");
     const { searchParams } = new URL(request.url);
 
-    // Pagination
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
     const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
-
-    // Filters (support multi-select via comma-separated or repeated params)
     const serviceTypeParam = searchParams.get("serviceType") || searchParams.getAll("serviceType").join(",");
-    const ticketSection = searchParams.get("ticketSection"); // customer | rider | merchant | system
+    const ticketSection = searchParams.get("ticketSection");
     const statusParam = searchParams.get("status") || searchParams.getAll("status").join(",");
     const priorityParam = searchParams.get("priority") || searchParams.getAll("priority").join(",");
-    const ticketCategory = searchParams.get("ticketCategory"); // order_related | non_order | other
-    const assignedTo = searchParams.get("assignedTo"); // Legacy: single value
-    const assignedToIdsParam = searchParams.get("assignedToIds"); // Multi-select: comma-separated IDs or "me", "unassigned"
+    const ticketCategory = searchParams.get("ticketCategory");
+    const assignedTo = searchParams.get("assignedTo");
+    const assignedToIdsParam = searchParams.get("assignedToIds");
     const sourceRoleParam = searchParams.get("sourceRole") || searchParams.getAll("sourceRole").join(",");
-    const groupIdsParam = searchParams.get("groupIds") || searchParams.get("groupId") || searchParams.getAll("groupIds").join(",");
     const tagsParam = (searchParams.get("tags") || "").trim();
     const dateFrom = searchParams.get("dateFrom");
     const dateTo = searchParams.get("dateTo");
@@ -65,328 +66,219 @@ export async function GET(request: NextRequest) {
     const resolvedTo = searchParams.get("resolvedTo");
     const closedFrom = searchParams.get("closedFrom");
     const closedTo = searchParams.get("closedTo");
-    const dueFrom = searchParams.get("dueFrom");
-    const dueTo = searchParams.get("dueTo");
     const searchQuery = (searchParams.get("q") || "").trim();
-    const isHighValue = searchParams.get("isHighValue"); // true | false
-    const slaBreach = searchParams.get("slaBreach"); // true | false
     const sortByParam = (searchParams.get("sortBy") || "created_at").toLowerCase();
     const sortOrderParam = (searchParams.get("sortOrder") || "desc").toLowerCase();
 
-    const allowedSortColumns = ["created_at", "updated_at", "sla_due_at", "priority", "status"];
+    const allowedSortColumns = ["created_at", "updated_at", "priority", "status"];
     const sortBy = allowedSortColumns.includes(sortByParam) ? sortByParam : "created_at";
     const sortOrder = sortOrderParam === "asc" ? "ASC" : "DESC";
     const orderByClause = `${sortBy} ${sortOrder}`;
 
-    // Build conditions
-    const conditions: any[] = [];
-
-    // Use postgres library with template literals
     const sqlClient = getSql();
-    
-    // Build WHERE conditions using postgres.js template literal syntax
-    const whereConditions: any[] = [];
+    const whereConditions: ReturnType<typeof sql>[] = [];
 
-    // Service type filter (multi)
-    const serviceTypes = serviceTypeParam
-      ? serviceTypeParam.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
+    const serviceTypes = serviceTypeParam ? serviceTypeParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
     if (serviceTypes.length > 0) {
-      whereConditions.push(sql`service_type = ANY(${serviceTypes})`);
+      whereConditions.push(sql`ut.service_type = ANY(${serviceTypes})`);
     }
-
-    // Ticket section filter
     if (ticketSection && ticketSection !== "all") {
-      whereConditions.push(sql`ticket_section = ${ticketSection}`);
+      whereConditions.push(sql`ut.raised_by_type = ${ticketSection.toUpperCase()}`);
     }
-
-    // Status filter (multi)
-    const statuses = statusParam
-      ? statusParam.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
+    const statuses = statusParam ? statusParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     if (statuses.length > 0) {
-      whereConditions.push(sql`status = ANY(${statuses})`);
+      whereConditions.push(sql`ut.status = ANY(${statuses})`);
     }
-
-    // Priority filter (multi)
-    const priorities = priorityParam
-      ? priorityParam.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
+    const priorities = priorityParam ? priorityParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     if (priorities.length > 0) {
-      whereConditions.push(sql`priority = ANY(${priorities})`);
+      whereConditions.push(sql`ut.priority = ANY(${priorities})`);
     }
-
-    // Category filter
     if (ticketCategory && ticketCategory !== "all") {
-      whereConditions.push(sql`ticket_category = ${ticketCategory}`);
+      whereConditions.push(sql`ut.ticket_category = ${ticketCategory}`);
     }
-
-    // Assignment filter (multi-select support)
     const assignedToIds = assignedToIdsParam
       ? assignedToIdsParam.split(",").map((s) => s.trim()).filter(Boolean)
-      : assignedTo && assignedTo !== "all"
-      ? [assignedTo] // Legacy support
-      : [];
-    
+      : assignedTo && assignedTo !== "all" ? [assignedTo] : [];
     if (assignedToIds.length > 0) {
       const meIndex = assignedToIds.indexOf("me");
       const unassignedIndex = assignedToIds.indexOf("unassigned");
-      const numericIds = assignedToIds
-        .filter((id) => id !== "me" && id !== "unassigned")
-        .map((id) => parseInt(id, 10))
-        .filter((id) => !isNaN(id));
-
-      const conditions: any[] = [];
-      
-      if (meIndex !== -1) {
-        conditions.push(sql`current_assignee_user_id = ${systemUser.id}`);
-      }
-      if (unassignedIndex !== -1) {
-        conditions.push(sql`current_assignee_user_id IS NULL`);
-      }
-      if (numericIds.length > 0) {
-        conditions.push(sql`current_assignee_user_id = ANY(${numericIds})`);
-      }
-      
-      if (conditions.length > 0) {
-        whereConditions.push(sql`(${sql.join(conditions, sql` OR `)})`);
+      const numericIds = assignedToIds.filter((id) => id !== "me" && id !== "unassigned").map((id) => parseInt(id, 10)).filter((id) => !isNaN(id));
+      const orParts: ReturnType<typeof sql>[] = [];
+      if (meIndex !== -1) orParts.push(sql`ut.assigned_to_agent_id = ${systemUser.id}`);
+      if (unassignedIndex !== -1) orParts.push(sql`ut.assigned_to_agent_id IS NULL`);
+      if (numericIds.length > 0) orParts.push(sql`ut.assigned_to_agent_id = ANY(${numericIds})`);
+      if (orParts.length > 0) {
+        whereConditions.push(orParts.length === 1 ? orParts[0]! : sql`(${orParts.reduce((acc, cond, idx) => (idx === 0 ? cond : sql`${acc} OR ${cond}`))})`);
       }
     }
-
-    // Source role filter (multi)
-    const sourceRoles = sourceRoleParam
-      ? sourceRoleParam.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
+    const sourceRoles = sourceRoleParam ? sourceRoleParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
     if (sourceRoles.length > 0) {
-      whereConditions.push(sql`source_role = ANY(${sourceRoles})`);
+      const upperSourceRoles = sourceRoles.map((r) => r.toUpperCase());
+      whereConditions.push(sql`ut.raised_by_type = ANY(${upperSourceRoles})`);
     }
-
-    // Group filter (multi) - via ticket_titles.group_id
-    const groupIds = groupIdsParam
-      ? groupIdsParam.split(",").map((s) => s.trim()).filter(Boolean).map((s) => parseInt(s, 10)).filter((n) => !Number.isNaN(n))
-      : [];
-    if (groupIds.length > 0) {
-      whereConditions.push(sql`title_id IS NOT NULL AND title_id IN (
-        SELECT id FROM ticket_titles WHERE group_id = ANY(${groupIds})
-      )`);
-    }
-
-    // Created date range filter
     if (dateFrom) {
-      whereConditions.push(sql`created_at >= ${dateFrom}::date`);
+      whereConditions.push(sql`ut.created_at >= ${dateFrom}::date`);
     }
     if (dateTo) {
-      whereConditions.push(sql`created_at <= (${dateTo}::date + interval '1 day')`);
+      whereConditions.push(sql`ut.created_at <= (${dateTo}::date + interval '1 day')`);
     }
-
-    // Resolved at date range filter
     if (resolvedFrom) {
-      whereConditions.push(sql`resolved_at IS NOT NULL AND resolved_at >= ${resolvedFrom}::date`);
+      whereConditions.push(sql`ut.resolved_at IS NOT NULL AND ut.resolved_at >= ${resolvedFrom}::date`);
     }
     if (resolvedTo) {
-      whereConditions.push(sql`resolved_at IS NOT NULL AND resolved_at < (${resolvedTo}::date + interval '1 day')`);
+      whereConditions.push(sql`ut.resolved_at IS NOT NULL AND ut.resolved_at < (${resolvedTo}::date + interval '1 day')`);
     }
-
-    // Closed at date range filter
     if (closedFrom) {
-      whereConditions.push(sql`closed_at IS NOT NULL AND closed_at >= ${closedFrom}::date`);
+      whereConditions.push(sql`ut.closed_at IS NOT NULL AND ut.closed_at >= ${closedFrom}::date`);
     }
     if (closedTo) {
-      whereConditions.push(sql`closed_at IS NOT NULL AND closed_at < (${closedTo}::date + interval '1 day')`);
+      whereConditions.push(sql`ut.closed_at IS NOT NULL AND ut.closed_at < (${closedTo}::date + interval '1 day')`);
     }
-
-    // SLA due range filter
-    if (dueFrom || dueTo) {
-      whereConditions.push(sql`sla_due_at IS NOT NULL`);
-    }
-    if (dueFrom) {
-      whereConditions.push(sql`sla_due_at >= ${dueFrom}`);
-    }
-    if (dueTo) {
-      whereConditions.push(sql`sla_due_at <= ${dueTo}`);
-    }
-
-    // High value filter
-    if (isHighValue === "true") {
-      whereConditions.push(sql`is_high_value_order = true`);
-    }
-
-    // SLA breach filter
-    if (slaBreach === "true") {
-      whereConditions.push(sql`sla_due_at IS NOT NULL AND sla_due_at < NOW() AND status NOT IN ('closed', 'resolved')`);
-    }
-
-    // Search query
     if (searchQuery) {
       const num = parseInt(searchQuery, 10);
       if (!Number.isNaN(num) && String(num) === searchQuery) {
         const searchPattern = `%${searchQuery}%`;
-        whereConditions.push(sql`(ticket_number LIKE ${searchPattern} OR id = ${num} OR order_id = ${num})`);
+        whereConditions.push(sql`(ut.ticket_id LIKE ${searchPattern} OR ut.id = ${num} OR ut.order_id = ${num})`);
       } else {
         const term = `%${searchQuery.replace(/%/g, "\\%")}%`;
-        whereConditions.push(sql`(subject ILIKE ${term} OR description ILIKE ${term} OR ticket_number LIKE ${term})`);
+        whereConditions.push(sql`(ut.subject ILIKE ${term} OR ut.description ILIKE ${term} OR ut.ticket_id ILIKE ${term})`);
       }
     }
-
-    // Tags filter (comma-separated tag codes)
     if (tagsParam) {
-      const tags = tagsParam
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
+      const tags = tagsParam.split(",").map((t) => t.trim()).filter(Boolean);
       if (tags.length > 0) {
-        whereConditions.push(sql`id IN (
-          SELECT m.ticket_id
-          FROM ticket_tag_map m
-          JOIN ticket_tags t ON t.id = m.tag_id
-          WHERE t.tag_code = ANY(${tags})
-        )`);
+        whereConditions.push(sql`ut.tags && ${tags}`);
       }
     }
 
-    // Build query using postgres.js template literals
-    let countResult: any;
-    let ticketRows: any;
+    const whereClause = whereConditions.length > 0
+      ? whereConditions.reduce((acc, cond, idx) => (idx === 0 ? cond : sql`${acc} AND ${cond}`))
+      : null;
+
+    let countResult: { count: number }[];
+    let ticketRows: Record<string, unknown>[];
 
     try {
-      // Combine WHERE conditions with AND
-      const whereClause = whereConditions.length > 0
-        ? whereConditions.reduce((acc, cond, idx) => 
-            idx === 0 ? cond : sql`${acc} AND ${cond}`
-          )
-        : null;
-
       if (whereClause) {
-        // Execute queries with WHERE clause
         countResult = await sqlClient`
-          SELECT COUNT(*)::int as count 
-          FROM tickets 
-          WHERE ${whereClause}
+          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause}
         `;
-        
-        ticketRows = await sqlClient`
-          SELECT 
-            t.id, t.ticket_number, t.service_type, t.ticket_category, t.ticket_section, t.source_role,
-            t.title_id, t.subject, t.description, t.status, t.priority, t.order_id, t.order_service_type,
-            t.is_3pl_order, t.is_high_value_order, t.current_assignee_user_id,
-            t.sla_due_at, t.resolved_at, t.closed_at, t.created_at, t.updated_at,
-            tt.group_id as title_group_id,
-            tg.group_name as group_name,
-            tg.group_code as group_code
-          FROM tickets t
-          LEFT JOIN ticket_titles tt ON t.title_id = tt.id
-          LEFT JOIN ticket_groups tg ON tt.group_id = tg.id AND tg.is_active = true
-          WHERE ${whereClause}
-          ORDER BY ${sql.raw(orderByClause)}
-          LIMIT ${limit}
-          OFFSET ${offset}
-        `;
+        try {
+          ticketRows = await sqlClient`
+            SELECT
+              ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
+              ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
+              ut.subject, ut.description, ut.priority, ut.status,
+              ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+              ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
+              ut.group_id, tg.group_code as group_code, tg.group_name as group_name
+            FROM public.unified_tickets ut
+            LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
+            WHERE ${whereClause}
+            ORDER BY ${sql.raw(orderByClause)}
+            LIMIT ${limit}
+            OFFSET ${offset}
+          `;
+        } catch {
+          ticketRows = await sqlClient`
+            SELECT
+              ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
+              ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
+              ut.subject, ut.description, ut.priority, ut.status,
+              ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+              ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
+            FROM public.unified_tickets ut
+            WHERE ${whereClause}
+            ORDER BY ${sql.raw(orderByClause)}
+            LIMIT ${limit}
+            OFFSET ${offset}
+          `;
+        }
       } else {
-        // No WHERE clause
-        countResult = await sqlClient`SELECT COUNT(*)::int as count FROM tickets`;
-        ticketRows = await sqlClient`
-          SELECT 
-            t.id, t.ticket_number, t.service_type, t.ticket_category, t.ticket_section, t.source_role,
-            t.title_id, t.subject, t.description, t.status, t.priority, t.order_id, t.order_service_type,
-            t.is_3pl_order, t.is_high_value_order, t.current_assignee_user_id,
-            t.sla_due_at, t.resolved_at, t.closed_at, t.created_at, t.updated_at,
-            tt.group_id as title_group_id,
-            tg.group_name as group_name,
-            tg.group_code as group_code
-          FROM tickets t
-          LEFT JOIN ticket_titles tt ON t.title_id = tt.id
-          LEFT JOIN ticket_groups tg ON tt.group_id = tg.id AND tg.is_active = true
-          ORDER BY ${sql.raw(orderByClause)}
-          LIMIT ${limit}
-          OFFSET ${offset}
-        `;
+        countResult = await sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`;
+        try {
+          ticketRows = await sqlClient`
+            SELECT
+              ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
+              ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
+              ut.subject, ut.description, ut.priority, ut.status,
+              ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+              ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
+              ut.group_id, tg.group_code as group_code, tg.group_name as group_name
+            FROM public.unified_tickets ut
+            LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
+            ORDER BY ${sql.raw(orderByClause)}
+            LIMIT ${limit}
+            OFFSET ${offset}
+          `;
+        } catch {
+          ticketRows = await sqlClient`
+            SELECT
+              ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
+              ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
+              ut.subject, ut.description, ut.priority, ut.status,
+              ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+              ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
+            FROM public.unified_tickets ut
+            ORDER BY ${sql.raw(orderByClause)}
+            LIMIT ${limit}
+            OFFSET ${offset}
+          `;
+        }
       }
     } catch (queryError) {
       console.error("[GET /api/tickets] Query execution error:", queryError);
-      console.error("[GET /api/tickets] If columns are missing, ensure DB has enterprise tickets table (ticket_number, service_type, etc.)");
-      console.error("[GET /api/tickets] Error details:", {
-        message: queryError instanceof Error ? queryError.message : String(queryError),
-        stack: queryError instanceof Error ? queryError.stack : undefined,
-        whereConditionsCount: whereConditions.length,
-      });
+      console.error("[GET /api/tickets] Ensure public.unified_tickets table and enums exist.");
       throw queryError;
     }
 
-    const total = countResult[0]?.count || 0;
+    const total = countResult[0]?.count ?? 0;
 
-    // Get assignee names
-    const assigneeIds = ticketRows
-      .map((t: any) => t.current_assignee_user_id)
-      .filter((id: any): id is number => id !== null);
-
-    let assignees: any[] = [];
-    if (assigneeIds.length > 0) {
-      const assigneesResult = await sqlClient`
-        SELECT id, full_name, email
-        FROM system_users
-        WHERE id = ANY(${assigneeIds})
-      `;
-      assignees = assigneesResult || [];
-    }
-
-    const assigneeMap = new Map(assignees.map((a: any) => [a.id, a]));
-
-    // Format response
-    const tickets = ticketRows.map((ticket: any) => {
-      const assignee = ticket.current_assignee_user_id
-        ? assigneeMap.get(ticket.current_assignee_user_id)
-        : null;
-
+    const tickets = ticketRows.map((t: Record<string, unknown>) => {
+      const rawStatus = String(t.status ?? "").toUpperCase().replace(/-/g, "_");
+      const rawPriority = String(t.priority ?? "").toUpperCase().replace(/-/g, "_");
+      const groupId = t.group_id != null ? Number(t.group_id) : null;
+      const groupName = t.group_name != null ? String(t.group_name) : "";
+      const groupCode = t.group_code != null ? String(t.group_code) : "";
       return {
-        id: ticket.id,
-        ticketNumber: ticket.ticket_number,
-        serviceType: ticket.service_type,
-        ticketCategory: ticket.ticket_category,
-        ticketSection: ticket.ticket_section,
-        sourceRole: ticket.source_role,
-        title: null, // Will be populated if title_id exists
-        subject: ticket.subject,
-        description: ticket.description,
-        status: ticket.status,
-        priority: ticket.priority,
-        orderId: ticket.order_id,
-        orderServiceType: ticket.order_service_type,
-        is3plOrder: ticket.is_3pl_order,
-        isHighValueOrder: ticket.is_high_value_order,
-        assignee: assignee
-          ? {
-              id: assignee.id,
-              name: assignee.full_name,
-              email: assignee.email,
-            }
-          : null,
-        group: ticket.title_group_id && ticket.group_name
-          ? {
-              id: ticket.title_group_id,
-              name: ticket.group_name,
-              code: ticket.group_code,
-            }
-          : null,
-        slaDueAt: ticket.sla_due_at,
-        resolvedAt: ticket.resolved_at,
-        closedAt: ticket.closed_at,
-        createdAt: ticket.created_at,
-        updatedAt: ticket.updated_at,
+        id: Number(t.id),
+        ticketNumber: String(t.ticket_id ?? ""),
+        serviceType: String(t.service_type ?? ""),
+        ticketCategory: String(t.ticket_category ?? ""),
+        ticketSection: String(t.ticket_source ?? ""),
+        sourceRole: String(t.raised_by_type ?? ""),
+        title: t.ticket_title != null ? String(t.ticket_title) : null,
+        subject: String(t.subject ?? ""),
+        description: String(t.description ?? ""),
+        status: rawStatus ? rawStatus.toLowerCase() : "",
+        priority: rawPriority ? rawPriority.toLowerCase() : "",
+        orderId: t.order_id != null ? Number(t.order_id) : null,
+        orderServiceType: t.order_type != null ? String(t.order_type) : null,
+        is3plOrder: false,
+        isHighValueOrder: false,
+        assignee:
+          t.assigned_to_agent_id != null
+            ? {
+                id: Number(t.assigned_to_agent_id),
+                name: (t.assigned_to_agent_name as string) || "",
+                email: "",
+              }
+            : null,
+        group: groupId != null ? { id: groupId, name: groupName || groupCode, code: groupCode || groupName } : null,
+        slaDueAt: null,
+        resolvedAt: t.resolved_at != null ? String(t.resolved_at) : null,
+        closedAt: t.closed_at != null ? String(t.closed_at) : null,
+        createdAt: String(t.created_at ?? ""),
+        updatedAt: String(t.updated_at ?? ""),
       };
     });
 
     return NextResponse.json({
       success: true,
-      data: {
-        tickets,
-        total: Number(total) ?? 0,
-        limit,
-        offset,
-      },
+      data: { tickets, total: Number(total), limit, offset },
     });
   } catch (error) {
     console.error("[GET /api/tickets] Error:", error);
-    console.error("[GET /api/tickets] Error stack:", error instanceof Error ? error.stack : "No stack");
     return NextResponse.json(
       {
         success: false,
@@ -405,13 +297,20 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError) {
+      if (isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json({ success: false, error: "Session invalid", code: "SESSION_INVALID" }, { status: 401 });
+      }
+      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    }
+    if (!user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email!);
     if (!systemUser) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
@@ -452,20 +351,59 @@ export async function POST(request: NextRequest) {
     const ticketCount = countResult[0]?.count || 0;
     const ticketNumber = `TKT-${year}-${String(ticketCount + 1).padStart(6, "0")}`;
 
-    // Insert ticket
-    const newTicketResult = await sqlClient`
-      INSERT INTO tickets (
-        ticket_number, service_type, ticket_category, ticket_section, source_role,
-        title_id, subject, description, priority, order_id, order_service_type,
-        is_3pl_order, is_high_value_order, created_by_user_id, status
-      )
-      VALUES (
-        ${ticketNumber}, ${serviceType}, ${ticketCategory}, ${ticketSection}, ${sourceRole},
-        ${titleId || null}, ${subject}, ${description}, ${priority}, ${orderId || null}, ${orderServiceType || null},
-        ${is3plOrder}, ${isHighValueOrder}, ${systemUser.id}, 'open'
-      )
-      RETURNING *
-    `;
+    // Resolve group from ticket_groups by service_type, ticket_section, source_role (and ticket_category if present)
+    let groupId: number | null = null;
+    try {
+      const st = String(serviceType).toLowerCase().trim();
+      const ts = String(ticketSection).toLowerCase().trim();
+      const sr = String(sourceRole).toLowerCase().trim();
+      const tc = ticketCategory ? String(ticketCategory).toLowerCase().trim() : "";
+      const groupRows = await sqlClient`
+        SELECT id FROM ticket_groups
+        WHERE is_active = true
+          AND LOWER(TRIM(COALESCE(service_type::text, ''))) = ${st}
+          AND LOWER(TRIM(COALESCE(ticket_section::text, ''))) = ${ts}
+          AND LOWER(TRIM(COALESCE(source_role::text, ''))) = ${sr}
+          AND (${tc === ""} OR LOWER(TRIM(COALESCE(ticket_category::text, ''))) = ${tc})
+        ORDER BY display_order ASC NULLS LAST
+        LIMIT 1
+      `;
+      if (Array.isArray(groupRows) && groupRows.length > 0 && (groupRows[0] as { id?: number })?.id != null) {
+        groupId = Number((groupRows[0] as { id: number }).id);
+      }
+    } catch (e) {
+      console.warn("[POST /api/tickets] Could not resolve group for auto-assign:", e);
+    }
+
+    // Insert ticket (include group_id when we resolved one)
+    const newTicketResult =
+      groupId != null
+        ? await sqlClient`
+            INSERT INTO tickets (
+              ticket_number, service_type, ticket_category, ticket_section, source_role,
+              title_id, subject, description, priority, order_id, order_service_type,
+              is_3pl_order, is_high_value_order, created_by_user_id, status, group_id
+            )
+            VALUES (
+              ${ticketNumber}, ${serviceType}, ${ticketCategory}, ${ticketSection}, ${sourceRole},
+              ${titleId || null}, ${subject}, ${description}, ${priority}, ${orderId || null}, ${orderServiceType || null},
+              ${is3plOrder}, ${isHighValueOrder}, ${systemUser.id}, 'open', ${groupId}
+            )
+            RETURNING *
+          `
+        : await sqlClient`
+            INSERT INTO tickets (
+              ticket_number, service_type, ticket_category, ticket_section, source_role,
+              title_id, subject, description, priority, order_id, order_service_type,
+              is_3pl_order, is_high_value_order, created_by_user_id, status
+            )
+            VALUES (
+              ${ticketNumber}, ${serviceType}, ${ticketCategory}, ${ticketSection}, ${sourceRole},
+              ${titleId || null}, ${subject}, ${description}, ${priority}, ${orderId || null}, ${orderServiceType || null},
+              ${is3plOrder}, ${isHighValueOrder}, ${systemUser.id}, 'open'
+            )
+            RETURNING *
+          `;
     const newTicket = newTicketResult[0];
 
     return NextResponse.json({

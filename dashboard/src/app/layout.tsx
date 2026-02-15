@@ -4,6 +4,7 @@ import "./globals.css";
 import { ReduxProvider } from "@/store/Provider";
 import { QueryProvider } from "@/providers/QueryProvider";
 import { GlobalErrorHandler } from "@/components/GlobalErrorHandler";
+import { ToastProvider } from "@/context/ToastContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -37,7 +38,9 @@ export default function RootLayout({
       >
         <GlobalErrorHandler />
         <ReduxProvider>
-          <QueryProvider>{children}</QueryProvider>
+          <QueryProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </QueryProvider>
         </ReduxProvider>
       </body>
     </html>
