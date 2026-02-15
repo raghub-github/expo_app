@@ -25,6 +25,19 @@ export function AgentActivityPageClient() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
 
+  interface AgentActivityRow {
+    userId: number;
+    name: string;
+    email: string;
+    onlineTimeMinutes: number;
+    breakTimeMinutes: number;
+    ticketsResolved: number;
+    ticketsClosed: number;
+    ticketsAssigned: number;
+    ticketsUpdated: number;
+    ticketsReopened: number;
+  }
+
   const { data, isLoading, error } = useQuery<{
     success: boolean;
     data: {
@@ -34,6 +47,7 @@ export function AgentActivityPageClient() {
       summary: ActivitySummary;
       profile: any;
       dailyBreakdown: any[];
+      allAgents?: AgentActivityRow[];
     };
   }>({
     queryKey: ["agentActivity", period, startDate, endDate],
@@ -271,6 +285,46 @@ export function AgentActivityPageClient() {
               </div>
             </div>
           </div>
+
+          {/* All agents activity table */}
+          {data?.data?.allAgents && data.data.allAgents.length > 0 && (
+            <div className="bg-white p-6 rounded-lg border border-gray-200">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">All Agents Activity</h2>
+              <p className="text-sm text-gray-600 mb-4">Activity for the selected period across all agents.</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200">
+                      <th className="text-left py-2 px-3 text-gray-600 font-medium">Agent</th>
+                      <th className="text-left py-2 px-3 text-gray-600 font-medium">Email</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Online</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Break</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Assigned</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Resolved</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Closed</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Updated</th>
+                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Reopened</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.data.allAgents.map((agent) => (
+                      <tr key={agent.userId} className="border-b border-gray-100 hover:bg-gray-50/50">
+                        <td className="py-2 px-3 text-gray-900 font-medium">{agent.name}</td>
+                        <td className="py-2 px-3 text-gray-600">{agent.email}</td>
+                        <td className="py-2 px-3 text-right text-gray-700">{formatMinutes(agent.onlineTimeMinutes)}</td>
+                        <td className="py-2 px-3 text-right text-gray-700">{formatMinutes(agent.breakTimeMinutes)}</td>
+                        <td className="py-2 px-3 text-right text-gray-700">{agent.ticketsAssigned}</td>
+                        <td className="py-2 px-3 text-right text-green-600 font-medium">{agent.ticketsResolved}</td>
+                        <td className="py-2 px-3 text-right text-gray-700">{agent.ticketsClosed}</td>
+                        <td className="py-2 px-3 text-right text-gray-700">{agent.ticketsUpdated}</td>
+                        <td className="py-2 px-3 text-right text-orange-600">{agent.ticketsReopened}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Daily Breakdown Table */}
           {data?.data?.dailyBreakdown && data.data.dailyBreakdown.length > 0 && (

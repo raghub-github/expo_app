@@ -39,7 +39,7 @@ function getPageNumbers(totalPages: number, currentPage: number): (number | "ell
 }
 
 export function TicketList() {
-  const { filters, appliedFilters, updateFilter } = useTicketFilters();
+  const { filters, appliedFilters, updateFilter, applySort } = useTicketFilters();
   const rightSidebar = useRightSidebar();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
@@ -312,22 +312,10 @@ export function TicketList() {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-white overflow-hidden">
-      {/* Toolbar */}
-      <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-gray-200/90 bg-white px-3 py-2">
-        {/* New Updated badge - when realtime reports new/updated tickets */}
-        {hasNewTickets && (
-          <button
-            type="button"
-            onClick={handleLoadNewTickets}
-            className="inline-flex items-center gap-1 rounded-full border border-blue-600 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-800 hover:bg-blue-100 transition-colors shrink-0"
-            aria-label="Load new tickets"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            New Updated{newTicketsCount > 1 ? ` (${newTicketsCount})` : ""}
-          </button>
-        )}
-        {/* Sort by: combined dropdown (criteria + order) */}
-        <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600" ref={sortDropdownRef}>
+      {/* Toolbar: fixed 3-column layout so Sort by position never changes */}
+      <div className="flex-shrink-0 flex items-center gap-2 border-b border-gray-200/90 bg-white px-3 py-2">
+        {/* Left: Sort by - fixed position */}
+        <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600 shrink-0" ref={sortDropdownRef}>
           <span className="hidden sm:inline font-medium text-gray-700">Sort by:</span>
           <button
             type="button"
@@ -337,13 +325,13 @@ export function TicketList() {
             aria-haspopup="listbox"
             aria-label="Sort options"
           >
-            {filters.sortBy === "created_at" && "Date created"}
-            {filters.sortBy === "updated_at" && "Last modified"}
-            {filters.sortBy === "sla_due_at" && "Due by"}
-            {filters.sortBy === "priority" && "Priority"}
-            {filters.sortBy === "status" && "Status"}
+            {appliedFilters.sortBy === "created_at" && "Date created"}
+            {appliedFilters.sortBy === "updated_at" && "Last modified"}
+            {appliedFilters.sortBy === "sla_due_at" && "Due by"}
+            {appliedFilters.sortBy === "priority" && "Priority"}
+            {appliedFilters.sortBy === "status" && "Status"}
             <span className="text-gray-400">·</span>
-            {filters.sortOrder === "asc" ? "Ascending" : "Descending"}
+            {appliedFilters.sortOrder === "asc" ? "Ascending" : "Descending"}
             <ChevronDown className={`h-3.5 w-3.5 text-gray-500 transition-transform ${sortDropdownOpen ? "rotate-180" : ""}`} />
           </button>
           {sortDropdownOpen && (
@@ -365,16 +353,19 @@ export function TicketList() {
                   key={opt.value}
                   type="button"
                   role="option"
-                  aria-selected={filters.sortBy === opt.value}
+                  aria-selected={appliedFilters.sortBy === opt.value}
                   onClick={() => {
-                    updateFilter("sortBy", opt.value);
+                    setSortDropdownOpen(false);
+                    // Date created: default to Descending so latest tickets show first
+                    const order = opt.value === "created_at" ? "desc" : appliedFilters.sortOrder;
+                    applySort(opt.value, order);
                   }}
                   className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm ${
-                    filters.sortBy === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
+                    appliedFilters.sortBy === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
                   }`}
                 >
-                  <span className={filters.sortBy === opt.value ? "font-medium" : ""}>{opt.label}</span>
-                  {filters.sortBy === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                  <span className={appliedFilters.sortBy === opt.value ? "font-medium" : ""}>{opt.label}</span>
+                  {appliedFilters.sortBy === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
                 </button>
               ))}
               <div className="my-1 border-t border-gray-200" />
@@ -389,23 +380,40 @@ export function TicketList() {
                   key={opt.value}
                   type="button"
                   role="option"
-                  aria-selected={filters.sortOrder === opt.value}
+                  aria-selected={appliedFilters.sortOrder === opt.value}
                   onClick={() => {
-                    updateFilter("sortOrder", opt.value);
+                    setSortDropdownOpen(false);
+                    applySort(appliedFilters.sortBy, opt.value);
                   }}
                   className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm ${
-                    filters.sortOrder === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
+                    appliedFilters.sortOrder === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
                   }`}
                 >
-                  <span className={filters.sortOrder === opt.value ? "font-medium" : ""}>{opt.label}</span>
-                  {filters.sortOrder === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                  <span className={appliedFilters.sortOrder === opt.value ? "font-medium" : ""}>{opt.label}</span>
+                  {appliedFilters.sortOrder === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        <div className="flex items-center gap-2 text-sm text-gray-600">
+        {/* Center: New Updated button (Freshdesk style) - only when there are new/updated tickets */}
+        <div className="flex-1 flex justify-center items-center min-w-0">
+          {hasNewTickets && (
+            <button
+              type="button"
+              onClick={handleLoadNewTickets}
+              className="inline-flex items-center gap-2 rounded-full border border-blue-400 bg-gray-100 px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-gray-200 hover:border-blue-500 transition-colors shrink-0 shadow-sm"
+              aria-label={`Load ${newTicketsCount} new update${newTicketsCount !== 1 ? "s" : ""}`}
+            >
+              <RefreshCw className="h-4 w-4 text-blue-600" />
+              {newTicketsCount} update{newTicketsCount !== 1 ? "s" : ""}
+            </button>
+          )}
+        </div>
+
+        {/* Right: Page info, view toggles, Export */}
+        <div className="flex items-center gap-2 text-sm text-gray-600 shrink-0">
           <span className="text-xs text-gray-600 tabular-nums whitespace-nowrap" aria-live="polite">
             Page {page} of {Math.max(1, Math.ceil(currentTotal / pageSize) || 1)}
             {" · "}

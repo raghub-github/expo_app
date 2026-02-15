@@ -346,6 +346,24 @@ export function useTicketFilters() {
     });
   }, [router]);
 
+  /** Apply sort immediately to URL so ticket list/cards auto-shift. Use for toolbar Sort dropdown. */
+  const applySort = useCallback(
+    (sortBy: string, sortOrder: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("sortBy", sortBy);
+      params.set("sortOrder", sortOrder);
+      const query = params.toString();
+      isUpdatingRef.current = true;
+      startTransition(() => {
+        router.replace(`/dashboard/tickets${query ? `?${query}` : ""}`, { scroll: false });
+        setTimeout(() => {
+          isUpdatingRef.current = false;
+        }, 0);
+      });
+    },
+    [router, searchParams]
+  );
+
   const updateFilter = useCallback((key: keyof TicketFilterState, value: string) => {
     dispatch({ type: "set", key, value });
   }, []);
@@ -405,6 +423,8 @@ export function useTicketFilters() {
     filters,
     /** Applied filters (from URL) - use for ticket list so it only updates on Apply */
     appliedFilters,
+    /** Apply sort to URL immediately (toolbar dropdown) so list/cards re-order */
+    applySort,
     updateFilter,
     updateFilters,
     updateStatuses,

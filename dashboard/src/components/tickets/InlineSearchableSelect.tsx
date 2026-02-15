@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Search } from "lucide-react";
 
 export type Option = { value: string; label: string };
@@ -45,37 +46,114 @@ export function InlineSearchableSelect({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [openUpward, setOpenUpward] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
   const ref = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current) return;
+    const buttonRect = buttonRef.current.getBoundingClientRect();
+    const dropdownWidth = 208;
+    const spaceBelow = window.innerHeight - buttonRect.bottom;
+    const spaceAbove = buttonRect.top;
+    const dropdownHeight = 250;
+    const shouldOpenUp = spaceBelow < dropdownHeight && spaceAbove > spaceBelow;
+    setOpenUpward(shouldOpenUp);
+
+    const wouldOverflowRight = buttonRect.left + dropdownWidth > window.innerWidth;
+    const maxH = shouldOpenUp
+      ? Math.max(150, Math.min(250, buttonRect.top - 20))
+      : Math.max(150, Math.min(250, window.innerHeight - buttonRect.bottom - 20));
+    const maxW = buttonRect.left + 208 > window.innerWidth
+      ? Math.min(208, window.innerWidth - buttonRect.left)
+      : 208;
+
+    const style: React.CSSProperties = {
+      maxHeight: `${maxH}px`,
+      maxWidth: `${maxW}px`,
+      overflowY: "auto",
+    };
+    if (shouldOpenUp) {
+      style.bottom = `${window.innerHeight - buttonRect.top + 4}px`;
+      style.top = "auto";
+      if (wouldOverflowRight) {
+        style.right = `${window.innerWidth - buttonRect.right}px`;
+        style.left = "auto";
+      } else {
+        style.left = `${buttonRect.left}px`;
+        style.right = "auto";
+      }
+    } else {
+      style.top = `${buttonRect.bottom + 4}px`;
+      style.bottom = "auto";
+      if (wouldOverflowRight) {
+        style.right = `${window.innerWidth - buttonRect.right}px`;
+        style.left = "auto";
+      } else {
+        style.left = `${buttonRect.left}px`;
+        style.right = "auto";
+      }
+    }
+    setDropdownStyle(style);
+  }, [open]);
 
   useEffect(() => {
     const onOutside = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      const inButton = ref.current?.contains(target);
+      const inDropdown = dropdownRef.current?.contains(target);
+      if (!inButton && !inDropdown) setOpen(false);
     };
     if (open) {
       document.addEventListener("mousedown", onOutside);
-      // Check if dropdown should open upward
       const checkPosition = () => {
         if (buttonRef.current) {
           const rect = buttonRef.current.getBoundingClientRect();
           const spaceBelow = window.innerHeight - rect.bottom;
           const spaceAbove = rect.top;
-          const dropdownHeight = 250; // Approximate max height including search bar
-          // Open upward if there's not enough space below but more space above
-          const shouldOpenUp = spaceBelow < dropdownHeight && spaceAbove > spaceBelow;
+          const shouldOpenUp = spaceBelow < 250 && spaceAbove > spaceBelow;
           setOpenUpward(shouldOpenUp);
+          setDropdownStyle((prev) => {
+            const next = { ...prev };
+            if (shouldOpenUp) {
+              next.bottom = `${window.innerHeight - rect.top + 4}px`;
+              next.top = "auto";
+              const wouldOverflowRight = rect.left + 208 > window.innerWidth;
+              if (wouldOverflowRight) {
+                next.right = `${window.innerWidth - rect.right}px`;
+                next.left = "auto";
+              } else {
+                next.left = `${rect.left}px`;
+                next.right = "auto";
+              }
+            } else {
+              next.top = `${rect.bottom + 4}px`;
+              next.bottom = "auto";
+              const wouldOverflowRight = rect.left + 208 > window.innerWidth;
+              if (wouldOverflowRight) {
+                next.right = `${window.innerWidth - rect.right}px`;
+                next.left = "auto";
+              } else {
+                next.left = `${rect.left}px`;
+                next.right = "auto";
+              }
+            }
+            next.maxHeight = shouldOpenUp
+              ? `${Math.max(150, Math.min(250, rect.top - 20))}px`
+              : `${Math.max(150, Math.min(250, window.innerHeight - rect.bottom - 20))}px`;
+            return next;
+          });
         }
       };
-      // Check immediately and on scroll/resize
-      checkPosition();
-      window.addEventListener('scroll', checkPosition, true);
-      window.addEventListener('resize', checkPosition);
+      window.addEventListener("scroll", checkPosition, true);
+      window.addEventListener("resize", checkPosition);
       return () => {
-        window.removeEventListener('scroll', checkPosition, true);
-        window.removeEventListener('resize', checkPosition);
+        window.removeEventListener("scroll", checkPosition, true);
+        window.removeEventListener("resize", checkPosition);
+        document.removeEventListener("mousedown", onOutside);
       };
     }
-    return () => document.removeEventListener("mousedown", onOutside);
   }, [open]);
 
   const filtered = options.filter((o) =>
@@ -100,101 +178,17 @@ export function InlineSearchableSelect({
   
   const displayLabel = getDisplayLabel();
 
-  return (
-    <div ref={ref} className={`relative ${className}`} style={{ zIndex: open ? 9999 : 'auto', isolation: 'isolate' }}>
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => !disabled && setOpen((o) => !o)}
-        disabled={disabled}
-        className={`inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50 border-0 bg-transparent transition-colors w-full ${fullWidth ? "" : ""}`}
-        style={{ border: 'none', outline: 'none' }}
-      >
-        {leadingIcon && <span className="shrink-0 flex items-center">{leadingIcon}</span>}
-        <span className="whitespace-nowrap text-gray-800 truncate flex-1 min-w-0 text-left">{displayLabel}</span>
-        <ChevronDown className="h-2.5 w-2.5 shrink-0 text-gray-500" />
-      </button>
-      {open && (
-        <div 
-          className={`fixed z-[9999] w-52 rounded-md border border-gray-200 bg-white shadow-lg ${
-            openUpward ? '' : ''
-          }`}
-          style={{ 
-            ...(() => {
-              if (!buttonRef.current) return { left: '0', top: '0' };
-              const buttonRect = buttonRef.current.getBoundingClientRect();
-              const dropdownWidth = 208; // w-52 = 13rem = 208px
-              
-              // Check if dropdown would overflow on the right side of viewport
-              const wouldOverflowRight = buttonRect.left + dropdownWidth > window.innerWidth;
-              
-              // Calculate position
-              if (openUpward) {
-                // Position above button using bottom
-                const bottomPosition = window.innerHeight - buttonRect.top + 4; // 4px gap
-                if (wouldOverflowRight) {
-                  // Align dropdown to right edge of button
-                  const rightPosition = window.innerWidth - buttonRect.right;
-                  return { 
-                    right: `${rightPosition}px`, 
-                    left: 'auto',
-                    bottom: `${bottomPosition}px`,
-                    top: 'auto'
-                  };
-                }
-                // Default: align to left edge of button
-                return { 
-                  left: `${buttonRect.left}px`, 
-                  right: 'auto',
-                  bottom: `${bottomPosition}px`,
-                  top: 'auto'
-                };
-              } else {
-                // Position below button using top
-                const topPosition = buttonRect.bottom + 4; // 4px gap below
-                if (wouldOverflowRight) {
-                  // Align dropdown to right edge of button
-                  const rightPosition = window.innerWidth - buttonRect.right;
-                  return { 
-                    right: `${rightPosition}px`, 
-                    left: 'auto',
-                    top: `${topPosition}px`,
-                    bottom: 'auto'
-                  };
-                }
-                // Default: align to left edge of button
-                return { 
-                  left: `${buttonRect.left}px`, 
-                  right: 'auto',
-                  top: `${topPosition}px`,
-                  bottom: 'auto'
-                };
-              }
-            })(),
-            maxHeight: (() => {
-              if (!buttonRef.current) return '200px';
-              const rect = buttonRef.current.getBoundingClientRect();
-              if (openUpward) {
-                // Space above minus padding
-                return `${Math.max(150, Math.min(250, rect.top - 20))}px`;
-              } else {
-                // Space below minus padding
-                return `${Math.max(150, Math.min(250, window.innerHeight - rect.bottom - 20))}px`;
-              }
-            })(),
-            // Ensure dropdown stays within viewport
-            maxWidth: (() => {
-              if (!buttonRef.current) return '208px';
-              const rect = buttonRef.current.getBoundingClientRect();
-              const wouldOverflowRight = rect.left + 208 > window.innerWidth;
-              if (wouldOverflowRight) {
-                // Limit width to available space
-                return `${Math.min(208, window.innerWidth - rect.right)}px`;
-              }
-              return '208px';
-            })(),
-            overflowY: 'auto'
-          }}
+  const hasPosition = dropdownStyle.top !== undefined || dropdownStyle.bottom !== undefined;
+  const dropdownContent =
+    open &&
+    hasPosition &&
+    typeof document !== "undefined" &&
+    (() => {
+      const content = (
+        <div
+          ref={dropdownRef}
+          className="fixed z-[9999] w-52 rounded-md border border-gray-200 bg-white shadow-lg"
+          style={dropdownStyle}
         >
           <div className="border-b border-gray-100 p-1.5">
             <div className="relative">
@@ -208,7 +202,7 @@ export function InlineSearchableSelect({
               />
             </div>
           </div>
-          <div className="overflow-y-auto py-1" style={{ maxHeight: 'inherit' }}>
+          <div className="overflow-y-auto py-1" style={{ maxHeight: "inherit" }}>
             {allowUnset && (
               <button
                 type="button"
@@ -236,9 +230,7 @@ export function InlineSearchableSelect({
                   }`}
                 >
                   <span>{opt.label}</span>
-                  {isAssigned && (
-                    <span className="text-gray-500 ml-2">—</span>
-                  )}
+                  {isAssigned && <span className="text-gray-500 ml-2">—</span>}
                 </button>
               );
             })}
@@ -247,7 +239,27 @@ export function InlineSearchableSelect({
             )}
           </div>
         </div>
-      )}
+      );
+      return createPortal(content, document.body);
+    })();
+
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled}
+        className={`inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50 border-0 bg-transparent transition-colors w-full ${fullWidth ? "" : ""}`}
+        style={{ border: "none", outline: "none" }}
+      >
+        {leadingIcon && <span className="shrink-0 flex items-center">{leadingIcon}</span>}
+        <span className="whitespace-nowrap text-gray-800 truncate flex-1 min-w-0 text-left">
+          {displayLabel}
+        </span>
+        <ChevronDown className="h-2.5 w-2.5 shrink-0 text-gray-500" />
+      </button>
+      {dropdownContent}
     </div>
   );
 }

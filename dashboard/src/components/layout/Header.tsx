@@ -372,14 +372,14 @@ export function Header() {
 
   return (
     <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
-      {/* Mobile: Logo + Page name, Desktop: Just Page name */}
-      <div className="flex items-center space-x-3 sm:space-x-4 min-w-0 flex-shrink">
+      {/* Mobile: Logo + Page name, Desktop: Just Page name. Toggle + gear never shrink. */}
+      <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Mobile logo - icon only */}
         <Link href="/dashboard" className="sm:hidden flex-shrink-0">
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
-        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
-        {/* Online/Offline toggle - only on Tickets dashboard, left of center */}
+        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate flex-shrink min-w-0">{pageName}</h2>
+        {/* Online/Offline/Break toggle + Settings - only on Tickets, always visible when on route */}
         {pathname.startsWith("/dashboard/tickets") && (
           <AgentStatusToggle />
         )}
