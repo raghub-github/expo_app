@@ -5,31 +5,41 @@ import {
   checkSessionValidity,
   formatTimeRemaining,
 } from "@/lib/auth/session-manager";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { cookies } from "next/headers";
 
 /**
  * GET /api/auth/session-status
  * Returns current session status, time remaining, etc.
+ * Uses getUser() to avoid triggering token refresh (prevents "refresh_token_already_used" when called in parallel with other routes).
  */
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError) {
+      if (isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json(
+          { success: false, authenticated: false, error: "Session invalid", code: "SESSION_INVALID" },
+          { status: 401, headers: { "Content-Type": "application/json" } }
+        );
+      }
       return NextResponse.json(
-        {
-          success: false,
-          authenticated: false,
-          error: "Not authenticated",
-          code: "SESSION_REQUIRED",
-        },
+        { success: false, authenticated: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
+
+    if (!user) {
+      return NextResponse.json(
+        { success: false, authenticated: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    const session = { user };
 
     // Get session metadata from cookies
     const cookieStore = await cookies();

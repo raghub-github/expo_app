@@ -27,7 +27,7 @@ const resolveDashboardType = (path?: string): DashboardType => {
   if (lower.includes("/rider")) return "RIDER";
   if (lower.includes("/merchant")) return "MERCHANT";
   if (lower.includes("/customer")) return "CUSTOMER";
-  if (lower.includes("/order")) return "ORDER";
+  if (lower.includes("/order")) return "ORDER_FOOD"; // Use ORDER_FOOD as default for orders
   if (lower.includes("/ticket")) return "TICKET";
   if (lower.includes("/offer")) return "OFFER";
   if (lower.includes("/area-manager")) return "AREA_MANAGER";

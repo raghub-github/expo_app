@@ -1,13 +1,11 @@
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
+import { AreaManagerDashboardClient } from "./AreaManagerDashboardClient";
 
 export default async function AreaManagersPage() {
   await requireDashboardAccess("AREA_MANAGER");
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <p className="text-gray-500">Area manager functionality coming soon...</p>
-      </div>
+      <AreaManagerDashboardClient />
     </div>
   );
 }

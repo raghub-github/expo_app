@@ -17,6 +17,10 @@ const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
 
 export async function GET(request: NextRequest) {
+  const startTime = Date.now();
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:19',message:'Dashboard access API start',data:{timestamp:startTime},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
   try {
     const supabase = await createServerSupabaseClient();
 
@@ -93,15 +97,34 @@ export async function GET(request: NextRequest) {
     }
 
     // Get dashboard access for regular users
+    const dashboardsStartTime = Date.now();
     const dashboards = await getUserDashboardAccess(systemUser.id);
+    const dashboardsDuration = Date.now() - dashboardsStartTime;
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:96',message:'getUserDashboardAccess completed',data:{dashboardsCount:dashboards.length,durationMs:dashboardsDuration},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
     
     // Get access points for each dashboard
+    const accessPointsStartTime = Date.now();
     const allAccessPoints = [];
     for (const dashboard of dashboards) {
+      const apStart = Date.now();
       const accessPoints = await getUserAccessPoints(systemUser.id, dashboard.dashboardType as any);
+      const apDuration = Date.now() - apStart;
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:101',message:'getUserAccessPoints per dashboard',data:{dashboardType:dashboard.dashboardType,accessPointsCount:accessPoints.length,durationMs:apDuration},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
       allAccessPoints.push(...accessPoints);
     }
+    const accessPointsDuration = Date.now() - accessPointsStartTime;
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:103',message:'All access points fetched',data:{totalAccessPoints:allAccessPoints.length,totalDurationMs:accessPointsDuration,isSequential:true},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
 
+    const totalDuration = Date.now() - startTime;
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:105',message:'Dashboard access API complete',data:{totalDurationMs:totalDuration,dashboardsCount:dashboards.length,accessPointsCount:allAccessPoints.length},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
     return NextResponse.json({
       success: true,
       data: {

@@ -10,7 +10,7 @@ import { desc, eq, and } from "drizzle-orm";
 import { ulid } from "ulid";
 import { auth } from "../../plugins/auth.js";
 import { getDb } from "../../db/client.js";
-import { riderLocationEvents, riders, riderDocuments } from "../../db/schema.js";
+import { riderLocationEvents, riders, riderDocuments, blacklistHistory, dutyLogs } from "../../db/schema.js";
 import { scoreLocationPing, type LocationPoint } from "./fraud.js";
 import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 
@@ -118,6 +118,112 @@ export async function riderRoutes(app: FastifyInstance) {
         approvalStatus: "DRAFT",
       };
     },
+  );
+
+  // Update duty status (go online/offline). When going online, blacklisted services are excluded so rider can only be online for allowed services.
+  app.put(
+    "/duty",
+    {
+      schema: {
+        body: z.object({
+          isOnDuty: z.boolean(),
+          serviceTypes: z.array(z.enum(["food", "parcel", "person_ride"])).optional(),
+        }),
+        response: {
+          200: z.object({
+            isOnDuty: z.boolean(),
+            allowedServiceTypes: z.array(z.string()),
+            blockedServiceTypes: z.array(z.string()).optional(),
+            lastUpdated: z.string(),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.auth!.sub;
+      const db = getDb();
+
+      const riderIdMatch = userId.match(/usr_(\d+)/);
+      if (!riderIdMatch) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+      const riderId = parseInt(riderIdMatch[1]!, 10);
+
+      const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
+      if (!rider) {
+        return reply.status(403).send({ error: "Rider not found" });
+      }
+
+      if (rider.status === "BLOCKED") {
+        return reply.status(403).send({
+          error: "You cannot go online. Your account is blocked (permanent blacklist).",
+        });
+      }
+
+      const body = req.body as { isOnDuty: boolean; serviceTypes?: ("food" | "parcel" | "person_ride")[] };
+      const isOnDuty = body.isOnDuty;
+      const requestedServices = body.serviceTypes ?? ["food", "parcel", "person_ride"];
+      const now = new Date();
+
+      if (!isOnDuty) {
+        await db.insert(dutyLogs).values({
+          riderId,
+          status: "OFF",
+          serviceTypes: [],
+        });
+        return {
+          isOnDuty: false,
+          allowedServiceTypes: [],
+          lastUpdated: now.toISOString(),
+        };
+      }
+
+      const blacklistEntries = await db
+        .select()
+        .from(blacklistHistory)
+        .where(and(eq(blacklistHistory.riderId, riderId), eq(blacklistHistory.banned, true)))
+        .orderBy(desc(blacklistHistory.createdAt));
+
+      const norm = (s: string) => {
+        const x = (s || "").toLowerCase();
+        return x === "ride" ? "person_ride" : x;
+      };
+      const isActiveBan = (entry: { isPermanent: boolean; expiresAt: Date | null }) =>
+        entry.isPermanent || !entry.expiresAt || new Date(entry.expiresAt) > now;
+
+      const getEffectiveForSlot = (slots: string[]) => {
+        const candidate = blacklistEntries.find((e) =>
+          slots.includes(norm((e.serviceType as string) || "all"))
+        );
+        if (!candidate) return null;
+        return isActiveBan(candidate) ? candidate : null;
+      };
+
+      const allBanned = getEffectiveForSlot(["all"]) != null;
+      const foodBanned = allBanned || getEffectiveForSlot(["food", "all"]) != null;
+      const parcelBanned = allBanned || getEffectiveForSlot(["parcel", "all"]) != null;
+      const personRideBanned = allBanned || getEffectiveForSlot(["person_ride", "all"]) != null;
+
+      const allowed: string[] = [];
+      const blocked: string[] = [];
+      if (requestedServices.includes("food")) (foodBanned ? blocked : allowed).push("food");
+      if (requestedServices.includes("parcel")) (parcelBanned ? blocked : allowed).push("parcel");
+      if (requestedServices.includes("person_ride")) (personRideBanned ? blocked : allowed).push("person_ride");
+
+      await db.insert(dutyLogs).values({
+        riderId,
+        status: "ON",
+        serviceTypes: allowed,
+      });
+
+      return {
+        isOnDuty: true,
+        allowedServiceTypes: allowed,
+        blockedServiceTypes: blocked.length ? blocked : undefined,
+        lastUpdated: now.toISOString(),
+      };
+    }
   );
 
   // Get rider status

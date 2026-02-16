@@ -43,5 +43,12 @@ export async function createServerSupabaseClient() {
         }
       },
     },
+    auth: {
+      autoRefreshToken: false, // Disable auto-refresh to prevent "refresh token already used" errors
+      // Token refresh should be handled explicitly, not automatically, to avoid race conditions
+      // when multiple API routes call getSession() simultaneously
+      persistSession: true,
+      detectSessionInUrl: false,
+    },
   });
 }

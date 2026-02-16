@@ -21,6 +21,16 @@ export const queryKeys = {
     detail: (id: number | string) => ["users", "detail", id] as const,
   },
   
+  // Customers
+  customers: {
+    all: () => ["customers"] as const,
+    lists: () => ["customers", "list"] as const,
+    list: (filters: Record<string, unknown>) => ["customers", "list", filters] as const,
+    details: () => ["customers", "detail"] as const,
+    detail: (id: number | string) => ["customers", "detail", id] as const,
+    stats: (filters: Record<string, unknown>) => ["customers", "stats", filters] as const,
+  },
+  
   // Service Points
   servicePoints: {
     all: () => ["service-points"] as const,
@@ -46,6 +56,13 @@ export const queryKeys = {
     list: (filters: Record<string, unknown>) => ["tickets", "list", filters] as const,
     details: () => ["tickets", "detail"] as const,
     detail: (id: number | string) => ["tickets", "detail", id] as const,
+    activities: (id: number | string) => ["tickets", "activities", id] as const,
+  },
+
+  // Unified tickets (public.unified_tickets)
+  unifiedTickets: {
+    all: () => ["unified-tickets"] as const,
+    list: (filters: Record<string, unknown>) => ["unified-tickets", "list", filters] as const,
   },
   
   // Analytics

@@ -199,12 +199,13 @@ export async function paymentRoutes(app: FastifyInstance) {
         })
         .where(eq(onboardingPayments.id, payment.id));
 
-      // If payment successful, update rider status to APPROVAL stage (awaiting admin verification)
+      // If payment successful, activate rider: onboarding_stage = ACTIVE, status = ACTIVE
       if (paymentStatus === "captured") {
         await db
           .update(riders)
           .set({
-            onboardingStage: "APPROVAL",
+            onboardingStage: "ACTIVE",
+            status: "ACTIVE",
             updatedAt: new Date(),
           })
           .where(eq(riders.id, riderIdInt));

@@ -4,6 +4,7 @@ import "./globals.css";
 import { ReduxProvider } from "@/store/Provider";
 import { QueryProvider } from "@/providers/QueryProvider";
 import { GlobalErrorHandler } from "@/components/GlobalErrorHandler";
+import { ToastProvider } from "@/context/ToastContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -19,9 +20,9 @@ export const metadata: Metadata = {
   title: "GatiMitra Control Dashboard",
   description: "Enterprise-grade unified control dashboard",
   icons: {
-    icon: "/favicon.ico",
-    shortcut: "/favicon.ico",
-    apple: "/favicon.ico",
+    icon: "/favicon.png",
+    shortcut: "/favicon.png",
+    apple: "/favicon.png",
   },
 };
 
@@ -31,13 +32,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <GlobalErrorHandler />
         <ReduxProvider>
-          <QueryProvider>{children}</QueryProvider>
+          <QueryProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </QueryProvider>
         </ReduxProvider>
       </body>
     </html>

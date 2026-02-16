@@ -12,4 +12,11 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 // Client-side Supabase client
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Disable autoRefreshToken to prevent race conditions when multiple tabs/components refresh simultaneously
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: true,
+    detectSessionInUrl: true,
+  },
+});

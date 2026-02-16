@@ -77,6 +77,9 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
     reports_to_id: "",
     manager_name: "",
     status: "",
+    area_code: "",
+    locality_code: "",
+    city: "",
   });
   const [selectedDashboards, setSelectedDashboards] = useState<string[]>([]);
   const [selectedAccessPoints, setSelectedAccessPoints] = useState<Record<string, string[]>>({});
@@ -149,6 +152,9 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           reports_to_id: user.reportsToId?.toString() || "",
           manager_name: user.managerName || "",
           status: user.status || "",
+          area_code: user.areaCode || "",
+          locality_code: user.localityCode || "",
+          city: user.city || "",
         });
         
         // Fetch dashboard access if editing
@@ -239,6 +245,14 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
       if (formData.team) payload.team = formData.team;
       if (formData.reports_to_id) payload.reports_to_id = parseInt(formData.reports_to_id);
       if (formData.manager_name) payload.manager_name = formData.manager_name;
+      if (
+        formData.primary_role === "AREA_MANAGER_MERCHANT" ||
+        formData.primary_role === "AREA_MANAGER_RIDER"
+      ) {
+        payload.area_code = formData.area_code?.trim() || "";
+        payload.locality_code = formData.locality_code?.trim() || "";
+        payload.city = formData.city?.trim() || "";
+      }
       // Only include status if super admin is editing someone else (not themselves)
       if (formData.status && canChangeStatus) {
         payload.status = formData.status;
@@ -503,6 +517,46 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
             </p>
           )}
         </div>
+
+        {/* Area Manager scope (area_code, locality_code, city) - saved in area_managers */}
+        {(formData.primary_role === "AREA_MANAGER_MERCHANT" ||
+          formData.primary_role === "AREA_MANAGER_RIDER") && (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+            <p className="text-sm font-medium text-gray-700">Area scope (saved in area_managers)</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Area code</label>
+                <input
+                  type="text"
+                  value={formData.area_code}
+                  onChange={(e) => setFormData({ ...formData, area_code: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder:text-gray-500 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="e.g. BLK01"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Locality code</label>
+                <input
+                  type="text"
+                  value={formData.locality_code}
+                  onChange={(e) => setFormData({ ...formData, locality_code: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder:text-gray-500 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="e.g. LOC_A"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">City (Rider AM scope)</label>
+                <input
+                  type="text"
+                  value={formData.city}
+                  onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder:text-gray-500 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="e.g. Mumbai"
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Subrole */}
         {formData.primary_role && hasSubroles(formData.primary_role) && (

@@ -1,19 +1,23 @@
-# Tickets Domain - Unified Ticket System
+# Tickets Domain - Ticket Systems Overview
 
 ## 🎫 **TICKETS DOMAIN OVERVIEW**
 
-The Tickets Domain provides a unified ticket system for handling all support requests across the platform, including:
-- Order-related tickets
-- Customer, rider, merchant support
-- System-generated tickets
-- Email integration
-- Auto-generation rules
+The database has **two ticket systems** that coexist:
 
-**Total Tables**: 5 tables
+| System | Main table | Purpose |
+|--------|------------|---------|
+| **Enterprise / rider-centric** | `tickets` | Rider & customer support tied to `ticket_groups`, `ticket_titles`, `ticket_messages`. Used by dashboard ticket list/detail and seed script `SEED_TICKETS_30_40.sql`. |
+| **Unified ticket system** | `unified_tickets` | Single design for all sources (customer, rider, merchant, system, email). Uses `unified_ticket_messages`, `unified_ticket_activities`. Different enums and constraints. |
+
+**Which table to use**
+- **Dashboard ticket UI and seed data**: use **`tickets`** (with `ticket_groups`, `ticket_titles`, `ticket_messages`, `ticket_participants`).
+- **Unified flows (email, multi-source, new apps)**: use **`unified_tickets`** and related unified_* tables.
+
+Other `ticket_*` tables (e.g. `ticket_statuses`, `ticket_tags`, `ticket_routing_*`, `ticket_sla_policies`) may support one or both systems; check FKs and app code.
 
 ---
 
-## 📋 **TICKET TABLES**
+## 📋 **UNIFIED TICKET SYSTEM TABLES** (unified_tickets design)
 
 ### 1. **`unified_tickets`** - Unified Tickets (Main Table)
 **Purpose**: Main table for all support tickets across the platform.
@@ -189,17 +193,29 @@ system_users (1) ──→ (many) unified_tickets (assigned_to_agent_id)
 
 ---
 
-## 📊 **SUMMARY**
+## 📊 **ENTERPRISE TICKETS** (tickets table and related)
+
+| Table | Purpose |
+|-------|---------|
+| `tickets` | Main table for dashboard: rider_id NOT NULL, ticket_number (format TKT-XXXX-NNNNNN), ticket_category, order_id FK → orders(id). |
+| `ticket_groups` | Grouping (e.g. Customer Order, Rider Non-Order). |
+| `ticket_titles` | Title templates per group (e.g. Order delayed, Wrong item). |
+| `ticket_messages` | Conversation thread for `tickets`. |
+| `ticket_participants` | Participants linked to a ticket. |
+
+Seed script: `dashboard/drizzle/SEED_TICKETS_30_40.sql` inserts into `ticket_groups`, `ticket_titles`, `tickets`, `ticket_messages`, `ticket_participants`. Requires riders and (for order_related) at least one row in `orders`.
+
+---
+
+## 📊 **UNIFIED SYSTEM SUMMARY**
 
 | Table | Purpose | Key Features |
 |-------|---------|--------------|
 | `unified_tickets` | Main tickets table | Unified for all ticket types, email integration |
 | `unified_ticket_messages` | Ticket messages | Conversation thread, internal notes |
 | `unified_ticket_activities` | Activity log | Immutable audit trail |
-| `ticket_title_config` | Title configuration | Predefined titles, defaults |
+| `ticket_title_config` | Title configuration | Predefined titles, defaults (unified) |
 | `ticket_auto_generation_rules` | Auto-generation rules | System-generated tickets |
-
-**Total**: 5 tables in Tickets Domain
 
 ---
 

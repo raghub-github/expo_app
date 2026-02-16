@@ -10,11 +10,22 @@ export async function POST(request: NextRequest) {
 
     const supabase = await createServerSupabaseClient();
 
-    const { data, error } = await supabase.auth.verifyOtp({
-      [type === "phone" ? "phone" : "email"]: email || phone,
-      token,
-      type: type === "phone" ? "sms" : "email",
-    });
+    let verifyResult;
+    if (type === "phone") {
+      verifyResult = await supabase.auth.verifyOtp({
+        phone: phone!,
+        token,
+        type: "sms",
+      });
+    } else {
+      verifyResult = await supabase.auth.verifyOtp({
+        email: email!,
+        token,
+        type: "email",
+      });
+    }
+
+    const { data, error } = verifyResult;
 
     if (error) {
       if (email) {

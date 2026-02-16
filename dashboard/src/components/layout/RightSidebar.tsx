@@ -1,24 +1,33 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
+  type DashboardSubRoute,
+  type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
+import { TicketFilters } from "@/components/tickets/TicketFilters";
+import { TicketPropertiesPanel } from "@/components/tickets/ticket-view/TicketPropertiesPanel";
+import { usePermission } from "@/hooks/usePermission";
+import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 
 interface RightSidebarProps {
   isOpen: boolean;
   onToggle: () => void;
+  /** When true, this (Properties) sidebar shifts left so Filters can sit at right: 0 */
+  filterSidebarOpen?: boolean;
 }
 
-export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
+export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const riderCtx = useRiderDashboardOptional();
+  const { hasDashboardAccess, isSuperAdmin } = usePermission();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -29,14 +38,74 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
     [cleanPathname]
   );
 
-  // Get sub-routes for current dashboard
-  const currentSubRoutes = useMemo(
+  // Sub-routes for current dashboard (may be filtered for Area Managers)
+  const rawSubRoutes = useMemo(
     () => getCurrentDashboardSubRoutes(cleanPathname),
     [cleanPathname]
   );
+  const isAreaManagerDashboard =
+    currentDashboard?.dashboardType === "AREA_MANAGER";
+  const isOrderDashboard =
+    currentDashboard?.dashboardType === "ORDER_FOOD" ||
+    currentDashboard?.dashboardType === "ORDER_PARCEL" ||
+    currentDashboard?.dashboardType === "ORDER_PERSON_RIDE" ||
+    cleanPathname.startsWith("/dashboard/orders");
+  const [areaManagerType, setAreaManagerType] =
+    useState<AreaManagerTypeFilter | null>(null);
+
+  useEffect(() => {
+    if (!isAreaManagerDashboard) return;
+    let cancelled = false;
+    fetch("/api/area-manager/me")
+      .then((r) => r.json())
+      .then((body) => {
+        if (cancelled || !body?.success) return;
+        const t = body?.data?.managerType;
+        if (t === "MERCHANT" || t === "RIDER") setAreaManagerType(t);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isAreaManagerDashboard]);
+
+  const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
+    let filtered = rawSubRoutes;
+
+    // Filter Area Manager routes
+    if (isAreaManagerDashboard && rawSubRoutes.length) {
+      if (areaManagerType !== null) {
+        filtered = rawSubRoutes.filter((r) => {
+          const allowed = r.areaManagerType;
+          if (!allowed || allowed === "BOTH") return true;
+          return allowed === areaManagerType;
+        });
+      }
+    }
+
+    // Filter Order dashboard routes based on permissions
+    if (isOrderDashboard && rawSubRoutes.length) {
+      filtered = rawSubRoutes.filter((route) => {
+        if (isSuperAdmin) return true;
+        const dashboardType = getDashboardTypeFromPath(route.href);
+        if (!dashboardType) return true;
+        return hasDashboardAccess(dashboardType);
+      });
+    }
+
+    return filtered;
+  }, [isAreaManagerDashboard, isOrderDashboard, rawSubRoutes, areaManagerType, hasDashboardAccess, isSuperAdmin]);
 
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");
+
+  // Ticket ID from path (must be before any conditional return to satisfy Rules of Hooks)
+  const ticketIdFromPath = useMemo(() => {
+    const match = cleanPathname.match(/^\/dashboard\/tickets\/(\d+)$/);
+    return match ? parseInt(match[1], 10) : null;
+  }, [cleanPathname]);
+
+  const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
 
   // Don't show right sidebar if not in a specific dashboard
   if (!isInSpecificDashboard || !currentSubRoutes.length) {
@@ -55,33 +124,36 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
 
   return (
     <>
-      {/* Right Sidebar - Collapsible like left sidebar */}
+      {/* Right Sidebar - Properties (ticket detail) or Filters/Nav (list). When filter open, shift left so Filters is rightmost. */}
       <aside
-        className={`fixed inset-y-0 right-0 z-40 flex h-screen flex-col bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 shadow-2xl transition-all duration-300 ease-in-out ${
-          isOpen ? "w-56" : "w-16"
+        className={`fixed inset-y-0 z-40 flex h-screen flex-col shadow-xl transition-all duration-300 ease-out ${
+          isOpen ? "w-56" : "w-14"
         }`}
-        style={{ scrollbarWidth: 'thin', scrollbarColor: '#4B5563 #1F2937' }}
+        style={{
+          right: filterSidebarOpen ? "14rem" : 0,
+          backgroundColor: "#E8F0F2",
+          scrollbarWidth: "thin",
+          scrollbarColor: "#9CA3AF #E8F0F2",
+        }}
       >
-        {/* Sidebar Header */}
-        <div className="flex h-14 items-center justify-between border-b border-gray-700 px-2">
+        {/* Sidebar Header - compact */}
+        <div className="flex h-12 sm:h-14 items-center justify-between border-b border-gray-300/30 px-2 shrink-0">
           {isOpen ? (
-            <>
-              <div className="flex items-center space-x-2 flex-1">
+            <div className="flex items-center justify-between flex-1 min-w-0 gap-2">
+              <div className="flex items-center space-x-2 flex-1 min-w-0">
                 {currentDashboard?.icon && (
-                  <div className="rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 p-1.5">
+                  <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5 shrink-0">
                     <currentDashboard.icon className="h-4 w-4 text-white" />
                   </div>
                 )}
-                <div className="min-w-0">
-                  <h2 className="text-xs font-bold text-white truncate">{currentDashboard?.name}</h2>
-                  {/* <p className="text-xs text-gray-400">{currentSubRoutes.length} options</p> */}
-                </div>
+                <h2 className="text-xs font-bold text-gray-800 truncate">{currentDashboard?.name}</h2>
               </div>
-            </>
+              {/* Agent Status Toggle - Only show on Tickets dashboard (API handles permission check) */}
+            </div>
           ) : (
-            <div className="flex items-center justify-center w-full">
+            <div className="flex items-center justify-center w-full relative">
               {currentDashboard?.icon && (
-                <div className="rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 p-1.5">
+                <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
                   <currentDashboard.icon className="h-4 w-4 text-white" />
                 </div>
               )}
@@ -89,79 +161,99 @@ export function RightSidebar({ isOpen, onToggle }: RightSidebarProps) {
           )}
         </div>
 
-        {/* Navigation Content - only the most specific (longest) matching route is active */}
-        <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
-          {(() => {
-            // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
-            const isWalletOrEarningsPath =
-              cleanPathname === "/dashboard/riders/wallet-history" ||
-              cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
-              cleanPathname === "/dashboard/riders/earnings" ||
-              cleanPathname.startsWith("/dashboard/riders/earnings/");
-            const activeHref = currentSubRoutes
-              .filter((r) => {
-                const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
-                const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
-                return exactOrPrefix || walletEarningsAlias;
-              })
-              .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
-            return currentSubRoutes.map((route) => {
-              const isActive = activeHref === route.href;
-              const Icon = route.icon;
-            return (
-              <Link
-                key={route.href}
-                href={appendRiderSearch(route.href)}
-                className={`group relative flex items-center rounded-lg transition-all duration-200 ${
-                  isOpen 
-                    ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
-                        isActive
-                          ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
-                          : "text-gray-300 hover:bg-gray-800/80 hover:text-white hover:-translate-x-1"
-                      }`
-                    : `justify-center px-2 py-2.5 ${
-                        isActive
-                          ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
-                          : "text-gray-300 hover:bg-gray-800/80 hover:text-white"
-                      }`
-                }`}
-                title={!isOpen ? route.name : route.description}
-              >
-                <Icon className={`flex-shrink-0 ${isOpen ? "h-4 w-4" : "h-5 w-5"}`} />
-                {isOpen && (
-                  <>
-                    <span className="flex-1 truncate">{route.name}</span>
-                    {isActive && (
-                      <div className="absolute right-2 h-2 w-2 rounded-full bg-white animate-pulse shadow-lg shadow-white/50"></div>
-                    )}
-                  </>
-                )}
-                {/* Tooltip for collapsed state */}
-                {!isOpen && (
-                  <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
-                    {route.name}
-                    <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900"></div>
-                  </div>
-                )}
-              </Link>
-            );
-          });
-          })()}
-        </nav>
-
-        {/* Sidebar Footer with Toggle Button */}
-        <div className="border-t border-gray-700/50 bg-gray-800/50 backdrop-blur-sm p-2">
-          <button
-            onClick={onToggle}
-            className={`flex w-full items-center justify-center rounded-lg bg-gradient-to-r from-gray-700/80 to-gray-600/80 text-white transition-all hover:from-gray-600 hover:to-gray-500 hover:shadow-lg hover:scale-105 ${
-              isOpen ? "space-x-2 px-3 py-2.5" : "p-2.5"
-            }`}
-            title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
-          >
-            <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-            {isOpen && <span className="text-xs font-semibold">Hide</span>}
-          </button>
+        {/* Tickets dashboard: on ticket detail show Properties panel; else filters. Other dashboards: nav links. */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          {isTicketsDashboard && ticketIdFromPath != null && isOpen ? (
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+            </div>
+          ) : isTicketsDashboard && isOpen ? (
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <TicketFilters variant="sidebar" dark={false} />
+            </div>
+          ) : isTicketsDashboard ? (
+            /* Tickets collapsed: no duplicate icons, empty content */
+            <div className="flex-1 min-h-0" />
+          ) : (
+            <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
+              {(() => {
+                // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
+                const isWalletOrEarningsPath =
+                  cleanPathname === "/dashboard/riders/wallet-history" ||
+                  cleanPathname.startsWith("/dashboard/riders/wallet-history/") ||
+                  cleanPathname === "/dashboard/riders/earnings" ||
+                  cleanPathname.startsWith("/dashboard/riders/earnings/");
+                // Special handling for customer dashboard - highlight "All Customers" when on /dashboard/customers
+                const isCustomerDashboardHome = cleanPathname === "/dashboard/customers";
+                const activeHref = currentSubRoutes
+                  .filter((r) => {
+                    const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
+                    const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
+                    const customerHomeAlias = isCustomerDashboardHome && r.href === "/dashboard/customers/all";
+                    return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
+                  })
+                  .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
+                return currentSubRoutes.map((route) => {
+                  const isActive = activeHref === route.href;
+                  const Icon = route.icon;
+                  return (
+                    <Link
+                      key={route.href}
+                      href={appendRiderSearch(route.href)}
+                      className={`group relative flex items-center rounded-lg transition-all duration-200 ${
+                        isOpen
+                          ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
+                              isActive
+                                ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
+                                : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+                            }`
+                          : `justify-center px-2 py-2.5 ${
+                              isActive
+                                ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
+                                : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900"
+                            }`
+                      }`}
+                      title={!isOpen ? route.name : route.description}
+                    >
+                      <Icon className={`flex-shrink-0 ${isOpen ? "h-4 w-4" : "h-5 w-5"}`} />
+                      {isOpen && (
+                        <>
+                          <span className="flex-1 truncate">{route.name}</span>
+                          {isActive && (
+                            <div className="absolute right-2 h-2 w-2 rounded-full bg-white animate-pulse shadow-lg shadow-white/50"></div>
+                          )}
+                        </>
+                      )}
+                      {/* Tooltip for collapsed state */}
+                      {!isOpen && (
+                        <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                          {route.name}
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900"></div>
+                        </div>
+                      )}
+                    </Link>
+                  );
+                });
+              })()}
+            </nav>
+          )}
         </div>
+
+        {/* Sidebar Footer with Toggle Button - hidden on Tickets dashboard (use Open/Hide in pagination bar instead) */}
+        {!isTicketsDashboard && (
+          <div className="border-t border-gray-300/30 bg-gray-200/30 backdrop-blur-sm p-2">
+            <button
+              onClick={onToggle}
+              className={`flex w-full items-center justify-center rounded-lg bg-gray-300/50 text-gray-800 transition-all hover:bg-gray-400/60 hover:shadow-lg hover:scale-105 ${
+                isOpen ? "space-x-2 px-3 py-2.5" : "p-2.5"
+              }`}
+              title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
+            >
+              <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+              {isOpen && <span className="text-xs font-semibold">Hide</span>}
+            </button>
+          </div>
+        )}
       </aside>
 
       {/* Overlay for mobile - only show when sidebar is open on mobile */}

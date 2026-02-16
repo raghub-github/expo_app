@@ -2,23 +2,135 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { LogOut, User, Bell } from "lucide-react";
+import Link from "next/link";
+import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
-import Link from "next/link";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
+import { GlobalSearch } from "@/components/search/GlobalSearch";
+import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
+
+// Order Search Bar Component
+function OrderSearchBar() {
+  const [searchType, setSearchType] = useState("Order Id");
+  const [searchValue, setSearchValue] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const MINT_GREEN = "#4EE5C1";
+
+  // All search items from the 3 dashboards
+  const searchItems = [
+    "Order Id",
+    "Merchant Id",
+    "Customer Mobile",
+    "Third Party Order Id",
+    "ONDC Order Id",
+    "Client Reference Id",
+    "Partner Order Id",
+    "Internal Order Id",
+    "Rider Mobile",
+    "Tracking Order Id",
+    "Client Name",
+  ];
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    if (showDropdown) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showDropdown]);
+
+  const handleSearch = () => {
+    // Handle search logic here
+    console.log("Search:", searchType, searchValue);
+  };
+
+  return (
+    <div className="flex items-center w-full max-w-md rounded-lg border" style={{ borderColor: "#D9DCE0" }}>
+      {/* Dropdown Section */}
+      <div ref={dropdownRef} className="relative">
+        <button
+          onClick={() => setShowDropdown(!showDropdown)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-lg text-xs font-medium text-gray-700 cursor-pointer"
+          style={{ backgroundColor: "#F0F2F5" }}
+        >
+          <span className="whitespace-nowrap">{searchType}</span>
+          <ChevronDown className="h-3.5 w-3.5 text-gray-600" />
+        </button>
+        {showDropdown && (
+          <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-80 overflow-y-auto">
+            {searchItems.map((item) => (
+              <button
+                key={item}
+                onClick={() => {
+                  setSearchType(item);
+                  setShowDropdown(false);
+                }}
+                onMouseEnter={() => setHoveredItem(item)}
+                onMouseLeave={() => setHoveredItem(null)}
+                className="w-full text-left px-3 py-1.5 text-xs cursor-pointer transition-colors"
+                style={{
+                  color: hoveredItem === item ? "#000000" : "#000000",
+                  backgroundColor: hoveredItem === item ? MINT_GREEN : "transparent",
+                }}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      
+      {/* Input Section */}
+      <input
+        type="text"
+        value={searchValue}
+        onChange={(e) => setSearchValue(e.target.value)}
+        placeholder="Search here..."
+        className="flex-1 px-2.5 py-1.5 border-l border-r text-xs focus:outline-none"
+        style={{ borderColor: "#D9DCE0" }}
+        onKeyPress={(e) => {
+          if (e.key === "Enter") {
+            handleSearch();
+          }
+        }}
+      />
+      
+      {/* Search Button */}
+      <button
+        onClick={handleSearch}
+        className="px-2.5 py-1.5 rounded-r-lg flex items-center justify-center cursor-pointer"
+        style={{ backgroundColor: MINT_GREEN }}
+      >
+        <Search className="h-3.5 w-3.5 text-gray-900" />
+      </button>
+    </div>
+  );
+}
 
 export function Header() {
   const pathname = usePathname();
   const pageName = useMemo(() => getCurrentPageName(pathname), [pathname]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showNewDropdown, setShowNewDropdown] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const newMenuRef = useRef<HTMLDivElement>(null);
   const { data: sessionData, isLoading } = useSessionQuery();
   const logoutMutation = useLogout();
 
@@ -35,6 +147,18 @@ export function Header() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showDropdown]);
 
+  useEffect(() => {
+    if (!showNewDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const el = newMenuRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setShowNewDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showNewDropdown]);
+
   // Extract user info from session
   const userEmail = sessionData?.session?.user?.email || null;
   const userMetadata = sessionData?.session?.user?.user_metadata || {};
@@ -45,6 +169,21 @@ export function Header() {
 
   // Get avatar URL - check multiple sources
   useEffect(() => {
+    let isMounted = true;
+    let timeoutIds: NodeJS.Timeout[] = [];
+    let imageInstances: HTMLImageElement[] = [];
+
+    const cleanup = () => {
+      isMounted = false;
+      timeoutIds.forEach(id => clearTimeout(id));
+      timeoutIds = [];
+      imageInstances.forEach(img => {
+        img.onload = null;
+        img.onerror = null;
+      });
+      imageInstances = [];
+    };
+
     if (userEmail) {
       // Check Supabase session user data for avatar (from Google OAuth)
       const sessionUser = sessionData?.session?.user;
@@ -91,10 +230,14 @@ export function Header() {
 
       // Helper function to try Gravatar fallback
       const tryGravatarFallback = (email: string, metadata: any, failedUrl: string | null) => {
+        if (!isMounted) return;
+        
         // Ensure we're in the browser before using Image constructor
         if (typeof window === "undefined" || typeof Image === "undefined") {
-          setAvatarError(true);
-          setAvatarUrl(null);
+          if (isMounted) {
+            setAvatarError(true);
+            setAvatarUrl(null);
+          }
           return;
         }
 
@@ -103,21 +246,26 @@ export function Header() {
           try {
             const gravatarImg = new window.Image();
             gravatarImg.crossOrigin = "anonymous";
+            imageInstances.push(gravatarImg);
             
             const gravatarTimeout = setTimeout(() => {
+              if (!isMounted) return;
               gravatarImg.onload = null;
               gravatarImg.onerror = null;
               setAvatarError(true);
               setAvatarUrl(null);
             }, 3000);
+            timeoutIds.push(gravatarTimeout);
             
             gravatarImg.onload = () => {
+              if (!isMounted) return;
               clearTimeout(gravatarTimeout);
               setAvatarUrl(gravatarUrl);
               setAvatarError(false);
             };
             
             gravatarImg.onerror = () => {
+              if (!isMounted) return;
               clearTimeout(gravatarTimeout);
               setAvatarError(true);
               setAvatarUrl(null);
@@ -126,46 +274,68 @@ export function Header() {
             gravatarImg.src = gravatarUrl;
           } catch (error) {
             console.error("[Header] Error creating Image for Gravatar:", error);
+            if (isMounted) {
+              setAvatarError(true);
+              setAvatarUrl(null);
+            }
+          }
+        } else {
+          if (isMounted) {
             setAvatarError(true);
             setAvatarUrl(null);
           }
-        } else {
-          setAvatarError(true);
-          setAvatarUrl(null);
         }
       };
 
       if (urlToTry) {
         // Ensure we're in the browser before using Image constructor
         if (typeof window === "undefined" || typeof Image === "undefined") {
-          setAvatarError(true);
-          setAvatarUrl(null);
-          return;
+          if (isMounted) {
+            setAvatarError(true);
+            setAvatarUrl(null);
+          }
+          return cleanup;
         }
 
         try {
           // Verify the image exists by trying to load it with timeout
           const img = new window.Image();
           img.crossOrigin = "anonymous"; // Allow CORS for external images
+          imageInstances.push(img);
           
+          // Suppress console errors for image loading (429, 404, CORS, etc.)
+          const originalError = console.error;
+          const suppressErrors = () => {
+            console.error = () => {}; // Suppress errors temporarily
+          };
+          const restoreErrors = () => {
+            console.error = originalError;
+          };
+
           // Set a timeout to prevent hanging on slow/failed requests (like 429 errors)
           const timeoutId = setTimeout(() => {
+            if (!isMounted) return;
+            restoreErrors();
             img.onload = null;
             img.onerror = null;
             // Timeout reached (likely 429 or network issue), try Gravatar fallback silently
             tryGravatarFallback(userEmail, userMetadata, urlToTry);
-          }, 3000); // 3 second timeout for faster fallback
+          }, 2000); // 2 second timeout for faster fallback on 429 errors
+          timeoutIds.push(timeoutId);
+
+          suppressErrors(); // Suppress errors during image load
           
           img.onload = () => {
+            if (!isMounted) return;
+            restoreErrors();
             clearTimeout(timeoutId);
-            if (process.env.NODE_ENV === "development") {
-              console.log("[Header] Avatar loaded successfully:", urlToTry);
-            }
             setAvatarUrl(urlToTry);
             setAvatarError(false);
           };
           
           img.onerror = () => {
+            if (!isMounted) return;
+            restoreErrors();
             clearTimeout(timeoutId);
             // Image failed to load (could be 429, 404, CORS, etc.)
             // Silently try Gravatar fallback without logging to reduce console noise
@@ -174,8 +344,7 @@ export function Header() {
           
           img.src = urlToTry;
         } catch (error) {
-          console.error("[Header] Error creating Image:", error);
-          // Fallback to Gravatar on error
+          // Fallback to Gravatar on error (suppress error logging)
           tryGravatarFallback(userEmail, userMetadata, urlToTry);
         }
       } else {
@@ -183,6 +352,8 @@ export function Header() {
         tryGravatarFallback(userEmail, userMetadata, null);
       }
     }
+
+    return cleanup;
   }, [userEmail, userMetadata, sessionData]);
 
   const openLogoutConfirm = () => {
@@ -201,22 +372,104 @@ export function Header() {
 
   return (
     <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
-      {/* Mobile: Logo + Page name, Desktop: Just Page name */}
-      <div className="flex items-center space-x-3 sm:space-x-4 min-w-0 flex-shrink">
+      {/* Mobile: Logo + Page name, Desktop: Just Page name. Toggle + gear never shrink. */}
+      <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Mobile logo - icon only */}
         <Link href="/dashboard" className="sm:hidden flex-shrink-0">
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
-        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate">{pageName}</h2>
+        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate flex-shrink min-w-0">{pageName}</h2>
+        {/* Online/Offline/Break toggle + Settings - only on Tickets, always visible when on route */}
+        {pathname.startsWith("/dashboard/tickets") && (
+          <AgentStatusToggle />
+        )}
       </div>
 
-      {/* Dashboard Search - Center (Desktop only for now) */}
-      <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
-        <DashboardSearch compact={true} />
-      </div>
+      {/* Center: Order Search on orders; Dashboard Search when not Tickets/Area Managers */}
+      {pathname.startsWith("/dashboard/orders") ? (
+        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+          <OrderSearchBar />
+        </div>
+      ) : !pathname.startsWith("/dashboard/tickets") && pathname !== "/dashboard/area-managers" ? (
+        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+          <DashboardSearch compact={true} />
+        </div>
+      ) : null}
 
-      <div className="flex items-center space-x-2 sm:space-x-4 flex-shrink-0">
-        <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100">
+      <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
+        {/* Global search and + New: only on Tickets dashboard */}
+        {pathname.startsWith("/dashboard/tickets") && (
+          <>
+            <div className="w-full min-w-0 max-w-[160px] sm:max-w-[220px] md:max-w-[280px]">
+              <GlobalSearch />
+            </div>
+            <div ref={newMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setShowNewDropdown((prev) => !prev)}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 hover:border-gray-400 transition-colors"
+                aria-expanded={showNewDropdown}
+                aria-haspopup="true"
+              >
+                <Plus className="h-4 w-4" />
+                <span>New</span>
+                <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${showNewDropdown ? "rotate-180" : ""}`} />
+              </button>
+              {showNewDropdown && (
+                <div
+                  className="absolute right-0 top-full z-[100] mt-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1.5 shadow-lg ring-1 ring-black/5"
+                  role="menu"
+                >
+                  <Link
+                    href="/dashboard/tickets/new"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+                      <Ticket className="h-4 w-4" />
+                    </div>
+                    <span>Ticket</span>
+                  </Link>
+                  <Link
+                    href="/dashboard/email"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
+                      <Mail className="h-4 w-4" />
+                    </div>
+                    <span>Email</span>
+                  </Link>
+                  <Link
+                    href="/dashboard/contacts/new"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
+                      <UserPlus className="h-4 w-4" />
+                    </div>
+                    <span>Contact</span>
+                  </Link>
+                  <Link
+                    href="/dashboard/companies/new"
+                    onClick={() => setShowNewDropdown(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                    role="menuitem"
+                  >
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
+                      <Building2 className="h-4 w-4" />
+                    </div>
+                    <span>Company</span>
+                  </Link>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
           <Bell className="h-5 w-5" />
         </button>
 
@@ -282,6 +535,7 @@ export function Header() {
               </div>
             </div>
           )}
+
         </div>
       </div>
 

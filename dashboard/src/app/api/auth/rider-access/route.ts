@@ -16,6 +16,7 @@ import {
   canPerformRiderServiceAction,
   canPerformRiderActionAnyService,
 } from "@/lib/permissions/actions";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
@@ -24,16 +25,26 @@ const SERVICES = ["food", "parcel", "person_ride"] as const;
 export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session?.user?.email) {
+    // Use getUser() instead of getSession() to avoid refresh token race conditions
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    
+    if (userError || !user) {
+      // Check if it's an invalid refresh token error
+      if (isInvalidRefreshToken(userError)) {
+        await supabase.auth.signOut();
+        return NextResponse.json(
+          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+          { status: 401 }
+        );
+      }
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
 
-    const authId = session.user.id;
-    const email = session.user.email;
+    const authId = user.id;
+    const email = user.email;
 
     const systemUserId = await getSystemUserIdFromAuthUser(authId, email);
     if (!systemUserId) {

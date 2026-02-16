@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/client";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { forceLogoutUser } from "@/lib/auth/user-management";
 import { getUserPermissions } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";

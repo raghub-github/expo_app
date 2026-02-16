@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
-import { CheckCircle, ArrowLeft, User, Car, Wallet, FileText, CreditCard, Receipt, TrendingUp, TrendingDown, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, Clock, AlertCircle } from 'lucide-react';
+import { CheckCircle, ArrowLeft, User, Car, FileText, CreditCard, Receipt, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, Clock, AlertCircle } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 
@@ -615,222 +615,33 @@ export default function RiderDetailsPage() {
         )}
       </section>
 
-      {/* Current Wallet - Redesigned */}
-      {wallet && (
-        <section className="rounded-2xl border border-gray-200/90 bg-gradient-to-br from-white to-emerald-50/30 p-4 sm:p-5 lg:p-6 shadow-lg ring-1 ring-gray-900/5">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg shrink-0">
-              <Wallet className="h-6 w-6" />
-            </div>
-            <div>
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Current Wallet</h2>
-              <p className="text-sm text-gray-500 mt-0.5">Balance, earnings & penalties overview</p>
-            </div>
-          </div>
-          
-          {wallet.globalWalletBlock && (
-            <div className="mb-6 rounded-xl border-2 border-amber-300 bg-gradient-to-r from-amber-50 to-amber-100 px-4 py-3 shadow-sm">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
-                <p className="text-sm font-semibold text-amber-900">All services blocked (wallet ≤ -200). Unlock when balance ≥ 0.</p>
-              </div>
-            </div>
-          )}
 
-          {/* Total Balance - Prominent Display */}
-          <div className="mb-6">
-            <div className={`rounded-2xl p-6 shadow-lg border-2 ${
-              Number(wallet.totalBalance) < 0 
-                ? 'bg-gradient-to-br from-red-50 to-red-100/50 border-red-300' 
-                : 'bg-gradient-to-br from-emerald-50 to-emerald-100/50 border-emerald-300'
-            }`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600 mb-1">Total Balance</p>
-                  <p className={`text-4xl sm:text-5xl font-bold tabular-nums ${
-                    Number(wallet.totalBalance) < 0 ? "text-red-600" : "text-emerald-700"
-                  }`}>
-                    ₹{Number(wallet.totalBalance).toFixed(2)}
-                  </p>
-                </div>
-                <div className={`h-16 w-16 rounded-2xl flex items-center justify-center ${
-                  Number(wallet.totalBalance) < 0 
-                    ? 'bg-red-200 text-red-700' 
-                    : 'bg-emerald-200 text-emerald-700'
-                }`}>
-                  {Number(wallet.totalBalance) < 0 ? (
-                    <TrendingDown className="h-8 w-8" />
-                  ) : (
-                    <TrendingUp className="h-8 w-8" />
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Earnings Section */}
-          <div className="mb-6 pb-6 border-b border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-emerald-600" />
-              Earnings by Service
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100/50 border border-emerald-200 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-emerald-700 uppercase tracking-wide">Food</span>
-                  <DollarSign className="h-4 w-4 text-emerald-600" />
-                </div>
-                <p className="text-2xl font-bold text-emerald-700 tabular-nums">₹{Number(wallet.earningsFood).toFixed(2)}</p>
-              </div>
-              <div className="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100/50 border border-emerald-200 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-emerald-700 uppercase tracking-wide">Parcel</span>
-                  <DollarSign className="h-4 w-4 text-emerald-600" />
-                </div>
-                <p className="text-2xl font-bold text-emerald-700 tabular-nums">₹{Number(wallet.earningsParcel).toFixed(2)}</p>
-              </div>
-              <div className="rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100/50 border border-emerald-200 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-emerald-700 uppercase tracking-wide">Person Ride</span>
-                  <DollarSign className="h-4 w-4 text-emerald-600" />
-                </div>
-                <p className="text-2xl font-bold text-emerald-700 tabular-nums">₹{Number(wallet.earningsPersonRide).toFixed(2)}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Penalties Section */}
-          <div className="mb-6 pb-6 border-b border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <TrendingDown className="h-4 w-4 text-red-600" />
-              Penalties by Service
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="rounded-xl bg-gradient-to-br from-red-50 to-red-100/50 border border-red-200 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-red-700 uppercase tracking-wide">Food</span>
-                  <AlertCircle className="h-4 w-4 text-red-600" />
-                </div>
-                <p className="text-2xl font-bold text-red-600 tabular-nums">₹{Number(wallet.penaltiesFood).toFixed(2)}</p>
-              </div>
-              <div className="rounded-xl bg-gradient-to-br from-red-50 to-red-100/50 border border-red-200 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-red-700 uppercase tracking-wide">Parcel</span>
-                  <AlertCircle className="h-4 w-4 text-red-600" />
-                </div>
-                <p className="text-2xl font-bold text-red-600 tabular-nums">₹{Number(wallet.penaltiesParcel).toFixed(2)}</p>
-              </div>
-              <div className="rounded-xl bg-gradient-to-br from-red-50 to-red-100/50 border border-red-200 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-red-700 uppercase tracking-wide">Person Ride</span>
-                  <AlertCircle className="h-4 w-4 text-red-600" />
-                </div>
-                <p className="text-2xl font-bold text-red-600 tabular-nums">₹{Number(wallet.penaltiesPersonRide).toFixed(2)}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Additional Info */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="rounded-xl bg-gray-50 border border-gray-200 p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-gray-600 uppercase tracking-wide">Total Withdrawn</span>
-                <DollarSign className="h-4 w-4 text-gray-500" />
-              </div>
-              <p className="text-xl font-bold text-gray-900 tabular-nums">₹{Number(wallet.totalWithdrawn).toFixed(2)}</p>
-            </div>
-            {wallet.lastUpdatedAt && (
-              <div className="rounded-xl bg-gray-50 border border-gray-200 p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-medium text-gray-600 uppercase tracking-wide">Last Updated</span>
-                  <Clock className="h-4 w-4 text-gray-500" />
-                </div>
-                <p className="text-sm font-semibold text-gray-700">{new Date(wallet.lastUpdatedAt).toLocaleString('en-IN')}</p>
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* Onboarding Fees - Redesigned */}
+      {/* Onboarding Fees - Single Line Compact */}
       {riderData.onboardingPayments && riderData.onboardingPayments.length > 0 && (
-        <section id="onboarding-fees" className="rounded-2xl border border-gray-200/90 bg-gradient-to-br from-white to-purple-50/30 p-4 sm:p-5 lg:p-6 shadow-lg ring-1 ring-gray-900/5">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-purple-500 to-purple-600 text-white shadow-lg shrink-0">
-              <Receipt className="h-6 w-6" />
-            </div>
-            <div>
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Onboarding Fees</h2>
-              <p className="text-sm text-gray-500 mt-0.5">Registration payment history</p>
-            </div>
+        <section id="onboarding-fees" className="rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
+          <div className="flex items-center gap-2 mb-2">
+            <Receipt className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+            <h2 className="text-sm font-semibold text-gray-900">Onboarding Fees</h2>
+            <span className="text-xs text-gray-500">
+              (Total: ₹{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)})
+            </span>
           </div>
-
-          {/* Total Paid Summary */}
-          <div className="mb-6">
-            <div className="rounded-2xl bg-gradient-to-br from-purple-50 to-purple-100/50 border-2 border-purple-300 p-6 shadow-lg">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-purple-700 mb-1">Total Paid During Registration</p>
-                  <p className="text-3xl sm:text-4xl font-bold text-purple-900 tabular-nums">
-                    ₹{riderData.onboardingPayments.filter((p) => p.status === "completed").reduce((sum, p) => sum + Number(p.amount), 0).toFixed(2)}
-                  </p>
-                  <p className="text-xs text-purple-600 mt-2">
-                    {riderData.onboardingPayments.filter((p) => p.status === "completed").length} completed payment{riderData.onboardingPayments.filter((p) => p.status === "completed").length !== 1 ? 's' : ''}
-                  </p>
-                </div>
-                <div className="h-16 w-16 rounded-2xl bg-purple-200 text-purple-700 flex items-center justify-center">
-                  <DollarSign className="h-8 w-8" />
-                </div>
+          <div className="space-y-1">
+            {riderData.onboardingPayments.map((p) => (
+              <div key={p.id} className="flex items-center gap-3 text-xs text-gray-700 py-1 px-2 rounded hover:bg-gray-50">
+                <span className="font-semibold text-gray-900 w-20">₹{Number(p.amount).toFixed(2)}</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                  p.status === "completed" ? "bg-emerald-100 text-emerald-800" :
+                  p.status === "failed" ? "bg-red-100 text-red-800" : 
+                  "bg-amber-100 text-amber-800"
+                }`}>
+                  {p.status}
+                </span>
+                <span className="text-gray-600">{p.provider || "—"}</span>
+                <span className="font-mono text-gray-500 text-[10px]">{p.refId || "—"}</span>
+                <span className="text-gray-500 ml-auto">{new Date(p.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>
               </div>
-            </div>
-          </div>
-
-          {/* Payment History Table */}
-          <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm bg-white">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gradient-to-r from-purple-50 to-purple-100/50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Ref ID</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Provider</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Payment ID</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Date</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {riderData.onboardingPayments.map((p) => (
-                  <tr key={p.id} className="hover:bg-purple-50/50 transition-colors">
-                    <td className="px-4 py-3 font-mono text-gray-900 text-sm">{p.refId || "—"}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <DollarSign className="h-4 w-4 text-purple-600" />
-                        <span className="font-bold text-gray-900 tabular-nums text-base">₹{Number(p.amount).toFixed(2)}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-gray-700 text-sm font-medium">{p.provider || "—"}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm ${
-                        p.status === "completed" ? "bg-emerald-100 text-emerald-800 border border-emerald-200" :
-                        p.status === "failed" ? "bg-red-100 text-red-800 border border-red-200" : 
-                        "bg-amber-100 text-amber-800 border border-amber-200"
-                      }`}>
-                        {p.status === "completed" && <CheckCircle className="h-3 w-3" />}
-                        {p.status === "failed" && <AlertCircle className="h-3 w-3" />}
-                        {p.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-gray-600 text-xs">{p.paymentId || "—"}</td>
-                    <td className="px-4 py-3 text-gray-700 text-sm">
-                      <div className="flex items-center gap-1.5">
-                        <Calendar className="h-3.5 w-3.5 text-gray-400" />
-                        {new Date(p.createdAt).toLocaleString('en-IN')}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            ))}
           </div>
         </section>
       )}

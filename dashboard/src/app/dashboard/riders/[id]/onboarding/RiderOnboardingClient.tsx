@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
@@ -135,6 +135,9 @@ export default function RiderOnboardingClient() {
     (d) => d.dashboardType === "RIDER" && d.isActive
   ) ?? false;
 
+  // Use ref to store the latest sync function to avoid dependency issues
+  const syncDashboardStateFromRiderRef = useRef<(r: Rider | null) => void>();
+  
   const syncDashboardStateFromRider = useCallback(
     (r: Rider | null) => {
       if (!riderDashboard || !r) return;
@@ -167,6 +170,11 @@ export default function RiderOnboardingClient() {
     [riderDashboard]
   );
 
+  // Update ref whenever sync function changes
+  useEffect(() => {
+    syncDashboardStateFromRiderRef.current = syncDashboardStateFromRider;
+  }, [syncDashboardStateFromRider]);
+
   // Full fetch with loading state (initial load only)
   const fetchRiderData = useCallback(async () => {
     try {
@@ -187,15 +195,15 @@ export default function RiderOnboardingClient() {
       }
 
       setRiderData(result.data ?? null);
-      syncDashboardStateFromRider(result.data?.rider ?? null);
-      syncDashboardStateFromRider(result.data?.rider ?? null);
+      // Use ref to avoid dependency issues
+      syncDashboardStateFromRiderRef.current?.(result.data?.rider ?? null);
     } catch (err) {
       console.error("Error fetching rider data:", err);
       setError(err instanceof Error ? err.message : "Failed to fetch rider data");
     } finally {
       setLoading(false);
     }
-  }, [riderId, syncDashboardStateFromRider]);
+  }, [riderId]);
 
   // Silent refetch without full-page loading ? use after approve/reject/edit so UI doesn?t flash
   const refetchRiderDataInBackground = useCallback(async () => {
@@ -210,16 +218,17 @@ export default function RiderOnboardingClient() {
       }
       if (result.success && result.data) {
         setRiderData(result.data);
-        syncDashboardStateFromRider(result.data?.rider ?? null);
+        // Use ref to avoid dependency issues
+        syncDashboardStateFromRiderRef.current?.(result.data?.rider ?? null);
         setError(null);
       }
     } catch (err) {
       console.error("Error refetching rider data:", err);
       // Don?t set error state on background refetch ? user already saw success
     }
-  }, [riderId, syncDashboardStateFromRider]);
+  }, [riderId]);
 
-  // Fetch rider data
+  // Fetch rider data - only fetch once when riderId changes
   useEffect(() => {
     if (isNaN(riderId)) {
       setError("Invalid rider ID");
@@ -228,7 +237,8 @@ export default function RiderOnboardingClient() {
     }
 
     fetchRiderData();
-  }, [riderId, fetchRiderData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [riderId]); // Only depend on riderId to prevent infinite loops - fetchRiderData is stable now
 
   if ((permissionsError || dashboardAccessError) && !hasCachedPermissions && !hasCachedDashboardAccess) {
     const msg = permissionsError instanceof Error ? permissionsError.message : dashboardAccessError instanceof Error ? dashboardAccessError.message : "Failed to load access.";
@@ -261,7 +271,8 @@ export default function RiderOnboardingClient() {
   }
 
   // Check access - only show access denied after loading is complete and user exists
-  if (!isSuperAdmin && !hasRiderAccess) {
+  // Don't block on permissions loading since server layout already verified RIDER access
+  if (!permissionsLoading && !dashboardAccessLoading && !isSuperAdmin && !hasRiderAccess) {
     return (
       <div className="space-y-6 p-6">
         <div className="rounded-lg border border-red-200 bg-red-50 p-6">
@@ -406,7 +417,7 @@ export default function RiderOnboardingClient() {
             ),
           };
         });
-        syncDashboardStateFromRider({
+        syncDashboardStateFromRiderRef.current?.({
           ...riderData.rider,
           kycStatus: data.kycStatus ?? riderData.rider.kycStatus,
           onboardingStage: data.onboardingStage ?? riderData.rider.onboardingStage,

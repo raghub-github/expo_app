@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
 
     for (let attempt = 1; attempt <= maxGetUserAttempts; attempt++) {
       const result = await supabase.auth.getUser();
-      user = result.data?.user ?? null;
+      user = result.data?.user ? { ...result.data.user, id: result.data.user.id, email: result.data.user.email } : null;
       userError = result.error ?? null;
 
       if (!userError && user) break;
@@ -48,8 +48,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get session (for tokens); refresh if needed so session stays valid
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    // Get session (for tokens) - only place we call getSession() so client gets full session once; avoids parallel refresh with middleware/other APIs
+    let session: { user: { id: string; email?: string; [key: string]: unknown }; [key: string]: unknown } | null = null;
+    let sessionError: unknown = null;
+    try {
+      const result = await supabase.auth.getSession();
+      session = result.data?.session ?? null;
+      sessionError = result.error ?? null;
+    } catch (err) {
+      sessionError = err;
+    }
     if (sessionError && isInvalidRefreshToken(sessionError)) {
       await supabase.auth.signOut();
       return NextResponse.json(
@@ -57,7 +65,14 @@ export async function GET(request: NextRequest) {
         { status: 401 }
       );
     }
-    const sessionToReturn = session ?? { user, access_token: "", refresh_token: "", expires_at: 0, expires_in: 0, token_type: "bearer" };
+
+    // Only return session if it exists and is valid
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: "No active session", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      );
+    }
 
     // Get user permissions
     const permissions = await getUserPermissions(user.id, user.email || "");
@@ -65,7 +80,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        session: sessionToReturn,
+        session,
         permissions,
       },
     });

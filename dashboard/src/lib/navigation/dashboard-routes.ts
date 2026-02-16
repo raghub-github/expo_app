@@ -7,13 +7,13 @@
 import {
   LayoutDashboard,
   User,
-  Package,
+  Bike,
   ShoppingCart,
   Store,
   Ticket,
   Settings,
   BarChart3,
-  UserCog,
+  Shield,
   MapPin,
   Wallet,
   DollarSign,
@@ -24,7 +24,7 @@ import {
   Zap,
   CreditCard,
   AlertCircle,
-  Users,
+  UserCircle,
   UtensilsCrossed,
   Car,
   Box,
@@ -32,13 +32,19 @@ import {
   CheckCircle,
   UserPlus,
   History,
+  Layers,
 } from "lucide-react";
+
+/** For Area Manager sidebar: show only routes allowed for this manager type. */
+export type AreaManagerTypeFilter = "MERCHANT" | "RIDER" | "BOTH";
 
 export interface DashboardSubRoute {
   name: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   description?: string;
+  /** Only for Area Manager dashboard: limit to this manager type (BOTH = show to all). */
+  areaManagerType?: AreaManagerTypeFilter;
 }
 
 export interface DashboardConfig {
@@ -126,10 +132,10 @@ export const riderDashboardRoutes: DashboardSubRoute[] = [
  */
 export const customerDashboardRoutes: DashboardSubRoute[] = [
   {
-    name: "All Customers",
+    name: "Overall Stats",
     href: "/dashboard/customers/all",
-    icon: Users,
-    description: "View all customers",
+    icon: UserCircle,
+    description: "View overall customer statistics",
   },
   {
     name: "Food Customers",
@@ -242,13 +248,13 @@ export const ticketDashboardRoutes: DashboardSubRoute[] = [
   {
     name: "Customer Tickets",
     href: "/dashboard/tickets/customer",
-    icon: Users,
+    icon: UserCircle,
     description: "Customer support tickets",
   },
   {
     name: "Rider Tickets",
     href: "/dashboard/tickets/rider",
-    icon: Package,
+    icon: Bike,
     description: "Rider support tickets",
   },
   {
@@ -256,6 +262,12 @@ export const ticketDashboardRoutes: DashboardSubRoute[] = [
     href: "/dashboard/tickets/merchant",
     icon: Store,
     description: "Merchant support tickets",
+  },
+  {
+    name: "Unified Tickets",
+    href: "/dashboard/tickets/unified",
+    icon: Layers,
+    description: "Tickets from unified_tickets table",
   },
 ];
 
@@ -284,6 +296,47 @@ export const orderDashboardRoutes: DashboardSubRoute[] = [
 ];
 
 /**
+ * Area Manager Dashboard Sub-Routes (filter by managerType in RightSidebar)
+ */
+export const areaManagerDashboardRoutes: DashboardSubRoute[] = [
+  {
+    name: "Dashboard",
+    href: "/dashboard/area-managers",
+    icon: LayoutDashboard,
+    description: "Area manager overview and metrics",
+    areaManagerType: "BOTH",
+  },
+  {
+    name: "Stores",
+    href: "/dashboard/area-managers/stores",
+    icon: Store,
+    description: "Stores onboarded by you (Merchant AM)",
+    areaManagerType: "MERCHANT",
+  },
+  {
+    name: "Riders",
+    href: "/dashboard/area-managers/riders",
+    icon: Bike,
+    description: "Riders in your locality (Rider AM)",
+    areaManagerType: "RIDER",
+  },
+  {
+    name: "Rider Availability",
+    href: "/dashboard/area-managers/availability",
+    icon: MapPin,
+    description: "Rider availability and coverage",
+    areaManagerType: "BOTH",
+  },
+  {
+    name: "Activity Logs",
+    href: "/dashboard/area-managers/activity-logs",
+    icon: History,
+    description: "Who onboarded, verified, rejected",
+    areaManagerType: "BOTH",
+  },
+];
+
+/**
  * Main Dashboard Navigation Items
  */
 export interface MainNavItem {
@@ -304,20 +357,20 @@ export const mainNavigation: MainNavItem[] = [
   {
     name: "Super Admin",
     href: "/dashboard/super-admin",
-    icon: UserCog,
+    icon: Shield,
     requiresSuperAdmin: true,
   },
   {
     name: "Customers",
     href: "/dashboard/customers",
-    icon: Users,
+    icon: UserCircle,
     dashboardType: "CUSTOMER",
     subRoutes: customerDashboardRoutes,
   },
   {
     name: "Riders",
     href: "/dashboard/riders",
-    icon: Package,
+    icon: Bike,
     dashboardType: "RIDER",
     subRoutes: riderDashboardRoutes,
   },
@@ -340,6 +393,7 @@ export const mainNavigation: MainNavItem[] = [
     href: "/dashboard/area-managers",
     icon: MapPin,
     dashboardType: "AREA_MANAGER",
+    subRoutes: areaManagerDashboardRoutes,
   },
   {
     name: "Tickets",
@@ -442,6 +496,10 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/offers": "Offers",
     "/dashboard/payments": "Payments",
     "/dashboard/audit": "Audit Logs",
+    "/dashboard/area-managers/stores": "Stores",
+    "/dashboard/area-managers/riders": "Riders",
+    "/dashboard/area-managers/availability": "Rider Availability",
+    "/dashboard/area-managers/activity-logs": "Activity Logs",
   };
   
   // Check exact matches first
