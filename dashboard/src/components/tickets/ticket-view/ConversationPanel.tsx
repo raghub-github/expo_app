@@ -607,7 +607,7 @@ export function ConversationPanel({
             </div>
             <div className="flex items-center gap-2" ref={sendOptionsRef}>
               <span className="text-xs text-gray-400">{sending ? "Sending…" : "Saved"}</span>
-              <button type="button" onClick={() => setShowDiscardConfirm(true)} className="p-2 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700" aria-label="Delete draft"><Trash2 className="h-4 w-4" /></button>
+              <button type="button" onClick={() => setShowDiscardConfirm(true)} className="p-2 rounded text-red-600 hover:bg-red-50 hover:text-red-700" aria-label="Delete draft"><Trash2 className="h-4 w-4" /></button>
               <div className="relative flex rounded-lg overflow-hidden">
                 <button
                   type="button"
