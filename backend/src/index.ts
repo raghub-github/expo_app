@@ -14,6 +14,8 @@ import { riderRoutes } from "./modules/rider/rider.routes.js";
 import { onboardingRoutes } from "./modules/onboarding/onboarding.routes.js";
 import { storageRoutes } from "./modules/storage/storage.routes.js";
 import { paymentRoutes } from "./modules/payment/payment.routes.js";
+import { meRoutes } from "./modules/me/me.routes.js";
+import { supportRoutes } from "./modules/support/support.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 
@@ -97,6 +99,8 @@ await app.register(riderRoutes, { prefix: "/v1/rider" });
 await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });
 await app.register(storageRoutes, { prefix: "/v1/storage" });
 await app.register(paymentRoutes, { prefix: "/v1/payment" });
+await app.register(meRoutes, { prefix: "/v1/me" });
+await app.register(supportRoutes, { prefix: "/v1/support" });
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {

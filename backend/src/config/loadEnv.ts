@@ -17,11 +17,10 @@ export function loadEnv() {
   const cwd = process.cwd();
   const initCwd = typeof process.env.INIT_CWD === "string" ? process.env.INIT_CWD : "";
 
-  // backendRoot = <repo>/backend
+  // backendRoot = <repo>/backend (loadEnv.ts is at backend/src/config/loadEnv.ts → 2 levels up)
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
-  // loadEnv.ts is at: backend/src/config/loadEnv.ts → go 3 levels up to reach `backend/`
-  const backendRoot = path.resolve(__dirname, "..", "..", "..");
+  const backendRoot = path.resolve(__dirname, "..", "..");
 
   // Also include `<repo>/backend` when cwd is the monorepo root.
   const backendFromCwd = path.resolve(cwd, "backend");

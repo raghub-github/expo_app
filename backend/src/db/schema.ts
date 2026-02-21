@@ -27,6 +27,7 @@ import {
   bigint,
   bigserial,
   serial,
+  uuid,
   index,
   uniqueIndex,
   primaryKey,
@@ -589,6 +590,111 @@ const ridersTable = pgTable(
 );
 
 export const riders = ridersTable;
+
+/**
+ * Customer user profiles (GatiMitra customer app onboarding).
+ * user_id format: GM100001, GM100002, ... (auto-generated from id).
+ */
+export const userProfiles = pgTable(
+  "user_profiles",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    userId: text("user_id").notNull().unique(),
+    mobileNumber: text("mobile_number").notNull().unique(),
+    fullName: text("full_name"),
+    email: text("email").unique(),
+    ageGroup: text("age_group"),
+    gender: text("gender"),
+    profileCompleted: boolean("profile_completed").notNull().default(false),
+    smsPermission: boolean("sms_permission").default(false),
+    locationPermission: boolean("location_permission").default(false),
+    contactsPermission: boolean("contacts_permission").default(false),
+    lastLoginIp: text("last_login_ip"),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    sessionsInvalidBefore: timestamp("sessions_invalid_before", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: uniqueIndex("user_profiles_user_id_idx").on(table.userId),
+    mobileIdx: uniqueIndex("user_profiles_mobile_idx").on(table.mobileNumber),
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Customers table (public.customers) – customer app auth & profile
+// Enums and table match DDL; use this for customer OTP verify and /me/profile
+// ---------------------------------------------------------------------------
+export const customerGenderEnum = pgEnum("customer_gender", ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"]);
+export const customerStatusEnum = pgEnum("customer_status", ["ACTIVE", "SUSPENDED", "BLOCKED", "DEACTIVATED", "PENDING_VERIFICATION"]);
+export const riskLevelEnum = pgEnum("risk_level", ["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+
+export const customers = pgTable(
+  "customers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: text("customer_id").notNull().unique(),
+    fullName: text("full_name").notNull(),
+    email: text("email").unique(),
+    primaryMobile: text("primary_mobile").notNull().unique(),
+    primaryMobileNormalized: text("primary_mobile_normalized"),
+    primaryMobileCountryCode: text("primary_mobile_country_code").default("+91"),
+    mobileVerified: boolean("mobile_verified").default(true),
+    alternateMobile: text("alternate_mobile"),
+    whatsappNumber: text("whatsapp_number"),
+    gender: customerGenderEnum("gender"),
+    dateOfBirth: date("date_of_birth"),
+    profileImageUrl: text("profile_image_url"),
+    bio: text("bio"),
+    preferredLanguage: text("preferred_language").default("en"),
+    referralCode: text("referral_code").unique(),
+    referredBy: text("referred_by"),
+    referrerCustomerId: bigint("referrer_customer_id", { mode: "number" }),
+    accountStatus: customerStatusEnum("account_status").notNull().default("ACTIVE"),
+    statusReason: text("status_reason"),
+    riskFlag: riskLevelEnum("risk_flag").default("LOW"),
+    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
+    walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),
+    walletLockedAmount: numeric("wallet_locked_amount", { precision: 12, scale: 2 }).default("0.0"),
+    isIdentityVerified: boolean("is_identity_verified").default(false),
+    isEmailVerified: boolean("is_email_verified").default(false),
+    isMobileVerified: boolean("is_mobile_verified").default(true),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    lastOrderAt: timestamp("last_order_at", { withTimezone: true }),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBy: integer("deleted_by"),
+    deletionReason: text("deletion_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdVia: text("created_via").default("app"),
+    updatedBy: text("updated_by"),
+    // App profile/onboarding (add via migration 0065 if your DDL doesn’t have these)
+    ageGroup: text("age_group"),
+    profileCompleted: boolean("profile_completed").default(false),
+    smsPermission: boolean("sms_permission").default(false),
+    locationPermission: boolean("location_permission").default(false),
+    contactsPermission: boolean("contacts_permission").default(false),
+    sessionsInvalidBefore: timestamp("sessions_invalid_before", { withTimezone: true }),
+    // Address / location (saved from app)
+    addressLine1: text("address_line1"),
+    addressLine2: text("address_line2"),
+    city: text("city"),
+    state: text("state"),
+    pincode: text("pincode"),
+    country: text("country"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+  },
+  (table) => ({
+    customerIdIdx: index("customers_customer_id_idx").on(table.customerId),
+    primaryMobileIdx: index("customers_primary_mobile_idx").on(table.primaryMobile),
+    emailIdx: index("customers_email_idx").on(table.email),
+    accountStatusIdx: index("customers_account_status_idx").on(table.accountStatus),
+  })
+);
 
 /**
  * Rider documents with history support (allows reupload)

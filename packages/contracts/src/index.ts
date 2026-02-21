@@ -55,6 +55,7 @@ export const OtpVerifySchema = z.object({
   phoneE164: z.string().min(10),
   otp: z.string().min(4).max(8),
   deviceId: z.string().min(6),
+  appType: z.enum(["customer", "rider"]).optional(),
 });
 export type OtpVerify = z.infer<typeof OtpVerifySchema>;
 

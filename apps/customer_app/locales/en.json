@@ -1,0 +1,59 @@
+{
+  "common": {
+    "cancel": "Cancel",
+    "save": "Save",
+    "edit": "Edit",
+    "customer": "Customer"
+  },
+  "profile": {
+    "lifetimeSavings": "Lifetime savings",
+    "customerId": "Customer ID",
+    "referralId": "Referral ID",
+    "verifyEmail": "Verify email",
+    "editProfile": "Edit profile",
+    "transactions": "Transactions",
+    "support": "Support",
+    "settings": "Settings",
+    "rewardsAndReferrals": "Rewards & Referrals",
+    "savedAddresses": "Saved addresses",
+    "helpAndSupport": "Help & Support",
+    "referEarnTitle": "Refer & Earn GatiMitra Credit",
+    "referEarnSub": "Share with friends and get rewards.",
+    "referNow": "Refer now"
+  },
+  "settings": {
+    "account": "Account",
+    "editProfile": "Edit profile",
+    "savedAddresses": "Saved addresses",
+    "preferences": "Preferences",
+    "pushNotifications": "Push notifications",
+    "pushNotificationsSub": "Orders, offers & reminders",
+    "language": "Language",
+    "legal": "Legal",
+    "termsOfService": "Terms of service",
+    "privacyPolicy": "Privacy policy",
+    "about": "About",
+    "appVersion": "App version",
+    "accountActions": "Account actions",
+    "signOut": "Sign out",
+    "signOutModalTitle": "Sign out",
+    "signOutModalMessage": "Sign out from this device only, or from all devices where you're logged in.",
+    "thisDevice": "This device",
+    "allDevices": "All devices"
+  },
+  "addresses": {
+    "noSavedAddresses": "No saved addresses",
+    "noSavedAddressesSub": "Add your home, work or other places for quick checkout.",
+    "home": "Home",
+    "work": "Work",
+    "addNewAddress": "Add new address",
+    "addNewAddressSub": "Home, work or any delivery spot"
+  },
+  "language": {
+    "chooseLanguage": "Choose your preferred language for the app."
+  },
+  "languages": {
+    "en": "English",
+    "hi": "हिन्दी"
+  }
+}

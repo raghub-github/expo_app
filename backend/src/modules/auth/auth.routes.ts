@@ -14,7 +14,7 @@ import { getEnv } from "../../config/env.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
-import { riders } from "../../db/schema.js";
+import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 
@@ -93,7 +93,7 @@ export async function authRoutes(app: FastifyInstance) {
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
 
-      // Generate a 6-digit OTP (dev).
+      // Generate a 6-digit OTP (dummy / dev – no real SMS).
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
       otpStore.set(requestId, {
         phoneE164,
@@ -101,6 +101,13 @@ export async function authRoutes(app: FastifyInstance) {
         expiresAtMs: Date.now() + expiresInSec * 1000,
         attempts: 0,
       });
+
+      // Always log OTP to terminal for dummy OTP flow (so you can copy and sign in).
+      req.log?.info?.({ phoneE164, requestId, otp }, "OTP generated (dummy – use this to sign in)");
+      if (env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.log("\n  [OTP] Phone:", phoneE164, "| OTP:", otp, "| RequestId:", requestId, "\n");
+      }
 
       return {
         requestId,
@@ -123,7 +130,8 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { requestId, phoneE164, deviceId, otp } = OtpVerifySchema.parse(req.body) as OtpVerify;
+      const body = OtpVerifySchema.parse(req.body) as OtpVerify & { appType?: string };
+      const { requestId, phoneE164, deviceId, otp } = body;
 
       const entry = otpStore.get(requestId);
       if (!entry) return reply.code(400).send({ error: "invalid_request_id" });
@@ -145,7 +153,91 @@ export async function authRoutes(app: FastifyInstance) {
       const db = getDb();
       const sql = getSql();
 
-      // Check if riders table exists first
+      // Customer app: find or create in customers table and return JWT with customer_id (GM100001, ...)
+      if (body.appType === "customer") {
+        try {
+          const tableCheck = await sql`
+            SELECT EXISTS (
+              SELECT FROM information_schema.tables
+              WHERE table_schema = 'public' AND table_name = 'customers'
+            );
+          `;
+          if (!tableCheck[0]?.exists) {
+            throw new Error("Database table 'customers' does not exist. Run migration: backend/drizzle/0066_customers_table_full_ddl.sql");
+          }
+
+          const existing = await db
+            .select()
+            .from(customers)
+            .where(eq(customers.primaryMobile, phoneE164))
+            .limit(1);
+
+          let customerUserId: string;
+          if (existing.length > 0) {
+            customerUserId = existing[0]!.customerId;
+          } else {
+            const normalizedMobile = phoneE164.replace(/\D/g, "");
+            const placeholderId = `GM_PENDING_${normalizedMobile}`;
+            const [inserted] = await db
+              .insert(customers)
+              .values({
+                customerId: placeholderId,
+                fullName: "Pending",
+                primaryMobile: phoneE164,
+                primaryMobileNormalized: normalizedMobile,
+              })
+              .returning({ id: customers.id });
+            if (!inserted) throw new Error("Failed to create customer");
+            const id = inserted.id;
+            customerUserId = `GM${100000 + id}`;
+            await db
+              .update(customers)
+              .set({
+                customerId: customerUserId,
+                primaryMobileNormalized: normalizedMobile,
+                updatedAt: new Date(),
+              })
+              .where(eq(customers.id, id));
+          }
+
+          const normalizedMobile = phoneE164.replace(/\D/g, "");
+          await db
+            .update(customers)
+            .set({
+              lastLoginAt: new Date(),
+              lastActivityAt: new Date(),
+              updatedAt: new Date(),
+              primaryMobileNormalized: normalizedMobile,
+            })
+            .where(eq(customers.customerId, customerUserId));
+
+          const expiresInSec = 60 * 60 * 24 * 365; // 1 year
+          const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+          const accessToken = await issueSupabaseCompatibleJwt({
+            jwtSecret: env.SUPABASE_JWT_SECRET,
+            sub: customerUserId,
+            role: "customer",
+            phoneE164,
+            deviceId,
+            exp: expiresAt,
+          });
+          req.log?.info?.(
+            { userId: customerUserId, phoneE164 },
+            "Customer signed in successfully; profile saved in customers"
+          );
+          return {
+            accessToken,
+            expiresAt,
+            role: "customer",
+            userId: customerUserId,
+          };
+        } catch (customerError: any) {
+          req.log?.error?.({ err: customerError }, "Customer OTP verify failed");
+          throw customerError;
+        }
+      }
+
+      // Rider flow
       try {
         const tableCheck = await sql`
           SELECT EXISTS (
@@ -159,16 +251,12 @@ export async function authRoutes(app: FastifyInstance) {
           throw new Error("Database table 'riders' does not exist. Please run the database migration: backend/drizzle/0002_enterprise_rider_schema.sql");
         }
       } catch (checkError: any) {
-        // If the check itself fails, it might be a connection issue
         if (checkError?.message?.includes("does not exist")) {
           throw checkError;
         }
-        // Otherwise, continue - the table might exist but we can't check it
         console.warn("Could not verify table existence:", checkError?.message);
       }
 
-      // Find or create rider by mobile number
-      // In this app, everyone is a rider - no separate users table
       let userId: string;
       let riderId: number;
       
@@ -176,11 +264,9 @@ export async function authRoutes(app: FastifyInstance) {
         const existingRider = await db.select().from(riders).where(eq(riders.mobile, phoneE164)).limit(1);
 
         if (existingRider.length > 0) {
-          // Rider exists - use their ID
           riderId = existingRider[0]!.id;
-          userId = `usr_${riderId}`; // Generate consistent userId from rider ID for JWT
+          userId = `usr_${riderId}`;
         } else {
-          // Create new rider
           const newRider = await db.insert(riders).values({
             mobile: phoneE164,
             countryCode: "+91",
@@ -191,7 +277,7 @@ export async function authRoutes(app: FastifyInstance) {
           }).returning({ id: riders.id });
           
           riderId = newRider[0]!.id;
-          userId = `usr_${riderId}`; // Generate consistent userId from rider ID for JWT
+          userId = `usr_${riderId}`;
         }
       } catch (dbError: any) {
         // Log the actual database error for debugging
