@@ -1,0 +1,58 @@
+{
+  "common": {
+    "cancel": "रद्द करें",
+    "save": "सहेजें",
+    "edit": "संपादित करें",
+    "customer": "ग्राहक"
+  },
+  "profile": {
+    "lifetimeSavings": "जीवन भर बचत",
+    "referralId": "रेफ़रल आईडी",
+    "verifyEmail": "ईमेल सत्यापित करें",
+    "editProfile": "प्रोफ़ाइल संपादित करें",
+    "transactions": "लेनदेन",
+    "support": "सहायता",
+    "settings": "सेटिंग्स",
+    "rewardsAndReferrals": "रिवॉर्ड्स और रेफ़रल",
+    "savedAddresses": "सहेजे गए पते",
+    "helpAndSupport": "सहायता और समर्थन",
+    "referEarnTitle": "रेफ़र करें और GatiMitra क्रेडिट कमाएं",
+    "referEarnSub": "दोस्तों के साथ शेयर करें और रिवॉर्ड्स पाएं।",
+    "referNow": "अभी रेफ़र करें"
+  },
+  "settings": {
+    "account": "खाता",
+    "editProfile": "प्रोफ़ाइल संपादित करें",
+    "savedAddresses": "सहेजे गए पते",
+    "preferences": "प्राथमिकताएं",
+    "pushNotifications": "पुश नोटिफ़िकेशन",
+    "pushNotificationsSub": "ऑर्डर, ऑफ़र और रिमाइंडर",
+    "language": "भाषा",
+    "legal": "कानूनी",
+    "termsOfService": "सेवा की शर्तें",
+    "privacyPolicy": "गोपनीयता नीति",
+    "about": "के बारे में",
+    "appVersion": "ऐप संस्करण",
+    "accountActions": "खाता क्रियाएं",
+    "signOut": "साइन आउट",
+    "signOutModalTitle": "साइन आउट",
+    "signOutModalMessage": "केवल इस डिवाइस से साइन आउट करें, या उन सभी डिवाइस से जहां आप लॉग इन हैं।",
+    "thisDevice": "यह डिवाइस",
+    "allDevices": "सभी डिवाइस"
+  },
+  "addresses": {
+    "noSavedAddresses": "कोई सहेजा गया पता नहीं",
+    "noSavedAddressesSub": "त्वरित चेकआउट के लिए घर, ऑफिस या अन्य जगहें जोड़ें।",
+    "home": "घर",
+    "work": "ऑफिस",
+    "addNewAddress": "नया पता जोड़ें",
+    "addNewAddressSub": "घर, ऑफिस या कोई डिलिवरी स्पॉट"
+  },
+  "language": {
+    "chooseLanguage": "ऐप के लिए अपनी पसंदीदा भाषा चुनें।"
+  },
+  "languages": {
+    "en": "English",
+    "hi": "हिन्दी"
+  }
+}

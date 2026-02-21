@@ -42,6 +42,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   
   const [selectedPoint, setSelectedPoint] = useState<ServicePoint | null>(null);
   const [deletingPointId, setDeletingPointId] = useState<number | null>(null);
+  const [deleteStartTime, setDeleteStartTime] = useState<number | null>(null);
   const { isSuperAdmin } = usePermissions();
   const { data: servicePoints = [], isLoading, error, dataUpdatedAt, isFetching } = useServicePointsQuery();
   const deleteServicePoint = useDeleteServicePoint();
@@ -74,6 +75,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
 
   const handleDeletePoint = useCallback(async (pointId: number) => {
     setDeletingPointId(pointId);
+    setDeleteStartTime(Date.now());
     try {
       await deleteServicePoint.mutateAsync(pointId);
       setSelectedPoint(null);
@@ -82,6 +84,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
       throw err;
     } finally {
       setDeletingPointId(null);
+      setDeleteStartTime(null);
     }
   }, [deleteServicePoint]);
 
@@ -144,6 +147,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
         isSuperAdmin={isSuperAdmin}
         onDeletePoint={isSuperAdmin ? handleDeletePoint : undefined}
         deletingPointId={deletingPointId}
+        deleteStartTime={deleteStartTime}
       />
     </div>
   );

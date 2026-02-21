@@ -53,7 +53,7 @@ interface SessionStatusResponse {
 export const SESSION_SERVICE_UNAVAILABLE = "SESSION_SERVICE_UNAVAILABLE";
 
 async function fetchSession(): Promise<SessionData> {
-  const response = await fetch("/api/auth/session", { credentials: "include" });
+  const response = await fetch("/api/auth/session", { credentials: "include", cache: "no-store" });
   const text = await response.text();
   const contentType = response.headers.get("content-type") ?? "";
   const isJson = contentType.includes("application/json");
@@ -103,7 +103,7 @@ async function fetchSession(): Promise<SessionData> {
 }
 
 async function fetchSessionStatus(): Promise<SessionStatus> {
-  const response = await fetch("/api/auth/session-status", { credentials: "include" });
+  const response = await fetch("/api/auth/session-status", { credentials: "include", cache: "no-store" });
   const text = await response.text();
   const contentType = response.headers.get("content-type") ?? "";
   const isJson = contentType.includes("application/json");

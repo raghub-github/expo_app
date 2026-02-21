@@ -44,6 +44,7 @@ interface MapComponentProps {
   isSuperAdmin?: boolean;
   onDeletePoint?: (pointId: number) => Promise<void>;
   deletingPointId?: number | null;
+  deleteStartTime?: number | null;
 }
 
 function MapComponentInner({
@@ -56,7 +57,9 @@ function MapComponentInner({
   isSuperAdmin = false,
   onDeletePoint,
   deletingPointId = null,
+  deleteStartTime = null,
 }: MapComponentProps) {
+  const [deleteElapsed, setDeleteElapsed] = useState(0);
   // #region agent log
   const componentMountTime = Date.now();
   fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:47',message:'MapComponent mounted',data:{componentMountTime,servicePointsCount:servicePoints.length,hasToken:!!mapboxToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
@@ -623,6 +626,18 @@ function MapComponentInner({
     }
   }, [servicePoints, isLoaded, onPointClick]);
 
+  // Tick elapsed time when delete is in progress
+  useEffect(() => {
+    if (!deletingPointId || !deleteStartTime) {
+      setDeleteElapsed(0);
+      return;
+    }
+    const id = setInterval(() => {
+      setDeleteElapsed(Math.floor((Date.now() - deleteStartTime) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [deletingPointId, deleteStartTime]);
+
   // Handle popup
   useEffect(() => {
     if (!mapRef.current || !selectedPoint) {
@@ -646,11 +661,15 @@ function MapComponentInner({
     const pointId = selectedPoint.id;
     const pointName = selectedPoint.name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     const isDeleting = deletingPointId === pointId;
+    const elapsedStr = isDeleting ? `${deleteElapsed}s` : '';
+    const trashSvg = '<svg style="width: 18px; height: 18px; flex-shrink: 0;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+    const spinnerSvg = '<svg style="width: 16px; height: 16px; animation: spin 1s linear infinite;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill-opacity="0.75"></path></svg>';
     
     const popup = new mapboxgl.Popup({ closeOnClick: false })
       .setLngLat([selectedPoint.longitude, selectedPoint.latitude])
       .setHTML(`
         <div style="padding: 12px; min-width: 220px;">
+          <style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>
           <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
             <div style="flex: 1;">
               <h3 style="font-weight: 600; color: #111827; margin: 0; font-size: 15px;">${pointName}</h3>
@@ -667,8 +686,9 @@ function MapComponentInner({
                 ${isDeleting ? 'disabled' : ''}
                 onmouseover="${isDeleting ? '' : "this.style.background='#dc2626'"} "
                 onmouseout="${isDeleting ? '' : "this.style.background='#ef4444'"} "
+                title="Delete service point"
               >
-                ${isDeleting ? '<svg style="width: 14px; height: 14px; animation: spin 1s linear infinite;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" fill-opacity="0.75"></path></svg><style>@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }</style>' : '🗑️'} ${isDeleting ? 'Deleting...' : 'Delete Service Point'}
+                ${isDeleting ? spinnerSvg + '<span style="margin-left: 6px;">' + elapsedStr + '</span>' : trashSvg}
               </button>
             </div>
           ` : ''}
@@ -720,7 +740,7 @@ function MapComponentInner({
         popupRef.current = null;
       }
     };
-  }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup, deletingPointId]);
+  }, [selectedPoint, isSuperAdmin, onDeletePoint, onClosePopup, deletingPointId, deleteElapsed, deleteStartTime]);
 
   return (
     <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '500px', maxWidth: '500px' }}>

@@ -48,39 +48,15 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get session (for tokens) - only place we call getSession() so client gets full session once; avoids parallel refresh with middleware/other APIs
-    let session: { user: { id: string; email?: string; [key: string]: unknown }; [key: string]: unknown } | null = null;
-    let sessionError: unknown = null;
-    try {
-      const result = await supabase.auth.getSession();
-      session = result.data?.session ?? null;
-      sessionError = result.error ?? null;
-    } catch (err) {
-      sessionError = err;
-    }
-    if (sessionError && isInvalidRefreshToken(sessionError)) {
-      await supabase.auth.signOut();
-      return NextResponse.json(
-        { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-        { status: 401 }
-      );
-    }
-
-    // Only return session if it exists and is valid
-    if (!session) {
-      return NextResponse.json(
-        { success: false, error: "No active session", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
-
-    // Get user permissions
+    // Return user + permissions only. Do not call getSession() here to avoid "Invalid Refresh Token: Already Used"
+    // when multiple requests run in parallel (getSession() can refresh the token; only one use is allowed).
+    // Auth is cookie-based; the client does not need session tokens in the response.
     const permissions = await getUserPermissions(user.id, user.email || "");
 
     return NextResponse.json({
       success: true,
       data: {
-        session,
+        session: { user },
         permissions,
       },
     });

@@ -111,9 +111,23 @@ export default function AuthCallbackPage() {
       }
 
       // 4) Existing session (e.g. return visit)
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      let session: { access_token: string; refresh_token: string } | null = null;
+      let sessionError: { message?: string } | null = null;
+      try {
+        const result = await supabase.auth.getSession();
+        session = result.data?.session ?? null;
+        sessionError = result.error ?? null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.toLowerCase().includes("refresh") && (msg.toLowerCase().includes("already used") || msg.toLowerCase().includes("invalid"))) {
+          await supabase.auth.signOut();
+          router.push("/login?reason=session_invalid");
+          return;
+        }
+        sessionError = err as { message?: string };
+      }
       if (sessionError) {
-        router.push(`/login?error=${encodeURIComponent(sessionError.message)}`);
+        router.push(`/login?error=${encodeURIComponent(sessionError.message ?? "Session error")}`);
         return;
       }
       if (session) {
