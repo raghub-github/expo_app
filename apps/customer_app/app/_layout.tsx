@@ -9,22 +9,30 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useCallback } from "react";
-import { View, ActivityIndicator, Text, Image, LogBox } from "react-native";
+import { View, ActivityIndicator, Text, Image, LogBox, Alert } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useLanguageStore } from "@/store/languageStore";
 import { useLocationStore } from "@/store/locationStore";
+import { useStoreStatusStore } from "@/store/storeStatusStore";
+import { useStoreStatusRealtime } from "@/hooks/useStoreStatusRealtime";
+import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
+import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { setOnSessionRevoked } from "@/services/api";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
 
-// Suppress benign "Unable to activate keep awake" console error (Expo/Android when device was locked during load)
-LogBox.ignoreLogs(["Unable to activate keep awake", "Unable to deactivate keep awake"]);
+// Suppress benign console warnings
+LogBox.ignoreLogs([
+  "Unable to activate keep awake",
+  "Unable to deactivate keep awake",
+  "SafeAreaView has been deprecated",
+]);
 
 SplashScreen.preventAutoHideAsync().catch(() => {
   // Ignore keep-awake related failures so app still loads
@@ -79,13 +87,40 @@ export default function RootLayout() {
   return (
     <QueryClientProvider client={queryClient}>
       <SafeAreaProvider>
+        <StoreStatusRealtimeSync />
         <SessionRevokedHandler />
         <LanguageSync />
         <RootStack onLayoutRootView={onLayoutRootView} />
+        <GlobalFloatingCart />
         <LocationModalWrapper />
       </SafeAreaProvider>
     </QueryClientProvider>
   );
+}
+
+function OrderRealtimeSync() {
+  useOrderRealtime();
+  return null;
+}
+
+function StoreStatusRealtimeSync() {
+  useStoreStatusRealtime();
+  useEffect(() => {
+    useStoreStatusStore.getState().setOnStoreClosedCallback((storeId: string) => {
+      const cartMerchantId = useCartStore.getState().merchantId;
+      if (cartMerchantId === storeId) {
+        Alert.alert(
+          "Kitchen closed",
+          "This kitchen just closed. Ordering is temporarily unavailable.",
+          [{ text: "OK" }]
+        );
+      }
+    });
+    return () => {
+      useStoreStatusStore.getState().setOnStoreClosedCallback(null);
+    };
+  }, []);
+  return null;
 }
 
 function LanguageSync() {
@@ -131,6 +166,7 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
   const segments = useSegments();
   const inProfileStack = segments[0] === "profile";
   const statusBarHeight = inProfileStack ? 0 : (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT);
+
   return (
     <>
       <StatusBar style="dark" backgroundColor={STATUS_BAR_BG} />
@@ -152,6 +188,7 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
           <Stack.Screen name="location-map" />
           <Stack.Screen name="home" />
           <Stack.Screen name="checkout" />
+          <Stack.Screen name="group" />
           <Stack.Screen name="orders" />
           <Stack.Screen name="profile" />
           <Stack.Screen name="wallet" />

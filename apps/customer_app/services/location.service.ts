@@ -1,37 +1,19 @@
 /**
  * Location service - reverse geocode and forward search using Mapbox Geocoding API.
  * All search results are restricted to India (country=IN).
- * Enhanced for street-level accuracy and fast real-time suggestions (autocomplete, cache, abort).
+ * Forward search delegates to the intelligent location search engine (locationSearch.service).
  */
 
 import { getConfig } from "@/config/env";
+import {
+  searchLocations,
+  toLegacyPlaceResult,
+  isPincodeSearchMode,
+  type EnrichedPlaceResult,
+  type LocationSearchOptions,
+} from "@/services/locationSearch.service";
 
 const COUNTRY_INDIA = "IN";
-const CACHE_TTL_MS = 25_000;
-const CACHE_MAX_ENTRIES = 50;
-
-type CacheEntry = { results: PlaceSearchResult[]; ts: number };
-const searchCache = new Map<string, CacheEntry>();
-
-function cacheKey(query: string, proximity?: string): string {
-  const q = query.trim().toLowerCase().slice(0, 100);
-  const p = proximity ?? "";
-  return `${q}|${p}`;
-}
-
-function getCached(key: string): PlaceSearchResult[] | null {
-  const entry = searchCache.get(key);
-  if (!entry || Date.now() - entry.ts > CACHE_TTL_MS) return null;
-  return entry.results;
-}
-
-function setCache(key: string, results: PlaceSearchResult[]) {
-  if (searchCache.size >= CACHE_MAX_ENTRIES) {
-    const oldest = [...searchCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
-    if (oldest) searchCache.delete(oldest[0]);
-  }
-  searchCache.set(key, { results, ts: Date.now() });
-}
 
 export type ReverseGeocodeResult = {
   primary: string;
@@ -56,7 +38,7 @@ export async function reverseGeocode(
     };
   }
 
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood&language=en`;
+  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood&language=en,hi&worldview=in`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Mapbox geocode failed: ${res.status}`);
@@ -99,141 +81,71 @@ export type PlaceSearchResult = ReverseGeocodeResult & {
   longitude: number;
 };
 
-function parseMapboxFeatures(
-  features: Array<{
-    place_name?: string;
-    text?: string;
-    center?: [number, number];
-    context?: Array<{ id: string; text: string }>;
-    place_type?: string[];
-  }>
-): PlaceSearchResult[] {
-  const parsed: (PlaceSearchResult & { _addr?: boolean })[] = features.map((feature) => {
-    const placeName = feature.place_name ?? "";
-    const [longitude, latitude] = feature.center ?? [0, 0];
-    const context = feature.context ?? [];
-    const locality = context.find((c) => c.id.startsWith("locality"))?.text;
-    const place = context.find((c) => c.id.startsWith("place"))?.text;
-    const neighborhood = context.find((c) => c.id.startsWith("neighborhood"))?.text;
-    const primary = feature.text ?? locality ?? neighborhood ?? place ?? placeName.split(",")[0] ?? "Address";
-    const secondary = [locality, place, neighborhood].filter(Boolean).join(", ") || placeName.split(",").slice(1, 3).join(", ").trim() || "—";
-    const isAddress = feature.place_type?.includes("address") ?? false;
-    return {
-      primary,
-      secondary: secondary.slice(0, 80),
-      fullAddress: placeName,
-      latitude,
-      longitude,
-      _addr: isAddress,
-    };
-  });
-  parsed.sort((a, b) => (b._addr ? 1 : 0) - (a._addr ? 1 : 0));
-  return parsed.map(({ _addr, ...r }) => r);
-}
+/** Re-export enriched type and pincode detection for location picker UI. */
+export type { EnrichedPlaceResult } from "@/services/locationSearch.service";
+export { isPincodeSearchMode } from "@/services/locationSearch.service";
 
-/** Options for search calls: optional abort signal and proximity for server-side biasing. */
+/** Options for search calls: optional abort signal, proximity, and local fallback. */
 export type SearchOptions = {
   signal?: AbortSignal;
-  /** When set, results are biased toward this point (lng, lat). */
   proximity?: { longitude: number; latitude: number };
+  recentLocationKeys?: Set<string>;
+  getLocalSuggestions?: (q: string) => Promise<import("@/services/locationSearch.service").LocalSuggestionInput[]>;
+  getCityAreas?: (cityName: string) => Promise<import("@/services/locationSearch.service").LocalSuggestionInput[]>;
 };
 
 /**
- * Forward geocode: search places/addresses by text using Mapbox Geocoding API.
- * Street-level accuracy: address type first, autocomplete for real-time partial match.
- * Uses a short-lived cache for identical queries.
+ * Forward geocode via intelligent search engine (Mapbox + fuzzy + scoring + fallback).
+ * Returns legacy shape for backward compatibility.
  */
 export async function searchPlaces(
   query: string,
   options?: SearchOptions
 ): Promise<PlaceSearchResult[]> {
-  const { mapboxAccessToken } = getConfig();
-  if (!mapboxAccessToken) return [];
-
-  const trimmed = query.trim();
-  if (!trimmed || trimmed.length < 2) return [];
-
-  const proximityStr = options?.proximity
-    ? `${options.proximity.longitude},${options.proximity.latitude}`
-    : "";
-  const key = cacheKey(trimmed, proximityStr);
-  const cached = getCached(key);
-  if (cached) return cached;
-
-  const encodedQuery = encodeURIComponent(trimmed);
-  const params = new URLSearchParams({
-    access_token: mapboxAccessToken,
-    limit: "10",
-    country: COUNTRY_INDIA,
-    types: "address,place,locality,neighborhood,poi",
-    autocomplete: "true",
-    language: "en",
+  const enriched = await searchLocations(query, {
+    signal: options?.signal,
+    proximity: options?.proximity,
+    recentLocationKeys: options?.recentLocationKeys,
+    getLocalSuggestions: options?.getLocalSuggestions,
+    getCityAreas: options?.getCityAreas,
   });
-  if (proximityStr) params.set("proximity", proximityStr);
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedQuery}.json?${params.toString()}`;
-
-  const res = await fetch(url, { signal: options?.signal });
-  if (!res.ok || options?.signal?.aborted) return [];
-  const data = (await res.json()) as {
-    features?: Array<{
-      place_name?: string;
-      text?: string;
-      center?: [number, number];
-      context?: Array<{ id: string; text: string }>;
-      place_type?: string[];
-    }>;
-  };
-  const results = parseMapboxFeatures(data.features ?? []);
-  setCache(key, results);
-  return results;
+  return enriched.map(toLegacyPlaceResult);
 }
 
 /**
  * Search places biased toward a location (proximity). India-only.
- * Street-level + autocomplete; use for pickup/drop suggestions in real time.
+ * Uses the same intelligent engine as searchPlaces.
  */
 export async function searchPlacesWithProximity(
   query: string,
   longitude: number,
   latitude: number,
-  options?: { signal?: AbortSignal }
+  options?: { signal?: AbortSignal; recentLocationKeys?: Set<string> }
 ): Promise<PlaceSearchResult[]> {
-  const { mapboxAccessToken } = getConfig();
-  if (!mapboxAccessToken) return [];
-
-  const trimmed = query.trim();
-  const searchTerm = trimmed.length >= 2 ? trimmed : "place";
-  const proximityStr = `${longitude},${latitude}`;
-  const key = cacheKey(searchTerm, proximityStr);
-  const cached = getCached(key);
-  if (cached) return cached;
-
-  const encodedQuery = encodeURIComponent(searchTerm);
-  const params = new URLSearchParams({
-    access_token: mapboxAccessToken,
-    limit: "10",
-    country: COUNTRY_INDIA,
-    proximity: proximityStr,
-    types: "address,place,locality,neighborhood,poi",
-    autocomplete: "true",
-    language: "en",
+  const searchTerm = query.trim().length >= 2 ? query.trim() : "place";
+  const enriched = await searchLocations(searchTerm, {
+    signal: options?.signal,
+    proximity: { longitude, latitude },
+    recentLocationKeys: options?.recentLocationKeys,
   });
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedQuery}.json?${params.toString()}`;
+  return enriched.map(toLegacyPlaceResult);
+}
 
-  const res = await fetch(url, { signal: options?.signal });
-  if (!res.ok || options?.signal?.aborted) return [];
-  const data = (await res.json()) as {
-    features?: Array<{
-      place_name?: string;
-      text?: string;
-      center?: [number, number];
-      context?: Array<{ id: string; text: string }>;
-      place_type?: string[];
-    }>;
-  };
-  const results = parseMapboxFeatures(data.features ?? []);
-  setCache(key, results);
-  return results;
+/**
+ * High-precision location search returning enriched results (area, city, state, distance, confidence).
+ * Pass getLocalSuggestions and getCityAreas for local fallback and city→areas.
+ */
+export async function searchPlacesEnriched(
+  query: string,
+  options?: SearchOptions
+): Promise<EnrichedPlaceResult[]> {
+  return searchLocations(query, {
+    signal: options?.signal,
+    proximity: options?.proximity,
+    recentLocationKeys: options?.recentLocationKeys,
+    getLocalSuggestions: options?.getLocalSuggestions,
+    getCityAreas: options?.getCityAreas,
+  });
 }
 
 /**
@@ -263,50 +175,21 @@ export async function geocodeAddressToCoord(
 
 /**
  * Drop suggestions: addresses and landmarks within the pickup city. India-only.
- * Street-level + autocomplete; proximity keeps results in same city/area.
+ * Uses the same intelligent search engine with proximity to pickup.
  */
 export async function searchDropSuggestionsInCity(
   query: string,
   pickupLongitude: number,
   pickupLatitude: number,
-  options?: { signal?: AbortSignal }
+  options?: { signal?: AbortSignal; recentLocationKeys?: Set<string> }
 ): Promise<PlaceSearchResult[]> {
-  const { mapboxAccessToken } = getConfig();
-  if (!mapboxAccessToken) return [];
-
-  const trimmed = query.trim();
-  const searchTerm = trimmed.length >= 2 ? trimmed : "landmark";
-  const proximityStr = `${pickupLongitude},${pickupLatitude}`;
-  const key = cacheKey(`drop:${searchTerm}`, proximityStr);
-  const cached = getCached(key);
-  if (cached) return cached;
-
-  const encodedQuery = encodeURIComponent(searchTerm);
-  const params = new URLSearchParams({
-    access_token: mapboxAccessToken,
-    limit: "10",
-    country: COUNTRY_INDIA,
-    proximity: proximityStr,
-    types: "address,poi,place,locality",
-    autocomplete: "true",
-    language: "en",
+  const searchTerm = query.trim().length >= 2 ? query.trim() : "landmark";
+  const enriched = await searchLocations(searchTerm, {
+    signal: options?.signal,
+    proximity: { longitude: pickupLongitude, latitude: pickupLatitude },
+    recentLocationKeys: options?.recentLocationKeys,
   });
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedQuery}.json?${params.toString()}`;
-
-  const res = await fetch(url, { signal: options?.signal });
-  if (!res.ok || options?.signal?.aborted) return [];
-  const data = (await res.json()) as {
-    features?: Array<{
-      place_name?: string;
-      text?: string;
-      center?: [number, number];
-      context?: Array<{ id: string; text: string }>;
-      place_type?: string[];
-    }>;
-  };
-  const results = parseMapboxFeatures(data.features ?? []);
-  setCache(key, results);
-  return results;
+  return enriched.map(toLegacyPlaceResult);
 }
 
 export type NearbyPlace = {

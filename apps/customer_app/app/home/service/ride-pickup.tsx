@@ -22,6 +22,7 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import * as Contacts from "expo-contacts";
 import { useLocationStore } from "@/store/locationStore";
+import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { BookingRiderSheet } from "@/features/ride/BookingRiderSheet";
 import { ContactListSheet } from "@/features/ride/ContactListSheet";
@@ -46,6 +47,9 @@ export default function RidePickupScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { address, coords } = useLocationStore();
+  const addRecentLocation = useRecentLocationStore((s) => s.addRecentLocation);
+  const getRecentLocationKeys = useRecentLocationStore((s) => s.getRecentLocationKeys);
+  const hydrateRecentLocations = useRecentLocationStore((s) => s.hydrate);
   const [pickupText, setPickupText] = useState(() => getDefaultPickup(address));
   const [dropText, setDropText] = useState("");
   const [riderSheetVisible, setRiderSheetVisible] = useState(false);
@@ -70,6 +74,10 @@ export default function RidePickupScreen() {
   const [pickupCoords, setPickupCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [dropCoords, setDropCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const hasCoords = !!coords?.latitude && !!coords?.longitude;
+
+  useEffect(() => {
+    hydrateRecentLocations();
+  }, [hydrateRecentLocations]);
 
   // When screen focuses: show current location by default; when returning from map, show selected location (store updated)
   useFocusEffect(
@@ -122,11 +130,12 @@ export default function RidePickupScreen() {
       const controller = new AbortController();
       pickupAbortRef.current = controller;
       setPickupSuggestionsLoading(true);
+      const recentKeys = getRecentLocationKeys();
       const search =
         hasCoords && coords
-          ? searchPlacesWithProximity(query || "place", coords.longitude, coords.latitude, { signal: controller.signal })
+          ? searchPlacesWithProximity(query || "place", coords.longitude, coords.latitude, { signal: controller.signal, recentLocationKeys: recentKeys })
           : query.length >= 2
-            ? searchPlaces(query, { signal: controller.signal, proximity: coords ? { longitude: coords.longitude, latitude: coords.latitude } : undefined })
+            ? searchPlaces(query, { signal: controller.signal, proximity: coords ? { longitude: coords.longitude, latitude: coords.latitude } : undefined, recentLocationKeys: recentKeys })
             : Promise.resolve([]);
       search
         .then((results) => {
@@ -143,7 +152,7 @@ export default function RidePickupScreen() {
       if (pickupDebounceRef.current) clearTimeout(pickupDebounceRef.current);
       pickupAbortRef.current?.abort();
     };
-  }, [pickupText, hasCoords, coords?.latitude, coords?.longitude]);
+  }, [pickupText, hasCoords, coords?.latitude, coords?.longitude, getRecentLocationKeys]);
 
   // Resolve pickup to "city" coordinates: use current location when pickup matches store, else geocode pickup text (India-only).
   useEffect(() => {
@@ -184,7 +193,7 @@ export default function RidePickupScreen() {
       const controller = new AbortController();
       dropAbortRef.current = controller;
       setDropSuggestionsLoading(true);
-      searchDropSuggestionsInCity(query || "landmark", pickupCityCoords.longitude, pickupCityCoords.latitude, { signal: controller.signal })
+      searchDropSuggestionsInCity(query || "landmark", pickupCityCoords.longitude, pickupCityCoords.latitude, { signal: controller.signal, recentLocationKeys: getRecentLocationKeys() })
         .then((results) => {
           if (!controller.signal.aborted) setDropSuggestions(results);
         })
@@ -215,6 +224,7 @@ export default function RidePickupScreen() {
               key={loc.fullAddress + loc.latitude}
               style={styles.suggestedRow}
               onPress={() => {
+                addRecentLocation({ latitude: loc.latitude, longitude: loc.longitude, primary: loc.primary, fullAddress: loc.fullAddress });
                 setPickupText(loc.fullAddress);
                 setPickupCoords({ latitude: loc.latitude, longitude: loc.longitude });
               }}
@@ -252,6 +262,7 @@ export default function RidePickupScreen() {
               key={loc.fullAddress + loc.latitude}
               style={styles.suggestedRow}
               onPress={() => {
+                addRecentLocation({ latitude: loc.latitude, longitude: loc.longitude, primary: loc.primary, fullAddress: loc.fullAddress });
                 setDropText(loc.fullAddress);
                 setDropCoords({ latitude: loc.latitude, longitude: loc.longitude });
               }}

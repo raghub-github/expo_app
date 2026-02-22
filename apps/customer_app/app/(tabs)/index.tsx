@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocationStore } from "@/store/locationStore";
+import { BrandingFooter } from "@/components/BrandingFooter";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
 
 const CATEGORY_IMAGES: Record<string, ReturnType<typeof require>> = {
@@ -274,6 +275,7 @@ export default function HomeScreen() {
           })()
         )}
 
+        <BrandingFooter />
       </ScrollView>
     </View>
   );

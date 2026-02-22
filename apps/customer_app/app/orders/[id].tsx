@@ -1,12 +1,30 @@
 /**
- * Order tracking - live status, rider details, map placeholder.
+ * Order tracking – Swiggy/Zomato-style: map, live rider, ETA, timeline, rider card, summary.
+ * Syncs active order store; clears when order is DELIVERED/CANCELLED.
  */
 
-import { View, Text, ScrollView } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useEffect, useRef, useMemo } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Linking,
+  Platform,
+} from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
+import { StatusBar } from "expo-status-bar";
+import { Ionicons } from "@expo/vector-icons";
+import MapView, { Marker, Region } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { orderService } from "@/services/order.service";
 import { ORDER_STATUS_LABELS } from "@/constants";
+import { useOrderStore } from "@/store/orderStore";
+import { GatiMitraColors } from "@/constants/gatimitra";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 
 const STATUS_STEPS = [
   "ORDER_PLACED",
@@ -16,9 +34,57 @@ const STATUS_STEPS = [
   "DELIVERED",
 ].map((s) => ({ key: s, label: ORDER_STATUS_LABELS[s] ?? s }));
 
+const DEFAULT_LAT = 20.5937;
+const DEFAULT_LNG = 78.9629;
+const DELTA = 0.012;
+
+function getMapRegion(
+  rider: { latitude: number; longitude: number } | null,
+  deliveryLat: number | null,
+  deliveryLng: number | null,
+  pickupLat: number | null,
+  pickupLng: number | null
+): Region {
+  const points: { lat: number; lng: number }[] = [];
+  if (rider) {
+    points.push({ lat: rider.latitude, lng: rider.longitude });
+  }
+  if (deliveryLat != null && deliveryLng != null) {
+    points.push({ lat: deliveryLat, lng: deliveryLng });
+  }
+  if (pickupLat != null && pickupLng != null) {
+    points.push({ lat: pickupLat, lng: pickupLng });
+  }
+  if (points.length === 0) {
+    return {
+      latitude: DEFAULT_LAT,
+      longitude: DEFAULT_LNG,
+      latitudeDelta: DELTA,
+      longitudeDelta: DELTA,
+    };
+  }
+  const lats = points.map((p) => p.lat);
+  const lngs = points.map((p) => p.lng);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  const latDelta = Math.max((maxLat - minLat) * 1.4, DELTA);
+  const lngDelta = Math.max((maxLng - minLng) * 1.4, DELTA);
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLng + maxLng) / 2,
+    latitudeDelta: latDelta,
+    longitudeDelta: lngDelta,
+  };
+}
+
 export default function OrderTrackingScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const orderId = id ?? "";
+  const mapRef = useRef<MapView>(null);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", orderId],
@@ -26,92 +92,573 @@ export default function OrderTrackingScreen() {
     enabled: !!orderId,
   });
 
+  const isActive =
+    order &&
+    order.status !== "DELIVERED" &&
+    order.status !== "CANCELLED" &&
+    (order.status === "ON_THE_WAY" ||
+      order.status === "OUT_FOR_DELIVERY" ||
+      order.status === "PICKED_UP");
+
+  const { data: tracking } = useQuery({
+    queryKey: ["orderTracking", orderId],
+    queryFn: () => orderService.getOrderTracking(orderId),
+    enabled: !!orderId && !!isActive,
+    refetchInterval: isActive ? 5000 : false,
+  });
+
+  const activeOrder = useOrderStore((s) => s.activeOrder);
+  const updateStatus = useOrderStore((s) => s.updateStatus);
+  const clearActiveOrder = useOrderStore((s) => s.clearActiveOrder);
+
+  useEffect(() => {
+    if (!order || activeOrder?.orderId !== order.orderId) return;
+    const status = (order.status ?? "").toUpperCase();
+    if (status === "DELIVERED" || status === "CANCELLED") {
+      clearActiveOrder();
+    } else {
+      const eta =
+        status === "OUT_FOR_DELIVERY" || status === "ON_THE_WAY"
+          ? 15
+          : status === "PICKED_UP"
+            ? 20
+            : 27;
+      updateStatus(status as import("@/store/orderStore").OrderStatus, eta);
+    }
+  }, [order?.status, order?.orderId, activeOrder?.orderId, updateStatus, clearActiveOrder]);
+
+  const deliveryLat =
+    order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
+  const deliveryLng =
+    order?.deliveryLng != null ? order.deliveryLng : DEFAULT_LNG + 0.008;
+  const pickupLat =
+    order?.pickupLat != null ? order.pickupLat : DEFAULT_LAT - 0.006;
+  const pickupLng =
+    order?.pickupLng != null ? order.pickupLng : DEFAULT_LNG - 0.006;
+
+  const mapRegion = useMemo(
+    () =>
+      getMapRegion(
+        tracking?.rider ?? null,
+        deliveryLat,
+        deliveryLng,
+        pickupLat,
+        pickupLng
+      ),
+    [
+      tracking?.rider,
+      deliveryLat,
+      deliveryLng,
+      pickupLat,
+      pickupLng,
+    ]
+  );
+
+  const etaMinutes =
+    activeOrder?.orderId === orderId
+      ? activeOrder.etaMinutes
+      : order?.status === "ON_THE_WAY" || order?.status === "OUT_FOR_DELIVERY"
+        ? 15
+        : order?.status === "PICKED_UP"
+          ? 20
+          : 27;
+
   if (!orderId) {
     return (
-      <View className="flex-1 items-center justify-center">
-        <Text className="text-gray-500">Invalid order</Text>
+      <View style={[styles.center, styles.screenBg]}>
+        <Text style={styles.errText}>Invalid order</Text>
+        <TouchableOpacity onPress={() => router.back()} style={styles.primaryBtn}>
+          <Text style={styles.primaryBtnText}>Go back</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
   if (isLoading || !order) {
     return (
-      <View className="flex-1 items-center justify-center bg-gray-50 dark:bg-gray-900">
-        <Text className="text-gray-500">Loading order...</Text>
+      <View style={[styles.center, styles.screenBg]}>
+        <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
+        <Text style={styles.loadingText}>Loading order...</Text>
       </View>
     );
   }
 
   const currentIndex = STATUS_STEPS.findIndex((s) => s.key === order.status);
   const activeIndex = currentIndex >= 0 ? currentIndex : 0;
+  const isDelivered = order.status === "DELIVERED";
+  const isCancelled = order.status === "CANCELLED";
+
+  const handleCallRider = () => {
+    const phone = order.rider?.phone?.replace(/\D/g, "") ?? "";
+    if (phone) Linking.openURL(`tel:${phone}`);
+  };
 
   return (
-    <ScrollView className="flex-1 bg-gray-50 dark:bg-gray-900" contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
-      {/* Map placeholder */}
-      <View className="h-48 bg-gray-200 dark:bg-gray-700 rounded-xl items-center justify-center mb-6">
-        <Text className="text-gray-500 dark:text-gray-400">Map integration ready</Text>
-      </View>
-
-      {/* Status timeline */}
-      <View className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700 mb-4">
-        <Text className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Order status</Text>
-        {STATUS_STEPS.map((step, i) => (
-          <View key={step.key} className="flex-row items-start mb-3 last:mb-0">
-            <View
-              className={`w-6 h-6 rounded-full border-2 items-center justify-center ${
-                i <= activeIndex ? "border-primary-500 bg-primary-500" : "border-gray-300 dark:border-gray-600"
-              }`}
-            >
-              {i < activeIndex ? (
-                <Text className="text-white text-xs">✓</Text>
-              ) : i === activeIndex ? (
-                <View className="w-2 h-2 rounded-full bg-white" />
-              ) : null}
-            </View>
-            <View className="ml-3 flex-1">
-              <Text
-                className={
-                  i <= activeIndex
-                    ? "text-gray-900 dark:text-white font-medium"
-                    : "text-gray-400 dark:text-gray-500"
-                }
-              >
-                {step.label}
-              </Text>
-            </View>
+    <>
+      <AndroidBackHandler />
+      <StatusBar style="dark" backgroundColor="#fff" />
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={styles.backBtn}
+            hitSlop={12}
+          >
+            <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            Track order
+          </Text>
+          <View style={styles.headerRight}>
+            <Text style={styles.orderIdLabel}>#{order.orderId}</Text>
           </View>
-        ))}
-      </View>
-
-      {/* Rider details placeholder */}
-      {order.rider && (
-        <View className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700 mb-4">
-          <Text className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Rider</Text>
-          <Text className="text-gray-700 dark:text-gray-300">{order.rider.name}</Text>
-          {order.rider.phone && (
-            <Text className="text-primary-500 mt-1">{order.rider.phone}</Text>
-          )}
         </View>
-      )}
 
-      {/* Order summary */}
-      <View className="bg-white dark:bg-gray-800 rounded-xl p-4 border border-gray-100 dark:border-gray-700">
-        <Text className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Order summary</Text>
-        {order.items?.map((item, i) => (
-          <View key={i} className="flex-row justify-between py-1">
-            <Text className="text-gray-700 dark:text-gray-300">
-              {item.name} × {item.quantity}
-            </Text>
-            <Text className="text-gray-900 dark:text-white">₹{item.price * item.quantity}</Text>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: insets.bottom + 24 },
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Map */}
+          <View style={styles.mapWrap}>
+            <MapView
+              ref={mapRef}
+              style={styles.map}
+              initialRegion={mapRegion}
+              scrollEnabled
+              zoomEnabled
+              showsUserLocation={false}
+              showsMyLocationButton={Platform.OS !== "web"}
+            >
+              {/* Restaurant / pickup */}
+              <Marker
+                coordinate={{ latitude: pickupLat, longitude: pickupLng }}
+                title={order.merchantName ?? "Restaurant"}
+                pinColor={GatiMitraColors.warmOrange}
+              />
+              {/* Delivery address */}
+              <Marker
+                coordinate={{ latitude: deliveryLat, longitude: deliveryLng }}
+                title="Delivery address"
+                pinColor={GatiMitraColors.emerald}
+              />
+              {/* Rider (live) */}
+              {tracking?.rider && (
+                <Marker
+                  coordinate={{
+                    latitude: tracking.rider.latitude,
+                    longitude: tracking.rider.longitude,
+                  }}
+                  title="Rider"
+                  description="Your order is here"
+                  anchor={{ x: 0.5, y: 0.5 }}
+                >
+                  <View style={styles.riderMarker}>
+                    <Ionicons name="bicycle" size={28} color="#fff" />
+                  </View>
+                </Marker>
+              )}
+            </MapView>
+            {/* ETA pill overlay */}
+            {!isDelivered && !isCancelled && (
+              <View style={styles.etaPill}>
+                <Ionicons name="time-outline" size={20} color={GatiMitraColors.emerald} />
+                <Text style={styles.etaText}>
+                  Arriving in ~{etaMinutes} min
+                </Text>
+              </View>
+            )}
+            {isDelivered && (
+              <View style={[styles.etaPill, styles.deliveredPill]}>
+                <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                <Text style={styles.deliveredText}>Delivered</Text>
+              </View>
+            )}
           </View>
-        ))}
-        {order.totalAmount != null && (
-          <View className="flex-row justify-between pt-2 mt-2 border-t border-gray-100 dark:border-gray-700">
-            <Text className="text-gray-900 dark:text-white font-semibold">Total</Text>
-            <Text className="text-gray-900 dark:text-white font-semibold">₹{order.totalAmount}</Text>
+
+          {/* Status timeline */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Order status</Text>
+            {STATUS_STEPS.map((step, i) => (
+              <View key={step.key} style={styles.timelineRow}>
+                <View style={styles.timelineDotWrap}>
+                  <View
+                    style={[
+                      styles.timelineDot,
+                      i <= activeIndex ? styles.timelineDotActive : styles.timelineDotInactive,
+                    ]}
+                  >
+                    {i < activeIndex ? (
+                      <Ionicons name="checkmark" size={14} color="#fff" />
+                    ) : i === activeIndex ? (
+                      <View style={styles.timelineDotCurrent} />
+                    ) : null}
+                  </View>
+                  {i < STATUS_STEPS.length - 1 && (
+                    <View
+                      style={[
+                        styles.timelineLine,
+                        i < activeIndex ? styles.timelineLineActive : styles.timelineLineInactive,
+                      ]}
+                    />
+                  )}
+                </View>
+                <Text
+                  style={[
+                    styles.timelineLabel,
+                    i <= activeIndex ? styles.timelineLabelActive : styles.timelineLabelInactive,
+                  ]}
+                >
+                  {step.label}
+                </Text>
+              </View>
+            ))}
           </View>
-        )}
+
+          {/* Rider card */}
+          {order.rider && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Delivery partner</Text>
+              <View style={styles.riderRow}>
+                <View style={styles.riderAvatar}>
+                  <Ionicons name="person" size={24} color={GatiMitraColors.emerald} />
+                </View>
+                <View style={styles.riderInfo}>
+                  <Text style={styles.riderName}>{order.rider.name}</Text>
+                  {order.rider.phone && (
+                    <TouchableOpacity
+                      onPress={handleCallRider}
+                      style={styles.callBtn}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="call" size={18} color={GatiMitraColors.emerald} />
+                      <Text style={styles.callBtnText}>Call</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            </View>
+          )}
+
+          {/* Delivery address */}
+          {order.deliveryAddress && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Delivery address</Text>
+              <View style={styles.addressRow}>
+                <Ionicons name="location-outline" size={20} color={GatiMitraColors.textSecondary} />
+                <Text style={styles.addressText}>{order.deliveryAddress}</Text>
+              </View>
+            </View>
+          )}
+
+          {/* Order summary */}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Order summary</Text>
+            {order.items?.map((item, i) => (
+              <View key={i} style={styles.summaryRow}>
+                <Text style={styles.summaryItem} numberOfLines={1}>
+                  {item.name} × {item.quantity}
+                </Text>
+                <Text style={styles.summaryPrice}>
+                  ₹{Math.round(item.price * item.quantity)}
+                </Text>
+              </View>
+            ))}
+            {order.totalAmount != null && (
+              <View style={styles.summaryTotal}>
+                <Text style={styles.summaryTotalLabel}>Total</Text>
+                <Text style={styles.summaryTotalValue}>₹{order.totalAmount}</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Help / Support placeholder */}
+          <TouchableOpacity
+            style={styles.helpBtn}
+            onPress={() => {}}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="help-circle-outline" size={22} color={GatiMitraColors.textSecondary} />
+            <Text style={styles.helpBtnText}>Need help with this order?</Text>
+            <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+          </TouchableOpacity>
+        </ScrollView>
       </View>
-    </ScrollView>
+    </>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: GatiMitraColors.softBackground,
+  },
+  screenBg: {
+    backgroundColor: GatiMitraColors.softBackground,
+  },
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  errText: {
+    fontSize: 16,
+    color: GatiMitraColors.textSecondary,
+    marginBottom: 16,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: GatiMitraColors.textSecondary,
+    marginTop: 12,
+  },
+  primaryBtn: {
+    backgroundColor: GatiMitraColors.emerald,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+  },
+  primaryBtnText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#fff",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#fff",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraColors.border,
+  },
+  backBtn: { padding: 4 },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    flex: 1,
+    textAlign: "center",
+  },
+  headerRight: {
+    minWidth: 60,
+    alignItems: "flex-end",
+  },
+  orderIdLabel: {
+    fontSize: 12,
+    color: GatiMitraColors.textSecondary,
+  },
+  scroll: { flex: 1 },
+  scrollContent: { padding: 16 },
+  mapWrap: {
+    height: 220,
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 16,
+    backgroundColor: GatiMitraColors.border,
+  },
+  map: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+  },
+  riderMarker: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: GatiMitraColors.emerald,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 3,
+    borderColor: "#fff",
+    ...GatiMitraColors.elevationShadow,
+  },
+  etaPill: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#fff",
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 24,
+    ...GatiMitraColors.elevationShadow,
+  },
+  etaText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+  },
+  deliveredPill: {
+    backgroundColor: GatiMitraColors.emerald,
+  },
+  deliveredText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#fff",
+  },
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    ...GatiMitraColors.elevationShadow,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+    marginBottom: 12,
+  },
+  timelineRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginBottom: 2,
+  },
+  timelineDotWrap: {
+    width: 24,
+    alignItems: "center",
+    position: "relative",
+  },
+  timelineDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  timelineDotActive: {
+    backgroundColor: GatiMitraColors.emerald,
+  },
+  timelineDotInactive: {
+    backgroundColor: "#E5E7EB",
+  },
+  timelineDotCurrent: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#fff",
+    borderWidth: 2,
+    borderColor: GatiMitraColors.emerald,
+  },
+  timelineLine: {
+    position: "absolute",
+    left: 11,
+    top: 24,
+    width: 2,
+    height: 22,
+  },
+  timelineLineActive: {
+    backgroundColor: GatiMitraColors.emerald,
+  },
+  timelineLineInactive: {
+    backgroundColor: "#E5E7EB",
+  },
+  timelineLabel: {
+    fontSize: 15,
+    marginLeft: 12,
+    flex: 1,
+    marginTop: 2,
+  },
+  timelineLabelActive: {
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+  },
+  timelineLabelInactive: {
+    color: GatiMitraColors.textSecondary,
+  },
+  riderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  riderAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: GatiMitraColors.mintSoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  riderInfo: { marginLeft: 12, flex: 1 },
+  riderName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+  },
+  callBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+  },
+  callBtnText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: GatiMitraColors.emerald,
+  },
+  addressRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  addressText: {
+    fontSize: 14,
+    color: GatiMitraColors.textSecondary,
+    flex: 1,
+  },
+  summaryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 6,
+  },
+  summaryItem: {
+    fontSize: 14,
+    color: GatiMitraColors.textPrimary,
+    flex: 1,
+  },
+  summaryPrice: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraColors.textPrimary,
+  },
+  summaryTotal: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: GatiMitraColors.border,
+  },
+  summaryTotalLabel: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  summaryTotalValue: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraColors.textPrimary,
+  },
+  helpBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    marginTop: 8,
+  },
+  helpBtnText: {
+    fontSize: 15,
+    color: GatiMitraColors.textSecondary,
+  },
+});

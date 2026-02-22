@@ -16,6 +16,8 @@ import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { BrandingFooter } from "@/components/BrandingFooter";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
 
 const PAD = 20;
@@ -117,11 +119,13 @@ export default function NotificationsScreen() {
   const hasNotifications = notifications.length > 0;
 
   return (
-    <View style={styles.container}>
-      <StatusBar style="dark" />
-      <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
-        <TouchableOpacity
-          style={styles.backBtn}
+    <>
+      <AndroidBackHandler />
+      <View style={styles.container}>
+        <StatusBar style="dark" />
+        <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
+          <TouchableOpacity
+            style={styles.backBtn}
           onPress={() => router.back()}
           activeOpacity={0.8}
         >
@@ -155,8 +159,11 @@ export default function NotificationsScreen() {
             />
           ))
         )}
+
+        <BrandingFooter />
       </ScrollView>
-    </View>
+      </View>
+    </>
   );
 }
 

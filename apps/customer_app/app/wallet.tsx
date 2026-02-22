@@ -14,6 +14,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
+import { BrandingFooter } from "@/components/BrandingFooter";
 
 const TEAL = "#14b8a6";
 const TEAL_DARK = "#0d9488";
@@ -102,11 +104,13 @@ export default function WalletScreen() {
   });
 
   return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
-          <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
+    <>
+      <AndroidBackHandler />
+      <View style={styles.container}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
+            <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>GatiMitra Money</Text>
         <TouchableOpacity style={styles.settingsBtn} hitSlop={12}>
@@ -175,8 +179,11 @@ export default function WalletScreen() {
             ))
           )}
         </View>
+
+        <BrandingFooter />
       </ScrollView>
-    </View>
+      </View>
+    </>
   );
 }
 

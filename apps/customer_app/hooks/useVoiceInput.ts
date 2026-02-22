@@ -45,8 +45,23 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
   useEffect(() => {
     let mounted = true;
     if (!Module) {
-      if (mounted) setIsAvailable(false);
-      return;
+      setIsAvailable(false);
+      // Re-check after deferred load may have run (dev client with native module)
+      const t = setTimeout(() => {
+        if (!mounted) return;
+        const M = getExpoSpeechRecognitionModule();
+        if (M) {
+          try {
+            setIsAvailable(!!M.isRecognitionAvailable());
+          } catch {
+            setIsAvailable(false);
+          }
+        }
+      }, 300);
+      return () => {
+        mounted = false;
+        clearTimeout(t);
+      };
     }
     try {
       const available = Module.isRecognitionAvailable();

@@ -46,7 +46,7 @@ export default function ServicePlaceholderScreen() {
 
   const goToGatiMitra = () => {
     setModalVisible(false);
-    router.replace("/(tabs)/");
+    router.back();
   };
 
   return (

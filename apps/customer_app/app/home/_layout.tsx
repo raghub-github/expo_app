@@ -1,8 +1,11 @@
 import { Stack } from "expo-router";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 
 export default function HomeLayout() {
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <>
+      <AndroidBackHandler />
+      <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
       <Stack.Screen name="category/[slug]" />
       <Stack.Screen name="service/[slug]" />
@@ -12,5 +15,6 @@ export default function HomeLayout() {
       <Stack.Screen name="merchant/[id]" />
       <Stack.Screen name="shop" />
     </Stack>
+    </>
   );
 }

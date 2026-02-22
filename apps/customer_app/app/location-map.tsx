@@ -18,7 +18,10 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import MapView, { Region } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useQueryClient } from "@tanstack/react-query";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { useLocationStore } from "@/store/locationStore";
+import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { reverseGeocode } from "@/services/location.service";
 
 const TEAL = "#14b8a6";
@@ -42,7 +45,9 @@ export default function LocationMapScreen() {
     fullAddress?: string;
   }>();
 
+  const queryClient = useQueryClient();
   const { setAddressAndCoords } = useLocationStore();
+  const addRecentLocation = useRecentLocationStore((s) => s.addRecentLocation);
 
   const lat = params.latitude != null ? parseFloat(params.latitude) : DEFAULT_LAT;
   const lng = params.longitude != null ? parseFloat(params.longitude) : DEFAULT_LNG;
@@ -121,6 +126,13 @@ export default function LocationMapScreen() {
         latitude: centerCoord.latitude,
         longitude: centerCoord.longitude,
       });
+      addRecentLocation({
+        latitude: centerCoord.latitude,
+        longitude: centerCoord.longitude,
+        primary: result.primary,
+        fullAddress: result.fullAddress,
+      });
+      queryClient.invalidateQueries({ queryKey: ["merchants"] });
       router.back();
       router.back();
     } catch (e) {
@@ -128,16 +140,18 @@ export default function LocationMapScreen() {
     } finally {
       setLoading(false);
     }
-  }, [centerCoord, setAddressAndCoords, router]);
+  }, [centerCoord, setAddressAndCoords, addRecentLocation, queryClient, router]);
 
   return (
-    <View style={styles.container}>
-      <StatusBar style="dark" backgroundColor="#FFFFFF" />
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
-          <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
-        </TouchableOpacity>
+    <>
+      <AndroidBackHandler />
+      <View style={styles.container}>
+        <StatusBar style="dark" backgroundColor="#FFFFFF" />
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
+            <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
+          </TouchableOpacity>
         <Text style={styles.headerTitle}>Confirm location</Text>
         <View style={styles.headerRight} />
       </View>
@@ -205,7 +219,8 @@ export default function LocationMapScreen() {
           )}
         </TouchableOpacity>
       </View>
-    </View>
+      </View>
+    </>
   );
 }
 

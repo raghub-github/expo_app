@@ -1,13 +1,14 @@
 /**
- * Saved addresses – list and add (UI ready for API).
- * Matches profile tab design: cards, teal accents, clear hierarchy.
+ * Saved addresses – list from API, delete, set default, add new.
  */
 
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from "react-native";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { addressService, type Address } from "@/services/address.service";
 
 const TEAL = "#14b8a6";
 const MINT_SOFT = "#ccfbf1";
@@ -27,10 +28,13 @@ const SHADOW_SOFT = {
   elevation: 2,
 };
 
-const MOCK_ADDRESSES = [
-  { id: "1", labelKey: "home", line: "123, Main St, City - 400001", icon: "home-outline" as const },
-  { id: "2", labelKey: "work", line: "456, Park Ave, City - 400002", icon: "briefcase-outline" as const },
-];
+function addressIcon(label: string | null): "home-outline" | "briefcase-outline" | "location-outline" {
+  if (!label) return "location-outline";
+  const l = label.toLowerCase();
+  if (l === "home") return "home-outline";
+  if (l === "work") return "briefcase-outline";
+  return "location-outline";
+}
 
 const PAD_H = 20;
 const CARD_RADIUS = 16;
@@ -39,9 +43,42 @@ export default function AddressesScreen() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const hasAddresses = MOCK_ADDRESSES.length > 0;
+  const queryClient = useQueryClient();
+
+  const { data: addresses = [], isLoading, error } = useQuery({
+    queryKey: ["addresses"],
+    queryFn: () => addressService.getAddresses(),
+    retry: false,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => addressService.deleteAddress(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["addresses"] }),
+  });
+
+  const setDefaultMutation = useMutation({
+    mutationFn: (id: number) => addressService.setAddressDefault(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["addresses"] }),
+  });
 
   const handleAddNewAddress = () => router.push("/location");
+
+  const handleDelete = (addr: Address) => {
+    Alert.alert(
+      t("addresses.deleteTitle", "Delete address?"),
+      t("addresses.deleteMessage", "Remove this saved address?"),
+      [
+        { text: t("common.cancel", "Cancel"), style: "cancel" },
+        {
+          text: t("common.delete", "Delete"),
+          style: "destructive",
+          onPress: () => deleteMutation.mutate(addr.id),
+        },
+      ]
+    );
+  };
+
+  const hasAddresses = addresses.length > 0;
 
   return (
     <View style={styles.container}>
@@ -53,38 +90,71 @@ export default function AddressesScreen() {
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {!hasAddresses ? (
+        {isLoading ? (
+          <View style={styles.emptyWrap}>
+            <ActivityIndicator size="small" color={TEAL} />
+            <Text style={[styles.emptySub, { marginTop: 12 }]}>{t("addresses.loading", "Loading addresses...")}</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.emptyWrap}>
+            <View style={styles.emptyIconWrap}>
+              <Ionicons name="warning-outline" size={48} color={TEXT_MUTED} />
+            </View>
+            <Text style={styles.emptyTitle}>{t("addresses.errorLoading", "Could not load addresses")}</Text>
+            <Text style={styles.emptySub}>{t("addresses.errorLoadingSub", "Please try again later.")}</Text>
+          </View>
+        ) : !hasAddresses ? (
           <View style={styles.emptyWrap}>
             <View style={styles.emptyIconWrap}>
               <Ionicons name="location-outline" size={48} color={TEXT_MUTED} />
             </View>
-            <Text style={styles.emptyTitle}>{t("addresses.noSavedAddresses")}</Text>
-            <Text style={styles.emptySub}>{t("addresses.noSavedAddressesSub")}</Text>
+            <Text style={styles.emptyTitle}>{t("addresses.noSavedAddresses", "No saved address found")}</Text>
+            <Text style={styles.emptySub}>{t("addresses.noSavedAddressesSub", "Please use the Add new address button below for a smooth delivery experience.")}</Text>
           </View>
         ) : (
           <>
-            {MOCK_ADDRESSES.map((addr) => (
+            {addresses.map((addr) => (
               <TouchableOpacity
                 key={addr.id}
                 style={[styles.addressCard, SHADOW_SOFT]}
                 activeOpacity={0.85}
               >
                 <View style={styles.addressIconWrap}>
-                  <Ionicons name={addr.icon} size={22} color={TEAL} />
+                  <Ionicons name={addressIcon(addr.label)} size={22} color={TEAL} />
                 </View>
                 <View style={styles.addressBody}>
-                  <Text style={styles.addressLabel}>{t(`addresses.${addr.labelKey}`)}</Text>
+                  <View style={styles.addressLabelRow}>
+                    <Text style={styles.addressLabel}>{addr.label ?? t("addresses.other", "Other")}</Text>
+                    {addr.isDefault && (
+                      <View style={styles.defaultBadge}>
+                        <Text style={styles.defaultBadgeText}>{t("addresses.default", "Default")}</Text>
+                      </View>
+                    )}
+                  </View>
                   <Text style={styles.addressLine} numberOfLines={2}>
-                    {addr.line}
+                    {addr.fullAddress}
                   </Text>
                 </View>
-                <TouchableOpacity
-                  hitSlop={12}
-                  style={styles.editBtn}
-                  onPress={() => {}}
-                >
-                  <Ionicons name="pencil-outline" size={20} color={TEXT_GRAY} />
-                </TouchableOpacity>
+                <View style={styles.cardActions}>
+                  {!addr.isDefault && (
+                    <TouchableOpacity
+                      hitSlop={12}
+                      style={styles.editBtn}
+                      onPress={() => setDefaultMutation.mutate(addr.id)}
+                      disabled={setDefaultMutation.isPending}
+                    >
+                      <Text style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    hitSlop={12}
+                    style={styles.editBtn}
+                    onPress={() => handleDelete(addr)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    <Ionicons name="trash-outline" size={20} color={TEXT_GRAY} />
+                  </TouchableOpacity>
+                </View>
               </TouchableOpacity>
             ))}
           </>
@@ -95,7 +165,7 @@ export default function AddressesScreen() {
           style={[
             styles.addCard,
             SHADOW_SOFT,
-            { marginTop: MOCK_ADDRESSES.length > 0 ? 8 : 24 },
+            { marginTop: hasAddresses ? 8 : 24 },
           ]}
           activeOpacity={0.85}
           onPress={handleAddNewAddress}
@@ -167,17 +237,26 @@ const styles = StyleSheet.create({
     marginRight: 14,
   },
   addressBody: { flex: 1, marginRight: 12 },
+  addressLabelRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 },
   addressLabel: {
     fontSize: 16,
     fontWeight: "600",
     color: TITLE_DARK,
-    marginBottom: 4,
   },
+  defaultBadge: {
+    backgroundColor: MINT_SOFT_ALT,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  defaultBadgeText: { fontSize: 11, fontWeight: "600", color: TEAL },
   addressLine: {
     fontSize: 14,
     color: TEXT_GRAY,
     lineHeight: 20,
   },
+  cardActions: { flexDirection: "row", alignItems: "center", gap: 4 },
+  setDefaultText: { fontSize: 12, color: TEAL, fontWeight: "600" },
   editBtn: {
     padding: 8,
   },

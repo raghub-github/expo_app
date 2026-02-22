@@ -2,6 +2,8 @@ import { requireSuperAdminAccess, checkDashboardAccess } from "@/lib/permissions
 import { TicketDashboardClient } from "@/components/tickets/TicketDashboardClient";
 import { TicketDetailLoader } from "@/components/tickets/ticket-view/TicketDetailLoader";
 
+export const dynamic = "force-dynamic";
+
 export default async function TicketsPage({
   params,
 }: {

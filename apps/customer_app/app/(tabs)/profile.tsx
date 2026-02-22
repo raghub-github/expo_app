@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { profileService } from "@/services/profile.service";
+import { BrandingFooter } from "@/components/BrandingFooter";
 
 const TEAL = "#14b8a6";
 const TEAL_DARK = "#0d9488";
@@ -83,7 +84,6 @@ export default function ProfileScreen() {
   const menuItems = [
     { id: "rewards", label: t("profile.rewardsAndReferrals"), icon: "gift-outline" as const, path: null },
     { id: "addresses", label: t("profile.savedAddresses"), icon: "location-outline" as const, path: "/profile/addresses" },
-    { id: "help", label: t("profile.helpAndSupport"), icon: "help-buoy-outline" as const, path: "/profile/help" },
   ];
 
   return (
@@ -233,6 +233,8 @@ export default function ProfileScreen() {
             <Ionicons name="arrow-forward" size={18} color="#fff" />
           </TouchableOpacity>
         </LinearGradient>
+
+        <BrandingFooter />
       </ScrollView>
     </View>
   );

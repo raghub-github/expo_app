@@ -47,13 +47,20 @@ customer_app/
 
 - `POST /v1/auth/otp/request` – body: `{ phoneE164 }` → `{ requestId, expiresInSec, otp? }`
 - `POST /v1/auth/otp/verify` – body: `{ requestId, phoneE164, otp, deviceId }` → Session (JWT)
+- `POST /v1/me/logout-all` – logout all sessions
+- `GET /v1/me/profile`, `PATCH /v1/me/profile` – profile read/update
+- `GET /v1/me/addresses` – list saved addresses | `POST /v1/me/addresses` – add | `PATCH/DELETE /v1/me/addresses/:id` | `POST /v1/me/addresses/:id/default`
+- `GET /v1/me/active-location`, `PUT /v1/me/active-location` – current delivery location (lock on order)
 - `GET /v1/merchants` – query: `lat?, lng?, limit?` → list of merchants
 - `GET /v1/merchants/:id/menu` → merchant + menu
-- `POST /v1/orders` – create order
-- `GET /v1/orders/:id` – order detail
-- `GET /v1/orders` – my orders
+- `GET /v1/search` – query: `q` → search dishes/stores
+- `GET /v1/bookmarks/check`, `POST /v1/bookmarks` – store save/unsave
+- `POST /v1/orders` – create order | `GET /v1/orders`, `GET /v1/orders/:id` – my orders, detail
+- `POST /v1/support/tickets`, `GET /v1/support/tickets`, `GET /v1/support/tickets/:id` – help tickets
 
 All authenticated requests: `Authorization: Bearer <accessToken>`.
+
+**Which tables are used where:** see [docs/CUSTOMER_APP_TABLES_AND_API.md](docs/CUSTOMER_APP_TABLES_AND_API.md) – project mein kaun konse backend/DB tables use ho rahe hain aur unka kya use hai (updated).
 
 ## Auth flow
 

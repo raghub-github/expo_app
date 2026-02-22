@@ -20,6 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
 import type { OrderSummary } from "@/services/order.service";
 import { useLocationStore } from "@/store/locationStore";
+import { BrandingFooter } from "@/components/BrandingFooter";
 
 const TEAL = "#14b8a6";
 const TITLE_DARK = "#1A1A1A";
@@ -219,12 +220,13 @@ export default function OrdersScreen() {
           <Text style={styles.emptyTitle}>No orders yet</Text>
           <Text style={styles.emptySub}>Order from a restaurant to see them here.</Text>
           <TouchableOpacity
-            onPress={() => router.replace("/(tabs)/")}
+            onPress={() => router.push("/home")}
             style={styles.exploreBtn}
             activeOpacity={0.9}
           >
             <Text style={styles.exploreBtnText}>Explore restaurants</Text>
           </TouchableOpacity>
+          <BrandingFooter />
         </View>
       ) : (
         <ScrollView
@@ -236,10 +238,11 @@ export default function OrdersScreen() {
             <OrderCard
               key={order.orderId}
               order={order}
-              onPress={() => router.push({ pathname: "/orders/[id]", params: { id: order.orderId } })}
+              onPress={() => router.push(`/orders/${order.orderId}`)}
               onViewMenu={() => router.push("/(tabs)/")}
             />
           ))}
+          <BrandingFooter />
         </ScrollView>
       )}
     </View>

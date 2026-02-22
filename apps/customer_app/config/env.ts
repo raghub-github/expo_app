@@ -21,7 +21,12 @@ function resolveApiBaseUrl(raw: string): string {
   return trimmed;
 }
 
-export function getConfig(): { apiBaseUrl: string; mapboxAccessToken: string | null } {
+export function getConfig(): {
+  apiBaseUrl: string;
+  mapboxAccessToken: string | null;
+  supabaseUrl: string | null;
+  supabaseAnonKey: string | null;
+} {
   // Physical device: set EXPO_PUBLIC_DEV_HOST to your PC's IP (from ipconfig) to reach backend
   const devHost = asNonEmptyString(process.env.EXPO_PUBLIC_DEV_HOST);
   let rawUrl: string;
@@ -46,5 +51,19 @@ export function getConfig(): { apiBaseUrl: string; mapboxAccessToken: string | n
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN as string) ??
     null;
 
-  return { apiBaseUrl, mapboxAccessToken };
+  const supabaseUrl =
+    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_URL) ??
+    asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_SUPABASE_URL as string) ??
+    null;
+  const supabaseAnonKey =
+    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY) ??
+    asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string) ??
+    null;
+
+  return {
+    apiBaseUrl,
+    mapboxAccessToken,
+    supabaseUrl,
+    supabaseAnonKey,
+  };
 }

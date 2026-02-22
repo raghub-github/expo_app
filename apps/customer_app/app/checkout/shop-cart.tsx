@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useShopCartStore } from "@/store/shopCartStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { BrandingFooter } from "@/components/BrandingFooter";
 import { PRODUCT_IMAGES } from "@/features/shop/data";
 
 const PAD = 20;
@@ -37,7 +38,7 @@ export default function ShopCartScreen() {
           <Text style={styles.emptyTitle}>Your cart is empty</Text>
           <Text style={styles.emptySub}>Add products from the Shop</Text>
           <TouchableOpacity
-            onPress={() => router.replace("/home/shop")}
+            onPress={() => router.back()}
             style={styles.browseBtn}
             activeOpacity={0.85}
           >
@@ -45,6 +46,7 @@ export default function ShopCartScreen() {
             <Ionicons name="arrow-forward" size={18} color="#fff" />
           </TouchableOpacity>
         </View>
+        <BrandingFooter />
       </View>
     );
   }
@@ -109,6 +111,8 @@ export default function ShopCartScreen() {
           <Ionicons name="trash-outline" size={18} color="#dc2626" />
           <Text style={styles.clearBtnText}>Clear cart</Text>
         </TouchableOpacity>
+
+        <BrandingFooter />
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <TouchableOpacity

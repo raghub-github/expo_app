@@ -13,7 +13,7 @@ export const ROUTES = {
   ORDERS: "/(tabs)/orders",
   PROFILE: "/(tabs)/profile",
   MERCHANT: "/home/merchant/[id]",
-  CART: "/checkout/cart",
+  CART: "/checkout",
   CHECKOUT: "/checkout",
   ORDER_TRACKING: "/orders/[id]",
   ORDER_HISTORY: "/(tabs)/orders",

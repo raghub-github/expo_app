@@ -19,7 +19,11 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
-import { useCartStore } from "@/store/cartStore";
+import { useLocationStore } from "@/store/locationStore";
+import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
+import { BrandingFooter } from "@/components/BrandingFooter";
+import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
+import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 
 const { width } = Dimensions.get("window");
 const PAD = 16;
@@ -106,23 +110,33 @@ function DishCard({
 export default function CategoryBrowseScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const router = useRouter();
-  const cartCount = useCartStore((s) => s.items.reduce((n, i) => n + i.quantity, 0));
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
 
-  const { data: merchants = [], isLoading } = useQuery({
-    queryKey: ["merchants", slug],
-    queryFn: () => merchantService.getMerchants({ limit: 20 }),
+  const { coords } = useLocationStore();
+  const debouncedCoords = useDebouncedCoords(coords, 400);
+  const { data, isLoading } = useQuery({
+    queryKey: ["merchants", slug, debouncedCoords?.latitude, debouncedCoords?.longitude],
+    queryFn: () =>
+      merchantService.getMerchants({
+        limit: 20,
+        ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
+          ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
+          : {}),
+      }),
+    staleTime: 60 * 1000,
+    placeholderData: (prev) => prev,
   });
 
+  const merchants = Array.isArray(data) ? data : [];
   const recommended = merchants.slice(0, 6);
   const allRestaurants = merchants;
 
   return (
     <View style={styles.container}>
-      {/* Header: back, search, cart */}
+      {/* Header: back, search (no cart on food) */}
       <View style={[styles.header, SHADOW]}>
-        <TouchableOpacity onPress={() => router.replace("/(tabs)/")} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
         </TouchableOpacity>
         <View style={styles.searchWrap}>
@@ -138,17 +152,6 @@ export default function CategoryBrowseScreen() {
             <Ionicons name="mic-outline" size={22} color={TEAL} />
           </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          onPress={() => router.push("/checkout/cart")}
-          style={styles.cartBtn}
-        >
-          <Ionicons name="cart-outline" size={24} color={TITLE_DARK} />
-          {cartCount > 0 && (
-            <View style={styles.cartBadge}>
-              <Text style={styles.cartBadgeText}>{cartCount > 99 ? "99+" : cartCount}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -218,10 +221,8 @@ export default function CategoryBrowseScreen() {
         {/* Recommended For You */}
         <Text style={styles.sectionHeading}>RECOMMENDED FOR YOU</Text>
         {isLoading ? (
-          <View style={styles.gridPlaceholder}>
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <View key={i} style={[styles.dishCard, styles.dishCardSkeleton]} />
-            ))}
+          <View style={styles.skeletonListWrap}>
+            <RestaurantListSkeleton count={3} />
           </View>
         ) : (
           <View style={styles.dishGrid}>
@@ -243,11 +244,12 @@ export default function CategoryBrowseScreen() {
         {/* All Restaurants */}
         <Text style={styles.sectionHeading}>ALL RESTAURANTS</Text>
         <Text style={styles.sectionSub}>Featured</Text>
-        {!isLoading && allRestaurants.length === 0 ? (
-          <View style={styles.emptyWrap}>
-            <Ionicons name="restaurant-outline" size={48} color={BORDER} />
-            <Text style={styles.emptyText}>No restaurants found</Text>
+        {isLoading ? (
+          <View style={styles.skeletonListWrap}>
+            <RestaurantListSkeleton count={4} />
           </View>
+        ) : allRestaurants.length === 0 ? (
+          <EmptyRestaurantsNearby />
         ) : (
           allRestaurants.map((m) => (
             <TouchableOpacity
@@ -273,6 +275,8 @@ export default function CategoryBrowseScreen() {
             </TouchableOpacity>
           ))
         )}
+
+        <BrandingFooter />
       </ScrollView>
     </View>
   );
@@ -477,6 +481,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: PAD,
     gap: 12,
   },
+  skeletonListWrap: { marginBottom: 16 },
   emptyWrap: {
     paddingVertical: 32,
     alignItems: "center",

@@ -11,6 +11,59 @@ import { getEnv } from "../../config/env.js";
 export async function paymentRoutes(app: FastifyInstance) {
   await app.register(auth, { required: true });
 
+  // Create Razorpay order for food/checkout (amount in paise). Returns orderId + key for client checkout.
+  app.post(
+    "/create-order",
+    {
+      schema: {
+        body: z.object({
+          amount: z.number().int().positive(), // in paise (₹100 = 10000)
+          currency: z.string().max(4).optional().default("INR"),
+          receipt: z.string().max(64).optional(),
+        }),
+        response: {
+          200: z.object({
+            orderId: z.string(),
+            keyId: z.string(),
+            amount: z.number(),
+            currency: z.string(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { amount, currency, receipt } = req.body as {
+        amount: number;
+        currency?: string;
+        receipt?: string;
+      };
+      const env = getEnv();
+      if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+        if (env.NODE_ENV === "development") {
+          return {
+            orderId: `sim_${ulid()}`,
+            keyId: "dev_sim_key",
+            amount,
+            currency: currency ?? "INR",
+          };
+        }
+        throw new Error("Razorpay is not configured");
+      }
+      const order = await createRazorpayOrder({
+        amount,
+        currency: currency ?? "INR",
+        receipt: receipt ?? `food_${Date.now()}`,
+        notes: {},
+      });
+      return {
+        orderId: order.id,
+        keyId: env.RAZORPAY_KEY_ID,
+        amount: order.amount,
+        currency: order.currency,
+      };
+    }
+  );
+
   // Create payment order for onboarding fee
   app.post(
     "/onboarding/create-order",

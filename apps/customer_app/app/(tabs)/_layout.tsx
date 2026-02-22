@@ -1,9 +1,12 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 
 export default function TabsLayout() {
   return (
-    <Tabs
+    <>
+      <AndroidBackHandler />
+      <Tabs
       screenOptions={{
         tabBarActiveTintColor: "#14b8a6",
         tabBarInactiveTintColor: "#6b7280",
@@ -44,5 +47,6 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    </>
   );
 }
