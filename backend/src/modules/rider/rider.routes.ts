@@ -162,7 +162,7 @@ export async function riderRoutes(app: FastifyInstance) {
       if (body.order_id) {
         await db.insert(orderRiderTracking).values({
           orderId: body.order_id,
-          orderSource: "core_orders",
+          orderSource: "orders_core",
           riderId,
           latitude: String(body.lat),
           longitude: String(body.lng),

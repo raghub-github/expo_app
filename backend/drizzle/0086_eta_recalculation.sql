@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS public.order_eta_snapshots (
   id BIGSERIAL PRIMARY KEY,
   order_id TEXT NOT NULL,
-  order_source TEXT NOT NULL DEFAULT 'core_orders',
+  order_source TEXT NOT NULL DEFAULT 'orders_core',
   eta_seconds INTEGER NOT NULL,
   eta_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   trigger_event TEXT,
@@ -23,7 +23,7 @@ COMMENT ON TABLE public.order_eta_snapshots IS 'ETA history; latest row per orde
 -- Call from trigger on order_events or from rider position update.
 CREATE OR REPLACE FUNCTION recalc_order_eta(
   p_order_id TEXT,
-  p_order_source TEXT DEFAULT 'core_orders',
+  p_order_source TEXT DEFAULT 'orders_core',
   p_trigger_event TEXT DEFAULT NULL
 )
 RETURNS INTEGER
@@ -34,13 +34,11 @@ DECLARE
   v_eta_seconds INTEGER;
   v_status TEXT;
 BEGIN
-  IF p_order_source = 'core_orders' THEN
-    SELECT distance_km, current_status INTO v_distance_km, v_status
-    FROM public.core_orders WHERE order_id = p_order_id LIMIT 1;
-  ELSE
-    SELECT distance_km, current_status INTO v_distance_km, v_status
-    FROM public.orders_core WHERE id::TEXT = p_order_id OR formatted_order_id = p_order_id LIMIT 1;
-  END IF;
+  -- Single source: orders_core (by order_id or id/formatted_order_id). core_orders is deprecated/dropped.
+  SELECT distance_km, current_status INTO v_distance_km, v_status
+  FROM public.orders_core
+  WHERE order_id = p_order_id OR id::TEXT = p_order_id OR formatted_order_id = p_order_id
+  LIMIT 1;
 
   v_distance_km := COALESCE(v_distance_km, 5);
   v_eta_seconds := 600;

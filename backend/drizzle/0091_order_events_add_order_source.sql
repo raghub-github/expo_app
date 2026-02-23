@@ -7,7 +7,7 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'order_events' AND column_name = 'order_source'
   ) THEN
-    ALTER TABLE public.order_events ADD COLUMN order_source TEXT NOT NULL DEFAULT 'core_orders';
+    ALTER TABLE public.order_events ADD COLUMN order_source TEXT NOT NULL DEFAULT 'orders_core';
   END IF;
 END $$;
 

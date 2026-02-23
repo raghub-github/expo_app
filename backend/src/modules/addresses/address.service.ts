@@ -7,7 +7,7 @@
 import { randomUUID } from "crypto";
 import { getDb } from "../../db/client.js";
 import { customerAddresses, customerActiveLocation } from "../../db/schema.js";
-import { eq, and, desc, isNull } from "drizzle-orm";
+import { eq, and, desc, isNull, sql } from "drizzle-orm";
 
 /** App-facing shape (id, fullAddress, pincode, etc.) for list/detail. */
 export type AddressRow = {
@@ -84,6 +84,8 @@ function toLabelAndCustom(label?: string | null): { label: "HOME" | "WORK" | "HO
   return { label: "OTHER", customLabel: label && label.trim() ? label.trim() : null };
 }
 
+const LOCATION_TOLERANCE = 0.0001; // ~11m; same coordinates = reuse existing address
+
 export async function addAddress(
   customerId: number,
   data: {
@@ -101,13 +103,53 @@ export async function addAddress(
 ): Promise<AddressRow> {
   const db = getDb();
   const { label: addressType, customLabel } = toLabelAndCustom(data.label);
-  const addressId = randomUUID();
   const city = (data.city ?? "").trim() || "—";
   const state = (data.state ?? "").trim() || "—";
   const postalCode = (data.pincode ?? "").trim() || "—";
+
+  // Duplicate detection: same customer + same location (within tolerance) → update existing, do not insert
+  const existing = await db
+    .select()
+    .from(customerAddresses)
+    .where(
+      and(
+        eq(customerAddresses.customerId, customerId),
+        eq(customerAddresses.isActive, true),
+        isNull(customerAddresses.deletedAt),
+        sql`ABS((${customerAddresses.latitude}::double precision) - ${data.latitude}) < ${LOCATION_TOLERANCE}`,
+        sql`ABS((${customerAddresses.longitude}::double precision) - ${data.longitude}) < ${LOCATION_TOLERANCE}`
+      )
+    )
+    .limit(1);
+
+  if (existing.length > 0) {
+    const existingRow = existing[0];
+    if (data.isDefault) {
+      await db.update(customerAddresses).set({ isDefault: false }).where(eq(customerAddresses.customerId, customerId));
+    }
+    const [updated] = await db
+      .update(customerAddresses)
+      .set({
+        addressLine1: data.fullAddress,
+        addressAuto: data.fullAddress,
+        customLabel: customLabel ?? existingRow.customLabel,
+        label: addressType,
+        city,
+        state,
+        postalCode,
+        country: data.country ?? "IN",
+        ...(data.isDefault != null && { isDefault: data.isDefault }),
+        updatedAt: new Date(),
+      })
+      .where(eq(customerAddresses.id, existingRow.id))
+      .returning();
+    return rowToAddressRow(updated);
+  }
+
   if (data.isDefault) {
     await db.update(customerAddresses).set({ isDefault: false }).where(eq(customerAddresses.customerId, customerId));
   }
+  const addressId = randomUUID();
   const [row] = await db
     .insert(customerAddresses)
     .values({

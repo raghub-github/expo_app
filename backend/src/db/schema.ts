@@ -1277,6 +1277,7 @@ export const ordersCore = pgTable(
   "orders_core",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").unique(),
     orderUuid: uuid("order_uuid").notNull().unique().defaultRandom(),
     orderType: orderTypeEnum("order_type").notNull(),
     orderSource: orderSourceTypeEnum("order_source").notNull().default("internal"),
@@ -1311,6 +1312,11 @@ export const ordersCore = pgTable(
     riderEarning: numeric("rider_earning", { precision: 10, scale: 2 }),
     status: orderStatusTypeEnum("status").notNull().default("assigned"),
     currentStatus: text("current_status"),
+    itemTotal: numeric("item_total", { precision: 12, scale: 2 }),
+    addonTotal: numeric("addon_total", { precision: 12, scale: 2 }),
+    grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
+    tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }),
+    placedAt: timestamp("placed_at", { withTimezone: true }),
     paymentStatus: paymentStatusTypeEnum("payment_status"),
     paymentMethod: paymentModeTypeEnum("payment_method"),
     riskFlagged: boolean("risk_flagged").notNull().default(false),
@@ -1337,6 +1343,7 @@ export const ordersCore = pgTable(
     deliveryAddress: text("delivery_address"),
   },
   (table) => ({
+    orderIdIdx: index("orders_core_order_id_idx").on(table.orderId),
     riderIdIdx: index("orders_core_rider_id_idx").on(table.riderId),
     statusIdx: index("orders_core_status_idx").on(table.status),
     orderTypeIdx: index("orders_core_order_type_idx").on(table.orderType),
@@ -1344,6 +1351,7 @@ export const ordersCore = pgTable(
     customerIdIdx: index("orders_core_customer_id_idx").on(table.customerId),
     orderSourceIdx: index("orders_core_order_source_idx").on(table.orderSource),
     orderUuidIdx: index("orders_core_order_uuid_idx").on(table.orderUuid),
+    placedAtIdx: index("orders_core_placed_at_idx").on(table.placedAt),
     riderStatusIdx: index("orders_core_rider_status_idx").on(
       table.riderId,
       table.status
@@ -1366,60 +1374,16 @@ export const ordersCore = pgTable(
 );
 
 // ============================================================================
-// CORE ORDERS (industry-grade: master + items + addons + payments)
+// ORDERS CORE ITEMS / ADDONS / PAYMENTS (references orders_core.order_id)
 // ============================================================================
 
-export const coreOrders = pgTable(
-  "core_orders",
-  {
-    id: bigserial("id", { mode: "number" }).primaryKey(),
-    orderId: text("order_id").notNull().unique(),
-    customerId: bigint("customer_id", { mode: "number" }).notNull(),
-    merchantStoreId: bigint("merchant_store_id", { mode: "number" }).notNull(),
-    merchantParentId: bigint("merchant_parent_id", { mode: "number" }),
-    orderType: text("order_type").notNull().default("FOOD"),
-    currentStatus: text("current_status").notNull().default("PLACED"),
-    itemTotal: numeric("item_total", { precision: 12, scale: 2 }).notNull().default("0"),
-    addonTotal: numeric("addon_total", { precision: 12, scale: 2 }).default("0"),
-    taxAmount: numeric("tax_amount", { precision: 12, scale: 2 }).default("0"),
-    deliveryFee: numeric("delivery_fee", { precision: 12, scale: 2 }).default("0"),
-    platformFee: numeric("platform_fee", { precision: 12, scale: 2 }).default("0"),
-    discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }).default("0"),
-    tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }).default("0"),
-    grandTotal: numeric("grand_total", { precision: 12, scale: 2 }).notNull(),
-    currency: text("currency").default("INR"),
-    pickupAddressNormalized: text("pickup_address_normalized"),
-    pickupAddressGeocoded: jsonb("pickup_address_geocoded"),
-    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
-    pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }),
-    dropAddressNormalized: text("drop_address_normalized"),
-    dropAddressGeocoded: jsonb("drop_address_geocoded"),
-    dropLat: numeric("drop_lat", { precision: 9, scale: 6 }),
-    dropLon: numeric("drop_lon", { precision: 9, scale: 6 }),
-    deliveryAddress: text("delivery_address"),
-    distanceKm: numeric("distance_km", { precision: 8, scale: 2 }),
-    paymentStatus: text("payment_status").default("PENDING"),
-    paymentMethod: text("payment_method"),
-    specialInstruction: text("special_instruction"),
-    placedAt: timestamp("placed_at", { withTimezone: true }).defaultNow(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    orderIdIdx: index("core_orders_order_id_idx").on(table.orderId),
-    customerIdIdx: index("core_orders_customer_id_idx").on(table.customerId),
-    merchantStoreIdIdx: index("core_orders_merchant_store_id_idx").on(table.merchantStoreId),
-    placedAtIdx: index("core_orders_placed_at_idx").on(table.placedAt),
-  })
-);
-
-export const coreOrderItems = pgTable(
-  "core_order_items",
+export const ordersCoreItems = pgTable(
+  "orders_core_items",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderId: text("order_id")
       .notNull()
-      .references(() => coreOrders.orderId, { onDelete: "cascade" }),
+      .references(() => ordersCore.orderId, { onDelete: "cascade" }),
     menuItemId: bigint("menu_item_id", { mode: "number" }).notNull(),
     itemName: text("item_name").notNull(),
     categoryName: text("category_name"),
@@ -1434,18 +1398,18 @@ export const coreOrderItems = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
-    orderIdIdx: index("core_order_items_order_id_idx").on(table.orderId),
-    menuItemIdIdx: index("core_order_items_menu_item_id_idx").on(table.menuItemId),
+    orderIdIdx: index("orders_core_items_order_id_idx").on(table.orderId),
+    menuItemIdIdx: index("orders_core_items_menu_item_id_idx").on(table.menuItemId),
   })
 );
 
-export const coreOrderItemAddons = pgTable(
-  "core_order_item_addons",
+export const ordersCoreItemAddons = pgTable(
+  "orders_core_item_addons",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderItemId: bigint("order_item_id", { mode: "number" })
       .notNull()
-      .references(() => coreOrderItems.id, { onDelete: "cascade" }),
+      .references(() => ordersCoreItems.id, { onDelete: "cascade" }),
     addonId: bigint("addon_id", { mode: "number" }),
     addonName: text("addon_name"),
     addonPrice: numeric("addon_price", { precision: 12, scale: 2 }),
@@ -1453,15 +1417,15 @@ export const coreOrderItemAddons = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
-    orderItemIdIdx: index("core_order_item_addons_order_item_id_idx").on(table.orderItemId),
+    orderItemIdIdx: index("orders_core_item_addons_order_item_id_idx").on(table.orderItemId),
   })
 );
 
-export const corePayments = pgTable(
-  "core_payments",
+export const ordersCorePayments = pgTable(
+  "orders_core_payments",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
-    orderId: text("order_id").references(() => coreOrders.orderId, { onDelete: "set null" }),
+    orderId: text("order_id").references(() => ordersCore.orderId, { onDelete: "set null" }),
     paymentGateway: text("payment_gateway"),
     paymentMethod: text("payment_method"),
     transactionId: text("transaction_id"),
@@ -1473,8 +1437,8 @@ export const corePayments = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
-    orderIdIdx: index("core_payments_order_id_idx").on(table.orderId),
-    transactionIdIdx: index("core_payments_transaction_id_idx").on(table.transactionId),
+    orderIdIdx: index("orders_core_payments_order_id_idx").on(table.orderId),
+    transactionIdIdx: index("orders_core_payments_transaction_id_idx").on(table.transactionId),
   })
 );
 
@@ -1531,7 +1495,7 @@ export const orderEvents = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderId: text("order_id").notNull(),
-    orderSource: text("order_source").notNull().default("core_orders"),
+    orderSource: text("order_source").notNull().default("orders_core"),
     eventType: text("event_type").notNull(),
     fromStatus: text("from_status"),
     toStatus: text("to_status").notNull(),
@@ -1550,7 +1514,7 @@ export const orderRiderTracking = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderId: text("order_id").notNull(),
-    orderSource: text("order_source").notNull().default("core_orders"),
+    orderSource: text("order_source").notNull().default("orders_core"),
     riderId: integer("rider_id"),
     latitude: numeric("latitude", { precision: 10, scale: 7 }).notNull(),
     longitude: numeric("longitude", { precision: 10, scale: 7 }).notNull(),
@@ -1629,7 +1593,7 @@ export const orderKitchenTimeline = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderId: text("order_id").notNull(),
-    orderSource: text("order_source").notNull().default("core_orders"),
+    orderSource: text("order_source").notNull().default("orders_core"),
     step: text("step").notNull(),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -1645,7 +1609,7 @@ export const orderEtaSnapshots = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderId: text("order_id").notNull(),
-    orderSource: text("order_source").notNull().default("core_orders"),
+    orderSource: text("order_source").notNull().default("orders_core"),
     etaSeconds: integer("eta_seconds").notNull(),
     etaAt: timestamp("eta_at", { withTimezone: true }).notNull().defaultNow(),
     triggerEvent: text("trigger_event"),

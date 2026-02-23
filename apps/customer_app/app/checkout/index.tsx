@@ -56,6 +56,10 @@ const SPACING = GRID * 2;
 const CARD_RADIUS = 14;
 const ANIM_DURATION = 240;
 
+/** Shown in "Order failed" alert when payment may have been charged. */
+const ORDER_FAILED_REFUND_NOTE =
+  " If you were charged, the amount will be reverted within 24–48 working hours. In some cases, refunds may be instant. For any issues, contact support with your payment details.";
+
 const PAYMENT_OPTIONS = [
   { id: "upi", label: "UPI (GPay, PhonePe, Paytm & more)", displayName: "UPI" },
   { id: "card", label: "Credit / Debit Card", displayName: "Card" },
@@ -178,23 +182,7 @@ export default function CheckoutScreen() {
           isDefault: true,
         });
         if (cancelled) return;
-        queryClient.setQueryData<Address[]>(["addresses"], (old) => [
-          ...(old ?? []),
-          {
-            id,
-            label: "Current location",
-            fullAddress,
-            landmark: null,
-            city: null,
-            state: null,
-            pincode: null,
-            country: null,
-            latitude: currentLocationCoords.latitude,
-            longitude: currentLocationCoords.longitude,
-            isDefault: true,
-            isLastUsed: false,
-          } as Address,
-        ]);
+        await queryClient.invalidateQueries({ queryKey: ["addresses"] });
         setSelectedAddressId(id);
       } catch {
         if (!cancelled) currentLocationAddressCreatedRef.current = false;
@@ -313,64 +301,103 @@ export default function CheckoutScreen() {
     onSuccess: (order) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
+      const etaMins = merchant?.avgPreparationTimeMinutes != null ? Math.round(Number(merchant.avgPreparationTimeMinutes)) + 20 : 25;
       setActiveOrder({
         orderId: order.orderId,
         status: "ORDER_PLACED",
-        etaMinutes: 25,
+        etaMinutes: etaMins,
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
         placedAt: Date.now(),
       });
       clearCart();
       queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      const orderId = order.orderId;
-      setTimeout(() => navigation.replace("success", { orderId }), 50);
+      navigation.replace("success", {
+        orderId: order.orderId,
+        merchantName: merchantName ?? undefined,
+        etaMinutes: etaMins,
+      });
     },
     onError: (err: Error & { response?: { data?: { message?: string } } }) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const msg = err?.response?.data?.message ?? err?.message ?? "Could not place order.";
-      Alert.alert(
-        "Order failed",
-        msg + " If you were charged, contact support with your payment details.",
-        [{ text: "OK" }]
-      );
+      Alert.alert("Order failed", msg + ORDER_FAILED_REFUND_NOTE, [{ text: "OK" }]);
     },
   });
 
+  const finalizeArgsRef = useRef<{ pendingId: string; result: RazorpayPaymentResult } | null>(null);
+
   const finalizeOrder = useMutation({
-    mutationFn: (args: { pendingId: string; result: RazorpayPaymentResult }) =>
-      orderService.finalizeOrder({
-        pendingId: args.pendingId,
-        razorpayOrderId: args.result.razorpayOrderId,
-        razorpayPaymentId: args.result.razorpayPaymentId,
-        razorpaySignature: args.result.razorpaySignature,
-      }),
+    mutationFn: (args: { pendingId: string; result: RazorpayPaymentResult }) => {
+      finalizeArgsRef.current = args;
+      return orderService.finalizeOrderWithRetry(
+        {
+          pendingId: args.pendingId,
+          razorpayOrderId: args.result.razorpayOrderId,
+          razorpayPaymentId: args.result.razorpayPaymentId,
+          razorpaySignature: args.result.razorpaySignature,
+        },
+        { retries: 3, delayMs: 1500 }
+      );
+    },
     onSuccess: (order) => {
+      finalizeArgsRef.current = null;
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
+      const orderId = order?.orderId ?? (order as { order_id?: string })?.order_id;
+      if (!orderId) {
+        console.warn("[checkout] finalize success but no orderId in response", order);
+        clearCart();
+        queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+        navigation.replace("/(tabs)/");
+        return;
+      }
+      const etaMins = merchant?.avgPreparationTimeMinutes != null ? Math.round(Number(merchant.avgPreparationTimeMinutes)) + 20 : 25;
       setActiveOrder({
-        orderId: order.orderId,
-        status: "ORDER_PLACED",
-        etaMinutes: 25,
+        orderId,
+        status: order.status === "PLACED" ? "ORDER_PLACED" : (order.status as import("@/store/orderStore").OrderStatus),
+        etaMinutes: etaMins,
         storeId: merchantId ?? null,
         storeName: merchantName ?? null,
         placedAt: Date.now(),
       });
       clearCart();
       queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      const orderId = order.orderId;
-      setTimeout(() => navigation.replace("success", { orderId }), 50);
+      navigation.replace("success", {
+        orderId,
+        merchantName: merchantName ?? undefined,
+        etaMinutes: etaMins,
+      });
     },
-    onError: (err: Error & { response?: { data?: { message?: string } } }) => {
+    onError: (err: Error & { response?: { data?: { message?: string } }; code?: string }) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const msg = err?.response?.data?.message ?? err?.message ?? "Order could not be confirmed.";
-      Alert.alert(
-        "Order failed",
-        msg + " If you were charged, contact support with your payment details.",
-        [{ text: "OK" }]
-      );
+      const networkErr = isNetworkError(err);
+
+      if (networkErr && finalizeArgsRef.current) {
+        Alert.alert(
+          "Connection issue",
+          "We couldn't confirm your order. Your payment may have gone through. Tap Retry to confirm, or check My Orders.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Retry",
+              onPress: () => finalizeOrder.mutate(finalizeArgsRef.current!),
+            },
+            {
+              text: "My Orders",
+              onPress: () => {
+                queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+                router.replace("/(tabs)/orders");
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert("Order failed", msg + ORDER_FAILED_REFUND_NOTE, [{ text: "OK" }]);
+      }
     },
   });
 

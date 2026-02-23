@@ -90,16 +90,40 @@ export default function SelectLocationScreen() {
     queryFn: () => addressService.getAddresses(),
     retry: false,
   });
+
+  // One entry per location (rounded to 4 decimals ~11m); Current location first, then default, then last used
+  const dedupedAndSortedAddresses = useMemo(() => {
+    const round4 = (n: number) => Math.round(n * 10000) / 10000;
+    const seen = new Set<string>();
+    const deduped = savedAddresses.filter((a) => {
+      const key = `${round4(a.latitude)}_${round4(a.longitude)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return deduped.sort((a, b) => {
+      const aCurrent = (a.label ?? "").toLowerCase() === "current location";
+      const bCurrent = (b.label ?? "").toLowerCase() === "current location";
+      if (aCurrent && !bCurrent) return -1;
+      if (!aCurrent && bCurrent) return 1;
+      if (a.isDefault && !b.isDefault) return -1;
+      if (!a.isDefault && b.isDefault) return 1;
+      if (a.isLastUsed && !b.isLastUsed) return -1;
+      if (!a.isLastUsed && b.isLastUsed) return 1;
+      return a.id - b.id;
+    });
+  }, [savedAddresses]);
+
   const filteredSaved = useMemo(
     () =>
       !searchQuery.trim()
-        ? savedAddresses
-        : savedAddresses.filter(
+        ? dedupedAndSortedAddresses
+        : dedupedAndSortedAddresses.filter(
             (a) =>
               (a.label ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
               a.fullAddress.toLowerCase().includes(searchQuery.toLowerCase())
           ),
-    [savedAddresses, searchQuery]
+    [dedupedAndSortedAddresses, searchQuery]
   );
 
   const currentLocationName = address?.primary ?? "Current location";
@@ -201,6 +225,18 @@ export default function SelectLocationScreen() {
 
   const handleUseCurrentLocation = async () => {
     await requestPermissionAndFetch();
+    const { coords, address } = useLocationStore.getState();
+    if (coords && address?.fullAddress) {
+      try {
+        await addressService.setActiveLocation({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          address: address.fullAddress,
+        });
+      } catch {
+        // local state already set; proceed
+      }
+    }
     router.back();
   };
 

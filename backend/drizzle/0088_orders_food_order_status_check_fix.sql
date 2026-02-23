@@ -1,5 +1,5 @@
 -- Fix: orders_food.order_status check constraint must allow order_status_type enum values
--- so that push_food_order() can insert 'assigned' (mapped from core_orders PLACED).
+-- so that push_food_order_from_orders_core() can insert 'assigned' (mapped from orders_core PLACED).
 -- If the column is TEXT with a restrictive CHECK, drop it and allow enum values.
 
 DO $$

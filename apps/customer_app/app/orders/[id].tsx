@@ -3,7 +3,7 @@
  * Syncs active order store; clears when order is DELIVERED/CANCELLED.
  */
 
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -18,21 +18,22 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import MapView, { Marker, Region } from "react-native-maps";
+import MapView, { Marker, Polyline, Region } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { orderService } from "@/services/order.service";
+import { getRouteCoordinates } from "@/services/directions.service";
 import { ORDER_STATUS_LABELS } from "@/constants";
 import { useOrderStore } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 
 const STATUS_STEPS = [
-  "ORDER_PLACED",
-  "PREPARING",
-  "PICKED_UP",
-  "ON_THE_WAY",
-  "DELIVERED",
-].map((s) => ({ key: s, label: ORDER_STATUS_LABELS[s] ?? s }));
+  { key: "ORDER_PLACED", label: "Order Confirmed" },
+  { key: "PREPARING", label: "Preparing Food" },
+  { key: "PICKED_UP", label: "Picked by Rider" },
+  { key: "ON_THE_WAY", label: "On the Way" },
+  { key: "DELIVERED", label: "Delivered" },
+].map((s) => ({ key: s.key, label: ORDER_STATUS_LABELS[s.key] ?? s.label }));
 
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
@@ -104,18 +105,26 @@ export default function OrderTrackingScreen() {
     queryKey: ["orderTracking", orderId],
     queryFn: () => orderService.getOrderTracking(orderId),
     enabled: !!orderId && !!isActive,
-    refetchInterval: isActive ? 5000 : false,
+    refetchInterval: isActive ? 2500 : false,
   });
 
-  const activeOrder = useOrderStore((s) => s.activeOrder);
-  const updateStatus = useOrderStore((s) => s.updateStatus);
-  const clearActiveOrder = useOrderStore((s) => s.clearActiveOrder);
+  const [routeCoordinates, setRouteCoordinates] = useState<{ latitude: number; longitude: number }[]>([]);
+  useEffect(() => {
+    if (!orderId || !order) return;
+    const pickup = { latitude: pickupLat, longitude: pickupLng };
+    const drop = { latitude: deliveryLat, longitude: deliveryLng };
+    getRouteCoordinates(pickup, drop).then(setRouteCoordinates);
+  }, [orderId, pickupLat, pickupLng, deliveryLat, deliveryLng, order?.orderId]);
+
+  const activeOrderForThis = useOrderStore((s) => s.activeOrders.find((o) => o.orderId === orderId) ?? s.activeOrder?.orderId === orderId ? s.activeOrder : null);
+  const updateOrderStatus = useOrderStore((s) => s.updateOrderStatus);
+  const removeActiveOrder = useOrderStore((s) => s.removeActiveOrder);
 
   useEffect(() => {
-    if (!order || activeOrder?.orderId !== order.orderId) return;
+    if (!order) return;
     const status = (order.status ?? "").toUpperCase();
     if (status === "DELIVERED" || status === "CANCELLED") {
-      clearActiveOrder();
+      removeActiveOrder(order.orderId);
     } else {
       const eta =
         status === "OUT_FOR_DELIVERY" || status === "ON_THE_WAY"
@@ -123,9 +132,9 @@ export default function OrderTrackingScreen() {
           : status === "PICKED_UP"
             ? 20
             : 27;
-      updateStatus(status as import("@/store/orderStore").OrderStatus, eta);
+      updateOrderStatus(order.orderId, status as import("@/store/orderStore").OrderStatus, eta);
     }
-  }, [order?.status, order?.orderId, activeOrder?.orderId, updateStatus, clearActiveOrder]);
+  }, [order?.status, order?.orderId, updateOrderStatus, removeActiveOrder]);
 
   const deliveryLat =
     order?.deliveryLat != null ? order.deliveryLat : DEFAULT_LAT + 0.008;
@@ -155,13 +164,12 @@ export default function OrderTrackingScreen() {
   );
 
   const etaMinutes =
-    activeOrder?.orderId === orderId
-      ? activeOrder.etaMinutes
-      : order?.status === "ON_THE_WAY" || order?.status === "OUT_FOR_DELIVERY"
-        ? 15
-        : order?.status === "PICKED_UP"
-          ? 20
-          : 27;
+    activeOrderForThis?.etaMinutes ??
+    (order?.status === "ON_THE_WAY" || order?.status === "OUT_FOR_DELIVERY"
+      ? 15
+      : order?.status === "PICKED_UP"
+        ? 20
+        : 27);
 
   if (!orderId) {
     return (
@@ -183,7 +191,8 @@ export default function OrderTrackingScreen() {
     );
   }
 
-  const currentIndex = STATUS_STEPS.findIndex((s) => s.key === order.status);
+  const normalizedStatus = order.status === "OUT_FOR_DELIVERY" ? "ON_THE_WAY" : order.status;
+  const currentIndex = STATUS_STEPS.findIndex((s) => s.key === normalizedStatus);
   const activeIndex = currentIndex >= 0 ? currentIndex : 0;
   const isDelivered = order.status === "DELIVERED";
   const isCancelled = order.status === "CANCELLED";
@@ -198,7 +207,7 @@ export default function OrderTrackingScreen() {
       <AndroidBackHandler />
       <StatusBar style="dark" backgroundColor="#fff" />
       <View style={[styles.container, { paddingTop: insets.top }]}>
-        {/* Header */}
+        {/* Header: restaurant name, order ID */}
         <View style={styles.header}>
           <TouchableOpacity
             onPress={() => router.back()}
@@ -207,12 +216,13 @@ export default function OrderTrackingScreen() {
           >
             <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            Track order
-          </Text>
-          <View style={styles.headerRight}>
+          <View style={styles.headerCenter}>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {order.merchantName ?? "Restaurant"}
+            </Text>
             <Text style={styles.orderIdLabel}>#{order.orderId}</Text>
           </View>
+          <View style={styles.headerRight} />
         </View>
 
         <ScrollView
@@ -246,6 +256,16 @@ export default function OrderTrackingScreen() {
                 title="Delivery address"
                 pinColor={GatiMitraColors.emerald}
               />
+              {/* Blue route polyline (pickup → drop, drivable route) */}
+              {routeCoordinates.length >= 2 && (
+                <Polyline
+                  coordinates={routeCoordinates}
+                  strokeColor="#2563eb"
+                  strokeWidth={4}
+                  lineCap="round"
+                  lineJoin="round"
+                />
+              )}
               {/* Rider (live) */}
               {tracking?.rider && (
                 <Marker
@@ -437,20 +457,20 @@ const styles = StyleSheet.create({
     borderBottomColor: GatiMitraColors.border,
   },
   backBtn: { padding: 4 },
+  headerCenter: { flex: 1, marginLeft: 8, justifyContent: "center" },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "700",
     color: GatiMitraColors.textPrimary,
-    flex: 1,
-    textAlign: "center",
   },
   headerRight: {
-    minWidth: 60,
+    minWidth: 40,
     alignItems: "flex-end",
   },
   orderIdLabel: {
     fontSize: 12,
     color: GatiMitraColors.textSecondary,
+    marginTop: 2,
   },
   scroll: { flex: 1 },
   scrollContent: { padding: 16 },

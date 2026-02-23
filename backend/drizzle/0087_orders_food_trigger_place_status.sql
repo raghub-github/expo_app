@@ -1,6 +1,5 @@
--- Fix: orders_food has check constraint orders_food_order_status_check that only allows
--- order_status_type enum values (assigned, accepted, reached_store, ...). core_orders
--- uses current_status = 'PLACED'. Map PLACED → assigned so trigger insert succeeds.
+-- Fix: orders_food has check constraint that only allows order_status_type enum values.
+-- orders_core uses current_status = 'PLACED'. Map PLACED → assigned so trigger insert succeeds.
 
 CREATE OR REPLACE FUNCTION push_food_order()
 RETURNS TRIGGER
@@ -41,4 +40,4 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION push_food_order() IS 'After core_orders insert: push to orders_food; maps PLACED→assigned for order_status check.';
+COMMENT ON FUNCTION push_food_order() IS 'Legacy: after core_orders insert push to orders_food. Primary: push_food_order_from_orders_core on orders_core.';

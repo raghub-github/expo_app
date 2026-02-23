@@ -114,14 +114,24 @@ const confettiStyles = StyleSheet.create({
   dot: {},
 });
 
+const AUTO_REDIRECT_SEC = 4;
+
 export default function OrderSuccessScreen() {
-  const { orderId: orderIdParam } = useLocalSearchParams<{ orderId?: string | string[] }>();
+  const { orderId: orderIdParam, merchantName: paramMerchantName, etaMinutes: paramEtaMinutes } = useLocalSearchParams<{
+    orderId?: string | string[];
+    merchantName?: string;
+    etaMinutes?: string | number;
+  }>();
   const route = useRoute();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const fromUrl = Array.isArray(orderIdParam) ? orderIdParam[0] : orderIdParam;
   const fromParams = (route.params as { orderId?: string } | undefined)?.orderId;
   const id = (fromUrl ?? fromParams ?? "").toString();
+  const merchantName = (route.params as { merchantName?: string } | undefined)?.merchantName ?? (paramMerchantName as string | undefined);
+  const etaFromParams =
+    (route.params as { etaMinutes?: number } | undefined)?.etaMinutes ??
+    (paramEtaMinutes != null ? Number(paramEtaMinutes) : undefined);
 
   const { data: order, isLoading } = useQuery({
     queryKey: ["order", id],
@@ -129,13 +139,21 @@ export default function OrderSuccessScreen() {
     enabled: !!id,
   });
 
+  // Auto-redirect to tracking after 3–5 seconds (no reload, no home)
+  useEffect(() => {
+    if (!id) return;
+    const t = setTimeout(() => {
+      router.replace(`/orders/${id}` as const);
+    }, AUTO_REDIRECT_SEC * 1000);
+    return () => clearTimeout(t);
+  }, [id, router]);
+
   const goHome = () => {
     router.replace("/(tabs)/");
   };
 
   const trackOrder = () => {
-    router.replace("/(tabs)/");
-    setTimeout(() => router.push(`/orders/${id}` as const), 50);
+    router.replace(`/orders/${id}` as const);
   };
 
   if (!id) {
@@ -149,17 +167,11 @@ export default function OrderSuccessScreen() {
     );
   }
 
-  if (isLoading || !order) {
-    return (
-      <View style={[styles.center, { paddingBottom: insets.bottom }]}>
-        <ActivityIndicator size="large" color={GatiMitraColors.emerald} />
-        <Text style={styles.loadingText}>Loading order details...</Text>
-      </View>
-    );
-  }
-
-  const etaMins = ETA_DEFAULT_MINS;
-  const orderIdDisplay = order.orderId || id;
+  const displayEta = typeof etaFromParams === "number" && etaFromParams > 0 ? etaFromParams : ETA_DEFAULT_MINS;
+  const orderIdDisplay = order?.orderId ?? id;
+  const displayMerchantName = order?.merchantName ?? merchantName ?? undefined;
+  // Show success UI immediately when we have orderId (from params); optional order fetch for summary/address
+  const showSuccessContent = true;
 
   return (
     <ScrollView
@@ -186,19 +198,19 @@ export default function OrderSuccessScreen() {
           <Text style={styles.cardLabel}>Order ID</Text>
           <Text style={styles.cardValue}>#{orderIdDisplay}</Text>
         </View>
-        {order.merchantName && (
+        {displayMerchantName ? (
           <View style={styles.cardRow}>
             <Text style={styles.cardLabel}>Restaurant</Text>
-            <Text style={styles.cardValue} numberOfLines={1}>{order.merchantName}</Text>
+            <Text style={styles.cardValue} numberOfLines={1}>{displayMerchantName}</Text>
           </View>
-        )}
+        ) : null}
         <View style={[styles.cardRow, styles.etaRow]}>
           <Ionicons name="time-outline" size={20} color={GatiMitraColors.emerald} />
-          <Text style={styles.etaText}>Estimated delivery in ~{etaMins} mins</Text>
+          <Text style={styles.etaText}>Estimated delivery in ~{displayEta} mins</Text>
         </View>
       </Animated.View>
 
-      {order.items && order.items.length > 0 && (
+      {order?.items && order.items.length > 0 && (
         <Animated.View entering={FadeIn.duration(300).delay(220)} style={styles.card}>
           <Text style={styles.sectionTitle}>Order summary</Text>
           {order.items.slice(0, 4).map((item: { name?: string; quantity?: number; price?: number }, i: number) => (
@@ -221,13 +233,13 @@ export default function OrderSuccessScreen() {
         </Animated.View>
       )}
 
-      {order.deliveryAddress && (
+      {order?.deliveryAddress && (
         <Animated.View entering={FadeIn.duration(300).delay(280)} style={styles.card}>
           <View style={styles.addressRow}>
             <Ionicons name="location" size={20} color={GatiMitraColors.emerald} />
             <Text style={styles.addressLabel}>Delivery address</Text>
           </View>
-          <Text style={styles.addressText}>{order.deliveryAddress}</Text>
+          <Text style={styles.addressText}>{order?.deliveryAddress}</Text>
         </Animated.View>
       )}
 
@@ -241,6 +253,7 @@ export default function OrderSuccessScreen() {
             <Text style={styles.trackBtnText}>Track Order</Text>
           </LinearGradient>
         </TouchableOpacity>
+        <Text style={styles.autoRedirectHint}>Opening live tracking in {AUTO_REDIRECT_SEC} seconds…</Text>
         <TouchableOpacity onPress={goHome} style={styles.homeBtn} activeOpacity={0.85}>
           <Text style={styles.homeBtnText}>Back to Home</Text>
         </TouchableOpacity>
@@ -323,6 +336,12 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   trackBtnText: { fontSize: 16, fontWeight: "700", color: "#fff" },
+  autoRedirectHint: {
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
+    textAlign: "center",
+    marginTop: 8,
+  },
   homeBtn: {
     backgroundColor: "#fff",
     paddingVertical: 16,

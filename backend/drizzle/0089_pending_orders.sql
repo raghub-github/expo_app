@@ -1,5 +1,5 @@
 -- Payment-first order flow: pending orders hold cart + address snapshot until payment succeeds.
--- Finalize (after payment verification) moves data into core_orders in one transaction.
+-- Finalize (after payment verification) moves data into orders_core in one transaction.
 
 CREATE TABLE IF NOT EXISTS public.pending_orders (
   id BIGSERIAL PRIMARY KEY,
@@ -51,4 +51,4 @@ CREATE INDEX IF NOT EXISTS pending_orders_razorpay_order_id_idx ON public.pendin
 CREATE INDEX IF NOT EXISTS pending_orders_finalized_order_id_idx ON public.pending_orders(finalized_order_id) WHERE finalized_order_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS pending_orders_expires_at_idx ON public.pending_orders(expires_at);
 
-COMMENT ON TABLE public.pending_orders IS 'Locked cart + address until payment success; finalize creates core_orders in one tx.';
+COMMENT ON TABLE public.pending_orders IS 'Locked cart + address until payment success; finalize creates orders_core in one tx.';

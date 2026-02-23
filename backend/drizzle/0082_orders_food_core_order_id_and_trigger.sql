@@ -1,7 +1,7 @@
--- Allow orders_food to be fed from core_orders (app flow) or from orders_core (legacy/rider flow).
--- Either order_id (orders_core.id) or core_order_id (core_orders.order_id) must be set.
+-- orders_core is the primary order table. orders_food is fed from orders_core via trigger (push_food_order_from_orders_core).
+-- core_order_id stores orders_core.order_id (e.g. GM10000001). Either order_id (legacy) or core_order_id must be set.
 
--- Add column for orders created via core_orders
+-- Column for canonical order id from orders_core
 ALTER TABLE public.orders_food
   ADD COLUMN IF NOT EXISTS core_order_id TEXT NULL;
 
@@ -18,7 +18,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS orders_food_core_order_id_key
   ON public.orders_food(core_order_id)
   WHERE core_order_id IS NOT NULL;
 
--- Ensure exactly one source: either orders_core or core_orders
+-- Ensure exactly one source: order_id (legacy) or core_order_id (orders_core.order_id)
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -34,9 +34,9 @@ BEGIN
   END IF;
 END $$;
 
-COMMENT ON COLUMN public.orders_food.core_order_id IS 'Set when row is created from core_orders (app flow); then order_id is null.';
+COMMENT ON COLUMN public.orders_food.core_order_id IS 'References orders_core.order_id (canonical id e.g. GM10000001); set by trigger on orders_core INSERT.';
 
--- Trigger: after insert on core_orders (order_type = FOOD) → insert into orders_food
+-- Trigger: after insert on core_orders (legacy; only if table exists). Primary flow: trigger on orders_core in 0094/0095.
 CREATE OR REPLACE FUNCTION push_food_order()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -68,8 +68,11 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS after_core_order_insert ON public.core_orders;
-CREATE TRIGGER after_core_order_insert
-  AFTER INSERT ON public.core_orders
-  FOR EACH ROW
-  EXECUTE FUNCTION push_food_order();
+-- Only attach trigger if core_orders exists (legacy; 0094 uses orders_core and drops core_orders)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'core_orders') THEN
+    DROP TRIGGER IF EXISTS after_core_order_insert ON public.core_orders;
+    EXECUTE 'CREATE TRIGGER after_core_order_insert AFTER INSERT ON public.core_orders FOR EACH ROW EXECUTE FUNCTION push_food_order()';
+  END IF;
+END $$;

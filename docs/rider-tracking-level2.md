@@ -34,7 +34,7 @@ Connects rider ↔ order. Use when a rider is assigned to an order.
 
 | Column | Type | Role |
 |--------|------|------|
-| order_id | TEXT | Unique; links to core_orders.order_id |
+| order_id | TEXT | Unique; links to orders_core.order_id (e.g. GM10000001) |
 | rider_id | INTEGER | FK riders.id |
 | assignment_status | TEXT | ASSIGNED, ACCEPTED, ARRIVED_AT_STORE, PICKED_UP, ON_THE_WAY, DELIVERED |
 | assigned_at, accepted_at, picked_up_at, delivered_at | TIMESTAMPTZ | State timestamps |

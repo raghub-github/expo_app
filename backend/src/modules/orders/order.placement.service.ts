@@ -1,20 +1,21 @@
 /**
  * Order placement service: payment-first flow.
  * - createPending: validate cart + address, lock data in pending_orders.
- * - finalizeOrder: verify payment → single transaction (core_orders + items + addons + payments) → emit event.
+ * - finalizeOrder: verify payment → single atomic transaction (orders_core + orders_core_items + addons + payments → update pending_orders → trigger emits order_events).
+ * Order ID format: GM10000001, GM10000002, ... from order_id_seq.
  * All string/number values are sanitized before DB insert (no "—", undefined, NaN).
  */
 
 import { randomBytes } from "crypto";
 import { and, eq, isNull } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   pendingOrders,
-  coreOrders,
-  coreOrderItems,
-  coreOrderItemAddons,
-  corePayments,
-  orderEvents,
+  ordersCore,
+  ordersCoreItems,
+  ordersCoreItemAddons,
+  ordersCorePayments,
 } from "../../db/schema.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { verifyRazorpaySignature } from "../../services/payment/razorpayService.js";
@@ -242,15 +243,15 @@ export async function finalizeOrder(
 
   if (pending.finalizedOrderId) {
     const [existing] = await db
-      .select({ orderId: coreOrders.orderId, grandTotal: coreOrders.grandTotal, placedAt: coreOrders.placedAt })
-      .from(coreOrders)
-      .where(eq(coreOrders.orderId, pending.finalizedOrderId))
+      .select({ orderId: ordersCore.orderId, grandTotal: ordersCore.grandTotal, placedAt: ordersCore.placedAt })
+      .from(ordersCore)
+      .where(eq(ordersCore.orderId, pending.finalizedOrderId))
       .limit(1);
-    if (existing) {
+    if (existing?.orderId) {
       return {
         ok: true,
         orderId: existing.orderId,
-        status: "ORDER_PLACED",
+        status: "PLACED",
         totalAmount: Number(existing.grandTotal ?? 0),
         createdAt: (existing.placedAt ?? new Date()).toISOString(),
       };
@@ -267,44 +268,60 @@ export async function finalizeOrder(
   }
   const items = norm.items;
 
-  const orderIdText = `GM-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const paymentMethodEnum = paymentMethodToEnum(pending.paymentMethod);
+  const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
+  const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
+  const pickupLat = pending.pickupLat != null ? String(pending.pickupLat) : "0";
+  const pickupLon = pending.pickupLon != null ? String(pending.pickupLon) : "0";
+  const dropLat = pending.dropLat != null ? String(pending.dropLat) : "0";
+  const dropLon = pending.dropLon != null ? String(pending.dropLon) : "0";
 
+  /** DB enum values for orders_core (must match PostgreSQL enums: lowercase) */
+  const ORDER_TYPE_FOOD = "food" as const;
+  const ORDER_SOURCE_INTERNAL = "internal" as const;
+  const ORDER_STATUS_ASSIGNED = "assigned" as const;
+  const PAYMENT_STATUS_COMPLETED = "completed" as const;
+
+  let orderIdText: string | undefined;
   try {
-    await db.transaction(async (tx) => {
-      await tx.insert(coreOrders).values({
+    const result = await db.transaction(async (tx) => {
+      const seqResult = await tx.execute(
+        sql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
+      );
+      const firstRow = Array.isArray(seqResult)
+        ? seqResult[0]
+        : (seqResult as { rows?: unknown[] })?.rows?.[0] ?? (seqResult as unknown[])?.[0];
+      const orderIdText =
+        firstRow != null && typeof firstRow === "object" && "order_id" in firstRow
+          ? String((firstRow as { order_id: unknown }).order_id)
+          : null;
+      if (!orderIdText || !orderIdText.startsWith("GM")) {
+        throw new Error(`Failed to generate order_id: got ${JSON.stringify(seqResult)}`);
+      }
+
+      await tx.insert(ordersCore).values({
         orderId: orderIdText,
+        orderType: ORDER_TYPE_FOOD,
+        orderSource: ORDER_SOURCE_INTERNAL,
         customerId: pending.customerId,
         merchantStoreId: pending.merchantStoreId,
         merchantParentId: pending.merchantParentId ?? undefined,
-        orderType: "FOOD",
+        status: ORDER_STATUS_ASSIGNED,
         currentStatus: "PLACED",
         itemTotal: pending.itemTotal,
         addonTotal: pending.addonTotal ?? "0",
-        taxAmount: "0",
-        deliveryFee: "0",
-        platformFee: "0",
-        discountAmount: "0",
-        tipAmount: pending.tipAmount ?? "0",
         grandTotal: pending.grandTotal,
-        currency: pending.currency ?? "INR",
-        pickupAddressNormalized: sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? undefined,
-        pickupAddressGeocoded:
-          pending.pickupLat != null && pending.pickupLon != null
-            ? { lat: Number(pending.pickupLat), lng: Number(pending.pickupLon) }
-            : undefined,
-        pickupLat: pending.pickupLat ?? undefined,
-        pickupLon: pending.pickupLon ?? undefined,
-        dropAddressNormalized: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
-        dropAddressGeocoded:
-          pending.dropLat != null && pending.dropLon != null
-            ? { lat: Number(pending.dropLat), lng: Number(pending.dropLon) }
-            : undefined,
-        dropLat: pending.dropLat ?? undefined,
-        dropLon: pending.dropLon ?? undefined,
+        tipAmount: pending.tipAmount ?? "0",
+        placedAt: new Date(),
+        pickupAddressRaw: pickupRaw || " ",
+        pickupLat,
+        pickupLon,
+        dropAddressRaw: dropRaw || " ",
+        dropLat,
+        dropLon,
         deliveryAddress: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
         distanceKm: pending.distanceKm ?? undefined,
-        paymentStatus: "PAID",
+        paymentStatus: PAYMENT_STATUS_COMPLETED,
         paymentMethod: paymentMethodEnum,
       });
 
@@ -327,14 +344,14 @@ export async function finalizeOrder(
         };
       });
 
-      const insertedItems = await tx.insert(coreOrderItems).values(itemInserts).returning({ id: coreOrderItems.id });
+      const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
       for (let idx = 0; idx < items.length; idx++) {
         const row = items[idx]!;
         const addons = row.addons;
         if (addons.length === 0) continue;
         const orderItemId = insertedItems[idx]?.id;
         if (orderItemId == null) continue;
-        await tx.insert(coreOrderItemAddons).values(
+        await tx.insert(ordersCoreItemAddons).values(
           addons.map((ad) => ({
             orderItemId,
             addonId: ad.addonId > 0 ? ad.addonId : undefined,
@@ -345,7 +362,7 @@ export async function finalizeOrder(
         );
       }
 
-      await tx.insert(corePayments).values({
+      await tx.insert(ordersCorePayments).values({
         orderId: orderIdText,
         paymentGateway: "razorpay",
         paymentMethod: paymentMethodEnum,
@@ -366,18 +383,34 @@ export async function finalizeOrder(
         })
         .where(eq(pendingOrders.pendingId, pendingId));
 
-      await tx.insert(orderEvents).values({
-        orderId: orderIdText,
-        orderSource: "core_orders",
-        eventType: "PLACED",
-        fromStatus: null,
-        toStatus: "PLACED",
-      });
+      return { orderIdText };
     });
+    orderIdText = result.orderIdText;
   } catch (err: unknown) {
-    const e = err as { code?: string; constraint?: string; message?: string; cause?: unknown };
+    const e = err as {
+      code?: string;
+      constraint?: string;
+      message?: string;
+      detail?: string;
+      cause?: { code?: string; detail?: string; constraint?: string; message?: string };
+    };
+    const detail = e?.detail ?? e?.cause?.detail;
+    const constraint = e?.constraint ?? e?.cause?.constraint;
+    const pgCode = e?.code ?? (e?.cause as { code?: string })?.code;
     console.error("[API] finalizeOrder failed:", e?.message ?? err);
-    if (e?.cause) console.error("[API] finalizeOrder cause:", e.cause);
+    if (pgCode) console.error("[API] finalizeOrder pgCode:", pgCode);
+    if (detail) console.error("[API] finalizeOrder detail:", detail);
+    if (constraint) console.error("[API] finalizeOrder constraint:", constraint);
+    if (e?.cause && !detail) console.error("[API] finalizeOrder cause:", e.cause);
+    return {
+      ok: false,
+      code: "ORDER_CREATION_FAILED",
+      message: "Order could not be created. Please try again.",
+    };
+  }
+
+  if (!orderIdText) {
+    console.error("[API] finalizeOrder: transaction succeeded but orderIdText missing");
     return {
       ok: false,
       code: "ORDER_CREATION_FAILED",
@@ -388,7 +421,7 @@ export async function finalizeOrder(
   return {
     ok: true,
     orderId: orderIdText,
-    status: "ORDER_PLACED",
+    status: "PLACED",
     totalAmount: Number(pending.grandTotal),
     createdAt: new Date().toISOString(),
   };

@@ -1,12 +1,11 @@
 /**
- * Food-only floating cart. Scope = FOOD_SERVICE_ONLY.
- * Visible ONLY on: /home, /home/merchant/*, /home/category/*, /search.
- * Hidden on: Ride, Parcel, E-com, Wallet, Profile, (tabs) root — no delay, removed from tree.
- * Compact bar: 56–64px height, 28px radius, single-line summary. Auto-hides when cart empty.
+ * Food floating cart + multi-order tracking dock.
+ * Visible on: /home, /home/merchant/*, /search, and on /orders when there are active orders.
+ * When multiple active orders or cart + order: horizontal scrollable dock [Track #1] [Track #2] [Cart].
  */
 
 import { useEffect } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, Platform, ScrollView } from "react-native";
 import { useRouter, useSegments, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
@@ -23,6 +22,7 @@ import Animated, {
 import { useCartStore } from "@/store/cartStore";
 import { useOrderStore } from "@/store/orderStore";
 import { useMerchantScrollStore } from "@/store/merchantScrollStore";
+import type { ActiveOrder } from "@/store/orderStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const CHECKOUT_PATH = "/checkout";
@@ -33,19 +33,27 @@ function useIsOnRestaurantDetailsPage(): boolean {
   return typeof pathname === "string" && pathname.startsWith("/home/merchant/");
 }
 
-/** Cart scope = FOOD only. Show on: /home, /home/merchant/*, /home/category/*, /search. Never on: Ride, Parcel, E-com, Profile, Wallet, (tabs) root. */
+/** Show on: /home, /home/merchant/*, /home/category/*, /search. */
 function useIsFoodServicePage(): boolean {
   const pathname = usePathname();
   const segments = useSegments();
   if (typeof pathname !== "string") return false;
   const p = pathname as string;
   if (segments[0] === "(auth)" || segments[0] === "(onboarding)") return false;
-  if (p.startsWith("/checkout") || p.startsWith("/profile") || p === "/wallet" || p.startsWith("/(tabs)/orders")) return false;
+  if (p.startsWith("/checkout") || p.startsWith("/profile") || p === "/wallet") return false;
   if (p === "/home" || p.startsWith("/home/merchant") || p.startsWith("/home/category")) return true;
   if (p.startsWith("/home/service") || p.startsWith("/home/shop")) return false;
   if (p === "/search") return true;
   if (p === "/" || p.startsWith("/(tabs)")) return false;
   return false;
+}
+
+/** Show dock on orders list or order detail when user has active orders (switch between orders). */
+function useIsOnOrdersArea(): boolean {
+  const pathname = usePathname();
+  if (typeof pathname !== "string") return false;
+  const p = pathname as string;
+  return p === "/orders" || p.startsWith("/orders/") || p.includes("orders");
 }
 
 /** True when current route is restaurant detail and it's the same as cart merchant */
@@ -63,6 +71,7 @@ export function GlobalFloatingCart() {
   const pathname = usePathname();
   const segments = useSegments();
   const isFoodServicePage = useIsFoodServicePage();
+  const isOnOrdersArea = useIsOnOrdersArea();
   const isInsideCartRestaurant = useIsInsideCartRestaurant();
   const isOnRestaurantDetails = useIsOnRestaurantDetailsPage();
   const merchantScrollY = useMerchantScrollStore((s) => s.scrollY);
@@ -71,15 +80,18 @@ export function GlobalFloatingCart() {
   const items = useCartStore((s) => s.items);
   const merchantId = useCartStore((s) => s.merchantId);
   const merchantName = useCartStore((s) => s.merchantName);
-  const activeOrder = useOrderStore((s) => s.activeOrder);
+  const activeOrdersRaw = useOrderStore((s) => s.activeOrders);
+  const activeOrderFallback = useOrderStore((s) => s.activeOrder);
+  const activeOrders = activeOrdersRaw.filter(
+    (o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"
+  );
+  const activeOrder = activeOrders[0] ?? (activeOrderFallback?.status !== "DELIVERED" && activeOrderFallback?.status !== "CANCELLED" ? activeOrderFallback : null);
 
   const totalCount = items.reduce((n, i) => n + i.quantity, 0);
   const cartTotal = items.reduce((n, i) => n + i.price * i.quantity, 0);
   const hasCart = totalCount > 0;
-  const hasActiveOrder =
-    activeOrder != null &&
-    activeOrder.status !== "DELIVERED" &&
-    activeOrder.status !== "CANCELLED";
+  const hasActiveOrder = activeOrders.length > 0;
+  const showDock = hasActiveOrder && (activeOrders.length > 1 || hasCart);
 
   const pulse = useSharedValue(1);
 
@@ -107,32 +119,21 @@ export function GlobalFloatingCart() {
 
   const handleCartPress = () => {
     const currentPath = typeof pathname === "string" ? pathname : "";
-    const destinationCheckout = CHECKOUT_PATH;
-
-    if (currentPath === destinationCheckout || currentPath.startsWith("/checkout")) {
-      return;
-    }
-
+    if (currentPath.startsWith("/checkout")) return;
     if (isOnRestaurantDetails || isInsideCartRestaurant) {
       router.push(CHECKOUT_PATH as any);
       return;
     }
-
     if (merchantId) {
-      router.push({
-        pathname: "/home/merchant/[id]",
-        params: { id: merchantId, openCart: "1" },
-      });
+      router.push({ pathname: "/home/merchant/[id]", params: { id: merchantId, openCart: "1" } });
     } else {
       router.push(CHECKOUT_PATH as any);
     }
   };
 
-  // Cart scope = FOOD_SERVICE_ONLY. Hide on Ride, Parcel, E-com, Profile, etc. No fade delay.
-  const visible = isFoodServicePage && (hasCart || hasActiveOrder);
+  const visible = (isFoodServicePage || isOnOrdersArea) && (hasCart || hasActiveOrder);
   if (!visible) return null;
 
-  // Bottom offset: when in tabs sit above tab bar; else above safe area only (e.g. merchant, search)
   const inTabs = segments[0] === "(tabs)";
   const TAB_BAR_HEIGHT = 56;
   const GAP_ABOVE_NAV = 14;
@@ -142,7 +143,49 @@ export function GlobalFloatingCart() {
 
   const slideUpEntering = SlideInUp.duration(250).easing(Easing.out(Easing.ease));
 
-  if (hasActiveOrder) {
+  if (showDock) {
+    return (
+      <Animated.View
+        entering={slideUpEntering}
+        style={[styles.wrap, styles.dockWrap, { bottom: bottomOffset }]}
+        pointerEvents="box-none"
+      >
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.dockContent}
+          snapToInterval={160}
+          snapToAlignment="center"
+          decelerationRate="fast"
+        >
+          {activeOrders.map((ord, idx) => (
+            <TrackOrderPill key={ord.orderId} order={ord} index={idx + 1} onPress={() => router.push(`/orders/${ord.orderId}` as const)} pulseStyle={pulseStyle} />
+          ))}
+          {hasCart && (
+            <TouchableOpacity activeOpacity={0.9} onPress={handleCartPress} style={styles.dockPill}>
+              <View style={[styles.pill, styles.dockPillInner]}>
+                <LinearGradient
+                  colors={GatiMitraColors.mintGradient as unknown as [string, string]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.pillGradient}
+                >
+                  <View style={styles.glassOverlay} />
+                  <View style={styles.pillContent}>
+                    <Ionicons name="cart" size={18} color={GatiMitraColors.emerald} />
+                    <Text style={styles.cartCount}>{totalCount}</Text>
+                    <Text style={styles.cartCta}>Cart →</Text>
+                  </View>
+                </LinearGradient>
+              </View>
+            </TouchableOpacity>
+          )}
+        </ScrollView>
+      </Animated.View>
+    );
+  }
+
+  if (hasActiveOrder && activeOrder) {
     return (
       <Animated.View
         entering={slideUpEntering}
@@ -164,7 +207,7 @@ export function GlobalFloatingCart() {
               <View style={styles.pillContent}>
                 <Ionicons name="bicycle" size={22} color="#fff" />
                 <Text style={styles.liveText} numberOfLines={1}>
-                  Order arriving in {activeOrder.etaMinutes} mins
+                  Track Order · Arriving in {activeOrder.etaMinutes} mins
                 </Text>
                 <Text style={styles.liveCta}>Track Live →</Text>
               </View>
@@ -184,37 +227,24 @@ export function GlobalFloatingCart() {
       style={[styles.wrap, { bottom: bottomOffset }]}
       pointerEvents="box-none"
     >
-      <TouchableOpacity
-        activeOpacity={0.9}
-        onPress={handleCartPress}
-        style={styles.touchable}
-      >
+      <TouchableOpacity activeOpacity={0.9} onPress={handleCartPress} style={styles.touchable}>
         <View style={[styles.pill, compact && styles.pillCompact]}>
           <LinearGradient
-            colors={
-              GatiMitraColors.mintGradient as unknown as [string, string]
-            }
+            colors={GatiMitraColors.mintGradient as unknown as [string, string]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={[styles.pillGradient, compact && styles.pillGradientCompact]}
           >
             <View style={styles.glassOverlay} />
             <View style={[styles.pillContent, compact && styles.pillContentCompact]}>
-              <Ionicons
-                name="cart"
-                size={compact ? 16 : 18}
-                color={GatiMitraColors.emerald}
-              />
+              <Ionicons name="cart" size={compact ? 16 : 18} color={GatiMitraColors.emerald} />
               <Text style={styles.cartCount}>{totalCount} Items</Text>
               <Text style={styles.cartDivider}>|</Text>
               <Text style={styles.cartTotal}>₹{Math.round(cartTotal)}</Text>
               {showStoreName && (
                 <>
                   <Text style={styles.cartDivider}>|</Text>
-                  <Text
-                    style={styles.cartFrom}
-                    numberOfLines={1}
-                  >{merchantName}</Text>
+                  <Text style={styles.cartFrom} numberOfLines={1}>{merchantName}</Text>
                 </>
               )}
               <Text style={styles.cartCta}>View Cart →</Text>
@@ -226,6 +256,38 @@ export function GlobalFloatingCart() {
   );
 }
 
+function TrackOrderPill({
+  order,
+  index,
+  onPress,
+  pulseStyle,
+}: {
+  order: ActiveOrder;
+  index: number;
+  onPress: () => void;
+  pulseStyle: { transform: { scale: number }[] };
+}) {
+  return (
+    <TouchableOpacity activeOpacity={0.9} onPress={onPress} style={styles.dockPill}>
+      <Animated.View style={[styles.pill, styles.livePill, styles.dockPillInner, pulseStyle]}>
+        <LinearGradient
+          colors={[GatiMitraColors.deepMintStart, GatiMitraColors.deepMintEnd]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.pillGradient}
+        >
+          <View style={styles.pillContent}>
+            <Ionicons name="bicycle" size={20} color="#fff" />
+            <Text style={styles.liveText} numberOfLines={1}>
+              #{order.orderId.slice(-6)} · {order.etaMinutes}m
+            </Text>
+          </View>
+        </LinearGradient>
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
 const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
@@ -234,6 +296,23 @@ const styles = StyleSheet.create({
     zIndex: 999,
     alignItems: "center",
     justifyContent: "center",
+  },
+  dockWrap: {
+    left: 8,
+    right: 8,
+    alignItems: "stretch",
+  },
+  dockContent: {
+    flexDirection: "row",
+    gap: 10,
+    paddingHorizontal: 8,
+  },
+  dockPill: {
+    minWidth: 152,
+    maxWidth: 152,
+  },
+  dockPillInner: {
+    minHeight: 48,
   },
   touchable: {
     width: "100%",

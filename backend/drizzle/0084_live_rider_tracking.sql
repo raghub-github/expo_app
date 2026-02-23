@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS public.order_rider_tracking (
   id BIGSERIAL PRIMARY KEY,
   order_id TEXT NOT NULL,
-  order_source TEXT NOT NULL DEFAULT 'core_orders',
+  order_source TEXT NOT NULL DEFAULT 'orders_core',
   rider_id INTEGER,
   latitude NUMERIC(10, 7) NOT NULL,
   longitude NUMERIC(10, 7) NOT NULL,

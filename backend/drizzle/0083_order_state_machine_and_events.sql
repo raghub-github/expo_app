@@ -30,7 +30,7 @@ COMMENT ON TYPE public.order_event_type IS 'Order lifecycle and tracking events;
 CREATE TABLE IF NOT EXISTS public.order_events (
   id BIGSERIAL PRIMARY KEY,
   order_id TEXT NOT NULL,
-  order_source TEXT NOT NULL DEFAULT 'core_orders',
+  order_source TEXT NOT NULL DEFAULT 'orders_core',
   event_type order_event_type NOT NULL,
   from_status TEXT,
   to_status TEXT NOT NULL,
@@ -83,10 +83,10 @@ INSERT INTO public.order_status_transitions (from_status, to_status, order_type)
   ('OUT_FOR_DELIVERY', 'CANCELLED', 'FOOD')
 ON CONFLICT (from_status, to_status, order_type) DO NOTHING;
 
--- Function: emit order event and update current_status on core_orders / orders_food.
+-- Function: emit order event and update current_status on orders_core / orders_food (primary table).
 CREATE OR REPLACE FUNCTION emit_order_event(
   p_order_id TEXT,
-  p_order_source TEXT DEFAULT 'core_orders',
+  p_order_source TEXT DEFAULT 'orders_core',
   p_event_type order_event_type DEFAULT NULL,
   p_to_status TEXT DEFAULT NULL,
   p_payload JSONB DEFAULT NULL,
@@ -105,21 +105,19 @@ BEGIN
   v_evt_type := COALESCE(p_event_type, p_to_status::order_event_type);
   v_to_status := COALESCE(p_to_status, p_evt_type::TEXT);
 
-  IF p_order_source = 'core_orders' THEN
-    SELECT current_status INTO v_from_status FROM public.core_orders WHERE order_id = p_order_id LIMIT 1;
-  ELSE
-    SELECT current_status INTO v_from_status FROM public.orders_core
-    WHERE id::TEXT = p_order_id OR formatted_order_id = p_order_id LIMIT 1;
-  END IF;
+  -- Single source: orders_core (by order_id or id/formatted_order_id). core_orders is deprecated/dropped.
+  SELECT current_status INTO v_from_status FROM public.orders_core
+  WHERE order_id = p_order_id OR id::TEXT = p_order_id OR formatted_order_id = p_order_id
+  LIMIT 1;
 
   INSERT INTO public.order_events (order_id, order_source, event_type, from_status, to_status, payload, actor_type, actor_id)
   VALUES (p_order_id, p_order_source, v_evt_type, v_from_status, v_to_status, p_payload, p_actor_type, p_actor_id)
   RETURNING id INTO v_event_id;
 
-  IF p_order_source = 'core_orders' THEN
-    UPDATE public.core_orders SET current_status = v_to_status, updated_at = now() WHERE order_id = p_order_id;
-    UPDATE public.orders_food SET order_status = v_to_status, updated_at = now() WHERE core_order_id = p_order_id;
-  END IF;
+  UPDATE public.orders_core SET current_status = v_to_status, updated_at = now()
+  WHERE order_id = p_order_id OR id::TEXT = p_order_id;
+  UPDATE public.orders_food SET order_status = v_to_status, updated_at = now()
+  WHERE core_order_id = p_order_id OR order_id::TEXT = p_order_id;
 
   RETURN v_event_id;
 END;
@@ -127,20 +125,23 @@ $$;
 
 COMMENT ON FUNCTION emit_order_event IS 'Append event and update current_status; call after validating transition.';
 
--- Emit PLACED when a new core order is inserted.
+-- Emit PLACED when a new order is inserted (legacy trigger; orders_core path uses trigger_emit_placed_on_orders_core).
 CREATE OR REPLACE FUNCTION trigger_emit_placed_on_core_order()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
   INSERT INTO public.order_events (order_id, order_source, event_type, from_status, to_status)
-  VALUES (NEW.order_id, 'core_orders', 'PLACED', NULL, COALESCE(NEW.current_status, 'PLACED'));
+  VALUES (NEW.order_id, 'orders_core', 'PLACED', NULL, COALESCE(NEW.current_status, 'PLACED'));
   RETURN NEW;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS after_core_order_insert_emit_placed ON public.core_orders;
-CREATE TRIGGER after_core_order_insert_emit_placed
-  AFTER INSERT ON public.core_orders
-  FOR EACH ROW
-  EXECUTE FUNCTION trigger_emit_placed_on_core_order();
+-- Only attach trigger if core_orders exists (idempotent; safe after 0094 drops core_orders)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'core_orders') THEN
+    DROP TRIGGER IF EXISTS after_core_order_insert_emit_placed ON public.core_orders;
+    EXECUTE 'CREATE TRIGGER after_core_order_insert_emit_placed AFTER INSERT ON public.core_orders FOR EACH ROW EXECUTE FUNCTION trigger_emit_placed_on_core_order()';
+  END IF;
+END $$;

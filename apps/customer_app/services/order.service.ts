@@ -1,6 +1,6 @@
 /**
  * Order service - create order, get order details, list history.
- * All APIs use orderId as the canonical reference (string: numeric for legacy, "GM-..." for new core_orders).
+ * All APIs use orderId as the canonical reference (string: numeric for legacy, "GM10000001" for new orders_core).
  */
 
 import api from "./api";
@@ -114,6 +114,28 @@ export const orderService = {
   async finalizeOrder(payload: FinalizeOrderPayload): Promise<FinalizeOrderResponse> {
     const { data } = await api.post<FinalizeOrderResponse>(`${ORDERS_PREFIX}/finalize`, payload);
     return data;
+  },
+
+  /** Finalize with retries on network error (idempotent; safe to retry). */
+  async finalizeOrderWithRetry(
+    payload: FinalizeOrderPayload,
+    opts: { retries?: number; delayMs?: number } = {}
+  ): Promise<FinalizeOrderResponse> {
+    const { retries = 3, delayMs = 1500 } = opts;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this.finalizeOrder(payload);
+      } catch (e) {
+        lastErr = e;
+        const isNetwork =
+          (e as { code?: string; message?: string })?.code === "ERR_NETWORK" ||
+          String((e as Error)?.message ?? "").toLowerCase().includes("network error");
+        if (!isNetwork || attempt === retries) throw e;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
   },
 
   async getOrder(orderId: string): Promise<OrderDetail> {

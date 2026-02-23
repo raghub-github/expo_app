@@ -38,9 +38,9 @@ api.interceptors.response.use(
   (res) => res,
   (err: AxiosError<{ message?: string; error?: string }>) => {
     const status = err.response?.status;
-    const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message;
+    const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message ?? "Network Error";
     if (__DEV__) {
-      console.warn("[API]", status, message);
+      console.warn("[API]", status ?? "network", message);
     }
     if (status === 401) {
       const errorCode = err.response?.data?.error;
