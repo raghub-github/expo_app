@@ -41,9 +41,9 @@ export async function GET(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -52,8 +52,8 @@ export async function GET(
 
     // Check permission
     const hasPermission = await checkPermission(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email ?? "",
       "USERS",
       "VIEW"
     );
@@ -136,9 +136,9 @@ export async function PUT(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -147,7 +147,7 @@ export async function PUT(
 
     // Get user permissions (this includes system user and super admin check in one call)
     const { getUserPermissions } = await import("@/lib/permissions/engine");
-    const userPerms = await getUserPermissions(session.user.id, session.user.email!);
+    const userPerms = await getUserPermissions(user.id, user.email ?? "");
     if (!userPerms) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },
@@ -160,8 +160,8 @@ export async function PUT(
     // Check permission (use cached userPerms if available, otherwise call checkPermission)
     // For super admin, they have all permissions
     const hasPermission = userIsSuperAdmin || await checkPermission(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email ?? "",
       "USERS",
       "UPDATE"
     );
@@ -562,7 +562,7 @@ export async function PUT(
     }
 
     // Audit log (action_audit_log)
-    await logActionByAuth(session.user.id, session.user.email!, "SYSTEM", "UPDATE", {
+    await logActionByAuth(user.id, user.email ?? "", "SYSTEM", "UPDATE", {
       resourceType: "USER",
       resourceId: userId.toString(),
       actionDetails: {
@@ -608,9 +608,9 @@ export async function DELETE(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -619,8 +619,8 @@ export async function DELETE(
 
     // Check permission
     const hasPermission = await checkPermission(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email ?? "",
       "USERS",
       "DELETE"
     );
@@ -643,7 +643,7 @@ export async function DELETE(
 
     // Get system user ID for logging
     const { getSystemUserByEmail } = await import("@/lib/db/operations/users");
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email ?? "");
     if (!systemUser) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },

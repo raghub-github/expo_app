@@ -40,9 +40,9 @@ export async function GET(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
@@ -80,13 +80,13 @@ export async function PUT(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json({ success: false, error: "Only super admins can update offers" }, { status: 403 });
     }
@@ -202,13 +202,13 @@ export async function PATCH(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json({ success: false, error: "Only super admins can update offers" }, { status: 403 });
     }
@@ -252,13 +252,13 @@ export async function DELETE(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json({ success: false, error: "Only super admins can delete offers" }, { status: 403 });
     }

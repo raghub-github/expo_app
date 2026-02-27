@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { queryClient, persister } from "@/lib/react-query";
 
@@ -8,19 +7,13 @@ interface QueryProviderProps {
   children: React.ReactNode;
 }
 
-/** Lazy-load DevTools so a ChunkLoadError in the devtools chunk does not break the app. */
-function DevToolsLazy() {
-  const [Devtools, setDevtools] = useState<React.ComponentType<{ initialIsOpen?: boolean }> | null>(null);
-  useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
-    import("@tanstack/react-query-devtools")
-      .then((mod) => setDevtools(() => mod.ReactQueryDevtools))
-      .catch(() => {});
-  }, []);
-  if (!Devtools) return null;
-  return <Devtools initialIsOpen={false} />;
-}
-
+/**
+ * React Query Devtools are disabled to avoid ChunkLoadError when the devtools
+ * chunk fails to load (e.g. in some dev setups). To re-enable, add:
+ *   import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+ *   <ReactQueryDevtools initialIsOpen={false} />
+ * inside the provider (dev only).
+ */
 export function QueryProvider({ children }: QueryProviderProps) {
   return (
     <PersistQueryClientProvider
@@ -32,7 +25,6 @@ export function QueryProvider({ children }: QueryProviderProps) {
       }}
     >
       {children}
-      <DevToolsLazy />
     </PersistQueryClientProvider>
   );
 }

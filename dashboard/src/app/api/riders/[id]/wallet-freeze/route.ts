@@ -26,17 +26,17 @@ async function getAuthAndRider(
 > {
   const supabase = await createServerSupabaseClient();
   const {
-    data: { session },
-    error: sessionError,
-  } = await supabase.auth.getSession();
-  if (sessionError || !session) {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+  if (userError || !user) {
     return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
   }
 
-  const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+  const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
   const hasRiderAccess = await hasDashboardAccessByAuth(
-    session.user.id,
-    session.user.email!,
+    user.id,
+    user.email ?? "",
     "RIDER"
   );
   if (!userIsSuperAdmin && !hasRiderAccess) {
@@ -48,7 +48,7 @@ async function getAuthAndRider(
     return { error: NextResponse.json({ success: false, error: "Invalid rider id" }, { status: 400 }) };
   }
 
-  const systemUser = await getSystemUserByEmail(session.user.email!);
+  const systemUser = await getSystemUserByEmail(user.email ?? "");
   if (!systemUser?.id) {
     return { error: NextResponse.json({ success: false, error: "Agent not found in system users." }, { status: 403 }) };
   }
@@ -119,14 +119,14 @@ export async function POST(
   const { db, riderId, systemUserId } = resolved;
 
   const supabase = await createServerSupabaseClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user?.email) {
+  const { data: { user: authUser } } = await supabase.auth.getUser();
+  if (!authUser?.email) {
     return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
   }
-  const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email);
+  const userIsSuperAdmin = await isSuperAdmin(authUser.id, authUser.email);
   const canFreeze =
     userIsSuperAdmin ||
-    (await canPerformRiderActionAnyService(session.user.id, session.user.email, "UPDATE"));
+    (await canPerformRiderActionAnyService(authUser.id, authUser.email, "UPDATE"));
   if (!canFreeze) {
     return NextResponse.json(
       { success: false, error: "Insufficient permissions. Rider action (penalty/refund) access required to freeze or unfreeze wallet." },

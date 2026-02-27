@@ -54,6 +54,65 @@ export interface UploadResult {
 }
 
 /**
+ * Upload a file to R2 with a specific key (e.g. merchants/{parentId}/stores/{storeId}/menu/...).
+ * @returns The R2 key
+ */
+export async function uploadWithKey(
+  file: File,
+  r2Key: string
+): Promise<{ key: string }> {
+  const client = getR2Client();
+  const bucket = getBucketName();
+
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+
+  await client.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: r2Key,
+      Body: buffer,
+      ContentType: file.type || "application/octet-stream",
+    })
+  );
+
+  console.log(`[R2] Uploaded file: ${r2Key}`);
+  return { key: r2Key };
+}
+
+/**
+ * Get object from R2 by key (for proxy/serving).
+ * Returns buffer and contentType for use in NextResponse.
+ */
+export async function getObjectByKey(
+  r2Key: string
+): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const client = getR2Client();
+  const bucket = getBucketName();
+
+  try {
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: r2Key,
+      })
+    );
+    if (!response.Body) return null;
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+      chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
+    return {
+      buffer,
+      contentType: response.ContentType ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Upload document to R2
  * @param file - File to upload
  * @param riderId - Rider ID

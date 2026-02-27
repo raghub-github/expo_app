@@ -41,9 +41,9 @@ function toPlanRow(row: Record<string, unknown>) {
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
@@ -102,13 +102,13 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json({ success: false, error: "Only super admins can create plans" }, { status: 403 });
     }

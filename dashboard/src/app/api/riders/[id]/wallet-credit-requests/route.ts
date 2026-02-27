@@ -22,19 +22,19 @@ export async function POST(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUserId = await getSystemUserIdFromAuthUser(session.user.id, session.user.email ?? undefined);
+    const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email ?? undefined);
     if (!systemUserId) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
     }
 
     // Any agent with RIDER dashboard access (view or full) can request add amount
     const canCreate =
-      (await isSuperAdmin(session.user.id, session.user.email!)) ||
+      (await isSuperAdmin(user.id, user.email ?? "")) ||
       (await hasDashboardAccess(systemUserId, "RIDER"));
     if (!canCreate) {
       return NextResponse.json({ success: false, error: "Insufficient permissions. RIDER dashboard access required." }, { status: 403 });
@@ -145,8 +145,8 @@ export async function POST(
       }
     }
 
-    const systemUser = await getSystemUserByEmail(session.user.email!);
-    const requestedByEmail = systemUser?.email ?? session.user.email ?? null;
+    const systemUser = await getSystemUserByEmail(user.email!);
+    const requestedByEmail = systemUser?.email ?? user.email ?? null;
 
     const [inserted] = await db
       .insert(walletCreditRequests)
@@ -165,8 +165,8 @@ export async function POST(
       .returning();
 
     await logActionByAuth(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email!,
       "RIDER",
       "REQUEST_CREATE",
       {

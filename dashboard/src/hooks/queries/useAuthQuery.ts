@@ -76,7 +76,9 @@ async function fetchSession(): Promise<SessionData> {
       params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
       params.set("reason", "session_required");
       if (typeof window !== "undefined") {
-        window.location.href = `/login?${params.toString()}`;
+        fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
+          window.location.href = `/login?${params.toString()}`;
+        });
         return new Promise(() => {});
       }
     }
@@ -92,7 +94,9 @@ async function fetchSession(): Promise<SessionData> {
       params.set("redirect", typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
       params.set("reason", result.code === "SESSION_INVALID" ? "session_invalid" : "session_required");
       if (typeof window !== "undefined") {
-        window.location.href = `/login?${params.toString()}`;
+        fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
+          window.location.href = `/login?${params.toString()}`;
+        });
         return new Promise(() => {});
       }
     }
@@ -122,6 +126,17 @@ async function fetchSessionStatus(): Promise<SessionStatus> {
   }
 
   if (!result.success) {
+    if (response.status === 401 && (result as { code?: string }).code === "SESSION_INVALID") {
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams();
+        params.set("redirect", window.location.pathname + window.location.search || "/dashboard");
+        params.set("reason", "session_invalid");
+        fetch("/api/auth/logout", { method: "POST", credentials: "include" }).finally(() => {
+          window.location.href = `/login?${params.toString()}`;
+        });
+        return new Promise<SessionStatus>(() => {});
+      }
+    }
     throw new Error(result.error || "Failed to fetch session status");
   }
 

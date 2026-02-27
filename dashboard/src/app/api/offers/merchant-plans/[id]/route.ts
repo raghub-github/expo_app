@@ -40,8 +40,8 @@ function toPlanRow(row: Record<string, unknown>) {
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
 
     const id = parseInt((await params).id, 10);
     if (isNaN(id)) return NextResponse.json({ success: false, error: "Invalid plan ID" }, { status: 400 });
@@ -60,10 +60,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) return NextResponse.json({ success: false, error: "Only super admins can update plans" }, { status: 403 });
 
     const id = parseInt((await params).id, 10);
@@ -129,10 +129,10 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) return NextResponse.json({ success: false, error: "Only super admins can update plans" }, { status: 403 });
 
     const id = parseInt((await params).id, 10);
@@ -156,10 +156,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) return NextResponse.json({ success: false, error: "Only super admins can delete plans" }, { status: 403 });
 
     const id = parseInt((await params).id, 10);

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -118,8 +119,7 @@ export default function AuthCallbackPage() {
         session = result.data?.session ?? null;
         sessionError = result.error ?? null;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.toLowerCase().includes("refresh") && (msg.toLowerCase().includes("already used") || msg.toLowerCase().includes("invalid"))) {
+        if (isInvalidRefreshToken(err)) {
           await supabase.auth.signOut();
           router.push("/login?reason=session_invalid");
           return;
@@ -127,6 +127,11 @@ export default function AuthCallbackPage() {
         sessionError = err as { message?: string };
       }
       if (sessionError) {
+        if (isInvalidRefreshToken(sessionError)) {
+          await supabase.auth.signOut();
+          router.push("/login?reason=session_invalid");
+          return;
+        }
         router.push(`/login?error=${encodeURIComponent(sessionError.message ?? "Session error")}`);
         return;
       }

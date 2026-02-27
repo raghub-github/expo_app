@@ -17,20 +17,20 @@ export async function GET(
   try {
     const supabase = await createServerSupabaseClient();
     const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     const hasRiderAccess = await hasDashboardAccessByAuth(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email ?? "",
       "RIDER"
     );
     if (!userIsSuperAdmin && !hasRiderAccess) {

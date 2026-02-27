@@ -7,27 +7,49 @@ import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/providers/AuthProvider";
-import { RightSidebarProvider } from "@/context/RightSidebarContext";
+import { RightSidebarProvider, useRightSidebar } from "@/context/RightSidebarContext";
+import { MerchantsSearchProvider } from "@/context/MerchantsSearchContext";
+import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { queryKeys } from "@/lib/queryKeys";
-import { fetchPermissions, usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
-import { fetchDashboardAccess, useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 
-function DashboardLayoutSkeleton() {
-  return (
-    <div className="animate-pulse space-y-4 p-4">
-      <div className="h-8 w-48 rounded bg-gray-200" />
-      <div className="h-4 w-full max-w-xl rounded bg-gray-100" />
-      <div className="h-4 w-full max-w-lg rounded bg-gray-100" />
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-24 rounded-lg bg-gray-100" />
-        ))}
-      </div>
-    </div>
-  );
+/**
+ * Page-based API execution: layout does NOT call or prefetch any APIs.
+ * Only the active page (when user opens it via sidebar) triggers its own APIs.
+ * Sidebar uses permissions/dashboard-access for nav visibility; those hooks run
+ * only when sidebar mounts (no prefetch from layout).
+ */
+
+const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
+
+type PersistedSidebar = "left" | "right" | "none";
+
+function getPersistedSidebar(): PersistedSidebar | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = localStorage.getItem(SIDEBAR_STATE_KEY);
+    return v === "left" || v === "right" || v === "none" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function setPersistedSidebar(which: PersistedSidebar) {
+  try {
+    localStorage.setItem(SIDEBAR_STATE_KEY, which);
+  } catch {}
+}
+
+/** When left sidebar opens on mobile, close right sidebar so only one is open. */
+function SyncSidebarsOnMobile() {
+  const left = useLeftSidebarMobile();
+  const right = useRightSidebar();
+  useEffect(() => {
+    if (left?.isMobileMenuOpen && right?.setOpen) right.setOpen(false);
+  }, [left?.isMobileMenuOpen, right?.setOpen]);
+  return null;
 }
 
 export default function DashboardLayoutClient({
@@ -37,14 +59,18 @@ export default function DashboardLayoutClient({
 }) {
   const pathname = usePathname();
   const queryClient = useQueryClient();
-  const { isLoading: permissionsLoading } = usePermissionsQuery();
-  const { isLoading: dashboardAccessLoading } = useDashboardAccessQuery();
-  const showSkeleton = permissionsLoading || dashboardAccessLoading;
 
+  // When navigating away from merchant dashboard (e.g. via left sidebar to Customers/Riders), clear store result/cache so it doesn’t persist
+  const isOnMerchantDashboard = useMemo(
+    () => /^\/dashboard\/merchants(\/|$)/.test(pathname.split("?")[0].split("#")[0]),
+    [pathname]
+  );
   useEffect(() => {
-    queryClient.prefetchQuery({ queryKey: queryKeys.permissions(), queryFn: fetchPermissions });
-    queryClient.prefetchQuery({ queryKey: queryKeys.dashboardAccess(), queryFn: fetchDashboardAccess });
-  }, [queryClient]);
+    if (!isOnMerchantDashboard) {
+      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] === "store" });
+    }
+  }, [isOnMerchantDashboard, queryClient]);
+
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
@@ -54,40 +80,100 @@ export default function DashboardLayoutClient({
     return isInSpecificDashboard && currentSubRoutes.length > 0;
   }, [isInSpecificDashboard, currentSubRoutes.length]);
 
-  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => !hasRightSidebar);
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(() => hasRightSidebar);
+  // Store orders path: left closed, right (order status/filters) open by default so only order sidebar is visible
+  const isStoreOrdersPath = useMemo(
+    () => /^\/dashboard\/merchants\/stores\/\d+\/orders(\/|$)/.test(cleanPathname),
+    [cleanPathname]
+  );
 
+  // Settings page: right sidebar must remain open (exception)
+  const isSettingsPage = useMemo(
+    () => /\/settings(\/|$)/.test(cleanPathname) || /\/store-settings(\/|$)/.test(cleanPathname),
+    [cleanPathname]
+  );
+
+  // Deterministic initial state (no localStorage) so server and client match and hydration succeeds
+  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => {
+    if (!hasRightSidebar) return true;
+    if (isStoreOrdersPath) return false; // Orders page: left closed by default
+    return false;
+  });
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(() => {
+    if (!hasRightSidebar) return false;
+    if (isStoreOrdersPath) return true; // Orders page: right (order filters) open by default
+    return true;
+  });
+
+  // Apply persisted state on navigation. Only one sidebar open at a time.
+  // Orders page: always left closed, right open. Settings: right open. Other pages: use persisted.
   useEffect(() => {
-    if (hasRightSidebar) {
+    if (isSettingsPage && hasRightSidebar) {
       setIsRightSidebarOpen(true);
       setIsLeftSidebarOpen(false);
-    } else {
+      return;
+    }
+    if (isStoreOrdersPath && hasRightSidebar) {
+      setIsLeftSidebarOpen(false);
+      setIsRightSidebarOpen(true);
+      return;
+    }
+    if (!hasRightSidebar) {
+      setIsRightSidebarOpen(false);
+      setIsLeftSidebarOpen(true);
+      return;
+    }
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 1024;
+    if (isMobile) return;
+    const persisted = getPersistedSidebar();
+    if (persisted === "left") {
       setIsLeftSidebarOpen(true);
       setIsRightSidebarOpen(false);
-    }
-  }, [hasRightSidebar]);
-
-  const handleLeftSidebarToggle = () => {
-    setIsLeftSidebarOpen(!isLeftSidebarOpen);
-    if (!isLeftSidebarOpen && isRightSidebarOpen) {
+    } else if (persisted === "right" || persisted === null) {
+      setIsLeftSidebarOpen(false);
+      setIsRightSidebarOpen(true);
+    } else {
+      // "none" = both closed; left remains collapsed
+      setIsLeftSidebarOpen(false);
       setIsRightSidebarOpen(false);
     }
+  }, [hasRightSidebar, isStoreOrdersPath, isSettingsPage, cleanPathname]);
+
+  // Enforce only one sidebar open at a time (never both expanded)
+  useEffect(() => {
+    if (hasRightSidebar && isLeftSidebarOpen && isRightSidebarOpen) {
+      setIsRightSidebarOpen(false);
+    }
+  }, [hasRightSidebar, isLeftSidebarOpen, isRightSidebarOpen]);
+
+  const handleLeftSidebarToggle = () => {
+    const nextLeftOpen = !isLeftSidebarOpen;
+    if (nextLeftOpen) {
+      setIsRightSidebarOpen(false);
+      setPersistedSidebar("left");
+    } else {
+      setPersistedSidebar("none");
+    }
+    setIsLeftSidebarOpen(nextLeftOpen);
   };
 
   const handleRightSidebarToggle = () => {
-    setIsRightSidebarOpen(!isRightSidebarOpen);
-    if (!isRightSidebarOpen && isLeftSidebarOpen) {
+    const nextRightOpen = !isRightSidebarOpen;
+    if (nextRightOpen) {
       setIsLeftSidebarOpen(false);
+      setPersistedSidebar("right");
+    } else {
+      setPersistedSidebar("none");
     }
+    setIsRightSidebarOpen(nextRightOpen);
   };
 
   return (
     <AuthProvider>
       <TicketFilterSidebarProvider>
         <DashboardLayoutContent
-          showSkeleton={showSkeleton}
           isLeftSidebarOpen={isLeftSidebarOpen}
           isRightSidebarOpen={isRightSidebarOpen}
+          setRightSidebarOpen={setIsRightSidebarOpen}
           hasRightSidebar={hasRightSidebar}
           handleRightSidebarToggle={handleRightSidebarToggle}
           handleLeftSidebarToggle={handleLeftSidebarToggle}
@@ -101,19 +187,19 @@ export default function DashboardLayoutClient({
 }
 
 function DashboardLayoutContent({
-  showSkeleton,
   children,
   isLeftSidebarOpen,
   isRightSidebarOpen,
+  setRightSidebarOpen,
   hasRightSidebar,
   handleRightSidebarToggle,
   handleLeftSidebarToggle,
   isInSpecificDashboard,
 }: {
-  showSkeleton: boolean;
   children: React.ReactNode;
   isLeftSidebarOpen: boolean;
   isRightSidebarOpen: boolean;
+  setRightSidebarOpen: (open: boolean) => void;
   hasRightSidebar: boolean;
   handleRightSidebarToggle: () => void;
   handleLeftSidebarToggle: () => void;
@@ -129,17 +215,25 @@ function DashboardLayoutContent({
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
-      <HierarchicalSidebar
-        isOpen={isLeftSidebarOpen}
-        onToggle={handleLeftSidebarToggle}
-        isInSpecificDashboard={isInSpecificDashboard}
-      />
-      <RightSidebarProvider
-        value={{ isOpen: isRightSidebarOpen, onToggle: handleRightSidebarToggle }}
-      >
+    <LeftSidebarMobileProvider>
+      <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
+        <HierarchicalSidebar
+          isOpen={isLeftSidebarOpen}
+          onToggle={handleLeftSidebarToggle}
+          isInSpecificDashboard={isInSpecificDashboard}
+        />
+        <RightSidebarProvider
+          value={{
+            isOpen: isRightSidebarOpen,
+            onToggle: handleRightSidebarToggle,
+            setOpen: setRightSidebarOpen,
+          }}
+        >
+          <MerchantsSearchProvider>
+          <SyncSidebarsOnMobile />
+        {/* Main content: margin-left reserves space for fixed left sidebar (w-56, same as right); margin-right for right sidebar overlay */}
         <div
-          className={`flex flex-1 flex-col overflow-hidden transition-all duration-300 w-full ${
+          className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${
             isLeftSidebarOpen ? "lg:ml-56" : "lg:ml-16"
           } ${
             hasRightSidebar && isRightSidebarOpen
@@ -150,6 +244,7 @@ function DashboardLayoutContent({
                 ? "lg:mr-16"
                 : ""
           }`}
+          style={{ transition: "margin 0.3s ease-out" }}
         >
           <Header />
           <div className="flex flex-1 overflow-hidden relative w-full">
@@ -158,7 +253,7 @@ function DashboardLayoutContent({
               style={{ backgroundColor: "#FFFFFF" }}
             >
               <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0">
-                {showSkeleton ? <DashboardLayoutSkeleton /> : children}
+                {children}
               </div>
             </main>
             <RightSidebar
@@ -204,7 +299,9 @@ function DashboardLayoutContent({
             )}
           </div>
         </div>
+          </MerchantsSearchProvider>
       </RightSidebarProvider>
     </div>
+    </LeftSidebarMobileProvider>
   );
 }

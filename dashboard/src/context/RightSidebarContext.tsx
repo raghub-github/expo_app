@@ -5,6 +5,8 @@ import { createContext, useContext } from "react";
 interface RightSidebarContextValue {
   isOpen: boolean;
   onToggle: () => void;
+  /** Set open state directly (e.g. close when left sidebar opens on mobile) */
+  setOpen?: (open: boolean) => void;
 }
 
 const RightSidebarContext = createContext<RightSidebarContextValue | null>(null);

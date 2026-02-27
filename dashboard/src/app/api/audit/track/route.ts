@@ -40,11 +40,11 @@ export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
     const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    if (sessionError || !session || !session.user.email) {
+    if (userError || !user || !user.email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
     const actionType: ActionType =
       body.actionType || methodToActionType(requestMethod);
 
-    await logActionByAuth(session.user.id, session.user.email, dashboardType, actionType, {
+    await logActionByAuth(user.id, user.email, dashboardType, actionType, {
       resourceType: body.resourceType,
       resourceId: body.resourceId,
       actionDetails: {
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
     });
 
     // Use getSystemUserByEmail with caching (getSystemUserByAuthId returns null currently)
-    const systemUser = await getSystemUserByEmail(session.user.email);
+    const systemUser = await getSystemUserByEmail(user.email);
 
     if (systemUser) {
       await logActivity({

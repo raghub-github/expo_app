@@ -123,13 +123,11 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     conditions.push(inArray(customers.id, customerIds));
   }
   
-  // Build base query
+  // Build base query (omit first_name/last_name - they may not exist in DB; use fullName)
   let query = db.select({
     id: customers.id,
     customerId: customers.customerId,
     fullName: customers.fullName,
-    firstName: customers.firstName,
-    lastName: customers.lastName,
     email: customers.email,
     primaryMobile: customers.primaryMobile,
     accountStatus: customers.accountStatus,
@@ -189,12 +187,14 @@ export async function listCustomers(filters: CustomerFilters = {}) {
   // Apply pagination
   const customerList = await query.limit(limit).offset(offset);
   
-  // Get order statistics for each customer
+  // Get order statistics for each customer (firstName/lastName omitted from select if not in DB)
   const customersWithStats: CustomerWithStats[] = await Promise.all(
     customerList.map(async (customer) => {
       const stats = await getCustomerOrderStats(customer.id, orderTypeFilter || undefined);
       return {
         ...customer,
+        firstName: null,
+        lastName: null,
         orderStats: stats,
       };
     })
@@ -250,32 +250,77 @@ export async function getCustomerOrderStats(
   }));
 }
 
+/** Safe customer columns (omit first_name/last_name when they do not exist in DB) */
+const customerSelectFields = {
+  id: customers.id,
+  customerId: customers.customerId,
+  fullName: customers.fullName,
+  email: customers.email,
+  emailVerified: customers.emailVerified,
+  primaryMobile: customers.primaryMobile,
+  primaryMobileNormalized: customers.primaryMobileNormalized,
+  primaryMobileCountryCode: customers.primaryMobileCountryCode,
+  mobileVerified: customers.mobileVerified,
+  alternateMobile: customers.alternateMobile,
+  whatsappNumber: customers.whatsappNumber,
+  gender: customers.gender,
+  dateOfBirth: customers.dateOfBirth,
+  profileImageUrl: customers.profileImageUrl,
+  bio: customers.bio,
+  preferredLanguage: customers.preferredLanguage,
+  referralCode: customers.referralCode,
+  referredBy: customers.referredBy,
+  referrerCustomerId: customers.referrerCustomerId,
+  accountStatus: customers.accountStatus,
+  statusReason: customers.statusReason,
+  riskFlag: customers.riskFlag,
+  trustScore: customers.trustScore,
+  fraudScore: customers.fraudScore,
+  walletBalance: customers.walletBalance,
+  walletLockedAmount: customers.walletLockedAmount,
+  isIdentityVerified: customers.isIdentityVerified,
+  isEmailVerified: customers.isEmailVerified,
+  isMobileVerified: customers.isMobileVerified,
+  lastLoginAt: customers.lastLoginAt,
+  lastOrderAt: customers.lastOrderAt,
+  lastActivityAt: customers.lastActivityAt,
+  deletedAt: customers.deletedAt,
+  deletedBy: customers.deletedBy,
+  deletionReason: customers.deletionReason,
+  createdAt: customers.createdAt,
+  updatedAt: customers.updatedAt,
+  createdVia: customers.createdVia,
+  updatedBy: customers.updatedBy,
+};
+
 /**
- * Get customer by ID
+ * Get customer by ID (uses safe columns; firstName/lastName not selected if missing in DB)
  */
 export async function getCustomerById(id: number) {
   const db = getDb();
-  
+
   const [customer] = await db
-    .select()
+    .select(customerSelectFields)
     .from(customers)
     .where(eq(customers.id, id))
     .limit(1);
-  
-  return customer || null;
+
+  if (!customer) return null;
+  return { ...customer, firstName: null, lastName: null };
 }
 
 /**
- * Get customer by customer_id
+ * Get customer by customer_id (uses safe columns; firstName/lastName not selected if missing in DB)
  */
 export async function getCustomerByCustomerId(customerId: string) {
   const db = getDb();
-  
+
   const [customer] = await db
-    .select()
+    .select(customerSelectFields)
     .from(customers)
     .where(eq(customers.customerId, customerId))
     .limit(1);
-  
-  return customer || null;
+
+  if (!customer) return null;
+  return { ...customer, firstName: null, lastName: null };
 }

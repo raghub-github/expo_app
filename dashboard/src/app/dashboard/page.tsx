@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, MapPin } from "lucide-react";
 import { ServicePointsMap } from "@/components/map/ServicePointsMap";
@@ -8,16 +7,14 @@ import { ServicePointForm } from "@/components/map/ServicePointForm";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { queryKeys } from "@/lib/queryKeys";
 
+/**
+ * Home page: only this page's APIs run when user opens Home from sidebar.
+ * Permissions and service points use React Query cache; no invalidation on mount.
+ */
 export default function DashboardHome() {
   const queryClient = useQueryClient();
   const { data: userPerms, error, isError } = usePermissionsQuery();
   const isSuperAdmin = userPerms?.isSuperAdmin ?? false;
-
-  // Always refetch latest permissions and service points when Home mounts (avoids stale persisted data).
-  useEffect(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
-    queryClient.invalidateQueries({ queryKey: queryKeys.servicePoints.list() });
-  }, [queryClient]);
 
   const handleRetry = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });

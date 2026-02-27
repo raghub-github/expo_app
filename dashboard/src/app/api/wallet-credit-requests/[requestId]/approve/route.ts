@@ -32,18 +32,18 @@ export async function POST(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUserId = await getSystemUserIdFromAuthUser(session.user.id, session.user.email ?? undefined);
+    const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email ?? undefined);
     if (!systemUserId) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
     }
 
     const canApprove =
-      (await isSuperAdmin(session.user.id, session.user.email!)) ||
+      (await isSuperAdmin(user.id, user.email ?? "")) ||
       ((await hasDashboardAccess(systemUserId, "RIDER")) &&
         (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "APPROVE")));
     if (!canApprove) {
@@ -68,8 +68,8 @@ export async function POST(
     const reviewNote = typeof body.reviewNote === "string" ? body.reviewNote.trim() || null : null;
 
     const db = getDb();
-    const systemUser = await getSystemUserByEmail(session.user.email!);
-    const reviewedByEmail = systemUser?.email ?? session.user.email ?? null;
+    const systemUser = await getSystemUserByEmail(user.email!);
+    const reviewedByEmail = systemUser?.email ?? user.email ?? null;
 
     await db.transaction(async (tx) => {
       const [row] = await tx
@@ -162,8 +162,8 @@ export async function POST(
     await applyFifoAllocation(updated.riderId, Number(updated.amount));
 
     await logActionByAuth(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email!,
       "RIDER",
       "REQUEST_APPROVE",
       {

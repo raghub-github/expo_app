@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserPermissions } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 
 const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
 
       if (!userError && user) break;
       if (userError && isInvalidRefreshToken(userError)) break;
+      if (userError && isTimeoutOrAbortError(userError)) break;
       if (userError && isNetworkOrTransientError(userError) && attempt < maxGetUserAttempts) {
         const delay = retryDelaysMs[attempt - 1] ?? 1000;
         await new Promise((r) => setTimeout(r, delay));
@@ -61,6 +62,18 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (isInvalidRefreshToken(error)) {
+      try {
+        const supabase = await createServerSupabaseClient();
+        await supabase.auth.signOut();
+      } catch {
+        // ignore
+      }
+      return NextResponse.json(
+        { success: false, error: "Session invalid", code: "SESSION_INVALID" },
+        { status: 401 }
+      );
+    }
     if (isNetworkOrTransientError(error)) {
       return NextResponse.json(
         { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },

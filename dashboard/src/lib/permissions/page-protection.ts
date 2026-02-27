@@ -1,12 +1,14 @@
 /**
  * Page Protection Utilities
- * 
+ *
  * Server-side utilities to protect dashboard pages based on dashboard access.
  * Uses getUser() (with retry) for reliable session on refresh; getSession() can be stale.
+ * On invalid/expired refresh token, clears session (signOut) so the user can log in again.
  */
 
 import { redirect } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { hasDashboardAccessByAuth, isSuperAdmin, getDashboardTypeFromPath } from "./engine";
 import type { DashboardType } from "../db/schema";
 
@@ -22,9 +24,14 @@ async function getAuthenticatedUser() {
     user = data?.user ?? null;
     lastError = error ?? null;
     if (!lastError && user?.email) return { user, error: null };
+    if (lastError && isInvalidRefreshToken(lastError)) break;
     if (attempt < maxGetUserAttempts) {
       await new Promise((r) => setTimeout(r, 300));
     }
+  }
+
+  if (lastError && isInvalidRefreshToken(lastError)) {
+    await supabase.auth.signOut();
   }
 
   return { user, error: lastError };

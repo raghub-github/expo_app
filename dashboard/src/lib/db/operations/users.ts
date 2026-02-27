@@ -5,7 +5,7 @@
 
 import { getDb } from "../client";
 import { systemUsers } from "../schema";
-import { eq, and, or, ilike, isNull, sql, desc, asc } from "drizzle-orm";
+import { eq, and, or, ilike, isNull, sql, desc, asc, inArray } from "drizzle-orm";
 
 export interface CreateUserData {
   system_user_id: string;
@@ -112,6 +112,20 @@ export async function getSystemUserById(id: number) {
     .limit(1);
   
   return user || null;
+}
+
+/**
+ * Get email by system user ids (batch). Returns Map<id, email>.
+ * Used to show "Verified by" email on merchant store lists.
+ */
+export async function getSystemUserEmailsByIds(ids: number[]): Promise<Map<number, string>> {
+  if (ids.length === 0) return new Map();
+  const db = getDb();
+  const rows = await db
+    .select({ id: systemUsers.id, email: systemUsers.email })
+    .from(systemUsers)
+    .where(inArray(systemUsers.id, ids));
+  return new Map(rows.map((r) => [r.id, r.email ?? ""]));
 }
 
 /**

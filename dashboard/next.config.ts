@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
+  // Use dashboard as the workspace root for file tracing (avoids multiple-lockfile warning in monorepo)
+  outputFileTracingRoot: path.join(process.cwd()),
+  // Image optimization: allow quality 75 (default) and 95 for crisp logos/hero images
+  images: {
+    qualities: [75, 95],
+  },
   // Reduce chunk load errors with Turbopack (Next 16)
   experimental: {
     optimizePackageImports: ["lucide-react"],

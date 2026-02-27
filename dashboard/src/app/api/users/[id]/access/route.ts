@@ -22,9 +22,9 @@ export async function GET(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !authUser) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -32,7 +32,7 @@ export async function GET(
     }
 
     // Check if user is super admin
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(authUser.id, authUser.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json(
         { success: false, error: "Super admin access required" },
@@ -111,11 +111,11 @@ export async function PUT(
   try {
     const supabase = await createServerSupabaseClient();
     const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+      data: { user: authUser },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !authUser) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -124,7 +124,7 @@ export async function PUT(
 
     // Get user permissions (includes super admin check and system user)
     const { getUserPermissions } = await import("@/lib/permissions/engine");
-    const userPerms = await getUserPermissions(session.user.id, session.user.email!);
+    const userPerms = await getUserPermissions(authUser.id, authUser.email ?? "");
     if (!userPerms || !userPerms.isSuperAdmin) {
       return NextResponse.json(
         { success: false, error: "Super admin access required" },
@@ -155,7 +155,7 @@ export async function PUT(
     const accessPointsData = Array.isArray(body.accessPoints) ? body.accessPoints : [];
 
     // Get actor details (use cached getSystemUserByEmail which is already called in getUserPermissions)
-    const actor = await getSystemUserByEmail(session.user.email!);
+    const actor = await getSystemUserByEmail(authUser.email ?? "");
     if (!actor) {
       return NextResponse.json(
         { success: false, error: "Actor not found in system" },
@@ -302,7 +302,7 @@ export async function PUT(
       }
     }
 
-    await logActionByAuth(session.user.id, session.user.email!, "SYSTEM", "UPDATE", {
+    await logActionByAuth(authUser.id, authUser.email ?? "", "SYSTEM", "UPDATE", {
       resourceType: "USER_ACCESS",
       resourceId: String(userId),
       actionDetails: {

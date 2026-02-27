@@ -33,6 +33,7 @@ import {
   UserPlus,
   History,
   Layers,
+  ClipboardList,
 } from "lucide-react";
 
 /** For Area Manager sidebar: show only routes allowed for this manager type. */
@@ -168,6 +169,18 @@ export const merchantDashboardRoutes: DashboardSubRoute[] = [
     description: "View all merchants",
   },
   {
+    name: "Verifications",
+    href: "/dashboard/merchants/verifications",
+    icon: CheckCircle,
+    description: "Verify store documents and approve/reject merchants",
+  },
+  {
+    name: "Store Dashboard",
+    href: "/dashboard/merchants/stores",
+    icon: Store,
+    description: "Store detail and dashboard",
+  },
+  {
     name: "Merchant Details",
     href: "/dashboard/merchants/details",
     icon: User,
@@ -210,6 +223,63 @@ export const merchantDashboardRoutes: DashboardSubRoute[] = [
     description: "Performance analytics",
   },
 ];
+
+/** Admin portal: top section shows only these two. */
+export const adminPortalMerchantRoutes: DashboardSubRoute[] = [
+  { name: "All Merchants", href: "/dashboard/merchants", icon: Store, description: "View all merchants" },
+  { name: "Verifications", href: "/dashboard/merchants/verifications", icon: CheckCircle, description: "Verify store documents and approve/reject merchants" },
+];
+
+/** Merchant portal: sidebar from reference (Dashboard, Orders, Menu, Offers, Payments, User Insights, Settings, Profile). */
+export const merchantPortalSidebarRoutes: DashboardSubRoute[] = [
+  { name: "Dashboard", href: "/dashboard/merchants", icon: LayoutDashboard, description: "Order overview and store dashboard" },
+  { name: "Orders", href: "/dashboard/merchants/orders", icon: ClipboardList, description: "Merchant orders" },
+  { name: "Menu", href: "/dashboard/merchants/menu", icon: UtensilsCrossed, description: "Menu management" },
+  { name: "Offers", href: "/dashboard/merchants/offers", icon: Zap, description: "Merchant offers" },
+  { name: "Payments", href: "/dashboard/merchants/payments", icon: CreditCard, description: "Payment history" },
+  { name: "User Insights", href: "/dashboard/merchants/analytics", icon: UserCircle, description: "Performance analytics" },
+  { name: "Settings", href: "/dashboard/merchants/settings", icon: Settings, description: "Settings" },
+  { name: "Profile", href: "/dashboard/merchants/details", icon: User, description: "Merchant profile" },
+];
+
+/**
+ * Merchant Portal section (shown below existing merchant sidebar items when portal=admin).
+ * Do not modify merchantDashboardRoutes; this is a separate section.
+ */
+export const merchantPortalRoutes: DashboardSubRoute[] = [
+  {
+    name: "Order Overview",
+    href: "/dashboard/merchants/order-overview",
+    icon: ShoppingCart,
+    description: "Search parent or child store and open store dashboard",
+  },
+];
+
+/** Store-scoped merchant portal sidebar (matches merchant portal: Dashboard, Orders, Menu, Offers, Payments, User Insights, Settings, Profile, Activity). */
+export function getStoreScopedMerchantRoutes(storeId: string): DashboardSubRoute[] {
+  const base = `/dashboard/merchants/stores/${storeId}`;
+  return [
+    { name: "Dashboard", href: base, icon: LayoutDashboard, description: "Store overview" },
+    { name: "Orders", href: `${base}/orders`, icon: ClipboardList, description: "Order history and status" },
+    { name: "Menu", href: `${base}/menu`, icon: UtensilsCrossed, description: "Categories and menu items" },
+    { name: "Offers", href: `${base}/offers`, icon: Zap, description: "Discounts and promotions" },
+    { name: "Payments", href: `${base}/payments`, icon: CreditCard, description: "Wallet, payouts, transactions" },
+    { name: "User Insights", href: `${base}/user-insights`, icon: UserCircle, description: "Reviews and complaints (read-only)" },
+    { name: "Settings", href: `${base}/store-settings`, icon: Settings, description: "Profile, timings, address" },
+    { name: "Profile", href: `${base}/profile`, icon: User, description: "Store profile" },
+    { name: "Activity Log", href: `${base}/activity`, icon: History, description: "Agent activity and audit history" },
+  ];
+}
+
+/** When on a store page, return only store-scoped links (no All Merchants / Verifications / etc.). */
+export function getMerchantSubRoutesForPath(pathname: string): DashboardSubRoute[] {
+  const storeMatch = pathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
+  if (storeMatch) {
+    const storeId = storeMatch[1];
+    return getStoreScopedMerchantRoutes(storeId);
+  }
+  return merchantDashboardRoutes;
+}
 
 /**
  * Ticket Dashboard Sub-Routes
@@ -488,6 +558,21 @@ export function getCurrentPageName(pathname: string): string {
     }
   }
   
+  // Check for store: /dashboard/merchants/stores/[id] — show "Store" in header; store name is in StoreLayoutShell.
+  if (/^\/dashboard\/merchants\/stores\/\d+$/.test(cleanPath)) return "Store";
+  const storeMxMatch = cleanPath.match(/^\/dashboard\/merchants\/stores\/\d+\/(.+)$/);
+  if (storeMxMatch) {
+    const tab = storeMxMatch[1].replace(/\/.*$/, "");
+    const tabNames: Record<string, string> = {
+      menu: "Menu",
+      orders: "Orders",
+      "store-settings": "Store settings",
+      payments: "Payments",
+      offers: "Offers",
+    };
+    if (tabNames[tab]) return tabNames[tab];
+  }
+
   // Check for special pages
   const pageNameMap: Record<string, string> = {
     "/dashboard/users": "User Management",
@@ -496,6 +581,10 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/offers": "Offers",
     "/dashboard/payments": "Payments",
     "/dashboard/audit": "Audit Logs",
+    "/dashboard/merchants/verifications": "Verifications",
+    "/dashboard/merchants/order-overview": "Order Overview",
+    "/dashboard/merchants/settings": "Settings",
+    "/dashboard/merchants/stores": "Store Dashboard",
     "/dashboard/area-managers/stores": "Stores",
     "/dashboard/area-managers/riders": "Riders",
     "/dashboard/area-managers/availability": "Rider Availability",

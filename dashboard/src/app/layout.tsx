@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import "bootstrap-icons/font/bootstrap-icons.css";
 import "./globals.css";
 import { ReduxProvider } from "@/store/Provider";
 import { QueryProvider } from "@/providers/QueryProvider";
 import { GlobalErrorHandler } from "@/components/GlobalErrorHandler";
 import { ToastProvider } from "@/context/ToastContext";
+import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -36,12 +38,14 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <GlobalErrorHandler />
-        <ReduxProvider>
-          <QueryProvider>
-            <ToastProvider>{children}</ToastProvider>
-          </QueryProvider>
-        </ReduxProvider>
+        <ChunkLoadErrorBoundary>
+          <GlobalErrorHandler />
+          <ReduxProvider>
+            <QueryProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </QueryProvider>
+          </ReduxProvider>
+        </ChunkLoadErrorBoundary>
       </body>
     </html>
   );
