@@ -3,7 +3,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { X, RefreshCw, Filter, CheckCircle2, ChevronDown, Info } from "lucide-react";
+import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
 
 // Exact color codes from reference image
 const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
@@ -51,6 +51,8 @@ interface OrdersCoreRow {
   merchantParentId: number | null;
   /** Store internal id if needed in future. */
   merchantStoreId: number | null;
+  /** Actual store_id from merchant_stores (e.g. GMMC123). */
+  storeId?: string | null;
   dropAddressRaw: string | null;
   dropAddressNormalized?: string | null;
   /** Order source / delivery provider (\"internal\" = GatiMitra). */
@@ -96,10 +98,15 @@ export default function FoodOrdersClient() {
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
   const userTypeRef = useRef<HTMLDivElement>(null);
-  const [showCxInstructions, setShowCxInstructions] = useState(false);
-  const [cxInstructions, setCxInstructions] = useState<string | null>(null);
-  const [cxLoading, setCxLoading] = useState(false);
-  const [cxError, setCxError] = useState<string | null>(null);
+  /** Stage instruction shown in Action column when that status filter is selected */
+  const STAGE_INSTRUCTION: Record<Exclude<OrderStatusFilter, null>, string> = {
+    "PAYMENT DONE": "Verify with MX",
+    ACCEPTED: "Check with MX & RX",
+    "DESPATCH READY": "Confirm with RX & MX",
+    DESPATCHED: "Check with RX & CX",
+    BULK: "Check with MX / RX / CX",
+  };
+  const stageInstructionText = selectedStatus ? STAGE_INSTRUCTION[selectedStatus] ?? "" : "";
 
   const setStatusFilter = useCallback(
     (status: OrderStatusFilter) => {
@@ -283,52 +290,9 @@ export default function FoodOrdersClient() {
     };
   };
 
-  const openCxInstructions = () => {
-    setShowCxInstructions(true);
-    if (cxInstructions || cxLoading) return;
-    setCxLoading(true);
-    setCxError(null);
-    fetch("/api/cx-instructions?context=orders-dashboard")
-      .then((res) => res.json())
-      .then((body) => {
-        if (body.success && typeof body.content === "string") {
-          setCxInstructions(body.content);
-        } else {
-          setCxError("Failed to load instructions.");
-        }
-      })
-      .catch(() => {
-        setCxError("Failed to load instructions.");
-      })
-      .finally(() => {
-        setCxLoading(false);
-      });
-  };
-
   return (
     <>
     <div className="space-y-2 w-full max-w-full overflow-x-hidden" style={{ backgroundColor: PAGE_BG }}>
-      {/* Header with CX instructions */}
-      <div className="flex items-center justify-between px-2 pt-2" style={{ backgroundColor: CONTENT_BG }}>
-        <div className="flex flex-col">
-          <span className="text-sm font-semibold" style={{ color: DARK_TEXT }}>
-            Food Orders
-          </span>
-          <span className="text-[11px] text-slate-500">
-            Live dashboard for CX / CS team
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={openCxInstructions}
-          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium cursor-pointer hover:bg-gray-50"
-          style={{ borderColor: BORDER_COLOR, backgroundColor: CONTENT_BG, color: INACTIVE_TEXT }}
-        >
-          <Info className="h-3.5 w-3.5" />
-          <span>CX Instructions</span>
-        </button>
-      </div>
-
       {/* Filter Section - No border */}
       <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
         <div className="flex flex-wrap items-center gap-2">
@@ -410,7 +374,7 @@ export default function FoodOrdersClient() {
             className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border cursor-pointer"
             style={getButtonStyles(filters.overview)}
           >
-            Overview
+            Overdue
           </button>
 
           {/* User-Type Dropdown */}
@@ -640,8 +604,10 @@ export default function FoodOrdersClient() {
                   `GMF${String(row.id ?? "").padStart(6, "0")}`;
                 const publicId = String(displayId).replace(/^#/, "");
                 const routedTo = row.routedToEmail ?? "";
-                const merchantId =
-                  row.merchantParentId != null ? row.merchantParentId : null;
+                const merchantIdDisplay =
+                  row.storeId != null && row.storeId !== ""
+                    ? row.storeId
+                    : null;
                 const localitySource =
                   row.dropAddressNormalized ?? row.dropAddressRaw ?? null;
                 const locality =
@@ -667,11 +633,17 @@ export default function FoodOrdersClient() {
                       </Link>
                     </td>
                     <td
-                      className="px-2 py-1.5 max-w-[180px] truncate"
+                      className="px-2 py-1.5 max-w-[200px]"
                       style={{ color: TABLE_TEXT }}
-                      title={row.latestRemark ?? undefined}
+                      title={stageInstructionText || undefined}
                     >
-                      {row.latestRemark ?? "—"}
+                      {stageInstructionText ? (
+                        <span className="text-[11px] font-medium" style={{ color: CHECKMARK_COLOR }}>
+                          {stageInstructionText}
+                        </span>
+                      ) : (
+                        <span>—</span>
+                      )}
                     </td>
                     <td className="px-2 py-1.5 truncate max-w-[160px]" style={{ color: TABLE_TEXT }}>
                       {routedTo}
@@ -686,7 +658,7 @@ export default function FoodOrdersClient() {
                       {row.customerMobile ?? "—"}
                     </td>
                     <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-                      {merchantId != null ? merchantId : "—"}
+                      {merchantIdDisplay != null ? merchantIdDisplay : "—"}
                     </td>
                     <td
                       className="px-2 py-1.5 max-w-[140px] truncate"
@@ -712,52 +684,6 @@ export default function FoodOrdersClient() {
         </table>
       </div>
     </div>
-    {showCxInstructions && (
-      <div
-        className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
-        onClick={(e) => {
-          if (e.target === e.currentTarget) setShowCxInstructions(false);
-        }}
-      >
-        <div
-          className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-5 text-[12px] text-slate-800"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
-                <Info className="h-3.5 w-3.5" />
-              </span>
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">CX / CS instructions</h2>
-                <p className="text-[11px] text-slate-500">
-                  Reference checklist for handling food orders from this dashboard.
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              className="text-xs text-slate-500 hover:text-slate-700"
-              onClick={() => setShowCxInstructions(false)}
-            >
-              ✕
-            </button>
-          </div>
-
-          <div className="mt-1 max-h-[60vh] overflow-y-auto rounded-md border border-slate-200 bg-slate-50/60 p-3">
-            {cxLoading ? (
-              <p className="text-[12px] text-slate-600">Loading instructions…</p>
-            ) : cxError ? (
-              <p className="text-[12px] text-red-600">{cxError}</p>
-            ) : (
-              <pre className="whitespace-pre-wrap text-[12px] text-slate-700">
-                {cxInstructions}
-              </pre>
-            )}
-          </div>
-        </div>
-      </div>
-    )}
     </>
   );
 }

@@ -902,6 +902,31 @@ export async function getMerchantStoreSummaryByStoreId(
 }
 
 /**
+ * Batch fetch store_id (actual store code from merchant_stores) by internal ids.
+ * Returns a map of internal id -> store_id string for use in orders list.
+ */
+export async function getStoreIdsByInternalIds(
+  internalIds: number[]
+): Promise<Map<number, string>> {
+  if (internalIds.length === 0) return new Map();
+  const uniq = [...new Set(internalIds)].filter((n) => Number.isFinite(n));
+  if (uniq.length === 0) return new Map();
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, store_id
+    FROM merchant_stores
+    WHERE id = ANY(${uniq}) AND deleted_at IS NULL
+  `;
+  const list = Array.isArray(rows) ? rows : [rows];
+  const map = new Map<number, string>();
+  for (const r of list) {
+    const row = r as { id: number; store_id: string | null };
+    if (row?.store_id != null) map.set(Number(row.id), String(row.store_id));
+  }
+  return map;
+}
+
+/**
  * Get parent_merchant_id (e.g. GMMP1002) by merchant_parents.id.
  * Used for R2 key paths: docs/merchants/{parent_merchant_id}/stores/{store_id}/assets/...
  */

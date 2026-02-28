@@ -593,12 +593,7 @@ export function Header() {
             aria-haspopup="true"
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
-              {isLoading ? (
-                <>
-                  <div className="h-4 w-24 bg-gray-200 rounded animate-pulse mb-1" />
-                  <div className="h-3 w-32 bg-gray-200 rounded animate-pulse" />
-                </>
-              ) : userName ? (
+              {userName ? (
                 <>
                   <span className="text-sm font-medium text-gray-900 truncate w-full">{userName}</span>
                   {userEmail && (
@@ -611,10 +606,8 @@ export function Header() {
                 <span className="text-sm font-medium">User</span>
               )}
             </div>
-            {/* Avatar or Fallback - moved to right side - always reserve space */}
-            {isLoading ? (
-              <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gray-200 animate-pulse" />
-            ) : avatarUrl && !avatarError ? (
+            {/* Avatar or Fallback - show placeholder when loading so header doesn't pop in late */}
+            {!isLoading && avatarUrl && !avatarError ? (
               <img
                 src={avatarUrl}
                 alt={userName || userEmail || "User"}
@@ -623,7 +616,7 @@ export function Header() {
               />
             ) : (
               <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
-                {getUserInitials(userName, userEmail)}
+                {getUserInitials(userName ?? null, userEmail ?? null)}
               </div>
             )}
           </button>

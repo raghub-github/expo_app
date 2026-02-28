@@ -11,7 +11,10 @@ import {
   type OrderSearchType,
   type OrderStatusFilter,
 } from "@/lib/db/operations/orders-core";
-import { getMerchantStoreSummaryByStoreId } from "@/lib/db/operations/merchant-stores";
+import {
+  getMerchantStoreSummaryByStoreId,
+  getStoreIdsByInternalIds,
+} from "@/lib/db/operations/merchant-stores";
 import { getOrderRemarksCount } from "@/lib/db/operations/order-remarks";
 import { getOrderReconsCount } from "@/lib/db/operations/order-recons";
 
@@ -104,11 +107,23 @@ export async function GET(request: NextRequest) {
       sortOrder: "desc",
     });
 
+    const storeIds = await getStoreIdsByInternalIds(
+      result.orders
+        .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
+        .filter((id): id is number => id != null && Number.isFinite(id))
+    );
+    const data = result.orders.map((order) => {
+      const o = order as { merchantStoreId?: number | null };
+      const storeIdDisplay =
+        o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
+      return { ...order, storeId: storeIdDisplay };
+    });
+
     let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
     let remarksCount: number | undefined;
     let reconsCount: number | undefined;
     if (result.orders.length === 1) {
-      const first = result.orders[0] as { id?: number; merchantStoreId?: number | null };
+      const first = data[0] as { id?: number; merchantStoreId?: number | null };
       const orderId = first?.id;
       const storeId = first?.merchantStoreId;
       if (storeId != null && Number.isFinite(storeId)) {
@@ -124,7 +139,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      data: result.orders,
+      data,
       pagination: {
         page: result.page,
         limit: result.limit,
