@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "GatiMitra Merchant",
+    "slug": "gatimitra-merchant",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "gatimitra-merchant",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#16A34A"
+    },
+    "androidStatusBar": {
+      "translucent": false,
+      "backgroundColor": "#FFFFFF",
+      "barStyle": "dark-content"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gatimitra.merchant"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#16A34A"
+      },
+      "package": "com.gatimitra.merchant"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": ["expo-router", "expo-font"]
+  }
+}

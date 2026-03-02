@@ -36,6 +36,155 @@ export async function authRoutes(app: FastifyInstance) {
   >();
 
   /**
+   * Merchant partner Google sign-in: verify Google id_token, lookup by owner_email, return JWT + partner.
+   */
+  app.post(
+    "/google",
+    {
+      schema: {
+        body: z.object({ idToken: z.string().min(10), deviceId: z.string().min(6) }),
+        response: {
+          200: z.object({
+            accessToken: z.string(),
+            expiresAt: z.number(),
+            role: z.string(),
+            userId: z.string(),
+            partner: z.object({
+              parent: z.any(),
+              childStores: z.array(z.any()),
+            }),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          404: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { idToken, deviceId } = z.object({ idToken: z.string(), deviceId: z.string() }).parse(req.body);
+      try {
+        const tokenRes = await fetch(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`
+        );
+        if (!tokenRes.ok) {
+          const errText = await tokenRes.text();
+          req.log?.info?.({ status: tokenRes.status, err: errText }, "Google tokeninfo failed");
+          return reply.code(400).send({ error: "invalid_google_token", message: "Google sign-in failed. Try again." });
+        }
+        const tokenData = (await tokenRes.json()) as { email?: string; sub?: string };
+        const email = tokenData?.email?.trim();
+        if (!email) {
+          return reply.code(400).send({ error: "no_email", message: "Google account email not found." });
+        }
+
+        const sql = getSql();
+        const tableCheck = await sql`
+          SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'merchant_parents'
+          );
+        `;
+        if (!tableCheck[0]?.exists) {
+          return reply.code(400).send({ error: "partner_not_found", message: "Partner registration is not available." });
+        }
+
+        const parentRows = await sql`
+          SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
+          FROM merchant_parents
+          WHERE LOWER(TRIM(owner_email)) = LOWER(TRIM(${email}))
+          LIMIT 1
+        `;
+        const parentRow = parentRows[0];
+        if (!parentRow) {
+          return reply.code(404).send({
+            error: "partner_not_found",
+            message: "No partner account found for this Google email. Sign up at partner.gatimitra.com",
+          });
+        }
+
+        const parentId = Number(parentRow.id);
+        const parentMerchantId = String(parentRow.parent_merchant_id);
+
+        const storeRows = await sql`
+          SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                 msrp.current_step, msrp.total_steps, msrp.registration_status
+          FROM merchant_stores ms
+          LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
+          WHERE ms.parent_id = ${parentId}
+          ORDER BY ms.created_at ASC
+        `;
+
+        let subscriptionRows: Array<{ store_id: number; payment_status: string; subscription_status: string }> = [];
+        try {
+          subscriptionRows = (await sql`
+            SELECT store_id, payment_status, subscription_status
+            FROM merchant_subscriptions
+            WHERE merchant_id = ${parentId}
+          `) as any;
+        } catch {
+          // table may not exist
+        }
+
+        const subByStore = new Map<number, { payment_status: string; subscription_status: string }>();
+        for (const row of Array.isArray(subscriptionRows) ? subscriptionRows : []) {
+          const sid = row?.store_id != null ? Number(row.store_id) : null;
+          if (sid != null) subByStore.set(sid, { payment_status: String(row?.payment_status ?? "PENDING"), subscription_status: String(row?.subscription_status ?? "INACTIVE") });
+        }
+
+        const childStores = (storeRows as any[]).map((s) => {
+          const step = s?.current_step != null ? Number(s.current_step) : 1;
+          const total = s?.total_steps != null ? Number(s.total_steps) : 9;
+          const sub = s?.id != null ? subByStore.get(Number(s.id)) : null;
+          const paymentStatus = sub?.payment_status === "PAID" ? "Completed" : "Pending";
+          return {
+            id: s?.id,
+            store_id: s?.store_id,
+            store_name: s?.store_name,
+            full_address: s?.full_address,
+            approval_status: s?.approval_status ?? "DRAFT",
+            current_step: step,
+            total_steps: total,
+            registration_status: s?.registration_status,
+            payment_status: paymentStatus,
+          };
+        });
+
+        const expiresInSec = 60 * 60 * 24 * 7;
+        const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+        const accessToken = await issueSupabaseCompatibleJwt({
+          jwtSecret: env.SUPABASE_JWT_SECRET,
+          sub: parentMerchantId,
+          role: "merchant",
+          phoneE164: "", // not used for Google
+          deviceId,
+          exp: expiresAt,
+        });
+
+        const parent = {
+          id: parentId,
+          parent_merchant_id: parentMerchantId,
+          parent_name: parentRow.parent_name,
+          owner_name: parentRow.owner_name,
+          owner_email: parentRow.owner_email ?? undefined,
+          brand_name: parentRow.brand_name ?? undefined,
+          registered_phone: parentRow.registered_phone,
+        };
+
+        req.log?.info?.({ parentMerchantId, email }, "Merchant partner signed in with Google");
+        return reply.send({
+          accessToken,
+          expiresAt,
+          role: "merchant",
+          userId: parentMerchantId,
+          partner: { parent, childStores },
+        });
+      } catch (err: any) {
+        req.log?.error?.({ err }, "Google auth failed");
+        return reply.code(500).send({ error: "google_auth_failed", message: err?.message ?? "Google sign-in failed." });
+      }
+    }
+  );
+
+  /**
    * Dev-only auth flow: exchange Firebase ID token (from Firebase Phone Auth)
    * for a backend-issued Supabase-compatible session JWT.
    */
@@ -152,6 +301,117 @@ export async function authRoutes(app: FastifyInstance) {
 
       const db = getDb();
       const sql = getSql();
+
+      // Merchant partner app: look up merchant_parents by phone, return JWT + parent + child stores
+      if (body.appType === "merchant") {
+        try {
+          const tableCheck = await sql`
+            SELECT EXISTS (
+              SELECT FROM information_schema.tables
+              WHERE table_schema = 'public' AND table_name = 'merchant_parents'
+            );
+          `;
+          if (!tableCheck[0]?.exists) {
+            return reply.code(400).send({ error: "partner_not_found", message: "Partner registration is not available." });
+          }
+
+          const normalizedPhone = phoneE164.replace(/\D/g, "");
+          const parentRows = await sql`
+            SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
+            FROM merchant_parents
+            WHERE registered_phone = ${phoneE164}
+               OR registered_phone_normalized = ${normalizedPhone}
+               OR registered_phone LIKE ${"%" + normalizedPhone.slice(-10)}
+            LIMIT 1
+          `;
+          const parentRow = parentRows[0];
+          if (!parentRow) {
+            return reply.code(404).send({ error: "partner_not_found", message: "No partner account found for this phone. Sign up at partner.gatimitra.com" });
+          }
+
+          const parentId = Number(parentRow.id);
+          const parentMerchantId = String(parentRow.parent_merchant_id);
+
+          const storeRows = await sql`
+            SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                   msrp.current_step, msrp.total_steps, msrp.registration_status
+            FROM merchant_stores ms
+            LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
+            WHERE ms.parent_id = ${parentId}
+            ORDER BY ms.created_at ASC
+          `;
+
+          let subscriptionRows: Array<{ store_id: number; payment_status: string; subscription_status: string }> = [];
+          try {
+            subscriptionRows = await sql`
+              SELECT store_id, payment_status, subscription_status
+              FROM merchant_subscriptions
+              WHERE merchant_id = ${parentId}
+            ` as any;
+          } catch {
+            // merchant_subscriptions may not exist
+          }
+
+          const subByStore = new Map<number, { payment_status: string; subscription_status: string }>();
+          for (const row of Array.isArray(subscriptionRows) ? subscriptionRows : []) {
+            const sid = row?.store_id != null ? Number(row.store_id) : null;
+            if (sid != null) subByStore.set(sid, { payment_status: String(row?.payment_status ?? "PENDING"), subscription_status: String(row?.subscription_status ?? "INACTIVE") });
+          }
+
+          const childStores = (storeRows as any[]).map((s) => {
+            const step = s?.current_step != null ? Number(s.current_step) : 1;
+            const total = s?.total_steps != null ? Number(s.total_steps) : 9;
+            const sub = s?.id != null ? subByStore.get(Number(s.id)) : null;
+            const paymentStatus = sub?.payment_status === "PAID" ? "Completed" : "Pending";
+            return {
+              id: s?.id,
+              store_id: s?.store_id,
+              store_name: s?.store_name,
+              full_address: s?.full_address,
+              approval_status: s?.approval_status ?? "DRAFT",
+              operational_status: s?.operational_status,
+              current_step: step,
+              total_steps: total,
+              registration_status: s?.registration_status,
+              payment_status: paymentStatus,
+            };
+          });
+
+          const expiresInSec = 60 * 60 * 24 * 7; // 7 days
+          const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+          const accessToken = await issueSupabaseCompatibleJwt({
+            jwtSecret: env.SUPABASE_JWT_SECRET,
+            sub: parentMerchantId,
+            role: "merchant",
+            phoneE164,
+            deviceId,
+            exp: expiresAt,
+          });
+
+          const parent = {
+            id: parentId,
+            parent_merchant_id: parentMerchantId,
+            parent_name: parentRow.parent_name,
+            owner_name: parentRow.owner_name,
+            owner_email: parentRow.owner_email ?? undefined,
+            brand_name: parentRow.brand_name ?? undefined,
+            registered_phone: parentRow.registered_phone,
+          };
+
+          req.log?.info?.({ parentMerchantId, phoneE164 }, "Merchant partner signed in successfully");
+          return reply.send({
+            accessToken,
+            expiresAt,
+            role: "merchant",
+            userId: parentMerchantId,
+            partner: { parent, childStores },
+          });
+        } catch (merchantErr: any) {
+          req.log?.error?.({ err: merchantErr }, "Merchant OTP verify failed");
+          if (merchantErr?.statusCode) throw merchantErr;
+          return reply.code(500).send({ error: "partner_lookup_failed", message: merchantErr?.message ?? "Could not load partner account." });
+        }
+      }
 
       // Customer app: find or create in customers table and return JWT with customer_id (GM100001, ...)
       if (body.appType === "customer") {
