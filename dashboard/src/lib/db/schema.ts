@@ -1632,6 +1632,81 @@ export const orders = pgTable(
   })
 );
 
+/**
+ * Order-level remarks added by agents, CS, or other actors.
+ * Stores the latest version of each remark; edit history is in orderRemarkEdits.
+ */
+export const orderRemarks = pgTable(
+  "order_remarks",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    actorType: text("actor_type").notNull(),
+    actorId: bigint("actor_id", { mode: "number" }),
+    actorName: text("actor_name"),
+    actionTaken: text("action_taken"),
+    remark: text("remark").notNull(),
+    remarkCategory: text("remark_category"),
+    remarkPriority: text("remark_priority").default("normal"),
+    visibleTo: text("visible_to").array(),
+    isInternal: boolean("is_internal").default(false),
+    remarkMetadata: jsonb("remark_metadata").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastEditedAt: timestamp("last_edited_at", { withTimezone: true }),
+    lastEditedByActorType: text("last_edited_by_actor_type"),
+    lastEditedByActorId: bigint("last_edited_by_actor_id", { mode: "number" }),
+    lastEditedByActorName: text("last_edited_by_actor_name"),
+  },
+  (table) => ({
+    orderIdIdx: index("order_remarks_order_id_idx").on(table.orderId),
+    actorTypeIdx: index("order_remarks_actor_type_idx").on(table.actorType),
+    actorIdIdx: index("order_remarks_actor_id_idx").on(table.actorId),
+    remarkCategoryIdx: index("order_remarks_remark_category_idx").on(table.remarkCategory),
+    createdAtIdx: index("order_remarks_created_at_idx").on(table.createdAt),
+    orderCreatedIdx: index("order_remarks_order_created_idx").on(
+      table.orderId,
+      table.createdAt.desc()
+    ),
+    isInternalIdx: index("order_remarks_is_internal_idx").on(table.isInternal),
+  })
+);
+
+/**
+ * Immutable edit history for order remarks.
+ * Each row captures a single edit with before/after values.
+ */
+export const orderRemarkEdits = pgTable(
+  "order_remarks_edits",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    remarkId: bigint("remark_id", { mode: "number" })
+      .notNull()
+      .references(() => orderRemarks.id, { onDelete: "cascade" }),
+    editedAt: timestamp("edited_at", { withTimezone: true }).notNull().defaultNow(),
+    editedByActorType: text("edited_by_actor_type").notNull(),
+    editedByActorId: bigint("edited_by_actor_id", { mode: "number" }),
+    editedByActorName: text("edited_by_actor_name"),
+    oldRemark: text("old_remark").notNull(),
+    newRemark: text("new_remark").notNull(),
+    oldRemarkCategory: text("old_remark_category"),
+    newRemarkCategory: text("new_remark_category"),
+    oldRemarkPriority: text("old_remark_priority"),
+    newRemarkPriority: text("new_remark_priority"),
+    oldIsInternal: boolean("old_is_internal"),
+    newIsInternal: boolean("new_is_internal"),
+    oldVisibleTo: text("old_visible_to").array(),
+    newVisibleTo: text("new_visible_to").array(),
+    oldRemarkMetadata: jsonb("old_remark_metadata"),
+    newRemarkMetadata: jsonb("new_remark_metadata"),
+  },
+  (table) => ({
+    remarkIdIdx: index("order_remarks_edits_remark_id_idx").on(table.remarkId),
+    editedAtIdx: index("order_remarks_edits_edited_at_idx").on(table.editedAt),
+  })
+);
+
 // ============================================================================
 // HYBRID ORDER TABLES (orders_core + service-specific + provider mapping)
 // ============================================================================
@@ -1692,6 +1767,10 @@ export const ordersCore = pgTable(
     fareAmount: numeric("fare_amount", { precision: 10, scale: 2 }),
     commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }),
     riderEarning: numeric("rider_earning", { precision: 10, scale: 2 }),
+    itemTotal: numeric("item_total", { precision: 12, scale: 2 }),
+    addonTotal: numeric("addon_total", { precision: 12, scale: 2 }),
+    grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
+    tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }),
     status: orderStatusTypeEnum("status").notNull().default("assigned"),
     currentStatus: text("current_status"),
     paymentStatus: paymentStatusTypeEnum("payment_status"),
@@ -1714,6 +1793,9 @@ export const ordersCore = pgTable(
     estimatedDeliveryTime: timestamp("estimated_delivery_time", { withTimezone: true }),
     actualPickupTime: timestamp("actual_pickup_time", { withTimezone: true }),
     actualDeliveryTime: timestamp("actual_delivery_time", { withTimezone: true }),
+    placedAt: timestamp("placed_at", { withTimezone: true }),
+    formattedOrderId: text("formatted_order_id"),
+    orderId: text("order_id"),
   },
   (table) => ({
     riderIdIdx: index("orders_core_rider_id_idx").on(table.riderId),

@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mobile viewport and safe-area support (web/PWA) */
+@supports (padding: env(safe-area-inset-top)) {
+  html,
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+@viewport {
+  width: device-width;
+  viewport-fit: cover;
+}

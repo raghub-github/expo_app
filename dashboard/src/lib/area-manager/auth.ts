@@ -84,6 +84,38 @@ export async function getAreaManagerByUserId(
 }
 
 /**
+ * Get area manager record by area manager id (PK)
+ */
+export async function getAreaManagerById(
+  areaManagerId: number
+): Promise<AreaManagerRecord | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: areaManagers.id,
+      userId: areaManagers.userId,
+      managerType: areaManagers.managerType,
+      areaCode: areaManagers.areaCode,
+      localityCode: areaManagers.localityCode,
+      city: areaManagers.city,
+      status: areaManagers.status,
+    })
+    .from(areaManagers)
+    .where(eq(areaManagers.id, areaManagerId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.userId,
+    managerType: row.managerType as "MERCHANT" | "RIDER",
+    areaCode: row.areaCode,
+    localityCode: row.localityCode,
+    city: row.city,
+    status: row.status,
+  };
+}
+
+/**
  * Resolve current area manager from Supabase auth (user id + email).
  * Returns null if not authenticated or not an area manager (or super admin can act as any).
  * Super admin: can access area-manager APIs but may not have an area_managers row; callers

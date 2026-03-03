@@ -72,6 +72,15 @@ export const queryKeys = {
     reports: (type: string) => ["analytics", "reports", type] as const,
   },
 
+  // Merchant store dashboard (stats, wallet, store-operations) – shared cache to avoid duplicate calls
+  merchantStore: {
+    stats: (storeId: string, date?: string) =>
+      ["merchant-store", storeId, "stats", date ?? "today"] as const,
+    wallet: (storeId: string) => ["merchant-store", storeId, "wallet"] as const,
+    storeOperations: (storeId: string) =>
+      ["merchant-store", storeId, "store-operations"] as const,
+  },
+
   // Rider Dashboard
   rider: {
     summary: (riderId: number | null, params: RiderSummaryParams) =>

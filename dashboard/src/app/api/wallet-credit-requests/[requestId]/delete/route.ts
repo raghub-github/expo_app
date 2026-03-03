@@ -35,8 +35,8 @@ export async function DELETE(
     }
 
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session?.user?.email) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user?.email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -44,8 +44,8 @@ export async function DELETE(
     }
 
     const systemUserId = await getSystemUserIdFromAuthUser(
-      session.user.id,
-      session.user.email
+      user.id,
+      user.email
     );
     if (!systemUserId) {
       return NextResponse.json(

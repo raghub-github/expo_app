@@ -1,5 +1,5 @@
 import { supabase } from "../supabase/client";
-import type { AuthError } from "@supabase/supabase-js";
+import { isInvalidRefreshToken } from "./session-errors";
 
 export interface LoginCredentials {
   email?: string;
@@ -150,7 +150,8 @@ export async function logout(): Promise<AuthResponse> {
 }
 
 /**
- * Get current session
+ * Get current session.
+ * On invalid/expired refresh token, signs out and returns null so the app can redirect to login.
  */
 export async function getSession() {
   const {
@@ -158,6 +159,10 @@ export async function getSession() {
     error,
   } = await supabase.auth.getSession();
 
+  if (error && isInvalidRefreshToken(error)) {
+    await supabase.auth.signOut();
+    return null;
+  }
   if (error) {
     throw error;
   }
@@ -166,7 +171,8 @@ export async function getSession() {
 }
 
 /**
- * Get current user
+ * Get current user.
+ * On invalid/expired refresh token, signs out and returns null so the app can redirect to login.
  */
 export async function getCurrentUser() {
   const {
@@ -174,6 +180,10 @@ export async function getCurrentUser() {
     error,
   } = await supabase.auth.getUser();
 
+  if (error && isInvalidRefreshToken(error)) {
+    await supabase.auth.signOut();
+    return null;
+  }
   if (error) {
     throw error;
   }

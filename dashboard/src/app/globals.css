@@ -35,6 +35,34 @@ body {
   display: none; /* Chrome, Safari, Opera */
 }
 
+/* Circular checkboxes (e.g. Items details modal) */
+input[type="checkbox"].checkbox-circle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgb(203 213 225);
+  border-radius: 9999px;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+input[type="checkbox"].checkbox-circle:hover {
+  border-color: rgb(16 185 129);
+}
+input[type="checkbox"].checkbox-circle:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.4);
+}
+input[type="checkbox"].checkbox-circle:checked {
+  background-color: rgb(16 185 129);
+  border-color: rgb(16 185 129);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white' stroke='white' stroke-width='3'%3E%3Cpath d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'/%3E%3C/svg%3E");
+  background-size: 0.6em 0.6em;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
 /* Allow scrolling but hide scrollbar */
 .overflow-y-auto,
 .overflow-x-auto,

@@ -14,6 +14,16 @@ import { riderRoutes } from "./modules/rider/rider.routes.js";
 import { onboardingRoutes } from "./modules/onboarding/onboarding.routes.js";
 import { storageRoutes } from "./modules/storage/storage.routes.js";
 import { paymentRoutes } from "./modules/payment/payment.routes.js";
+import { meRoutes } from "./modules/me/me.routes.js";
+import { supportRoutes } from "./modules/support/support.routes.js";
+import { merchantRoutes } from "./modules/merchants/merchant.routes.js";
+import { merchantReportRoutes } from "./modules/merchants/merchant-report.routes.js";
+import { bookmarkRoutes } from "./modules/bookmarks/bookmark.routes.js";
+import { orderRoutes } from "./modules/orders/order.routes.js";
+import { addressRoutes } from "./modules/addresses/address.routes.js";
+import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
+import { plansRoutes } from "./modules/plans/plans.routes.js";
+import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 
@@ -92,11 +102,113 @@ await app.register(swaggerUi, {
 });
 
 await app.register(healthRoutes, { prefix: "/v1" });
+
+// Public Razorpay checkout page (no auth) – used by customer app WebView.
+// Load checkout.js first, then open payment so the Razorpay modal (UPI/cards/wallets) actually appears.
+app.get("/v1/razorpay-checkout", async (req, reply) => {
+  const q = req.query as Record<string, string | undefined>;
+  const orderId = q.order_id ?? "";
+  const keyId = q.key_id ?? "";
+  const amount = q.amount ?? "0";
+  const successUrl = q.success_url ?? "gatimitra://pay-success";
+  const cancelUrl = q.cancel_url ?? "gatimitra://pay-cancel";
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <title>Complete payment</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; }
+    .msg { color: #64748b; font-size: 15px; margin-top: 12px; }
+    .err { color: #dc2626; font-size: 14px; margin-top: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+  <p class="msg" id="status">Opening Razorpay…</p>
+  <p class="err" id="err" style="display:none;"></p>
+  <script>
+(function() {
+  var order_id = ${JSON.stringify(orderId)};
+  var key_id = ${JSON.stringify(keyId)};
+  var amount = ${JSON.stringify(amount)};
+  var success_url = ${JSON.stringify(successUrl)};
+  var cancel_url = ${JSON.stringify(cancelUrl)};
+  var statusEl = document.getElementById("status");
+  var errEl = document.getElementById("err");
+
+  function showErr(msg) {
+    if (statusEl) statusEl.style.display = "none";
+    if (errEl) { errEl.textContent = msg; errEl.style.display = "block"; }
+  }
+
+  if (!order_id || !key_id || amount === "0") {
+    showErr("Invalid payment parameters. Please try again from the app.");
+    return;
+  }
+
+  function openCheckout() {
+    if (typeof Razorpay === "undefined") {
+      showErr("Razorpay failed to load. Check your connection and try again.");
+      return;
+    }
+    try {
+      var options = {
+        key: key_id,
+        amount: Number(amount),
+        order_id: order_id,
+        name: "GatiMitra",
+        description: "Order payment",
+        handler: function(r) {
+          var u = success_url + (success_url.indexOf("?") >= 0 ? "&" : "?") +
+            "razorpay_payment_id=" + encodeURIComponent(r.razorpay_payment_id) +
+            "&razorpay_order_id=" + encodeURIComponent(r.razorpay_order_id) +
+            "&razorpay_signature=" + encodeURIComponent(r.razorpay_signature);
+          window.location.href = u;
+        },
+        modal: { ondismiss: function() { window.location.href = cancel_url; } }
+      };
+      var rzp = new Razorpay(options);
+      rzp.on("payment.failed", function() { window.location.href = cancel_url; });
+      rzp.open();
+      if (statusEl) statusEl.textContent = "Choose payment method below…";
+    } catch (e) {
+      showErr("Could not open payment: " + (e && e.message ? e.message : "Please try again."));
+    }
+  }
+
+  if (typeof Razorpay !== "undefined") {
+    openCheckout();
+    return;
+  }
+  var s = document.createElement("script");
+  s.src = "https://checkout.razorpay.com/v1/checkout.js";
+  s.async = true;
+  s.onload = function() { openCheckout(); };
+  s.onerror = function() { showErr("Could not load Razorpay. Check your internet connection."); };
+  document.head.appendChild(s);
+})();
+  </script>
+</body>
+</html>`;
+  return reply.type("text/html").send(html);
+});
+
 await app.register(authRoutes, { prefix: "/v1/auth" });
 await app.register(riderRoutes, { prefix: "/v1/rider" });
 await app.register(onboardingRoutes, { prefix: "/v1/onboarding" });
 await app.register(storageRoutes, { prefix: "/v1/storage" });
 await app.register(paymentRoutes, { prefix: "/v1/payment" });
+await app.register(meRoutes, { prefix: "/v1/me" });
+await app.register(addressRoutes, { prefix: "/v1/me" });
+await app.register(locationSearchRoutes, { prefix: "/v1/me" });
+await app.register(supportRoutes, { prefix: "/v1/support" });
+await app.register(merchantRoutes, { prefix: "/v1" });
+await app.register(plansRoutes, { prefix: "/v1" });
+await app.register(merchantPartnerRoutes, { prefix: "/v1" });
+await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
+await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
+await app.register(orderRoutes, { prefix: "/v1/orders" });
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {

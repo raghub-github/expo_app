@@ -7,6 +7,10 @@ import { ServicePointForm } from "@/components/map/ServicePointForm";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { queryKeys } from "@/lib/queryKeys";
 
+/**
+ * Home page: only this page's APIs run when user opens Home from sidebar.
+ * Permissions and service points use React Query cache; no invalidation on mount.
+ */
 export default function DashboardHome() {
   const queryClient = useQueryClient();
   const { data: userPerms, error, isError } = usePermissionsQuery();

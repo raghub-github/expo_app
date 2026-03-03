@@ -13,9 +13,9 @@ export const runtime = 'nodejs';
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -57,9 +57,9 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if user is super admin
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json(
         { success: false, error: "Only super admins can create service points" },
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
     // Get system user ID for created_by
     const sql = getSql();
     const [systemUser] = await sql`
-      SELECT id FROM system_users WHERE email = ${session.user.email}
+      SELECT id FROM system_users WHERE email = ${user.email}
     `;
 
     if (!systemUser) {
@@ -137,9 +137,9 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -147,7 +147,7 @@ export async function PUT(request: NextRequest) {
     }
 
     // Check if user is super admin
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json(
         { success: false, error: "Only super admins can update service points" },
@@ -250,9 +250,9 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -260,7 +260,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Check if user is super admin
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     if (!userIsSuperAdmin) {
       return NextResponse.json(
         { success: false, error: "Only super admins can delete service points" },

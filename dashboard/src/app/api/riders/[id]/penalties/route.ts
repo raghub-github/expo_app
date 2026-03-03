@@ -18,13 +18,13 @@ export async function POST(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    const hasRiderAccess = await hasDashboardAccessByAuth(session.user.id, session.user.email!, "RIDER");
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
+    const hasRiderAccess = await hasDashboardAccessByAuth(user.id, user.email ?? "", "RIDER");
     if (!userIsSuperAdmin && !hasRiderAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions." }, { status: 403 });
     }
@@ -62,7 +62,7 @@ export async function POST(
 
     const db = getDb();
 
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email!);
 
     const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
     if (!rider) {
@@ -152,10 +152,10 @@ export async function POST(
 
     await syncNegativeWalletBlocks(riderId);
 
-    const agentEmail = session.user.email!;
+    const agentEmail = user.email!;
     const agentName = (systemUser as { fullName?: string })?.fullName ?? null;
     await logActionByAuth(
-      session.user.id,
+      user.id,
       agentEmail,
       "RIDER",
       "RIDER_PENALTY_ADDED",

@@ -1,13 +1,11 @@
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
+import { OffersClient } from "@/components/offers/OffersClient";
 
 export default async function OffersPage() {
   await requireDashboardAccess("OFFER");
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-
-      <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <p className="text-gray-500">Offer management functionality coming soon...</p>
-      </div>
+      <OffersClient />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useState, useCallback, useMemo, useEffect, Suspense } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search, Loader2 } from "lucide-react";
 import { getCurrentDashboard } from "@/lib/navigation/dashboard-routes";
+import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 
 type DashboardType = "RIDER" | "CUSTOMER" | "MERCHANT" | "AREA_MANAGER";
 
@@ -16,6 +17,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const merchantsSearch = useMerchantsSearch();
   const [loading, setLoading] = useState(false);
   const [merchantType, setMerchantType] = useState<"child" | "parent">("child");
   const [localSearchValue, setLocalSearchValue] = useState("");
@@ -31,13 +33,17 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
     return null;
   }, [currentDashboard]);
 
-  // Get search value from URL params
+  // Get search value and merchant type from URL params
   const searchValue = searchParams.get("search") || "";
+  const parentParam = searchParams.get("parent") === "true";
 
-  // Sync local search value with URL
+  // Sync local search value and merchant type with URL (keeps search bar in sync when returning from store)
   useEffect(() => {
     setLocalSearchValue(searchValue);
   }, [searchValue]);
+  useEffect(() => {
+    setMerchantType(parentParam ? "parent" : "child");
+  }, [parentParam]);
 
   // ALL HOOKS MUST BE CALLED BEFORE ANY CONDITIONAL RETURNS
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -50,6 +56,15 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
     }
   }, []);
 
+  /** Normalize merchant search: digits-only → add prefix (GMMC child / GMMP parent); full ID stays as-is. */
+  const normalizeMerchantSearch = useCallback((value: string, type: "child" | "parent") => {
+    const trimmed = value.trim().toUpperCase().replace(/\s/g, "");
+    if (!trimmed) return "";
+    const digitsOnly = /^\d+$/.test(trimmed);
+    if (digitsOnly) return type === "child" ? `GMMC${trimmed}` : `GMMP${trimmed}`;
+    return trimmed;
+  }, []);
+
   // Get placeholder text based on dashboard type
   const placeholder = useMemo(() => {
     if (!dashboardType) return "Search...";
@@ -59,7 +74,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
       case "CUSTOMER":
         return "Search by Customer ID, Number, or Name...";
       case "MERCHANT":
-        return "Search by Merchant ID or Number...";
+        return "e.g. GMMC1001 or 1001 (child) / GMMP1001 or 1001 (parent)";
       case "AREA_MANAGER":
         return "Search by Area Manager ID or Number...";
       default:
@@ -67,10 +82,21 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
     }
   }, [dashboardType]);
 
+  // Clear search button loading when pathname or search params change (after navigation)
+  const queryString = searchParams.toString();
+  useEffect(() => {
+    if (dashboardType === "MERCHANT") setLoading(false);
+  }, [pathname, queryString, dashboardType]);
+
   // Don't render if not in a searchable dashboard
   if (!dashboardType) {
     return null;
   }
+
+  // Current portal (admin vs merchant) for merchant dashboard, mirroring Header logic.
+  const currentPortal =
+    searchParams.get("portal") ||
+    (pathname.startsWith("/dashboard/merchants/stores/") ? "merchant" : "admin");
 
   // Render merchant-specific search with dropdowns
   if (dashboardType === "MERCHANT") {
@@ -78,14 +104,29 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
       <div className={`flex items-center gap-2 ${compact ? "w-full max-w-md" : "w-full max-w-2xl"}`}>
         <form onSubmit={(e) => {
           e.preventDefault();
-          const params = new URLSearchParams();
-          if (localSearchValue.trim()) params.set("search", localSearchValue.trim());
-          if (merchantType === "parent") {
-            params.set("parent", "true");
-          } else {
-            params.set("child", "true");
-          }
+          setLoading(true);
           const basePath = currentDashboard?.href || "/dashboard";
+          const normalized = normalizeMerchantSearch(localSearchValue, merchantType);
+          if (!normalized) {
+            const keep = new URLSearchParams(searchParams.toString());
+            keep.delete("search");
+            keep.delete("parent");
+            keep.delete("child");
+            // Preserve portal when clearing search so we don't flip Admin ↔ Merchant unexpectedly
+            if (currentPortal === "merchant") keep.set("portal", "merchant");
+            const qs = keep.toString();
+            router.push(qs ? `${basePath}?${qs}` : basePath);
+            return;
+          }
+          const params = new URLSearchParams(searchParams.toString());
+          params.set("search", normalized);
+          if (merchantType === "parent") params.set("parent", "true");
+          else params.set("child", "true");
+          // If user is currently in Merchant portal (e.g. on a store dashboard), keep them in merchant portal for search
+          if (currentPortal === "merchant") params.set("portal", "merchant");
+          setLocalSearchValue(normalized);
+          // Trigger with value + filter immediately so fetch uses them before URL update (fixes first-click result)
+          merchantsSearch?.triggerMerchantSearch(normalized, merchantType);
           router.push(`${basePath}?${params.toString()}`);
         }} className="flex-1 flex flex-col sm:flex-row gap-2">
           <div className="flex-1 flex flex-col sm:flex-row gap-2">
@@ -104,12 +145,15 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
               type="text"
               value={localSearchValue}
               onChange={(e) => {
-                let value = e.target.value;
+                const value = e.target.value.toUpperCase();
                 setLocalSearchValue(value);
+                if (!value.trim() && currentDashboard?.href) {
+                  router.replace(currentDashboard.href);
+                }
               }}
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
-              className={`flex-1 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder:text-gray-400 transition-all duration-200 ${
+              className={`flex-1 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder:text-gray-400 transition-all duration-200 uppercase ${
                 compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
               }`}
             />
@@ -117,7 +161,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           <button
             type="submit"
             disabled={loading}
-            className={`rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
+            className={`cursor-pointer rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
               compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
             }`}
           >
@@ -191,7 +235,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
         <button
           type="submit"
           disabled={loading}
-          className={`rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all duration-200 ${
+          className={`cursor-pointer rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all duration-200 ${
             compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
           }`}
         >

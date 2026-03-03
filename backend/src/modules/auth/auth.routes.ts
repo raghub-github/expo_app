@@ -11,10 +11,11 @@ import {
   type OtpVerify,
 } from "@gatimitra/contracts";
 import { getEnv } from "../../config/env.js";
+import { sendOtpViaMsg91 } from "../../services/otp/msg91.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
-import { riders } from "../../db/schema.js";
+import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 
@@ -34,6 +35,155 @@ export async function authRoutes(app: FastifyInstance) {
     string,
     { phoneE164: string; otp: string; expiresAtMs: number; attempts: number }
   >();
+
+  /**
+   * Merchant partner Google sign-in: verify Google id_token, lookup by owner_email, return JWT + partner.
+   */
+  app.post(
+    "/google",
+    {
+      schema: {
+        body: z.object({ idToken: z.string().min(10), deviceId: z.string().min(6) }),
+        response: {
+          200: z.object({
+            accessToken: z.string(),
+            expiresAt: z.number(),
+            role: z.string(),
+            userId: z.string(),
+            partner: z.object({
+              parent: z.any(),
+              childStores: z.array(z.any()),
+            }),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          404: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { idToken, deviceId } = z.object({ idToken: z.string(), deviceId: z.string() }).parse(req.body);
+      try {
+        const tokenRes = await fetch(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`
+        );
+        if (!tokenRes.ok) {
+          const errText = await tokenRes.text();
+          req.log?.info?.({ status: tokenRes.status, err: errText }, "Google tokeninfo failed");
+          return reply.code(400).send({ error: "invalid_google_token", message: "Google sign-in failed. Try again." });
+        }
+        const tokenData = (await tokenRes.json()) as { email?: string; sub?: string };
+        const email = tokenData?.email?.trim();
+        if (!email) {
+          return reply.code(400).send({ error: "no_email", message: "Google account email not found." });
+        }
+
+        const sql = getSql();
+        const tableCheck = await sql`
+          SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'merchant_parents'
+          );
+        `;
+        if (!tableCheck[0]?.exists) {
+          return reply.code(400).send({ error: "partner_not_found", message: "Partner registration is not available." });
+        }
+
+        const parentRows = await sql`
+          SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
+          FROM merchant_parents
+          WHERE LOWER(TRIM(owner_email)) = LOWER(TRIM(${email}))
+          LIMIT 1
+        `;
+        const parentRow = parentRows[0];
+        if (!parentRow) {
+          return reply.code(404).send({
+            error: "partner_not_found",
+            message: "No partner account found for this Google email. Sign up at partner.gatimitra.com",
+          });
+        }
+
+        const parentId = Number(parentRow.id);
+        const parentMerchantId = String(parentRow.parent_merchant_id);
+
+        const storeRows = await sql`
+          SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                 msrp.current_step, msrp.total_steps, msrp.registration_status
+          FROM merchant_stores ms
+          LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
+          WHERE ms.parent_id = ${parentId}
+          ORDER BY ms.created_at ASC
+        `;
+
+        let subscriptionRows: Array<{ store_id: number; payment_status: string; subscription_status: string }> = [];
+        try {
+          subscriptionRows = (await sql`
+            SELECT store_id, payment_status, subscription_status
+            FROM merchant_subscriptions
+            WHERE merchant_id = ${parentId}
+          `) as any;
+        } catch {
+          // table may not exist
+        }
+
+        const subByStore = new Map<number, { payment_status: string; subscription_status: string }>();
+        for (const row of Array.isArray(subscriptionRows) ? subscriptionRows : []) {
+          const sid = row?.store_id != null ? Number(row.store_id) : null;
+          if (sid != null) subByStore.set(sid, { payment_status: String(row?.payment_status ?? "PENDING"), subscription_status: String(row?.subscription_status ?? "INACTIVE") });
+        }
+
+        const childStores = (storeRows as any[]).map((s) => {
+          const step = s?.current_step != null ? Number(s.current_step) : 1;
+          const total = s?.total_steps != null ? Number(s.total_steps) : 9;
+          const sub = s?.id != null ? subByStore.get(Number(s.id)) : null;
+          const paymentStatus = sub?.payment_status === "PAID" ? "Completed" : "Pending";
+          return {
+            id: s?.id,
+            store_id: s?.store_id,
+            store_name: s?.store_name,
+            full_address: s?.full_address,
+            approval_status: s?.approval_status ?? "DRAFT",
+            current_step: step,
+            total_steps: total,
+            registration_status: s?.registration_status,
+            payment_status: paymentStatus,
+          };
+        });
+
+        const expiresInSec = 60 * 60 * 24 * 7;
+        const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+        const accessToken = await issueSupabaseCompatibleJwt({
+          jwtSecret: env.SUPABASE_JWT_SECRET,
+          sub: parentMerchantId,
+          role: "merchant",
+          phoneE164: "", // not used for Google
+          deviceId,
+          exp: expiresAt,
+        });
+
+        const parent = {
+          id: parentId,
+          parent_merchant_id: parentMerchantId,
+          parent_name: parentRow.parent_name,
+          owner_name: parentRow.owner_name,
+          owner_email: parentRow.owner_email ?? undefined,
+          brand_name: parentRow.brand_name ?? undefined,
+          registered_phone: parentRow.registered_phone,
+        };
+
+        req.log?.info?.({ parentMerchantId, email }, "Merchant partner signed in with Google");
+        return reply.send({
+          accessToken,
+          expiresAt,
+          role: "merchant",
+          userId: parentMerchantId,
+          partner: { parent, childStores },
+        });
+      } catch (err: any) {
+        req.log?.error?.({ err }, "Google auth failed");
+        return reply.code(500).send({ error: "google_auth_failed", message: err?.message ?? "Google sign-in failed." });
+      }
+    }
+  );
 
   /**
    * Dev-only auth flow: exchange Firebase ID token (from Firebase Phone Auth)
@@ -93,14 +243,37 @@ export async function authRoutes(app: FastifyInstance) {
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
 
-      // Generate 4-digit OTP (matches app UI and MSG91 widget config).
-      const otp = Math.floor(1000 + Math.random() * 9000).toString();
+      // 6-digit OTP (SMS standard; MSG91 and partnersite use 6).
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
       otpStore.set(requestId, {
         phoneE164,
         otp,
         expiresAtMs: Date.now() + expiresInSec * 1000,
         attempts: 0,
       });
+
+      // Send SMS via MSG91 when configured (same provider as partnersite).
+      if (env.MSG91_AUTH_KEY) {
+        const sendResult = await sendOtpViaMsg91({
+          authKey: env.MSG91_AUTH_KEY,
+          phoneE164,
+          otp,
+          templateId: env.MSG91_TEMPLATE_ID,
+          senderId: env.MSG91_SENDER_ID,
+          otpExpirySec: expiresInSec,
+        });
+        if (!sendResult.ok) {
+          req.log?.warn?.({ phoneE164, requestId, err: sendResult.error }, "MSG91 send failed");
+          // Do not fail the request – dev can still use OTP from logs; prod may retry or show generic error
+        }
+      }
+
+      // Log OTP in dev so you can copy and sign in when SMS is not configured or fails.
+      req.log?.info?.({ phoneE164, requestId, otp }, "OTP generated");
+      if (env.NODE_ENV !== "production") {
+        // eslint-disable-next-line no-console
+        console.log("\n  [OTP] Phone:", phoneE164, "| OTP:", otp, "| RequestId:", requestId, "\n");
+      }
 
       return {
         requestId,
@@ -123,7 +296,8 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { requestId, phoneE164, deviceId, otp } = OtpVerifySchema.parse(req.body) as OtpVerify;
+      const body = OtpVerifySchema.parse(req.body) as OtpVerify & { appType?: string };
+      const { requestId, phoneE164, deviceId, otp } = body;
 
       const entry = otpStore.get(requestId);
       if (!entry) return reply.code(400).send({ error: "invalid_request_id" });
@@ -145,7 +319,202 @@ export async function authRoutes(app: FastifyInstance) {
       const db = getDb();
       const sql = getSql();
 
-      // Check if riders table exists first
+      // Merchant partner app: look up merchant_parents by phone, return JWT + parent + child stores
+      if (body.appType === "merchant") {
+        try {
+          const tableCheck = await sql`
+            SELECT EXISTS (
+              SELECT FROM information_schema.tables
+              WHERE table_schema = 'public' AND table_name = 'merchant_parents'
+            );
+          `;
+          if (!tableCheck[0]?.exists) {
+            return reply.code(400).send({ error: "partner_not_found", message: "Partner registration is not available." });
+          }
+
+          const normalizedPhone = phoneE164.replace(/\D/g, "");
+          const parentRows = await sql`
+            SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
+            FROM merchant_parents
+            WHERE registered_phone = ${phoneE164}
+               OR registered_phone_normalized = ${normalizedPhone}
+               OR registered_phone LIKE ${"%" + normalizedPhone.slice(-10)}
+            LIMIT 1
+          `;
+          const parentRow = parentRows[0];
+          if (!parentRow) {
+            return reply.code(404).send({ error: "partner_not_found", message: "No partner account found for this phone. Sign up at partner.gatimitra.com" });
+          }
+
+          const parentId = Number(parentRow.id);
+          const parentMerchantId = String(parentRow.parent_merchant_id);
+
+          const storeRows = await sql`
+            SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
+                   msrp.current_step, msrp.total_steps, msrp.registration_status
+            FROM merchant_stores ms
+            LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
+            WHERE ms.parent_id = ${parentId}
+            ORDER BY ms.created_at ASC
+          `;
+
+          let subscriptionRows: Array<{ store_id: number; payment_status: string; subscription_status: string }> = [];
+          try {
+            subscriptionRows = await sql`
+              SELECT store_id, payment_status, subscription_status
+              FROM merchant_subscriptions
+              WHERE merchant_id = ${parentId}
+            ` as any;
+          } catch {
+            // merchant_subscriptions may not exist
+          }
+
+          const subByStore = new Map<number, { payment_status: string; subscription_status: string }>();
+          for (const row of Array.isArray(subscriptionRows) ? subscriptionRows : []) {
+            const sid = row?.store_id != null ? Number(row.store_id) : null;
+            if (sid != null) subByStore.set(sid, { payment_status: String(row?.payment_status ?? "PENDING"), subscription_status: String(row?.subscription_status ?? "INACTIVE") });
+          }
+
+          const childStores = (storeRows as any[]).map((s) => {
+            const step = s?.current_step != null ? Number(s.current_step) : 1;
+            const total = s?.total_steps != null ? Number(s.total_steps) : 9;
+            const sub = s?.id != null ? subByStore.get(Number(s.id)) : null;
+            const paymentStatus = sub?.payment_status === "PAID" ? "Completed" : "Pending";
+            return {
+              id: s?.id,
+              store_id: s?.store_id,
+              store_name: s?.store_name,
+              full_address: s?.full_address,
+              approval_status: s?.approval_status ?? "DRAFT",
+              operational_status: s?.operational_status,
+              current_step: step,
+              total_steps: total,
+              registration_status: s?.registration_status,
+              payment_status: paymentStatus,
+            };
+          });
+
+          const expiresInSec = 60 * 60 * 24 * 7; // 7 days
+          const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+          const accessToken = await issueSupabaseCompatibleJwt({
+            jwtSecret: env.SUPABASE_JWT_SECRET,
+            sub: parentMerchantId,
+            role: "merchant",
+            phoneE164,
+            deviceId,
+            exp: expiresAt,
+          });
+
+          const parent = {
+            id: parentId,
+            parent_merchant_id: parentMerchantId,
+            parent_name: parentRow.parent_name,
+            owner_name: parentRow.owner_name,
+            owner_email: parentRow.owner_email ?? undefined,
+            brand_name: parentRow.brand_name ?? undefined,
+            registered_phone: parentRow.registered_phone,
+          };
+
+          req.log?.info?.({ parentMerchantId, phoneE164 }, "Merchant partner signed in successfully");
+          return reply.send({
+            accessToken,
+            expiresAt,
+            role: "merchant",
+            userId: parentMerchantId,
+            partner: { parent, childStores },
+          });
+        } catch (merchantErr: any) {
+          req.log?.error?.({ err: merchantErr }, "Merchant OTP verify failed");
+          if (merchantErr?.statusCode) throw merchantErr;
+          return reply.code(500).send({ error: "partner_lookup_failed", message: merchantErr?.message ?? "Could not load partner account." });
+        }
+      }
+
+      // Customer app: find or create in customers table and return JWT with customer_id (GM100001, ...)
+      if (body.appType === "customer") {
+        try {
+          const tableCheck = await sql`
+            SELECT EXISTS (
+              SELECT FROM information_schema.tables
+              WHERE table_schema = 'public' AND table_name = 'customers'
+            );
+          `;
+          if (!tableCheck[0]?.exists) {
+            throw new Error("Database table 'customers' does not exist. Run migration: backend/drizzle/0066_customers_table_full_ddl.sql");
+          }
+
+          const existing = await db
+            .select()
+            .from(customers)
+            .where(eq(customers.primaryMobile, phoneE164))
+            .limit(1);
+
+          let customerUserId: string;
+          if (existing.length > 0) {
+            customerUserId = existing[0]!.customerId;
+          } else {
+            const normalizedMobile = phoneE164.replace(/\D/g, "");
+            const placeholderId = `GM_PENDING_${normalizedMobile}`;
+            const [inserted] = await db
+              .insert(customers)
+              .values({
+                customerId: placeholderId,
+                fullName: "Pending",
+                primaryMobile: phoneE164,
+                primaryMobileNormalized: normalizedMobile,
+              })
+              .returning({ id: customers.id });
+            if (!inserted) throw new Error("Failed to create customer");
+            const id = inserted.id;
+            customerUserId = `GM${100000 + id}`;
+            await db
+              .update(customers)
+              .set({
+                customerId: customerUserId,
+                primaryMobileNormalized: normalizedMobile,
+                updatedAt: new Date(),
+              })
+              .where(eq(customers.id, id));
+          }
+
+          const normalizedMobile = phoneE164.replace(/\D/g, "");
+          await db
+            .update(customers)
+            .set({
+              lastLoginAt: new Date(),
+              lastActivityAt: new Date(),
+              updatedAt: new Date(),
+              primaryMobileNormalized: normalizedMobile,
+            })
+            .where(eq(customers.customerId, customerUserId));
+
+          const expiresInSec = 60 * 60 * 24 * 365; // 1 year
+          const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+          const accessToken = await issueSupabaseCompatibleJwt({
+            jwtSecret: env.SUPABASE_JWT_SECRET,
+            sub: customerUserId,
+            role: "customer",
+            phoneE164,
+            deviceId,
+            exp: expiresAt,
+          });
+          req.log?.info?.(
+            { userId: customerUserId, phoneE164 },
+            "Customer signed in successfully; profile saved in customers"
+          );
+          return {
+            accessToken,
+            expiresAt,
+            role: "customer",
+            userId: customerUserId,
+          };
+        } catch (customerError: any) {
+          req.log?.error?.({ err: customerError }, "Customer OTP verify failed");
+          throw customerError;
+        }
+      }
+
+      // Rider flow
       try {
         const tableCheck = await sql`
           SELECT EXISTS (
@@ -159,16 +528,12 @@ export async function authRoutes(app: FastifyInstance) {
           throw new Error("Database table 'riders' does not exist. Please run the database migration: backend/drizzle/0002_enterprise_rider_schema.sql");
         }
       } catch (checkError: any) {
-        // If the check itself fails, it might be a connection issue
         if (checkError?.message?.includes("does not exist")) {
           throw checkError;
         }
-        // Otherwise, continue - the table might exist but we can't check it
         console.warn("Could not verify table existence:", checkError?.message);
       }
 
-      // Find or create rider by mobile number
-      // In this app, everyone is a rider - no separate users table
       let userId: string;
       let riderId: number;
       
@@ -176,11 +541,9 @@ export async function authRoutes(app: FastifyInstance) {
         const existingRider = await db.select().from(riders).where(eq(riders.mobile, phoneE164)).limit(1);
 
         if (existingRider.length > 0) {
-          // Rider exists - use their ID
           riderId = existingRider[0]!.id;
-          userId = `usr_${riderId}`; // Generate consistent userId from rider ID for JWT
+          userId = `usr_${riderId}`;
         } else {
-          // Create new rider
           const newRider = await db.insert(riders).values({
             mobile: phoneE164,
             countryCode: "+91",
@@ -191,7 +554,7 @@ export async function authRoutes(app: FastifyInstance) {
           }).returning({ id: riders.id });
           
           riderId = newRider[0]!.id;
-          userId = `usr_${riderId}`; // Generate consistent userId from rider ID for JWT
+          userId = `usr_${riderId}`;
         }
       } catch (dbError: any) {
         // Log the actual database error for debugging
@@ -260,6 +623,123 @@ export async function authRoutes(app: FastifyInstance) {
         role: "rider",
         userId,
         riderId: riderId.toString(),
+      };
+    },
+  );
+
+  /**
+   * Exchange a Supabase access token (from Supabase Auth phone OTP) for a backend customer session.
+   * This lets the customer app use Supabase Send SMS hook for OTP delivery
+   * while backend remains the session authority.
+   */
+  app.post(
+    "/supabase/exchange-customer",
+    {
+      schema: {
+        body: z.object({
+          accessToken: z.string().min(10),
+          phoneE164: z.string().min(10),
+          deviceId: z.string().min(1),
+        }),
+        response: {
+          200: SessionSchema,
+          400: z.object({ error: z.string() }),
+          401: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { accessToken, phoneE164, deviceId } = req.body as {
+        accessToken: string;
+        phoneE164: string;
+        deviceId: string;
+      };
+
+      // Validate the Supabase token using the service role client
+      const { getSupabase } = await import("../../lib/supabase.js");
+      const supabase = getSupabase();
+      const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
+      if (userError || !userData?.user) {
+        return reply.code(401).send({ error: "Invalid or expired Supabase token" });
+      }
+
+      const sbPhone = userData.user.phone ?? "";
+      const normalizePhone = (p: string) => p.replace(/[\s+\-]/g, "");
+      if (normalizePhone(sbPhone) !== normalizePhone(phoneE164)) {
+        return reply.code(400).send({ error: "Phone mismatch between Supabase user and request" });
+      }
+
+      const db = getDb();
+      const sql = getSql();
+
+      const tableCheck = await sql`
+        SELECT EXISTS (
+          SELECT FROM information_schema.tables
+          WHERE table_schema = 'public' AND table_name = 'customers'
+        );
+      `;
+      if (!tableCheck[0]?.exists) {
+        throw new Error("Database table 'customers' does not exist.");
+      }
+
+      const existing = await db
+        .select()
+        .from(customers)
+        .where(eq(customers.primaryMobile, phoneE164))
+        .limit(1);
+
+      let customerUserId: string;
+      if (existing.length > 0) {
+        customerUserId = existing[0]!.customerId;
+      } else {
+        const normalizedMobile = phoneE164.replace(/\D/g, "");
+        const placeholderId = `GM_PENDING_${normalizedMobile}`;
+        const [inserted] = await db
+          .insert(customers)
+          .values({
+            customerId: placeholderId,
+            fullName: "Pending",
+            primaryMobile: phoneE164,
+            primaryMobileNormalized: normalizedMobile,
+          })
+          .returning({ id: customers.id });
+        if (!inserted) throw new Error("Failed to create customer");
+        const id = inserted.id;
+        customerUserId = `GM${100000 + id}`;
+        await db
+          .update(customers)
+          .set({ customerId: customerUserId, primaryMobileNormalized: normalizedMobile, updatedAt: new Date() })
+          .where(eq(customers.id, id));
+      }
+
+      const normalizedMobile = phoneE164.replace(/\D/g, "");
+      await db
+        .update(customers)
+        .set({
+          lastLoginAt: new Date(),
+          lastActivityAt: new Date(),
+          updatedAt: new Date(),
+          primaryMobileNormalized: normalizedMobile,
+        })
+        .where(eq(customers.customerId, customerUserId));
+
+      const expiresInSec = 60 * 60 * 24 * 365;
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+      const jwtToken = await issueSupabaseCompatibleJwt({
+        jwtSecret: env.SUPABASE_JWT_SECRET,
+        sub: customerUserId,
+        role: "customer",
+        phoneE164,
+        deviceId,
+        exp: expiresAt,
+      });
+
+      req.log?.info?.({ userId: customerUserId, phoneE164 }, "Customer signed in via Supabase OTP exchange");
+      return {
+        accessToken: jwtToken,
+        expiresAt,
+        role: "customer",
+        userId: customerUserId,
       };
     },
   );

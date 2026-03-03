@@ -57,6 +57,11 @@ export function TicketViewClient({ ticketId }: { ticketId: number }) {
     queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketId) });
   }, [queryClient, ticketId]);
 
+  // Always refetch ticket when this view mounts so latest data and UI are shown.
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+  }, [ticketId, queryClient]);
+
   // Reply box stays hidden until user clicks Reply; do not auto-open on refresh or hash
 
   useEffect(() => {

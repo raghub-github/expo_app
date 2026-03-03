@@ -103,8 +103,13 @@ export function useServicePointsQuery() {
     ...getCacheConfig(CacheTier.STATIC), // Service points are static data
     retry: (failureCount, error) => {
       if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) return false;
+      // Retry on network errors (e.g. "Failed to fetch", connection refused, timeout)
+      if (error instanceof Error && (error.message === "Failed to fetch" || error.name === "TypeError")) {
+        return failureCount < 3;
+      }
       return failureCount < 1;
     },
+    retryDelay: (attemptIndex) => Math.min(800 * 2 ** attemptIndex, 5000),
   });
   
   // #region agent log

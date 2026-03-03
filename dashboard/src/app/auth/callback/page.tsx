@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
+import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -111,9 +112,27 @@ export default function AuthCallbackPage() {
       }
 
       // 4) Existing session (e.g. return visit)
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      let session: { access_token: string; refresh_token: string } | null = null;
+      let sessionError: { message?: string } | null = null;
+      try {
+        const result = await supabase.auth.getSession();
+        session = result.data?.session ?? null;
+        sessionError = result.error ?? null;
+      } catch (err) {
+        if (isInvalidRefreshToken(err)) {
+          await supabase.auth.signOut();
+          router.push("/login?reason=session_invalid");
+          return;
+        }
+        sessionError = err as { message?: string };
+      }
       if (sessionError) {
-        router.push(`/login?error=${encodeURIComponent(sessionError.message)}`);
+        if (isInvalidRefreshToken(sessionError)) {
+          await supabase.auth.signOut();
+          router.push("/login?reason=session_invalid");
+          return;
+        }
+        router.push(`/login?error=${encodeURIComponent(sessionError.message ?? "Session error")}`);
         return;
       }
       if (session) {

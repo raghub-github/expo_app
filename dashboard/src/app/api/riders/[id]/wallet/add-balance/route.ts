@@ -23,16 +23,16 @@ export async function POST(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    const hasRiderAccess = await hasDashboardAccessByAuth(session.user.id, session.user.email!, "RIDER");
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
+    const hasRiderAccess = await hasDashboardAccessByAuth(user.id, user.email ?? "", "RIDER");
     const canAddBalance =
       userIsSuperAdmin ||
-      (hasRiderAccess && (await canPerformRiderActionAnyService(session.user.id, session.user.email!, "UPDATE")));
+      (hasRiderAccess && (await canPerformRiderActionAnyService(user.id, user.email ?? "", "UPDATE")));
     if (!canAddBalance) {
       return NextResponse.json(
         { success: false, error: "Insufficient permissions. Rider action (penalty/refund) access required to add balance directly." },
@@ -118,7 +118,7 @@ export async function POST(
 
     const currentBalance = wallet ? Number(wallet.totalBalance) : 0;
     const balanceAfter = (currentBalance + amount).toFixed(2);
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email ?? "");
     const ref = idempotencyKey ?? `add_bal_${Date.now()}_${riderId}`;
 
     await db.insert(walletLedger).values({
@@ -153,8 +153,8 @@ export async function POST(
     const totalBalanceAfter = walletAfter ? Number(walletAfter.totalBalance) : 0;
 
     await logActionByAuth(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email ?? "",
       "RIDER",
       "RIDER_WALLET_ADD_BALANCE",
       {

@@ -1,0 +1,67 @@
+{
+  "expo": {
+    "name": "GatiMitra",
+    "slug": "gatimitra-customer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./public/img/fav.png",
+    "scheme": "gatimitra",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./public/img/fav.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#14b8a6"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "androidStatusBar": {
+      "translucent": false,
+      "backgroundColor": "#FFFFFF",
+      "barStyle": "dark-content"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gatimitra.customer"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./public/img/fav.png",
+        "backgroundColor": "#14b8a6"
+      },
+      "package": "com.gatimitra.customer"
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./public/img/fav.png",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "GatiMitra uses your location to show nearby restaurants and delivery options."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "GatiMitra uses the microphone for voice search.",
+          "speechRecognitionPermission": "GatiMitra uses speech recognition so you can search by voice."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "GatiMitra needs access to your contacts to add a guest for the ride."
+        }
+      ],
+      "expo-font"
+    ],
+    "extra": {
+      "API_BASE_URL": "${EXPO_PUBLIC_API_BASE_URL}"
+    }
+  }
+}

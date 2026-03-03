@@ -27,9 +27,9 @@ export async function POST(
 ) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-    if (sessionError || !session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -37,10 +37,10 @@ export async function POST(
     }
 
     // Check if user is super admin or can perform APPROVE action on RIDER dashboard
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     const canApprove = await canPerformActionByAuth(
-      session.user.id,
-      session.user.email!,
+      user.id,
+      user.email ?? "",
       "RIDER",
       "APPROVE",
       "RIDER_DOCUMENT"

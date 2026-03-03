@@ -592,6 +592,215 @@ const ridersTable = pgTable(
 export const riders = ridersTable;
 
 /**
+ * Customer user profiles (GatiMitra customer app onboarding).
+ * user_id format: GM100001, GM100002, ... (auto-generated from id).
+ */
+export const userProfiles = pgTable(
+  "user_profiles",
+  {
+    id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+    userId: text("user_id").notNull().unique(),
+    mobileNumber: text("mobile_number").notNull().unique(),
+    fullName: text("full_name"),
+    email: text("email").unique(),
+    ageGroup: text("age_group"),
+    gender: text("gender"),
+    profileCompleted: boolean("profile_completed").notNull().default(false),
+    smsPermission: boolean("sms_permission").default(false),
+    locationPermission: boolean("location_permission").default(false),
+    contactsPermission: boolean("contacts_permission").default(false),
+    lastLoginIp: text("last_login_ip"),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    sessionsInvalidBefore: timestamp("sessions_invalid_before", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: uniqueIndex("user_profiles_user_id_idx").on(table.userId),
+    mobileIdx: uniqueIndex("user_profiles_mobile_idx").on(table.mobileNumber),
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Customers table (public.customers) – customer app auth & profile
+// Enums and table match DDL; use this for customer OTP verify and /me/profile
+// ---------------------------------------------------------------------------
+export const customerGenderEnum = pgEnum("customer_gender", ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"]);
+export const customerStatusEnum = pgEnum("customer_status", ["ACTIVE", "SUSPENDED", "BLOCKED", "DEACTIVATED", "PENDING_VERIFICATION"]);
+export const riskLevelEnum = pgEnum("risk_level", ["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+/** Customer address label (HOME / WORK / HOTEL / OTHER). Matches public.address_type. */
+export const addressTypeEnum = pgEnum("address_type", ["HOME", "WORK", "HOTEL", "OTHER"]);
+
+export const customers = pgTable(
+  "customers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: text("customer_id").notNull().unique(),
+    fullName: text("full_name").notNull(),
+    email: text("email").unique(),
+    primaryMobile: text("primary_mobile").notNull().unique(),
+    primaryMobileNormalized: text("primary_mobile_normalized"),
+    primaryMobileCountryCode: text("primary_mobile_country_code").default("+91"),
+    mobileVerified: boolean("mobile_verified").default(true),
+    alternateMobile: text("alternate_mobile"),
+    whatsappNumber: text("whatsapp_number"),
+    gender: customerGenderEnum("gender"),
+    dateOfBirth: date("date_of_birth"),
+    profileImageUrl: text("profile_image_url"),
+    bio: text("bio"),
+    preferredLanguage: text("preferred_language").default("en"),
+    referralCode: text("referral_code").unique(),
+    referredBy: text("referred_by"),
+    referrerCustomerId: bigint("referrer_customer_id", { mode: "number" }),
+    accountStatus: customerStatusEnum("account_status").notNull().default("ACTIVE"),
+    statusReason: text("status_reason"),
+    riskFlag: riskLevelEnum("risk_flag").default("LOW"),
+    trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
+    walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),
+    walletLockedAmount: numeric("wallet_locked_amount", { precision: 12, scale: 2 }).default("0.0"),
+    isIdentityVerified: boolean("is_identity_verified").default(false),
+    isEmailVerified: boolean("is_email_verified").default(false),
+    isMobileVerified: boolean("is_mobile_verified").default(true),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    lastOrderAt: timestamp("last_order_at", { withTimezone: true }),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    deletedBy: integer("deleted_by"),
+    deletionReason: text("deletion_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdVia: text("created_via").default("app"),
+    updatedBy: text("updated_by"),
+    // App profile/onboarding (add via migration 0065 if your DDL doesn’t have these)
+    ageGroup: text("age_group"),
+    profileCompleted: boolean("profile_completed").default(false),
+    smsPermission: boolean("sms_permission").default(false),
+    locationPermission: boolean("location_permission").default(false),
+    contactsPermission: boolean("contacts_permission").default(false),
+    sessionsInvalidBefore: timestamp("sessions_invalid_before", { withTimezone: true }),
+    // Address / location (saved from app)
+    addressLine1: text("address_line1"),
+    addressLine2: text("address_line2"),
+    city: text("city"),
+    state: text("state"),
+    pincode: text("pincode"),
+    country: text("country"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    customerUuid: uuid("customer_uuid").notNull().$defaultFn(() => crypto.randomUUID()),
+  },
+  (table) => ({
+    customerIdIdx: index("customers_customer_id_idx").on(table.customerId),
+    primaryMobileIdx: index("customers_primary_mobile_idx").on(table.primaryMobile),
+    emailIdx: index("customers_email_idx").on(table.email),
+    accountStatusIdx: index("customers_account_status_idx").on(table.accountStatus),
+  })
+);
+
+/** Saved delivery addresses per customer. Matches public.customer_addresses (address_id, address_line1, city, state, postal_code, etc.). */
+export const customerAddresses = pgTable(
+  "customer_addresses",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    addressId: text("address_id").notNull().unique(),
+    label: addressTypeEnum("label").notNull().default("HOME"),
+    customLabel: text("custom_label"),
+    addressLine1: text("address_line1").notNull(),
+    addressLine2: text("address_line2"),
+    addressAuto: text("address_auto"),
+    addressManual: text("address_manual"),
+    landmark: text("landmark"),
+    city: text("city").notNull(),
+    state: text("state").notNull(),
+    postalCode: text("postal_code").notNull(),
+    country: text("country").default("IN"),
+    latitude: numeric("latitude", { precision: 10, scale: 8 }),
+    longitude: numeric("longitude", { precision: 11, scale: 8 }),
+    isDeliveryAddress: boolean("is_delivery_address").default(true),
+    isPickupAddress: boolean("is_pickup_address").default(false),
+    contactName: text("contact_name"),
+    contactMobile: text("contact_mobile"),
+    deliveryInstructions: text("delivery_instructions"),
+    accessCode: text("access_code"),
+    floorNumber: text("floor_number"),
+    isDefault: boolean("is_default").default(false),
+    isVerified: boolean("is_verified").default(false),
+    isActive: boolean("is_active").default(true),
+    orderCount: integer("order_count").default(0),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    isLastUsed: boolean("is_last_used").default(false),
+  },
+  (table) => [
+    index("customer_addresses_customer_id_idx").on(table.customerId),
+    index("customer_addresses_address_id_idx").on(table.addressId),
+    index("idx_customer_address_location").on(table.latitude, table.longitude),
+  ]
+);
+
+/** Session-level active delivery location. Locked when order placed; unlock after delivery. */
+export const customerActiveLocation = pgTable("customer_active_location", {
+  customerId: bigint("customer_id", { mode: "number" })
+    .primaryKey()
+    .references(() => customers.id, { onDelete: "cascade" }),
+  latitude: numeric("latitude", { precision: 10, scale: 7 }),
+  longitude: numeric("longitude", { precision: 10, scale: 7 }),
+  address: text("address"),
+  lockedForOrder: boolean("locked_for_order").default(false),
+  orderId: bigint("order_id", { mode: "number" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+/** Self-learning delivery locations (orders + manual); powers local search fallback and city→area suggestions. */
+export const popularLocations = pgTable(
+  "popular_locations",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    cityName: text("city_name").notNull(),
+    areaName: text("area_name").notNull(),
+    displayName: text("display_name"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }).notNull(),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }).notNull(),
+    searchRank: smallint("search_rank").default(0),
+    usageCount: bigint("usage_count", { mode: "number" }).default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    index("idx_popular_locations_city").on(table.cityName),
+    index("idx_popular_locations_area").on(table.areaName),
+    index("idx_popular_locations_usage").on(table.usageCount),
+  ]
+);
+
+/** Customer reports about restaurant (menu, pricing, fraud). store_id = merchant_stores.id from Supabase. */
+export const restaurantReports = pgTable(
+  "restaurant_reports",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigint("customer_id", { mode: "number" })
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    storeId: bigint("store_id", { mode: "number" }).notNull(),
+    reportType: text("report_type").notNull(),
+    description: text("description"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    index("idx_restaurant_reports_customer_id").on(table.customerId),
+    index("idx_restaurant_reports_store_id").on(table.storeId),
+    index("idx_restaurant_reports_created_at").on(table.createdAt),
+  ]
+);
+
+/**
  * Rider documents with history support (allows reupload)
  * Tracks all document submissions for audit and compliance
  */
@@ -1069,6 +1278,7 @@ export const ordersCore = pgTable(
   "orders_core",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").unique(),
     orderUuid: uuid("order_uuid").notNull().unique().defaultRandom(),
     orderType: orderTypeEnum("order_type").notNull(),
     orderSource: orderSourceTypeEnum("order_source").notNull().default("internal"),
@@ -1103,6 +1313,11 @@ export const ordersCore = pgTable(
     riderEarning: numeric("rider_earning", { precision: 10, scale: 2 }),
     status: orderStatusTypeEnum("status").notNull().default("assigned"),
     currentStatus: text("current_status"),
+    itemTotal: numeric("item_total", { precision: 12, scale: 2 }),
+    addonTotal: numeric("addon_total", { precision: 12, scale: 2 }),
+    grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
+    tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }),
+    placedAt: timestamp("placed_at", { withTimezone: true }),
     paymentStatus: paymentStatusTypeEnum("payment_status"),
     paymentMethod: paymentModeTypeEnum("payment_method"),
     riskFlagged: boolean("risk_flagged").notNull().default(false),
@@ -1123,8 +1338,13 @@ export const ordersCore = pgTable(
     estimatedDeliveryTime: timestamp("estimated_delivery_time", { withTimezone: true }),
     actualPickupTime: timestamp("actual_pickup_time", { withTimezone: true }),
     actualDeliveryTime: timestamp("actual_delivery_time", { withTimezone: true }),
+    items: jsonb("items"),
+    deliveryLatitude: numeric("delivery_latitude", { precision: 10, scale: 7 }),
+    deliveryLongitude: numeric("delivery_longitude", { precision: 10, scale: 7 }),
+    deliveryAddress: text("delivery_address"),
   },
   (table) => ({
+    orderIdIdx: index("orders_core_order_id_idx").on(table.orderId),
     riderIdIdx: index("orders_core_rider_id_idx").on(table.riderId),
     statusIdx: index("orders_core_status_idx").on(table.status),
     orderTypeIdx: index("orders_core_order_type_idx").on(table.orderType),
@@ -1132,6 +1352,7 @@ export const ordersCore = pgTable(
     customerIdIdx: index("orders_core_customer_id_idx").on(table.customerId),
     orderSourceIdx: index("orders_core_order_source_idx").on(table.orderSource),
     orderUuidIdx: index("orders_core_order_uuid_idx").on(table.orderUuid),
+    placedAtIdx: index("orders_core_placed_at_idx").on(table.placedAt),
     riderStatusIdx: index("orders_core_rider_status_idx").on(
       table.riderId,
       table.status
@@ -1153,14 +1374,262 @@ export const ordersCore = pgTable(
   })
 );
 
+// ============================================================================
+// ORDERS CORE ITEMS / ADDONS / PAYMENTS (references orders_core.order_id)
+// ============================================================================
+
+export const ordersCoreItems = pgTable(
+  "orders_core_items",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => ordersCore.orderId, { onDelete: "cascade" }),
+    menuItemId: bigint("menu_item_id", { mode: "number" }).notNull(),
+    itemName: text("item_name").notNull(),
+    categoryName: text("category_name"),
+    vegNonveg: text("veg_nonveg"),
+    variantId: bigint("variant_id", { mode: "number" }),
+    variantName: text("variant_name"),
+    quantity: integer("quantity").notNull(),
+    basePrice: numeric("base_price", { precision: 12, scale: 2 }).notNull(),
+    addonPrice: numeric("addon_price", { precision: 12, scale: 2 }).default("0"),
+    totalPrice: numeric("total_price", { precision: 12, scale: 2 }).notNull(),
+    itemSnapshot: jsonb("item_snapshot"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("orders_core_items_order_id_idx").on(table.orderId),
+    menuItemIdIdx: index("orders_core_items_menu_item_id_idx").on(table.menuItemId),
+  })
+);
+
+export const ordersCoreItemAddons = pgTable(
+  "orders_core_item_addons",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderItemId: bigint("order_item_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCoreItems.id, { onDelete: "cascade" }),
+    addonId: bigint("addon_id", { mode: "number" }),
+    addonName: text("addon_name"),
+    addonPrice: numeric("addon_price", { precision: 12, scale: 2 }),
+    quantity: integer("quantity").default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    orderItemIdIdx: index("orders_core_item_addons_order_item_id_idx").on(table.orderItemId),
+  })
+);
+
+export const ordersCorePayments = pgTable(
+  "orders_core_payments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").references(() => ordersCore.orderId, { onDelete: "set null" }),
+    paymentGateway: text("payment_gateway"),
+    paymentMethod: text("payment_method"),
+    transactionId: text("transaction_id"),
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    currency: text("currency").default("INR"),
+    paymentStatus: text("payment_status").default("INITIATED"),
+    gatewayResponse: jsonb("gateway_response"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("orders_core_payments_order_id_idx").on(table.orderId),
+    transactionIdIdx: index("orders_core_payments_transaction_id_idx").on(table.transactionId),
+  })
+);
+
+// ============================================================================
+// PENDING ORDERS (payment-first: lock cart until payment success)
+// ============================================================================
+
+export const pendingOrders = pgTable(
+  "pending_orders",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    pendingId: text("pending_id").notNull().unique(),
+    customerId: bigint("customer_id", { mode: "number" }).notNull(),
+    merchantStoreId: bigint("merchant_store_id", { mode: "number" }).notNull(),
+    merchantParentId: bigint("merchant_parent_id", { mode: "number" }),
+    itemsSnapshot: jsonb("items_snapshot").notNull(),
+    addressIdUsed: bigint("address_id_used", { mode: "number" }).notNull(),
+    paymentMethod: text("payment_method").notNull(),
+    tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }).default("0"),
+    donationAmount: numeric("donation_amount", { precision: 12, scale: 2 }).default("0"),
+    itemTotal: numeric("item_total", { precision: 12, scale: 2 }).notNull(),
+    addonTotal: numeric("addon_total", { precision: 12, scale: 2 }).default("0"),
+    grandTotal: numeric("grand_total", { precision: 12, scale: 2 }).notNull(),
+    currency: text("currency").default("INR"),
+    deliveryAddress: text("delivery_address"),
+    dropLat: numeric("drop_lat", { precision: 9, scale: 6 }),
+    dropLon: numeric("drop_lon", { precision: 9, scale: 6 }),
+    pickupAddressNormalized: text("pickup_address_normalized"),
+    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
+    pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }),
+    distanceKm: numeric("distance_km", { precision: 8, scale: 2 }),
+    razorpayOrderId: text("razorpay_order_id"),
+    finalizedOrderId: text("finalized_order_id"),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pendingIdIdx: index("pending_orders_pending_id_idx").on(table.pendingId),
+    customerIdIdx: index("pending_orders_customer_id_idx").on(table.customerId),
+    razorpayOrderIdIdx: index("pending_orders_razorpay_order_id_idx").on(table.razorpayOrderId),
+    finalizedOrderIdIdx: index("pending_orders_finalized_order_id_idx").on(table.finalizedOrderId),
+    expiresAtIdx: index("pending_orders_expires_at_idx").on(table.expiresAt),
+  })
+);
+
+// ============================================================================
+// LEVEL-2: Order events, rider tracking, kitchen timeline, ETA
+// ============================================================================
+
+export const orderEvents = pgTable(
+  "order_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    eventType: text("event_type").notNull(),
+    fromStatus: text("from_status"),
+    toStatus: text("to_status").notNull(),
+    payload: jsonb("payload"),
+    actorType: text("actor_type"),
+    actorId: bigint("actor_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderIdCreatedIdx: index("order_events_order_id_created_idx").on(table.orderId, table.createdAt),
+  })
+);
+
+export const orderRiderTracking = pgTable(
+  "order_rider_tracking",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    riderId: integer("rider_id"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }).notNull(),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }).notNull(),
+    headingDegrees: numeric("heading_degrees", { precision: 5, scale: 2 }),
+    speedKmh: numeric("speed_kmh", { precision: 5, scale: 2 }),
+    accuracyMeters: numeric("accuracy_meters", { precision: 6, scale: 2 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderIdCreatedIdx: index("order_rider_tracking_order_id_created_idx").on(table.orderId, table.createdAt),
+  })
+);
+
+// Level-2: delivery_assignments, rider_live_locations, rider_location_history, order_tracking_tokens
+export const deliveryAssignments = pgTable(
+  "delivery_assignments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull().unique(),
+    riderId: integer("rider_id").notNull().references(() => riders.id, { onDelete: "cascade" }),
+    assignmentStatus: text("assignment_status").notNull().default("ASSIGNED"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    pickedUpAt: timestamp("picked_up_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    currentEtaMinutes: integer("current_eta_minutes"),
+    distanceRemainingKm: numeric("distance_remaining_km", { precision: 6, scale: 2 }),
+    routePolyline: text("route_polyline"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("delivery_assignments_order_id_idx").on(table.orderId),
+    riderIdIdx: index("delivery_assignments_rider_id_idx").on(table.riderId),
+    statusIdx: index("delivery_assignments_status_idx").on(table.assignmentStatus),
+  })
+);
+
+export const riderLiveLocations = pgTable("rider_live_locations", {
+  riderId: integer("rider_id").primaryKey().references(() => riders.id, { onDelete: "cascade" }),
+  latitude: numeric("latitude", { precision: 10, scale: 7 }).notNull(),
+  longitude: numeric("longitude", { precision: 10, scale: 7 }).notNull(),
+  speedKmh: numeric("speed_kmh", { precision: 5, scale: 2 }),
+  heading: numeric("heading", { precision: 6, scale: 2 }),
+  accuracyMeters: numeric("accuracy_meters", { precision: 6, scale: 2 }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const riderLocationHistory = pgTable(
+  "rider_location_history",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    riderId: integer("rider_id").notNull().references(() => riders.id, { onDelete: "cascade" }),
+    orderId: text("order_id"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }).notNull(),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }).notNull(),
+    speedKmh: numeric("speed_kmh", { precision: 5, scale: 2 }),
+    heading: numeric("heading", { precision: 6, scale: 2 }),
+    accuracyMeters: numeric("accuracy_meters", { precision: 6, scale: 2 }),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    riderRecordedIdx: index("rider_location_history_rider_id_recorded_idx").on(table.riderId, table.recordedAt),
+    orderIdIdx: index("rider_location_history_order_id_idx").on(table.orderId),
+  })
+);
+
+export const orderTrackingTokens = pgTable("order_tracking_tokens", {
+  orderId: text("order_id").primaryKey(),
+  trackingToken: text("tracking_token").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+});
+
+export const orderKitchenTimeline = pgTable(
+  "order_kitchen_timeline",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    step: text("step").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    metadata: jsonb("metadata"),
+  },
+  (table) => ({
+    orderIdIdx: index("order_kitchen_timeline_order_id_idx").on(table.orderId),
+  })
+);
+
+export const orderEtaSnapshots = pgTable(
+  "order_eta_snapshots",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    orderSource: text("order_source").notNull().default("orders_core"),
+    etaSeconds: integer("eta_seconds").notNull(),
+    etaAt: timestamp("eta_at", { withTimezone: true }).notNull().defaultNow(),
+    triggerEvent: text("trigger_event"),
+    distanceKm: numeric("distance_km", { precision: 8, scale: 2 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderIdCreatedIdx: index("order_eta_snapshots_order_id_created_idx").on(table.orderId, table.createdAt),
+  })
+);
+
 export const ordersFood = pgTable(
   "orders_food",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     orderId: bigint("order_id", { mode: "number" })
-      .notNull()
       .unique()
       .references(() => ordersCore.id, { onDelete: "cascade" }),
+    coreOrderId: text("core_order_id").unique(),
     merchantStoreId: bigint("merchant_store_id", { mode: "number" }),
     merchantParentId: bigint("merchant_parent_id", { mode: "number" }),
     restaurantName: text("restaurant_name"),
@@ -1176,6 +1645,8 @@ export const ordersFood = pgTable(
     isHighValue: boolean("is_high_value").notNull().default(false),
     vegNonVeg: vegNonVegTypeEnum("veg_non_veg"),
     deliveryInstructions: text("delivery_instructions"),
+    customerId: bigint("customer_id", { mode: "number" }),
+    orderStatus: text("order_status"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1185,6 +1656,7 @@ export const ordersFood = pgTable(
   },
   (table) => ({
     orderIdIdx: index("orders_food_order_id_idx").on(table.orderId),
+    coreOrderIdIdx: index("orders_food_core_order_id_idx").on(table.coreOrderId),
     merchantStoreIdIdx: index("orders_food_merchant_store_id_idx").on(
       table.merchantStoreId
     ),
@@ -1411,35 +1883,6 @@ export const orderActions = pgTable(
     orderIdIdx: index("order_actions_order_id_idx").on(table.orderId),
     riderIdIdx: index("order_actions_rider_id_idx").on(table.riderId),
     timestampIdx: index("order_actions_timestamp_idx").on(table.timestamp),
-  })
-);
-
-/**
- * Order timeline events - comprehensive event log
- */
-export const orderEvents = pgTable(
-  "order_events",
-  {
-    id: bigserial("id", { mode: "number" }).primaryKey(),
-    orderId: integer("order_id")
-      .notNull()
-      .references(() => orders.id, { onDelete: "cascade" }),
-    event: text("event").notNull(), // e.g., "assigned", "accepted", "reached_store", "picked_up", "delivered"
-    actorType: text("actor_type"), // "rider", "system", "customer", "merchant"
-    actorId: integer("actor_id"),
-    metadata: jsonb("metadata").default({}),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => ({
-    orderIdIdx: index("order_events_order_id_idx").on(table.orderId),
-    eventIdx: index("order_events_event_idx").on(table.event),
-    createdAtIdx: index("order_events_created_at_idx").on(table.createdAt),
-    orderEventIdx: index("order_events_order_event_idx").on(
-      table.orderId,
-      table.event
-    ),
   })
 );
 
@@ -2589,7 +3032,6 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
     references: [riders.id],
   }),
   actions: many(orderActions),
-  events: many(orderEvents),
   ratings: many(ratings),
   tickets: many(tickets),
   walletCreditRequests: many(walletCreditRequests),

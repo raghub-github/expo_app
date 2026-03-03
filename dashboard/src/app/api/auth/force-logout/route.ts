@@ -12,10 +12,11 @@ export async function POST(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
     const {
-      data: { session },
-    } = await supabase.auth.getSession();
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    if (!session) {
+    if (userError || !user) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check permissions
-    const email = session.user.email;
+    const email = user.email;
     if (!email) {
       return NextResponse.json(
         { success: false, error: "Invalid session" },
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const userPerms = await getUserPermissions(session.user.id, email);
+    const userPerms = await getUserPermissions(user.id, email);
     if (!userPerms) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },

@@ -7,6 +7,9 @@ import { ChevronRight } from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
+  getMerchantSubRoutesForPath,
+  adminPortalMerchantRoutes,
+  merchantPortalSidebarRoutes,
   type DashboardSubRoute,
   type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
@@ -15,6 +18,9 @@ import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { TicketPropertiesPanel } from "@/components/tickets/ticket-view/TicketPropertiesPanel";
 import { usePermission } from "@/hooks/usePermission";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
+import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
+import { useStore } from "@/hooks/useStore";
+import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -38,11 +44,20 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
     [cleanPathname]
   );
 
-  // Sub-routes for current dashboard (may be filtered for Area Managers)
-  const rawSubRoutes = useMemo(
-    () => getCurrentDashboardSubRoutes(cleanPathname),
-    [cleanPathname]
-  );
+  const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
+  const portal = searchParams.get("portal") || (isStorePath ? "merchant" : "admin");
+
+  // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = Dashboard, Orders, Menu, etc. When on a store page, show store-scoped links.
+  const rawSubRoutes = useMemo(() => {
+    const dashboard = getCurrentDashboard(cleanPathname);
+    if (dashboard?.href === "/dashboard/merchants") {
+      const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
+      if (isStorePath) return getMerchantSubRoutesForPath(cleanPathname);
+      if (portal === "merchant") return merchantPortalSidebarRoutes;
+      return adminPortalMerchantRoutes;
+    }
+    return getCurrentDashboardSubRoutes(cleanPathname);
+  }, [cleanPathname, portal]);
   const isAreaManagerDashboard =
     currentDashboard?.dashboardType === "AREA_MANAGER";
   const isOrderDashboard =
@@ -105,6 +120,45 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
     return match ? parseInt(match[1], 10) : null;
   }, [cleanPathname]);
 
+  // Store ID when on a merchant store page (for Store Information Card in sidebar)
+  const storeIdFromPath = useMemo(() => {
+    const match = cleanPathname.match(/^\/dashboard\/merchants\/stores\/(\d+)/);
+    return match ? match[1] : null;
+  }, [cleanPathname]);
+
+  const { store: sidebarStoreData } = useStore(storeIdFromPath);
+  const merchantsSearch = useMerchantsSearch();
+
+  const sidebarStore: StoreInfoCardData | null = useMemo(() => {
+    if (!sidebarStoreData) return null;
+    return {
+      storeId: sidebarStoreData.id,
+      name: sidebarStoreData.name ?? "",
+      store_id: sidebarStoreData.store_id ?? "",
+      full_address: sidebarStoreData.full_address ?? null,
+      approval_status: sidebarStoreData.approval_status ?? null,
+      store_phones: sidebarStoreData.store_phones ?? null,
+      store_email: sidebarStoreData.store_email ?? null,
+      created_at: sidebarStoreData.created_at ?? null,
+    };
+  }, [sidebarStoreData]);
+
+  const isMerchantsListPage = cleanPathname === "/dashboard/merchants";
+  const showMerchantSearchSkeleton =
+    isMerchantsListPage && portal === "merchant" && Boolean(merchantsSearch?.isLoading);
+  const merchantSearchResultStore: StoreInfoCardData | null = useMemo(() => {
+    if (!merchantsSearch?.searchResultStore || !isMerchantsListPage || portal !== "merchant") return null;
+    const s = merchantsSearch.searchResultStore;
+    return {
+      storeId: s.storeId,
+      name: s.name,
+      store_id: s.store_id,
+      full_address: s.full_address ?? null,
+      approval_status: s.approval_status ?? null,
+      store_phones: s.store_phones ?? null,
+    };
+  }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal]);
+
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
 
   // Don't show right sidebar if not in a specific dashboard
@@ -122,13 +176,29 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
     return `${href}?search=${encodeURIComponent(selectedRiderId)}`;
   };
 
+  const isMerchantsDashboard = currentDashboard?.href === "/dashboard/merchants";
+  const appendMerchantPortal = (href: string) => {
+    if (!isMerchantsDashboard || portal !== "merchant") return href;
+    const sep = href.includes("?") ? "&" : "?";
+    return `${href}${sep}portal=merchant`;
+  };
+
   return (
     <>
-      {/* Right Sidebar - Properties (ticket detail) or Filters/Nav (list). When filter open, shift left so Filters is rightmost. */}
+      {/* Right Sidebar: desktop = fixed rail; mobile = drawer from right with overlay */}
+      {/* Mobile overlay - tap to close (same as left sidebar) */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden transition-opacity duration-300"
+          onClick={onToggle}
+          aria-hidden="true"
+        />
+      )}
       <aside
-        className={`fixed inset-y-0 z-40 flex h-screen flex-col shadow-xl transition-all duration-300 ease-out ${
-          isOpen ? "w-56" : "w-14"
-        }`}
+        className={`fixed inset-y-0 z-40 flex h-screen flex-col shadow-xl transition-[transform,width] duration-300 ease-out
+          ${isOpen ? "w-56" : "w-14"}
+          max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}
+          lg:translate-x-0`}
         style={{
           right: filterSidebarOpen ? "14rem" : 0,
           backgroundColor: "#E8F0F2",
@@ -175,7 +245,7 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
             /* Tickets collapsed: no duplicate icons, empty content */
             <div className="flex-1 min-h-0" />
           ) : (
-            <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
+            <nav className="flex-1 space-y-2 overflow-y-auto px-2 py-3">
               {(() => {
                 // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
                 const isWalletOrEarningsPath =
@@ -185,7 +255,8 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                   cleanPathname.startsWith("/dashboard/riders/earnings/");
                 // Special handling for customer dashboard - highlight "All Customers" when on /dashboard/customers
                 const isCustomerDashboardHome = cleanPathname === "/dashboard/customers";
-                const activeHref = currentSubRoutes
+                const allRoutesForActive = [...currentSubRoutes];
+                const activeHref = allRoutesForActive
                   .filter((r) => {
                     const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
                     const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
@@ -193,14 +264,14 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                     return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
                   })
                   .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
-                return currentSubRoutes.map((route) => {
+                const linkEl = (route: DashboardSubRoute) => {
                   const isActive = activeHref === route.href;
                   const Icon = route.icon;
                   return (
                     <Link
                       key={route.href}
-                      href={appendRiderSearch(route.href)}
-                      className={`group relative flex items-center rounded-lg transition-all duration-200 ${
+                      href={appendMerchantPortal(appendRiderSearch(route.href))}
+                      className={`group relative flex cursor-pointer items-center rounded-lg transition-all duration-200 ${
                         isOpen
                           ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
                               isActive
@@ -224,7 +295,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                           )}
                         </>
                       )}
-                      {/* Tooltip for collapsed state */}
                       {!isOpen && (
                         <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
                           {route.name}
@@ -233,7 +303,24 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                       )}
                     </Link>
                   );
-                });
+                };
+                return (
+                  <>
+                    {currentSubRoutes.map((route) => linkEl(route))}
+                    {/* Store Information Card: merchant portal — from URL store, or from search result on list page; skeleton when search loading */}
+                    {isOpen && portal === "merchant" && (
+                      <div className="mt-3 min-w-0">
+                        {showMerchantSearchSkeleton ? (
+                          <StoreInfoCardSkeleton />
+                        ) : sidebarStore ? (
+                          <StoreInfoCard store={sidebarStore} />
+                        ) : merchantSearchResultStore ? (
+                          <StoreInfoCard store={merchantSearchResultStore} />
+                        ) : null}
+                      </div>
+                    )}
+                  </>
+                );
               })()}
             </nav>
           )}
@@ -244,7 +331,7 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
           <div className="border-t border-gray-300/30 bg-gray-200/30 backdrop-blur-sm p-2">
             <button
               onClick={onToggle}
-              className={`flex w-full items-center justify-center rounded-lg bg-gray-300/50 text-gray-800 transition-all hover:bg-gray-400/60 hover:shadow-lg hover:scale-105 ${
+              className={`flex w-full cursor-pointer items-center justify-center rounded-lg bg-gray-300/50 text-gray-800 transition-all hover:bg-gray-400/60 hover:shadow-lg hover:scale-105 ${
                 isOpen ? "space-x-2 px-3 py-2.5" : "p-2.5"
               }`}
               title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
@@ -255,15 +342,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
           </div>
         )}
       </aside>
-
-      {/* Overlay for mobile - only show when sidebar is open on mobile */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-30 bg-black/50 lg:hidden"
-          onClick={onToggle}
-          aria-hidden="true"
-        />
-      )}
     </>
   );
 }

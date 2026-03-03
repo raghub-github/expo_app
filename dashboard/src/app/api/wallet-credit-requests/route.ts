@@ -15,19 +15,19 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
 
-    const systemUserId = await getSystemUserIdFromAuthUser(session.user.id, session.user.email ?? undefined);
+    const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email ?? undefined);
     if (!systemUserId) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
     }
 
     // Any agent with RIDER dashboard access (view or full) can see pending action data
     const canView =
-      (await isSuperAdmin(session.user.id, session.user.email!)) ||
+      (await isSuperAdmin(user.id, user.email ?? "")) ||
       (await hasDashboardAccess(systemUserId, "RIDER"));
     if (!canView) {
       return NextResponse.json({ success: false, error: "Insufficient permissions. RIDER dashboard access required." }, { status: 403 });

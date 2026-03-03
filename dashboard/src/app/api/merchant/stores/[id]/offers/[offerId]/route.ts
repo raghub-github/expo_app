@@ -1,0 +1,176 @@
+/**
+ * PATCH /api/merchant/stores/[id]/offers/[offerId] - Update offer
+ * DELETE /api/merchant/stores/[id]/offers/[offerId] - Delete offer (soft: set is_active = false)
+ */
+import { NextRequest, NextResponse } from "next/server";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { getSql } from "@/lib/db/client";
+
+export const runtime = "nodejs";
+
+async function assertStoreAccess(storeId: number) {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) {
+    return { ok: false as const, status: 401, error: "Not authenticated" };
+  }
+  const allowed =
+    (await isSuperAdmin(user.id, user.email)) ||
+    (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
+  if (!allowed) {
+    return { ok: false as const, status: 403, error: "Merchant dashboard access required" };
+  }
+  let areaManagerId: number | null = null;
+  if (!(await isSuperAdmin(user.id, user.email))) {
+    const systemUser = await getSystemUserByEmail(user.email);
+    if (systemUser) {
+      const am = await getAreaManagerByUserId(systemUser.id);
+      if (am) areaManagerId = am.id;
+    }
+  }
+  const store = await getMerchantStoreById(storeId, areaManagerId);
+  if (!store) {
+    return { ok: false as const, status: 404, error: "Store not found" };
+  }
+  return { ok: true as const, store };
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string; offerId: string }> }
+) {
+  try {
+    const { id, offerId } = await params;
+    const storeId = parseInt(id, 10);
+    const offerIdNum = parseInt(offerId, 10);
+    if (!Number.isFinite(storeId) || !Number.isFinite(offerIdNum)) {
+      return NextResponse.json({ success: false, error: "Invalid store or offer id" }, { status: 400 });
+    }
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) {
+      return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    }
+    const body = await request.json().catch(() => ({}));
+    const sql = getSql();
+    const [existing] = await sql`
+      SELECT id FROM merchant_offers WHERE id = ${offerIdNum} AND store_id = ${storeId}
+    `;
+    if (!existing) {
+      return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
+    }
+    const {
+      offer_title,
+      offer_description,
+      offer_type,
+      offer_sub_type,
+      menu_item_ids,
+      discount_value,
+      min_order_amount,
+      buy_quantity,
+      get_quantity,
+      coupon_code,
+      valid_from,
+      valid_till,
+      is_active,
+    } = body;
+    const updates: string[] = ["updated_at = NOW()"];
+    const values: unknown[] = [];
+    let p = 1;
+    if (offer_title !== undefined) {
+      updates.push(`offer_title = $${p++}`);
+      values.push(String(offer_title).trim());
+    }
+    if (valid_from !== undefined) {
+      updates.push(`valid_from = $${p++}`);
+      values.push(new Date(valid_from).toISOString());
+    }
+    if (valid_till !== undefined) {
+      updates.push(`valid_till = $${p++}`);
+      values.push(new Date(valid_till).toISOString());
+    }
+    if (is_active !== undefined) {
+      updates.push(`is_active = $${p++}`);
+      values.push(Boolean(is_active));
+    }
+    if (offer_type !== undefined) {
+      updates.push(`offer_type = $${p++}`);
+      values.push(offer_type);
+    }
+    if (discount_value !== undefined && discount_value !== "") {
+      const type = offer_type ?? "PERCENTAGE";
+      if (type === "PERCENTAGE") {
+        updates.push(`discount_percentage = $${p++}`);
+        updates.push(`discount_value = NULL`);
+        values.push(Number(discount_value));
+      } else {
+        updates.push(`discount_value = $${p++}`);
+        updates.push(`discount_percentage = NULL`);
+        values.push(Number(discount_value));
+      }
+    }
+    if (min_order_amount !== undefined) {
+      updates.push(`min_order_amount = $${p++}`);
+      values.push(min_order_amount === "" || min_order_amount == null ? null : Number(min_order_amount));
+    }
+    if (buy_quantity !== undefined) {
+      updates.push(`buy_quantity = $${p++}`);
+      values.push(buy_quantity == null ? null : Number(buy_quantity));
+    }
+    if (get_quantity !== undefined) {
+      updates.push(`get_quantity = $${p++}`);
+      values.push(get_quantity == null ? null : Number(get_quantity));
+    }
+    if (updates.length <= 1) {
+      return NextResponse.json({ success: false, error: "No fields to update" }, { status: 400 });
+    }
+    values.push(offerIdNum);
+    const setClause = updates.join(", ");
+    const sqlUnsafe = sql as { unsafe: (q: string, v?: unknown[]) => Promise<unknown[]> };
+    const [updated] = await sqlUnsafe.unsafe(
+      `UPDATE merchant_offers SET ${setClause} WHERE id = $${p} AND store_id = ${storeId} RETURNING id, offer_id, store_id, offer_title, offer_type, discount_value, discount_percentage, min_order_amount, valid_from, valid_till, is_active, created_at`,
+      values
+    );
+    if (!updated) {
+      return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
+    }
+    return NextResponse.json({ success: true, offer: updated });
+  } catch (e) {
+    console.error("[PATCH /api/merchant/stores/[id]/offers/[offerId]]", e);
+    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string; offerId: string }> }
+) {
+  try {
+    const { id, offerId } = await params;
+    const storeId = parseInt(id, 10);
+    const offerIdNum = parseInt(offerId, 10);
+    if (!Number.isFinite(storeId) || !Number.isFinite(offerIdNum)) {
+      return NextResponse.json({ success: false, error: "Invalid store or offer id" }, { status: 400 });
+    }
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) {
+      return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    }
+    const sql = getSql();
+    const [updated] = await sql`
+      UPDATE merchant_offers SET is_active = false, updated_at = NOW()
+      WHERE id = ${offerIdNum} AND store_id = ${storeId}
+      RETURNING id
+    `;
+    if (!updated) {
+      return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
+    }
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    console.error("[DELETE /api/merchant/stores/[id]/offers/[offerId]]", e);
+    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+  }
+}

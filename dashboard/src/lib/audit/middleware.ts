@@ -37,12 +37,20 @@ export async function withAuditLog<T>(
   context: ActionContext = {}
 ): Promise<T> {
   const { createServerSupabaseClient } = await import("../supabase/server");
+  const { isInvalidRefreshToken } = await import("../auth/session-errors");
   const supabase = await createServerSupabaseClient();
-  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
 
-  if (sessionError || !session || !session.user.email) {
+  if (userError) {
+    if (isInvalidRefreshToken(userError)) {
+      await supabase.auth.signOut();
+    }
     throw new Error("Not authenticated");
   }
+  if (!user?.email) {
+    throw new Error("Not authenticated");
+  }
+  const session = { userId: user.id, email: user.email };
 
   const startTime = Date.now();
   let actionStatus: "SUCCESS" | "FAILED" = "SUCCESS";
@@ -50,15 +58,12 @@ export async function withAuditLog<T>(
 
   try {
     // Execute handler
-    const result = await handler(
-      { userId: session.user.id, email: session.user.email },
-      context
-    );
+    const result = await handler(session, context);
 
     // Log success
     await logActionByAuth(
-      session.user.id,
-      session.user.email,
+      session.userId,
+      session.email,
       dashboardType,
       actionType,
       {
@@ -78,8 +83,8 @@ export async function withAuditLog<T>(
 
     // Log failure
     await logActionByAuth(
-      session.user.id,
-      session.user.email,
+      session.userId,
+      session.email,
       dashboardType,
       actionType,
       {

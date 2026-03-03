@@ -6,9 +6,10 @@
 
 export function isInvalidRefreshToken(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { message?: string; code?: string };
+  const e = err as { message?: string; code?: string; name?: string };
   const message = (e.message ?? "").toLowerCase();
   return (
+    e.name === "AuthApiError" && (message.includes("refresh") && (message.includes("not found") || message.includes("invalid") || message.includes("already used"))) ||
     e.code === "refresh_token_already_used" ||
     e.code === "refresh_token_not_found" ||
     e.message?.includes("refresh_token_already_used") ||
@@ -39,16 +40,34 @@ function getCauseCode(err: unknown): string | undefined {
   return code;
 }
 
+/** True if error is timeout/abort (do not retry – Supabase unreachable). */
+export function isTimeoutOrAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { message?: string; code?: string; name?: string };
+  const name = (e.name ?? "").toLowerCase();
+  const msg = (e.message ?? "").toLowerCase();
+  if (name === "aborterror" || msg.includes("aborted")) return true;
+  const code = getCauseCode(err) ?? e.code;
+  return (
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_SOCKET_TIMEOUT" ||
+    code === "ETIMEDOUT"
+  );
+}
+
 /**
  * Network/transient errors: Supabase unreachable, DNS, timeout.
  * Return 503 so client retries instead of logging out or showing "Not authenticated".
- * Includes undici codes: UND_ERR_CONNECT_TIMEOUT, etc.
+ * Includes undici codes: UND_ERR_CONNECT_TIMEOUT, AbortError (our fetch timeout), etc.
  */
 export function isNetworkOrTransientError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const e = err as { message?: string; code?: string; cause?: unknown };
+  const e = err as { message?: string; code?: string; name?: string; cause?: unknown };
   const msg = (e.message ?? "").toLowerCase();
+  const name = (e.name ?? "").toLowerCase();
   if (
+    name === "aborterror" ||
+    msg.includes("aborted") ||
     msg.includes("fetch failed") ||
     msg.includes("enotfound") ||
     msg.includes("etimedout") ||

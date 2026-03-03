@@ -46,6 +46,11 @@ All old/conflicting files have been **removed**. Only the correct migration file
 19. ✅ `0020_unified_ticket_system.sql`
 20. ✅ `0021_unified_ticket_data_migration.sql`
 
+### **Phase 10: Customer addresses & delivery snapshot**
+21. ✅ `0070_customer_addresses_and_active_location.sql` – saved addresses + active delivery location (required for Saved addresses / Location in app)
+22. ✅ `0071_orders_delivery_location_snapshot.sql` – delivery lat/lon/address on orders (run after 0070)
+23. ✅ `0072_restaurant_reports.sql` – customer reports about restaurant (menu/pricing/fraud); used by Report issue in app
+
 ---
 
 ## 🗑️ **FILES REMOVED (No Longer Needed)**
@@ -78,10 +83,13 @@ The following old/conflicting files have been **deleted**:
 cd backend/drizzle
 export DATABASE_URL="your_supabase_connection_string"
 
-# Run all migrations
+# Run all migrations (including customer addresses)
 psql $DATABASE_URL -f 0002_enterprise_rider_schema.sql
 psql $DATABASE_URL -f 0003_consolidate_schemas_FIXED.sql
-# ... continue for all 20 files
+# ... through 0021, then:
+psql $DATABASE_URL -f 0070_customer_addresses_and_active_location.sql
+psql $DATABASE_URL -f 0071_orders_delivery_location_snapshot.sql
+psql $DATABASE_URL -f 0072_restaurant_reports.sql
 ```
 
 ---
@@ -98,7 +106,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
 -- Check key tables exist
 SELECT table_name FROM information_schema.tables 
 WHERE table_schema = 'public' 
-  AND table_name IN ('riders', 'orders', 'customers', 'merchant_stores', 'system_users', 'unified_tickets');
+  AND table_name IN ('riders', 'orders', 'customers', 'merchant_stores', 'system_users', 'unified_tickets', 'customer_addresses', 'customer_active_location');
 ```
 
 ---

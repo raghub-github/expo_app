@@ -1,27 +1,41 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2 } from "lucide-react";
+import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
-import { getCurrentPageName } from "@/lib/navigation/dashboard-routes";
+import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
+import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
+import { useRightSidebar } from "@/context/RightSidebarContext";
 
-// Order Search Bar Component
+// Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
-  const [searchType, setSearchType] = useState("Order Id");
-  const [searchValue, setSearchValue] = useState("");
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlSearch = searchParams.get("search") ?? "";
+  const urlSearchType = searchParams.get("searchType") ?? "Order Id";
+
+  const [searchType, setSearchType] = useState(urlSearchType);
+  const [searchValue, setSearchValue] = useState(urlSearch);
   const [showDropdown, setShowDropdown] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const MINT_GREEN = "#4EE5C1";
+
+  // Sync from URL when URL changes (e.g. back/forward or external nav)
+  useEffect(() => {
+    setSearchValue(searchParams.get("search") ?? "");
+    setSearchType(searchParams.get("searchType") ?? "Order Id");
+  }, [searchParams.get("search"), searchParams.get("searchType")]);
 
   // All search items from the 3 dashboards
   const searchItems = [
@@ -54,8 +68,19 @@ function OrderSearchBar() {
   }, [showDropdown]);
 
   const handleSearch = () => {
-    // Handle search logic here
-    console.log("Search:", searchType, searchValue);
+    const params = new URLSearchParams(searchParams.toString());
+    const value = searchValue.trim();
+    if (value) {
+      params.set("search", value);
+      params.set("searchType", searchType);
+      params.delete("page");
+    } else {
+      params.delete("search");
+      params.delete("searchType");
+      params.delete("page");
+    }
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   };
 
   return (
@@ -123,7 +148,31 @@ function OrderSearchBar() {
 
 export function Header() {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const pageName = useMemo(() => getCurrentPageName(pathname), [pathname]);
+  const isMerchantsArea = pathname.startsWith("/dashboard/merchants");
+  const portal = searchParams.get("portal") || (pathname.startsWith("/dashboard/merchants/stores/") ? "merchant" : "admin");
+  const setPortal = (value: "admin" | "merchant") => {
+    if (pathname.startsWith("/dashboard/merchants/stores/")) {
+      if (value === "admin") router.push("/dashboard/merchants?portal=admin");
+      else {
+        const next = new URLSearchParams(searchParams.toString());
+        next.set("portal", "merchant");
+        const qs = next.toString();
+        router.replace(qs ? `${pathname}?${qs}` : pathname);
+      }
+    } else {
+      if (value === "merchant") {
+        // Merchant portal: clear search/category so result list hides and tagline shows
+        router.push("/dashboard/merchants?portal=merchant");
+      } else {
+        const next = new URLSearchParams(searchParams.toString());
+        next.set("portal", value);
+        router.push(`/dashboard/merchants?${next.toString()}`);
+      }
+    }
+  };
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNewDropdown, setShowNewDropdown] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -133,6 +182,16 @@ export function Header() {
   const newMenuRef = useRef<HTMLDivElement>(null);
   const { data: sessionData, isLoading } = useSessionQuery();
   const logoutMutation = useLogout();
+  const leftSidebarMobile = useLeftSidebarMobile();
+  const rightSidebar = useRightSidebar();
+  const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
+  const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
+  const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
+  const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
+  const handleOpenRightPanel = () => {
+    leftSidebarMobile?.setMobileMenuOpen(false);
+    rightSidebar?.onToggle();
+  };
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -372,8 +431,24 @@ export function Header() {
 
   return (
     <header className="flex h-14 items-center justify-between border-b bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4">
-      {/* Mobile: Logo + Page name, Desktop: Just Page name. Toggle + gear never shrink. */}
+      {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
+        {/* Hamburger - only on tablet/mobile (<1024px) */}
+        {leftSidebarMobile && (
+          <button
+            type="button"
+            onClick={leftSidebarMobile.toggleMobileMenu}
+            className="lg:hidden flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 active:bg-gray-200 transition-colors duration-200 -ml-1"
+            aria-label={leftSidebarMobile.isMobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={leftSidebarMobile.isMobileMenuOpen}
+          >
+            {leftSidebarMobile.isMobileMenuOpen ? (
+              <X className="h-6 w-6" aria-hidden />
+            ) : (
+              <Menu className="h-6 w-6" aria-hidden />
+            )}
+          </button>
+        )}
         {/* Mobile logo - icon only */}
         <Link href="/dashboard" className="sm:hidden flex-shrink-0">
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
@@ -385,18 +460,41 @@ export function Header() {
         )}
       </div>
 
-      {/* Center: Order Search on orders; Dashboard Search when not Tickets/Area Managers */}
+      {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
       {pathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
           <OrderSearchBar />
         </div>
-      ) : !pathname.startsWith("/dashboard/tickets") && pathname !== "/dashboard/area-managers" ? (
-        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
+      ) : !pathname.startsWith("/dashboard/tickets") &&
+        pathname !== "/dashboard/area-managers" &&
+        !pathname.startsWith("/dashboard/merchants/verifications") ? (
+        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />
         </div>
       ) : null}
 
       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
+        {/* Admin | Merchant portal toggle: always on merchants area (list + store pages) */}
+        {isMerchantsArea && (
+          <div className="flex rounded-md border border-gray-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
+            <button
+              type="button"
+              onClick={() => setPortal("admin")}
+              className={`cursor-pointer rounded px-2 py-1.5 text-xs font-medium transition ${portal === "admin" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-100"}`}
+              aria-pressed={portal === "admin"}
+            >
+              Admin
+            </button>
+            <button
+              type="button"
+              onClick={() => setPortal("merchant")}
+              className={`cursor-pointer rounded px-2 py-1.5 text-xs font-medium transition ${portal === "merchant" ? "bg-orange-500 text-white" : "text-gray-600 hover:bg-gray-100"}`}
+              aria-pressed={portal === "merchant"}
+            >
+              Merchant
+            </button>
+          </div>
+        )}
         {/* Global search and + New: only on Tickets dashboard */}
         {pathname.startsWith("/dashboard/tickets") && (
           <>
@@ -469,11 +567,24 @@ export function Header() {
             </div>
           </>
         )}
+        {/* Right sidebar / panel toggle - mobile only when this dashboard has a right sidebar */}
+        {hasRightSidebar && (
+          <button
+            type="button"
+            onClick={handleOpenRightPanel}
+            className="lg:hidden flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg text-gray-700 hover:bg-gray-100 active:bg-gray-200 transition-colors duration-200"
+            aria-label={rightSidebar?.isOpen ? "Close panel" : "Open panel"}
+            aria-expanded={rightSidebar?.isOpen}
+          >
+            <PanelRight className="h-5 w-5" aria-hidden />
+          </button>
+        )}
         <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
           <Bell className="h-5 w-5" />
         </button>
 
-        <div ref={userMenuRef} className="relative">
+        {/* User name + avatar + logout - hidden on mobile (moved to left sidebar) */}
+        <div ref={userMenuRef} className="relative hidden lg:block">
           <button
             type="button"
             onClick={() => setShowDropdown((prev) => !prev)}
@@ -482,12 +593,7 @@ export function Header() {
             aria-haspopup="true"
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
-              {isLoading ? (
-                <>
-                  <div className="h-4 w-24 bg-gray-200 rounded animate-pulse mb-1" />
-                  <div className="h-3 w-32 bg-gray-200 rounded animate-pulse" />
-                </>
-              ) : userName ? (
+              {userName ? (
                 <>
                   <span className="text-sm font-medium text-gray-900 truncate w-full">{userName}</span>
                   {userEmail && (
@@ -500,10 +606,8 @@ export function Header() {
                 <span className="text-sm font-medium">User</span>
               )}
             </div>
-            {/* Avatar or Fallback - moved to right side - always reserve space */}
-            {isLoading ? (
-              <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gray-200 animate-pulse" />
-            ) : avatarUrl && !avatarError ? (
+            {/* Avatar or Fallback - show placeholder when loading so header doesn't pop in late */}
+            {!isLoading && avatarUrl && !avatarError ? (
               <img
                 src={avatarUrl}
                 alt={userName || userEmail || "User"}
@@ -512,7 +616,7 @@ export function Header() {
               />
             ) : (
               <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
-                {getUserInitials(userName, userEmail)}
+                {getUserInitials(userName ?? null, userEmail ?? null)}
               </div>
             )}
           </button>

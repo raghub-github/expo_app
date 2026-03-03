@@ -1,0 +1,407 @@
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import { listStores, getMenuByStoreId, getStoreLiveStatus, getMenuItemFullConfig, search } from "./merchant.service.js";
+import type { NearbyStoreRow } from "./merchant.types.js";
+import { computeLiveStatus } from "./merchant.types.js";
+
+const querySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+  lat: z.coerce.number().optional(),
+  lng: z.coerce.number().optional(),
+  veg: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
+});
+
+const searchQuerySchema = z.object({
+  q: z.string().max(200).optional().default(""),
+  limit: z.coerce.number().int().min(1).max(50).optional().default(30),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+  lat: z.coerce.number().optional(),
+  lng: z.coerce.number().optional(),
+});
+
+export async function merchantRoutes(app: FastifyInstance) {
+  // GET /v1/merchants – list stores with active menu
+  app.get(
+    "/merchants",
+    {
+      schema: {
+        querystring: querySchema,
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                displayImage: z.string().nullable(),
+                deliveryTime: z.string().optional(),
+                cuisines: z.array(z.string()).optional(),
+                isOpen: z.boolean(),
+                liveStatus: z.enum(["OPEN", "CLOSED"]),
+                distanceKm: z.number().optional(),
+                offerText: z.string().nullable().optional(),
+                nextCloseAt: z.union([z.string(), z.number()]).nullable().optional(),
+                nextOpenAt: z.union([z.string(), z.number()]).nullable().optional(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof querySchema>;
+      const { items } = await listStores({
+        limit: q.limit,
+        offset: q.offset,
+        lat: q.lat,
+        lng: q.lng,
+        veg_mode: q.veg ?? false,
+      });
+      const body = items.map((s) => {
+        const nearby = s as NearbyStoreRow;
+        const displayImage =
+          nearby.display_image ??
+          s.banner_url ??
+          (Array.isArray(s.ads_images) && s.ads_images[0] ? s.ads_images[0] : null) ??
+          (Array.isArray(s.gallery_images) && s.gallery_images[0] ? s.gallery_images[0] : null) ??
+          s.logo_url ??
+          null;
+        const prepMin = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
+        const rawLiveStatus = (s as NearbyStoreRow).live_status;
+        const normalized =
+          typeof rawLiveStatus === "string" ? rawLiveStatus.trim().toUpperCase() : "";
+        const liveStatus: "OPEN" | "CLOSED" =
+          normalized === "OPEN" || normalized === "CLOSED"
+            ? normalized
+            : computeLiveStatus({
+                is_active: s.is_active,
+                is_available: (s as { is_available?: boolean | null }).is_available,
+                is_accepting_orders: s.is_accepting_orders,
+                operational_status: (s as { operational_status?: string | null }).operational_status,
+              });
+        const isOpen = liveStatus === "OPEN";
+        return {
+          id: s.store_id,
+          name: s.store_display_name ?? s.store_name,
+          displayImage,
+          deliveryTime: prepMin != null ? `${prepMin} min` : undefined,
+          cuisines: s.cuisine_types ?? undefined,
+          isOpen,
+          liveStatus,
+          distanceKm: "distance_km" in s ? nearby.distance_km : undefined,
+          offerText: null,
+          nextCloseAt: (s as { next_close_at?: string | number | null }).next_close_at ?? null,
+          nextOpenAt: (s as { next_open_at?: string | number | null }).next_open_at ?? null,
+        };
+      });
+      return reply.send({ items: body });
+    }
+  );
+
+  // GET /v1/merchants/:id/menu/items/:itemId/full-config – item + variants + customizations + addons for customization sheet.
+  app.get<{ Params: { id: string; itemId: string } }>(
+    "/merchants/:id/menu/items/:itemId/full-config",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1), itemId: z.string().min(1) }),
+        response: {
+          200: z.object({
+            item: z.object({
+              id: z.string(),
+              name: z.string(),
+              description: z.string().nullable(),
+              price: z.number(),
+              imageUrl: z.string().nullable(),
+              isVeg: z.boolean(),
+              hasCustomizations: z.boolean(),
+              hasAddons: z.boolean(),
+              hasVariants: z.boolean(),
+            }),
+            variants: z.array(z.object({
+              id: z.string(),
+              name: z.string(),
+              type: z.string().nullable(),
+              price: z.number(),
+              isDefault: z.boolean(),
+              displayOrder: z.number(),
+            })),
+            customizations: z.array(z.object({
+              id: z.string(),
+              title: z.string(),
+              type: z.string().nullable(),
+              isRequired: z.boolean(),
+              minSelection: z.number(),
+              maxSelection: z.number(),
+              displayOrder: z.number(),
+              addons: z.array(z.object({
+                id: z.string(),
+                name: z.string(),
+                price: z.number(),
+                imageUrl: z.string().nullable(),
+                displayOrder: z.number(),
+              })),
+            })),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: storeId, itemId } = request.params;
+      const config = await getMenuItemFullConfig(storeId, itemId);
+      if (!config) return reply.status(404).send({ error: "Item not found" });
+      return reply.send(config);
+    }
+  );
+
+  // GET /v1/merchants/:id/live-status – single source of truth for OPEN/CLOSED. Used by list, detail, cart, checkout, group order.
+  app.get<{ Params: { id: string } }>(
+    "/merchants/:id/live-status",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({ liveStatus: z.enum(["OPEN", "CLOSED"]) }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const liveStatus = await getStoreLiveStatus(id);
+      if (liveStatus == null) return reply.status(404).send({ error: "Store not found" });
+      return reply.send({ liveStatus });
+    }
+  );
+
+  // GET /v1/merchants/:id/about – store detail for About page (full_address, etc.)
+  app.get<{ Params: { id: string }; Querystring: Record<string, unknown> }>(
+    "/merchants/:id/about",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            store_name: z.string(),
+            store_display_name: z.string().nullable(),
+            full_address: z.string().nullable(),
+            city: z.string().nullable(),
+            state: z.string().optional().nullable(),
+            postal_code: z.string().nullable(),
+            cuisine_types: z.array(z.string()).nullable(),
+            operational_status: z.string().nullable(),
+            avg_preparation_time_minutes: z.number().nullable(),
+            logo_url: z.string().nullable(),
+            banner_url: z.string().nullable(),
+            is_active: z.boolean().nullable(),
+            created_at: z.string().nullable().optional(),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { getStoreByStoreId } = await import("./merchant.service.js");
+      const store = await getStoreByStoreId(id);
+      if (!store) return reply.status(404).send({ error: "Store not found" });
+      return reply.send({
+        store_name: store.store_name,
+        store_display_name: store.store_display_name ?? null,
+        full_address: store.full_address ?? store.store_description ?? null,
+        city: store.city ?? null,
+        state: (store as { state?: string | null }).state ?? null,
+        postal_code: store.postal_code ?? null,
+        cuisine_types: store.cuisine_types ?? null,
+        operational_status: store.operational_status ?? null,
+        avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
+        logo_url: store.logo_url ?? null,
+        banner_url: store.banner_url ?? null,
+        is_active: store.is_active ?? null,
+        created_at: store.created_at ?? null,
+      });
+    }
+  );
+
+  const menuQuerystringSchema = z.object({ q: z.string().max(200).optional() });
+
+  // GET /v1/merchants/:id/menu – store detail + menu (id = store_id string). Optional ?q= filters menu by item name.
+  app.get<{ Params: { id: string }; Querystring: z.infer<typeof menuQuerystringSchema> }>(
+    "/merchants/:id/menu",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        querystring: menuQuerystringSchema,
+        response: {
+          200: z.object({
+            id: z.string(),
+            name: z.string(),
+            imageUrl: z.string().nullable().optional(),
+            address: z.string().optional(),
+            bannerImages: z.array(z.string()).optional(),
+            latitude: z.number().nullable().optional(),
+            longitude: z.number().nullable().optional(),
+            operationalStatus: z.string().nullable().optional(),
+            isOpen: z.boolean().optional(),
+            acceptingOrders: z.boolean().optional(),
+            avgPreparationTimeMinutes: z.number().nullable().optional(),
+            city: z.string().nullable().optional(),
+            menu: z.array(
+              z.object({
+                id: z.string(),
+                menuItemId: z.number(),
+                name: z.string(),
+                description: z.string().optional(),
+                price: z.number(),
+                imageUrl: z.string().nullable().optional(),
+                isVeg: z.boolean(),
+                category: z.string().optional(),
+                categoryId: z.number().nullable().optional(),
+                categoryName: z.string().nullable().optional(),
+                isPopular: z.boolean().optional(),
+                isRecommended: z.boolean().optional(),
+                prepTimeMinutes: z.number().optional(),
+                discountPercentage: z.number().optional(),
+                hasCustomizations: z.boolean().optional(),
+                hasAddons: z.boolean().optional(),
+                hasVariants: z.boolean().optional(),
+              })
+            ),
+            cuisines: z.array(z.string()).optional(),
+          }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const q = (request.query as { q?: string }).q;
+      const { store, items } = await getMenuByStoreId(id, q);
+      if (!store) {
+        return reply.status(404).send({ error: "Store not found" });
+      }
+      const bannerImages: string[] = [];
+      const ads = store.ads_images ?? [];
+      const gallery = store.gallery_images ?? [];
+      if (Array.isArray(ads) && ads.length > 0) bannerImages.push(...ads.filter(Boolean));
+      if (Array.isArray(gallery) && gallery.length > 0) bannerImages.push(...gallery.filter(Boolean));
+      if (bannerImages.length === 0 && store.banner_url) bannerImages.push(store.banner_url);
+
+      const menu = items.map((m) => ({
+        id: m.item_id,
+        menuItemId: m.id,
+        name: m.item_name,
+        description: m.item_description ?? undefined,
+        price: parseFloat(m.selling_price),
+        imageUrl: m.item_image_url ?? undefined,
+        isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
+        category: m.cuisine_type ?? (m as { category_name?: string | null }).category_name ?? undefined,
+        categoryId: m.category_id ?? undefined,
+        categoryName: (m as { category_name?: string | null }).category_name ?? undefined,
+        isPopular: m.is_popular ?? undefined,
+        isRecommended: m.is_recommended ?? undefined,
+        prepTimeMinutes: m.preparation_time_minutes ?? undefined,
+        discountPercentage: m.discount_percentage != null ? parseFloat(String(m.discount_percentage)) : undefined,
+        hasCustomizations: (m as { has_customizations?: boolean }).has_customizations ?? false,
+        hasAddons: (m as { has_addons?: boolean }).has_addons ?? false,
+        hasVariants: (m as { has_variants?: boolean }).has_variants ?? false,
+      }));
+
+      const rawLiveStatus = (store as { live_status?: string | null }).live_status;
+      const liveStatus =
+        rawLiveStatus === "OPEN" || rawLiveStatus === "CLOSED"
+          ? rawLiveStatus
+          : computeLiveStatus({
+              is_active: store.is_active,
+              is_available: store.is_available,
+              is_accepting_orders: store.is_accepting_orders,
+              operational_status: store.operational_status,
+            });
+      const isOpen = liveStatus === "OPEN";
+      return reply.send({
+        id: store.store_id,
+        name: store.store_display_name ?? store.store_name,
+        imageUrl: store.logo_url ?? store.banner_url ?? undefined,
+        address: store.store_description ?? undefined,
+        bannerImages: bannerImages.length > 0 ? bannerImages : undefined,
+        latitude: store.latitude != null ? Number(store.latitude) : undefined,
+        longitude: store.longitude != null ? Number(store.longitude) : undefined,
+        operationalStatus: store.operational_status ?? undefined,
+        isOpen,
+        liveStatus,
+        acceptingOrders: store.is_accepting_orders === true,
+        avgPreparationTimeMinutes: store.avg_preparation_time_minutes ?? undefined,
+        city: store.city ?? undefined,
+        menu,
+        cuisines: store.cuisine_types ?? undefined,
+      });
+    }
+  );
+
+  // GET /v1/search – unified search (dishes + stores)
+  app.get(
+    "/search",
+    {
+      schema: {
+        querystring: searchQuerySchema,
+        response: {
+          200: z.object({
+            dishes: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                imageKey: z.string().optional(),
+                restaurantName: z.string().optional(),
+                storeId: z.string().optional(),
+                price: z.number().optional(),
+                isVeg: z.boolean().optional(),
+              })
+            ),
+            stores: z.array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                imageUrl: z.string().nullable().optional(),
+                cuisines: z.array(z.string()).optional(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof searchQuerySchema>;
+      const { dishes: items, stores } = await search({
+        q: (q.q ?? "").trim(),
+        limit: q.limit,
+        offset: q.offset,
+        lat: q.lat,
+        lng: q.lng,
+      });
+      const storeMap = new Map(stores.map((s) => [s.id, s]));
+      const dishes = items.map((m) => {
+        const store = storeMap.get(m.store_id);
+        return {
+          id: m.item_id,
+          menuItemId: m.id,
+          name: m.item_name,
+          imageKey: "default",
+          restaurantName: store?.store_display_name ?? store?.store_name,
+          storeId: store?.store_id,
+          price: parseFloat(m.selling_price),
+          isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
+        };
+      });
+      const storeList = stores.map((s) => ({
+        id: s.store_id,
+        name: s.store_display_name ?? s.store_name,
+        imageUrl: s.logo_url ?? s.banner_url ?? undefined,
+        cuisines: s.cuisine_types ?? undefined,
+      }));
+      return reply.send({ dishes, stores: storeList });
+    }
+  );
+}

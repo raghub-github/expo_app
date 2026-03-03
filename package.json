@@ -8,8 +8,16 @@
     "dashboard",
     "merchant_db"
   ],
+  "dependencies": {
+    "expo": "^54.0.33",
+    "i18next": "^25.8.13",
+    "react-i18next": "^16.5.4"
+  },
   "scripts": {
+    "dev:customer": "npm --workspace apps/customer_app run start",
+    "dev:customer:clear": "npm --workspace apps/customer_app run start:clear",
     "dev:rider": "npm --workspace apps/gatimitra-riderApp run start",
+    "dev:merchant": "npm --workspace apps/merchant_app run start",
     "dev:backend": "npm --workspace backend run dev",
     "dev:dashboard": "npm --workspace dashboard run dev",
     "dev:merchant_db": "npm --workspace merchant_db run dev",

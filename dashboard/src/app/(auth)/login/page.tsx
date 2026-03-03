@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { requestEmailOTP, verifyOTP, signInWithGoogle } from "@/lib/auth/supabase";
 import { supabase } from "@/lib/supabase/client";
@@ -8,10 +8,13 @@ import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 
+const OTP_LENGTH = 8;
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
-  const [otp, setOtp] = useState("");
+  const [otpDigits, setOtpDigits] = useState<string[]>(() => Array(OTP_LENGTH).fill(""));
+  const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const [otpSent, setOtpSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -63,8 +66,48 @@ export default function LoginPage() {
     setLoading(false);
   };
 
+  const otpValue = otpDigits.join("");
+
+  const setOtpDigit = useCallback((index: number, value: string) => {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    setOtpDigits((prev) => {
+      const next = [...prev];
+      next[index] = digit;
+      return next;
+    });
+    if (digit && index < OTP_LENGTH - 1) {
+      otpInputRefs.current[index + 1]?.focus();
+    }
+  }, []);
+
+  const handleOtpKeyDown = useCallback((index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace" && !otpDigits[index] && index > 0) {
+      otpInputRefs.current[index - 1]?.focus();
+      setOtpDigits((prev) => {
+        const next = [...prev];
+        next[index - 1] = "";
+        return next;
+      });
+    }
+  }, [otpDigits]);
+
+  const handleOtpPaste = useCallback((e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, OTP_LENGTH);
+    const chars = pasted.split("");
+    setOtpDigits((prev) => {
+      const next = [...prev];
+      chars.forEach((c, i) => { if (i < OTP_LENGTH) next[i] = c; });
+      return next;
+    });
+    const focusIndex = Math.min(pasted.length, OTP_LENGTH) - 1;
+    otpInputRefs.current[focusIndex]?.focus();
+  }, []);
+
   const handleVerifyOTP = async (e: React.FormEvent) => {
     e.preventDefault();
+    const otp = otpDigits.join("");
+    if (otp.length !== OTP_LENGTH) return;
     setLoading(true);
     setError("");
 
@@ -246,35 +289,39 @@ export default function LoginPage() {
 
               {otpSent && (
                 <div>
-                  <label htmlFor="otp" className="block text-sm font-semibold text-gray-700 mb-2">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
                     Enter Verification Code
                   </label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-                    <input
-                      id="otp"
-                      name="otp"
-                      type="text"
-                      required
-                      value={otp}
-                      onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                      placeholder="000000"
-                      maxLength={6}
-                      className="block w-full rounded-lg border border-gray-300 bg-white py-3 pl-10 pr-4 text-center text-lg font-mono tracking-widest text-gray-900 placeholder-gray-400 shadow-sm transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
-                      style={{ color: '#111827' }}
-                    />
+                  <div className="flex justify-center gap-1.5 sm:gap-2 mb-2">
+                    {Array.from({ length: OTP_LENGTH }).map((_, i) => (
+                      <input
+                        key={i}
+                        ref={(el) => { otpInputRefs.current[i] = el; }}
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={1}
+                        value={otpDigits[i]}
+                        onChange={(e) => setOtpDigit(i, e.target.value)}
+                        onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                        onPaste={i === 0 ? handleOtpPaste : undefined}
+                        className="w-9 h-11 sm:w-10 sm:h-12 rounded-lg border border-gray-300 bg-white text-center text-lg font-mono font-semibold text-gray-900 placeholder-gray-400 shadow-sm transition-all focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
+                        style={{ color: "#111827" }}
+                        aria-label={`Digit ${i + 1} of ${OTP_LENGTH}`}
+                      />
+                    ))}
                   </div>
                   <p className="mt-2 text-xs text-gray-500">
                     We sent a verification code to <span className="font-medium text-gray-700">{email}</span>
                   </p>
                   <p className="mt-1 text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded px-2 py-1">
-                    📧 Check your inbox (and spam folder) for the code. Enter the first 6 digits above.
+                    📧 Check your inbox (and spam folder) for the code. Enter the 8 digits above.
                   </p>
                   <button
                     type="button"
                     onClick={() => {
                       setOtpSent(false);
-                      setOtp("");
+                      setOtpDigits(Array(OTP_LENGTH).fill(""));
                       setError("");
                     }}
                     className="mt-2 text-xs font-medium text-blue-600 hover:text-blue-700"
@@ -286,7 +333,7 @@ export default function LoginPage() {
 
               <button
                 type="submit"
-                disabled={loading || googleLoading}
+                disabled={loading || googleLoading || (otpSent && otpValue.length !== OTP_LENGTH)}
                 className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition-all duration-200 hover:bg-blue-700 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed sm:px-6 sm:py-3"
               >
                 {loading ? (

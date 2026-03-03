@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
 
 // Exact color codes from reference image
@@ -16,6 +18,48 @@ const CHECKMARK_COLOR = "#2F8F6F"; // Checkmark icon color
 const ORDER_TAG_BG = "#ECF8F3"; // Order ID tag background
 const ORDER_TAG_TEXT = "#2F8F6F"; // Order ID tag text
 
+export type OrderStatusFilter =
+  | "PAYMENT DONE"
+  | "ACCEPTED"
+  | "DESPATCH READY"
+  | "DESPATCHED"
+  | "BULK"
+  | null;
+
+interface OrdersCoreRow {
+  id: number;
+  orderUuid: string;
+  orderType: string;
+  formattedOrderId: string | null;
+  orderId: string | null;
+  status: string;
+  currentStatus: string | null;
+  paymentStatus: string | null;
+  createdAt: string;
+  updatedAt: string;
+  customerId: number | null;
+  customerName: string | null;
+  customerMobile: string | null;
+  riderId: number | null;
+  riderName: string | null;
+  riderMobile: string | null;
+  /** Email of agent routed to (from latest remark). */
+  routedToEmail: string | null;
+  /** Latest internal remark text for this order (for agent actions). */
+  latestRemark: string | null;
+  /** Merchant foreign key (parent merchant). */
+  merchantParentId: number | null;
+  /** Store internal id if needed in future. */
+  merchantStoreId: number | null;
+  /** Actual store_id from merchant_stores (e.g. GMMC123). */
+  storeId?: string | null;
+  dropAddressRaw: string | null;
+  dropAddressNormalized?: string | null;
+  /** Order source / delivery provider (\"internal\" = GatiMitra). */
+  orderSource: string | null;
+  isBulkOrder: boolean;
+}
+
 interface FilterState {
   delivery: string[]; // Array for multiple selections: "GatiMitra" | "Merchant"
   pickUp: boolean;
@@ -28,6 +72,12 @@ interface FilterState {
 }
 
 export default function FoodOrdersClient() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlStatus = searchParams.get("statusFilter") as OrderStatusFilter | null;
+  const urlSearch = searchParams.get("search") ?? "";
+  const urlSearchType = searchParams.get("searchType") ?? "Order Id";
+
   const [filters, setFilters] = useState<FilterState>({
     delivery: [],
     pickUp: false,
@@ -39,11 +89,75 @@ export default function FoodOrdersClient() {
     userType: [],
   });
 
-  const [selectedStatus, setSelectedStatus] = useState<string | null>(null); // No button active by default
+  const selectedStatus = urlStatus ?? null;
+  const [orders, setOrders] = useState<OrdersCoreRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
   const userTypeRef = useRef<HTMLDivElement>(null);
+  /** Stage instruction shown in Action column when that status filter is selected */
+  const STAGE_INSTRUCTION: Record<Exclude<OrderStatusFilter, null>, string> = {
+    "PAYMENT DONE": "Verify with MX",
+    ACCEPTED: "Check with MX & RX",
+    "DESPATCH READY": "Confirm with RX & MX",
+    DESPATCHED: "Check with RX & CX",
+    BULK: "Check with MX / RX / CX",
+  };
+  const stageInstructionText = selectedStatus ? STAGE_INSTRUCTION[selectedStatus] ?? "" : "";
+
+  const setStatusFilter = useCallback(
+    (status: OrderStatusFilter) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (status) params.set("statusFilter", status);
+      else params.delete("statusFilter");
+      params.delete("page");
+      router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams();
+    params.set("orderType", "food");
+    const status = searchParams.get("statusFilter");
+    if (status) params.set("statusFilter", status);
+    const search = searchParams.get("search");
+    if (search) params.set("search", search);
+    const searchType = searchParams.get("searchType");
+    if (searchType) params.set("searchType", searchType);
+    params.set("page", "1");
+    params.set("limit", "20");
+
+    setLoading(true);
+    fetch(`/api/orders/core?${params.toString()}`)
+      .then((res) => res.json())
+      .then((body) => {
+        if (cancelled) return;
+        if (body.success && Array.isArray(body.data)) {
+          setOrders(body.data);
+          setTotal(body.pagination?.total ?? body.data.length);
+        } else {
+          setOrders([]);
+          setTotal(0);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOrders([]);
+          setTotal(0);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams.toString(), refreshKey]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -138,10 +252,12 @@ export default function FoodOrdersClient() {
       overview: false,
       userType: [],
     });
-    // Don't reset status - keep it active
-  }, []);
+    router.replace("/dashboard/orders/food", { scroll: false });
+  }, [router]);
 
-  const orderCount = 0; // Will be populated from API
+  const refreshData = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  const orderCount = total;
 
   // Helper function to get button styles - prevents hydration mismatch
   const getButtonStyles = (isActive: boolean) => {
@@ -175,6 +291,7 @@ export default function FoodOrdersClient() {
   };
 
   return (
+    <>
     <div className="space-y-2 w-full max-w-full overflow-x-hidden" style={{ backgroundColor: PAGE_BG }}>
       {/* Filter Section - No border */}
       <div className="p-2" style={{ backgroundColor: CONTENT_BG }}>
@@ -257,7 +374,7 @@ export default function FoodOrdersClient() {
             className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border cursor-pointer"
             style={getButtonStyles(filters.overview)}
           >
-            Overview
+            Overdue
           </button>
 
           {/* User-Type Dropdown */}
@@ -352,11 +469,7 @@ export default function FoodOrdersClient() {
       <div className="p-2 mt-3" style={{ backgroundColor: CONTENT_BG }}>
         <div className="flex items-center gap-2 w-full">
           <button
-            onClick={() => {
-              if (selectedStatus !== "PAYMENT DONE") {
-                setSelectedStatus("PAYMENT DONE");
-              }
-            }}
+            onClick={() => setStatusFilter(selectedStatus === "PAYMENT DONE" ? null : "PAYMENT DONE")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "PAYMENT DONE" ? "font-bold" : "font-medium"
             }`}
@@ -365,11 +478,7 @@ export default function FoodOrdersClient() {
             PAYMENT DONE
           </button>
           <button
-            onClick={() => {
-              if (selectedStatus !== "ACCEPTED") {
-                setSelectedStatus("ACCEPTED");
-              }
-            }}
+            onClick={() => setStatusFilter(selectedStatus === "ACCEPTED" ? null : "ACCEPTED")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "ACCEPTED" ? "font-bold" : "font-medium"
             }`}
@@ -378,11 +487,7 @@ export default function FoodOrdersClient() {
             ACCEPTED
           </button>
           <button
-            onClick={() => {
-              if (selectedStatus !== "DESPATCH READY") {
-                setSelectedStatus("DESPATCH READY");
-              }
-            }}
+            onClick={() => setStatusFilter(selectedStatus === "DESPATCH READY" ? null : "DESPATCH READY")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "DESPATCH READY" ? "font-bold" : "font-medium"
             }`}
@@ -391,11 +496,7 @@ export default function FoodOrdersClient() {
             DESPATCH READY
           </button>
           <button
-            onClick={() => {
-              if (selectedStatus !== "DESPATCHED") {
-                setSelectedStatus("DESPATCHED");
-              }
-            }}
+            onClick={() => setStatusFilter(selectedStatus === "DESPATCHED" ? null : "DESPATCHED")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "DESPATCHED" ? "font-bold" : "font-medium"
             }`}
@@ -404,11 +505,7 @@ export default function FoodOrdersClient() {
             DESPATCHED
           </button>
           <button
-            onClick={() => {
-              if (selectedStatus !== "BULK") {
-                setSelectedStatus("BULK");
-              }
-            }}
+            onClick={() => setStatusFilter(selectedStatus === "BULK" ? null : "BULK")}
             className={`flex-1 px-3 py-2 rounded-md text-xs transition-colors border cursor-pointer ${
               selectedStatus === "BULK" ? "font-bold" : "font-medium"
             }`}
@@ -424,15 +521,18 @@ export default function FoodOrdersClient() {
         <div className="flex items-center gap-1.5">
           <CheckCircle2 className="h-4 w-4" style={{ color: CHECKMARK_COLOR }} />
           <span className="text-xs font-medium" style={{ color: DARK_TEXT }}>
-            {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "---"} - {orderCount} / Out Of {orderCount}
+            {selectedStatus ? selectedStatus.substring(0, 3).toUpperCase() : "ALL"} - {orderCount} / Out Of {orderCount}
           </span>
         </div>
         <div className="flex items-center gap-2">
           <button
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer"
+            type="button"
+            onClick={refreshData}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             Refresh Data
           </button>
           <button
@@ -446,59 +546,144 @@ export default function FoodOrdersClient() {
         </div>
       </div>
 
-      {/* Orders Table - No border */}
+      {/* Orders Table - compact layout */}
       <div className="overflow-x-auto" style={{ backgroundColor: CONTENT_BG }}>
-        <table className="min-w-full divide-y divide-gray-200">
+        <table className="min-w-full divide-y divide-gray-200 text-[11px]">
           <thead className="bg-gray-100">
             <tr>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                ORDER...
+              <th className="px-2 py-1.5 text-left font-medium" style={{ color: DARK_TEXT }}>
+                Order
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                ACTION
+              <th className="px-2 py-1.5 text-left font-medium" style={{ color: DARK_TEXT }}>
+                Action
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                ROUTED TO
+              <th className="px-2 py-1.5 text-left font-medium" style={{ color: DARK_TEXT }}>
+                Routed to
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                ORDER TIME
+              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
+                Order time
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                USER NAME
+              <th className="px-2 py-1.5 text-left font-medium" style={{ color: DARK_TEXT }}>
+                User name
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                UPDATED TIME
+              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
+                User mobile
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                USER MO...
+              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
+                Merchant id
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                MERCH...
+              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
+                Mx locality
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                MERCHAN...
+              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
+                Updated time
               </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                MERCHANT L...
-              </th>
-              <th className="px-2 py-2 text-left text-xs font-medium uppercase" style={{ color: DARK_TEXT }}>
-                DELIVER
+              <th className="px-2 py-1.5 text-left font-medium whitespace-nowrap" style={{ color: DARK_TEXT }}>
+                DE provider
               </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
-            {/* No dummy data - table will be populated from API */}
-            {/* Note: Order ID cells (first column) should have cursor-pointer class */}
-            {orderCount === 0 && (
+            {loading ? (
               <tr>
-                <td colSpan={11} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                <td colSpan={10} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
+                  Loading…
+                </td>
+              </tr>
+            ) : orders.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
                   No orders found
                 </td>
               </tr>
+            ) : (
+              orders.map((row) => {
+                const displayId =
+                  row.formattedOrderId ??
+                  row.orderId ??
+                  `GMF${String(row.id ?? "").padStart(6, "0")}`;
+                const publicId = String(displayId).replace(/^#/, "");
+                const routedTo = row.routedToEmail ?? "";
+                const merchantIdDisplay =
+                  row.storeId != null && row.storeId !== ""
+                    ? row.storeId
+                    : null;
+                const localitySource =
+                  row.dropAddressNormalized ?? row.dropAddressRaw ?? null;
+                const locality =
+                  localitySource != null && localitySource.length > 0
+                    ? localitySource.split(",")[0]?.trim() || localitySource
+                    : null;
+                const deliverProvider =
+                  !row.orderSource || row.orderSource === "internal"
+                    ? "GatiMitra"
+                    : row.orderSource.charAt(0).toUpperCase() + row.orderSource.slice(1);
+
+                return (
+                  <tr key={row.id} className="hover:bg-gray-50">
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      <Link
+                        href={`/order/${encodeURIComponent(publicId)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center px-2 py-0.5 rounded font-medium cursor-pointer hover:underline text-[11px]"
+                        style={{ backgroundColor: ORDER_TAG_BG, color: ORDER_TAG_TEXT }}
+                      >
+                        #{publicId}
+                      </Link>
+                    </td>
+                    <td
+                      className="px-2 py-1.5 max-w-[200px]"
+                      style={{ color: TABLE_TEXT }}
+                      title={stageInstructionText || undefined}
+                    >
+                      {stageInstructionText ? (
+                        <span className="text-[11px] font-medium" style={{ color: CHECKMARK_COLOR }}>
+                          {stageInstructionText}
+                        </span>
+                      ) : (
+                        <span>—</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 truncate max-w-[160px]" style={{ color: TABLE_TEXT }}>
+                      {routedTo}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
+                    </td>
+                    <td className="px-2 py-1.5" style={{ color: TABLE_TEXT }}>
+                      {row.customerName ?? "—"}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      {row.customerMobile ?? "—"}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      {merchantIdDisplay != null ? merchantIdDisplay : "—"}
+                    </td>
+                    <td
+                      className="px-2 py-1.5 max-w-[140px] truncate"
+                      style={{ color: TABLE_TEXT }}
+                      title={locality ?? undefined}
+                    >
+                      {locality ?? "—"}
+                    </td>
+                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+                      {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "—"}
+                    </td>
+                    <td
+                      className="px-2 py-1.5 whitespace-nowrap"
+                      style={{ color: TABLE_TEXT }}
+                    >
+                      {deliverProvider}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
     </div>
+    </>
   );
 }

@@ -41,21 +41,21 @@ export async function POST(
   try {
     const supabase = await createServerSupabaseClient();
     const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
 
-    if (sessionError || !session?.user?.email) {
+    if (userError || !user?.email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
     const hasRiderAccess = await hasDashboardAccessByAuth(
-      session.user.id,
-      session.user.email,
+      user.id,
+      user.email,
       "RIDER"
     );
     if (!userIsSuperAdmin && !hasRiderAccess) {
@@ -112,10 +112,10 @@ export async function POST(
     const canAct =
       userIsSuperAdmin ||
       (serviceType === "all"
-        ? await canPerformRiderActionAnyService(session.user.id, session.user.email, actionType)
+        ? await canPerformRiderActionAnyService(user.id, user.email, actionType)
         : await canPerformRiderServiceAction(
-            session.user.id,
-            session.user.email,
+            user.id,
+            user.email,
             serviceType as "food" | "parcel" | "person_ride",
             actionType
           ));
@@ -173,9 +173,9 @@ export async function POST(
       );
     }
 
-    const systemUser = await getSystemUserByEmail(session.user.email);
+    const systemUser = await getSystemUserByEmail(user.email);
     const adminUserId = systemUser?.id ?? null;
-    const actorEmail = session.user.email ?? null;
+    const actorEmail = user.email ?? null;
 
     const dbServiceType = toDbServiceType(serviceType);
     const baseValues = {
@@ -229,8 +229,8 @@ export async function POST(
     }
 
     await logActionByAuth(
-      session.user.id,
-      session.user.email,
+      user.id,
+      user.email,
       "RIDER",
       "CREATE",
       {

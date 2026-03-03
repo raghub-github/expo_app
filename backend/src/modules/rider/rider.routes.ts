@@ -10,7 +10,16 @@ import { desc, eq, and } from "drizzle-orm";
 import { ulid } from "ulid";
 import { auth } from "../../plugins/auth.js";
 import { getDb } from "../../db/client.js";
-import { riderLocationEvents, riders, riderDocuments, blacklistHistory, dutyLogs } from "../../db/schema.js";
+import {
+  riderLocationEvents,
+  riders,
+  riderDocuments,
+  blacklistHistory,
+  dutyLogs,
+  riderLiveLocations,
+  riderLocationHistory,
+  orderRiderTracking,
+} from "../../db/schema.js";
 import { scoreLocationPing, type LocationPoint } from "./fraud.js";
 import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
 
@@ -96,6 +105,86 @@ export async function riderRoutes(app: FastifyInstance) {
         fraudSignals,
         fraudScore,
       };
+    },
+  );
+
+  // Level-2: Live rider location update — UPSERT rider_live_locations, append order_rider_tracking + history
+  app.post(
+    "/location/update",
+    {
+      schema: {
+        body: z.object({
+          lat: z.number(),
+          lng: z.number(),
+          order_id: z.string().optional(),
+          speed: z.number().optional(),
+          heading: z.number().optional(),
+          accuracy: z.number().optional(),
+        }),
+        response: { 200: z.object({ ok: z.literal(true) }) },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.auth!.sub;
+      const riderIdMatch = String(userId).match(/usr_(\d+)/);
+      const riderId = riderIdMatch ? parseInt(riderIdMatch[1]!, 10) : null;
+      if (riderId == null) {
+        return reply.status(403).send({ error: "Invalid rider session" });
+      }
+
+      const body = req.body as { lat: number; lng: number; order_id?: string; speed?: number; heading?: number; accuracy?: number };
+      const db = getDb();
+      const now = new Date();
+
+      await db
+        .insert(riderLiveLocations)
+        .values({
+          riderId,
+          latitude: String(body.lat),
+          longitude: String(body.lng),
+          speedKmh: body.speed != null ? String(body.speed) : null,
+          heading: body.heading != null ? String(body.heading) : null,
+          accuracyMeters: body.accuracy != null ? String(body.accuracy) : null,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: riderLiveLocations.riderId,
+          set: {
+            latitude: String(body.lat),
+            longitude: String(body.lng),
+            speedKmh: body.speed != null ? String(body.speed) : null,
+            heading: body.heading != null ? String(body.heading) : null,
+            accuracyMeters: body.accuracy != null ? String(body.accuracy) : null,
+            updatedAt: now,
+          },
+        });
+
+      if (body.order_id) {
+        await db.insert(orderRiderTracking).values({
+          orderId: body.order_id,
+          orderSource: "orders_core",
+          riderId,
+          latitude: String(body.lat),
+          longitude: String(body.lng),
+          headingDegrees: body.heading != null ? String(body.heading) : null,
+          speedKmh: body.speed != null ? String(body.speed) : null,
+          accuracyMeters: body.accuracy != null ? String(body.accuracy) : null,
+          createdAt: now,
+        });
+      }
+
+      await db.insert(riderLocationHistory).values({
+        riderId,
+        orderId: body.order_id ?? null,
+        latitude: String(body.lat),
+        longitude: String(body.lng),
+        speedKmh: body.speed != null ? String(body.speed) : null,
+        heading: body.heading != null ? String(body.heading) : null,
+        accuracyMeters: body.accuracy != null ? String(body.accuracy) : null,
+        recordedAt: now,
+      });
+
+      return { ok: true as const };
     },
   );
 
