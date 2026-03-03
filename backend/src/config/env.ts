@@ -25,6 +25,7 @@ const EnvSchema = z.object({
   // MSG91 (backend-only)
   MSG91_AUTH_KEY: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   MSG91_TEMPLATE_ID: z.preprocess(emptyToUndefined, z.string().min(3).optional()),
+  MSG91_WIDGET_ID: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   MSG91_OTP_EXPIRY_SEC: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(300)),
 
   // Firebase Admin (backend-only; used to verify Firebase ID tokens in dev flow)

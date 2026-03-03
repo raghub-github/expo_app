@@ -1,9 +1,17 @@
 import type React from "react";
-import type { Session } from "@gatimitra/contracts";
+import type { Session, OtpRequestResponse } from "@gatimitra/contracts";
+
+export interface VerifyOtpArgs {
+  phoneE164: string;
+  otp: string;
+  deviceId: string;
+  /** If set, used for verify (e.g. from UI state); avoids "OTP not requested yet" after hot reload. */
+  requestId?: string;
+}
 
 export interface OtpService {
-  requestOtp(phoneE164: string): Promise<{ otp?: string }>;
-  verifyOtp(args: { phoneE164: string; otp: string; deviceId: string }): Promise<Session>;
+  requestOtp(phoneE164: string): Promise<OtpRequestResponse>;
+  verifyOtp(args: VerifyOtpArgs): Promise<Session>;
 }
 
 export type OtpServiceExtras = {

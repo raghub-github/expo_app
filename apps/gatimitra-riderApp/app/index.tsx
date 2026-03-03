@@ -15,9 +15,10 @@ export default function Index() {
   const hasRequestedPermissions = usePermissionStore((s) => s.hasRequestedPermissions);
   const session = useSessionStore((s) => s.session);
   const languageSelected = useLanguageStore((s) => s.languageSelected);
+  const languageHydrated = useLanguageStore((s) => s.hydrated);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
 
-  // Ensure language store is hydrated
+  // Ensure language store is hydrated before redirect decisions
   useEffect(() => {
     hydrateLanguage().catch((err) => {
       console.warn('[Index] Language hydration failed:', err);
@@ -35,14 +36,14 @@ export default function Index() {
     // #endregion
   }, [hydrated, hasRequestedPermissions, session]);
 
-  // Show loading while permission store hydrates
-  if (!hydrated) {
+  // Show loading until both permission and language stores are hydrated (avoids flashing language screen after login)
+  if (!hydrated || !languageHydrated) {
     console.log('[Index] Showing loading screen');
     // #region agent log
-    fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.tsx:24',message:'Index showing loading screen',data:{hydrated,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7243/ingest/5d17a330-9f7e-4e34-b5cc-0cddb360341d',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.tsx:24',message:'Index showing loading screen',data:{hydrated,languageHydrated,timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
     // #endregion
     return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.background.light }}>
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#FFFFFF" }}>
         <ActivityIndicator size="large" color={colors.primary[500]} />
         <Text style={{ marginTop: 16, color: colors.text.primary.light }}>Loading...</Text>
       </View>

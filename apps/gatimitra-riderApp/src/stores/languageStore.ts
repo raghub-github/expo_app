@@ -24,6 +24,7 @@ type LanguageState = {
   languageSelected: boolean;
   selectedLanguage: LanguageCode;
   isChanging: boolean;
+  hydrated: boolean;
   setLanguageSelected: (selected: boolean) => Promise<void>;
   setSelectedLanguage: (lang: LanguageCode) => Promise<void>;
   hydrate: () => Promise<void>;
@@ -34,6 +35,7 @@ export const useLanguageStore = create<LanguageState>((set, get) => ({
   languageSelected: false,
   selectedLanguage: "en",
   isChanging: false,
+  hydrated: false,
 
   setLanguageSelected: async (selected) => {
     set({ languageSelected: selected });
@@ -110,6 +112,8 @@ export const useLanguageStore = create<LanguageState>((set, get) => ({
       await get().syncWithI18n();
     } catch (error) {
       console.warn("[LanguageStore] Hydration error:", error);
+    } finally {
+      set({ hydrated: true });
     }
   },
 

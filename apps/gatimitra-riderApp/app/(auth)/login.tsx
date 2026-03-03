@@ -3,7 +3,7 @@ import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform } fro
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { createOtpService } from "@/src/services/auth/otp";
+import { createOtpService, retryOtp } from "@/src/services/auth/otp";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useCheckMobile, useCreateRider } from "@/src/hooks/useOnboarding";
@@ -22,13 +22,14 @@ export default function LoginScreen() {
 
   const [phoneE164, setPhoneE164] = useState("");
   const [otp, setOtp] = useState("");
-  const [displayedOtp, setDisplayedOtp] = useState<string | null>(null); // OTP to show to user
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const [devOtpShown, setDevOtpShown] = useState(false); // when backend returns OTP (no SMS)
 
-  // Request OTP and display it to user
+  // Request OTP using MSG91 SDK
   const onRequestOtp = async () => {
     if (!phoneE164.trim() || phoneE164.trim().length < 10) {
       setError("Please enter a valid phone number");
@@ -48,13 +49,22 @@ export default function LoginScreen() {
         timeoutPromise,
       ]) as Awaited<ReturnType<typeof service.requestOtp>>;
 
-      // Display OTP to user
-      if (response.otp) {
-        setDisplayedOtp(response.otp);
-        setOtp(response.otp); // Auto-fill OTP
+      // Store request ID for retry functionality
+      if (response.requestId) {
+        setRequestId(response.requestId);
       }
+
+      // When backend returns OTP (e.g. dev/Expo Go), show it so user can enter it
+      const devOtp = (response as { otp?: string }).otp;
+      if (devOtp) {
+        setOtp(devOtp);
+        setDevOtpShown(true);
+      } else {
+        setDevOtpShown(false);
+      }
+
       setStep("otp");
-      setCountdown(60);
+      setCountdown(30); // 30 seconds resend delay
       const interval = setInterval(() => {
         setCountdown((prev) => {
           if (prev <= 1) {
@@ -65,27 +75,38 @@ export default function LoginScreen() {
         });
       }, 1000);
     } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : t("login.failedRequest");
+      const err = e instanceof Error ? e : new Error(String(e));
+      const errorMessage = err.message;
       setError(errorMessage);
       console.error("OTP request error:", e);
+      // Hint when likely a network/backend connectivity issue
+      if (err.message?.toLowerCase().includes("network") || err.message?.toLowerCase().includes("failed")) {
+        setError(`${errorMessage} Make sure backend is running and app uses correct API URL (e.g. http://10.19.200.18:3000 on device).`);
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  // FAKE OTP BYPASS: Accept any OTP and check rider status
+  // Verify OTP using MSG91 SDK
   const onVerifyOtp = async () => {
+    if (!otp.trim() || otp.trim().length !== 4) {
+      setError("Please enter a valid 4-digit OTP");
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
       const deviceId = await getOrCreateDeviceId();
       const phone = phoneE164.trim();
-      
-      // Verify OTP (for now, accepts any OTP - will be replaced with MSG91 later)
-      const session = await service.verifyOtp({ 
-        phoneE164: phone, 
-        otp: otp.trim() || displayedOtp || "123456", // Use displayed OTP or any OTP
-        deviceId 
+
+      // Pass requestId from UI state so verify works even after hot reload / new service instance
+      const session = await service.verifyOtp({
+        phoneE164: phone,
+        otp: otp.trim(),
+        deviceId,
+        requestId: requestId ?? undefined,
       });
       await setSession(session);
       
@@ -127,9 +148,39 @@ export default function LoginScreen() {
     }
   };
 
+  // Retry OTP on different channel
+  const onRetryOtp = async () => {
+    if (countdown > 0 || !requestId) return;
+    
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await retryOtp(requestId, "SMS");
+      if (result.success) {
+        setCountdown(30);
+        const interval = setInterval(() => {
+          setCountdown((prev) => {
+            if (prev <= 1) {
+              clearInterval(interval);
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+        Alert.alert("Success", "OTP has been resent to your phone number.");
+      } else {
+        setError(result.message || "Failed to resend OTP");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to resend OTP");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onResendOtp = async () => {
     if (countdown > 0) return;
-    await onRequestOtp();
+    await onRetryOtp();
   };
 
   return (
@@ -205,53 +256,49 @@ export default function LoginScreen() {
                     {t("login.otpDescription", { phone: phoneE164 })}
                   </Text>
 
-                  {/* Display OTP to user */}
-                  {displayedOtp && (
-                    <View
-                      style={{
-                        marginBottom: 16,
-                        padding: 16,
-                        backgroundColor: "#E0F2FE",
-                        borderRadius: 12,
-                        borderWidth: 2,
-                        borderColor: colors.primary[300],
-                      }}
-                    >
-                      <Text style={{ fontSize: 12, fontWeight: "600", color: "#0369A1", marginBottom: 8, textAlign: "center" }}>
-                        Your OTP (for development):
-                      </Text>
-                      <Text style={{ fontSize: 32, fontWeight: "bold", color: colors.primary[600], textAlign: "center", letterSpacing: 4 }}>
-                        {displayedOtp}
-                      </Text>
-                      <Text style={{ fontSize: 11, color: "#0284C7", marginTop: 8, textAlign: "center" }}>
-                        This will be sent via SMS in production
-                      </Text>
+                  {devOtpShown && (
+                    <View style={{ marginBottom: 16, padding: 12, backgroundColor: '#E0F2FE', borderRadius: 12, borderWidth: 1, borderColor: '#7DD3FC' }}>
+                      <Text style={{ fontSize: 12, color: '#0369A1', marginBottom: 4 }}>Development: use the code below (no SMS sent)</Text>
+                      <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#0C4A6E', letterSpacing: 4 }}>{otp || '—'}</Text>
                     </View>
                   )}
 
+                  {/* OTP Input Section */}
                   <View style={{ marginBottom: 16 }} className="mb-4">
-                    <Text style={{ fontSize: 14, fontWeight: '500', color: '#374151', marginBottom: 8 }} className="text-sm font-medium text-gray-700 mb-2">{t("login.otpCode")}</Text>
+                    <Text style={{ fontSize: 14, fontWeight: '500', color: '#374151', marginBottom: 8 }} className="text-sm font-medium text-gray-700 mb-2">
+                      {t("login.otpCode")} (4 digits)
+                    </Text>
                     <TextInput
                       value={otp}
-                      onChangeText={setOtp}
-                      placeholder={t("login.otpPlaceholder")}
+                      onChangeText={(text) => {
+                        // Only allow 4 digits
+                        const cleaned = text.replace(/[^0-9]/g, '').slice(0, 4);
+                        setOtp(cleaned);
+                        setError(null); // Clear error on input
+                      }}
+                      placeholder="0000"
                       placeholderTextColor={colors.gray[400]}
                       keyboardType="number-pad"
-                      maxLength={6}
+                      maxLength={4}
+                      autoFocus
                       style={{ 
                         backgroundColor: '#F9FAFB', 
-                        borderWidth: 1, 
-                        borderColor: '#E5E7EB', 
-                        borderRadius: 12, 
-                        paddingHorizontal: 16, 
-                        paddingVertical: 16, 
-                        fontSize: 24, 
+                        borderWidth: 2, 
+                        borderColor: otp.length === 4 ? colors.primary[500] : '#E5E7EB', 
+                        borderRadius: 16, 
+                        paddingHorizontal: 20, 
+                        paddingVertical: 20, 
+                        fontSize: 32, 
+                        fontWeight: 'bold',
                         color: '#111827', 
                         textAlign: 'center', 
-                        letterSpacing: 8 
+                        letterSpacing: 12 
                       }}
-                      className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-4 text-base text-gray-900 text-center tracking-widest"
+                      className="bg-gray-50 border-2 rounded-2xl px-5 py-5 text-center"
                     />
+                    <Text style={{ fontSize: 12, color: '#6B7280', marginTop: 8, textAlign: 'center' }} className="text-xs text-gray-500 mt-2 text-center">
+                      Enter the 4-digit code sent to {phoneE164}
+                    </Text>
                   </View>
 
                   {error && (
@@ -262,7 +309,7 @@ export default function LoginScreen() {
 
                   <Button
                     onPress={onVerifyOtp}
-                    disabled={busy || otp.trim().length < 4}
+                    disabled={busy || otp.trim().length !== 4}
                     loading={busy}
                     size="lg"
                     className="mt-2"
@@ -291,8 +338,10 @@ export default function LoginScreen() {
                       onPress={() => {
                         setStep("phone");
                         setOtp("");
-                        setDisplayedOtp(null);
+                        setRequestId(null);
+                        setDevOtpShown(false);
                         setError(null);
+                        setCountdown(0);
                       }}
                       variant="ghost"
                       size="sm"

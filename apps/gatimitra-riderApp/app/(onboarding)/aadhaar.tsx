@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from "react";
 import { View, Text, TextInput, ScrollView, KeyboardAvoidingView, Platform, Image, Alert, Pressable } from "react-native";
-import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// Optional: native module not available in Expo Go; use text fallback
+let DateTimePicker: React.ComponentType<any> | null = null;
+try {
+  DateTimePicker = require("@react-native-community/datetimepicker").default;
+} catch {
+  // Expo Go or env without native datetimepicker
+}
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import * as ImagePicker from "expo-image-picker";
@@ -308,7 +315,7 @@ export default function AadhaarScreen() {
                   </Text>
                   <Text style={{ fontSize: 16, color: colors.gray[600] }}>📅</Text>
                 </Pressable>
-                {showDatePicker && (
+                {showDatePicker && DateTimePicker && (
                   <DateTimePicker
                     value={dobDate || new Date()}
                     mode="date"
@@ -317,7 +324,6 @@ export default function AadhaarScreen() {
                       setShowDatePicker(Platform.OS === "ios");
                       if (selectedDate) {
                         setDobDate(selectedDate);
-                        // Format as YYYY-MM-DD
                         const year = selectedDate.getFullYear();
                         const month = String(selectedDate.getMonth() + 1).padStart(2, "0");
                         const day = String(selectedDate.getDate()).padStart(2, "0");
@@ -328,7 +334,24 @@ export default function AadhaarScreen() {
                     minimumDate={new Date(new Date().setFullYear(new Date().getFullYear() - 100))}
                   />
                 )}
-                {Platform.OS === "ios" && showDatePicker && (
+                {showDatePicker && !DateTimePicker && (
+                  <TextInput
+                    placeholder="YYYY-MM-DD"
+                    value={dob}
+                    onChangeText={setDob}
+                    style={{
+                      backgroundColor: "#F9FAFB",
+                      borderWidth: 1,
+                      borderColor: "#E5E7EB",
+                      borderRadius: 12,
+                      paddingHorizontal: 16,
+                      paddingVertical: 12,
+                      fontSize: 16,
+                      marginTop: 8,
+                    }}
+                  />
+                )}
+                {Platform.OS === "ios" && showDatePicker && DateTimePicker && (
                   <View style={{ flexDirection: "row", gap: 12, marginTop: 12 }}>
                     <Button
                       variant="outline"

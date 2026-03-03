@@ -1,0 +1,75 @@
+# ============================================
+# Root .easignore - reduces EAS upload size
+# (EAS may upload from repo root in monorepos)
+# ============================================
+
+# Entire workspaces not needed for rider app build
+backend/
+dashboard/
+merchant_db/
+dashboards/
+
+# Docs and schemas (not needed at build time)
+**/docs/
+**/documentation/
+**/*.md
+!apps/gatimitra-riderApp/README.md
+
+# Drizzle and DB (backend only)
+**/drizzle/meta/
+**/drizzle/*.sql
+**/drizzle/fixes/
+**/drizzle/documentation/
+
+# Git and IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs and caches
+**/dist/
+**/build/
+**/out/
+**/.next/
+**/.expo/
+**/.gradle/
+**/.cache/
+# Exclude native folders from other workspaces (rider app uses prebuild)
+backend/android/
+backend/ios/
+dashboard/android/
+dashboard/ios/
+merchant_db/android/
+merchant_db/ios/
+**/tmp/
+**/temp/
+**/logs/
+*.log
+*.tgz
+*.zip
+*.tar.gz
+*.apk
+*.aab
+*.ipa
+*.keystore
+
+# Test and coverage
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+**/coverage/
+**/.nyc_output/
+
+# Environment and secrets (use EAS env instead)
+.env
+.env.*
+!.env.example
+!apps/gatimitra-riderApp/env.example
+
+# Misc
+.DS_Store
+Thumbs.db

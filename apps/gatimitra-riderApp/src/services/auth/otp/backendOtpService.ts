@@ -16,7 +16,7 @@ export function createBackendOtpService(): OtpService {
       const resp = await postJson<OtpRequestResponse>(
         `${apiBaseUrl}/v1/auth/otp/request`, 
         { phoneE164 },
-        { timeout: 15000 } // 15 second timeout
+        { timeout: 30000 } // 30s for slow networks / cold backend
       );
       requestId = resp.requestId;
       phoneBound = phoneE164;
@@ -24,19 +24,24 @@ export function createBackendOtpService(): OtpService {
       return resp; // Return response so caller can access OTP
     },
 
-    verifyOtp: async ({ phoneE164, otp, deviceId }) => {
-      if (!requestId || !phoneBound) throw new Error("OTP not requested yet");
-      if (phoneBound !== phoneE164) throw new Error("Phone number mismatch for OTP request");
+    verifyOtp: async ({ phoneE164, otp, deviceId, requestId: requestIdArg }) => {
+      const rid = requestIdArg ?? requestId;
+      if (!rid) {
+        throw new Error("OTP not requested yet. Tap \"Send OTP\" first and wait for the code.");
+      }
+      if (phoneBound && phoneBound !== phoneE164) {
+        throw new Error("Phone number mismatch for OTP request");
+      }
 
       return await postJson<Session>(
         `${apiBaseUrl}/v1/auth/otp/verify`,
         {
-          requestId,
+          requestId: rid,
           phoneE164,
           otp,
           deviceId,
         },
-        { timeout: 15000 } // 15 second timeout
+        { timeout: 30000 } // 30s for slow networks / cold backend
       );
     },
   };

@@ -27,6 +27,7 @@ import {
   bigint,
   bigserial,
   serial,
+  uuid,
   index,
   uniqueIndex,
   primaryKey,

@@ -3,6 +3,7 @@
  * This file is only loaded on iOS/Android, not on web
  */
 
+import Constants from "expo-constants";
 import { getRiderAppConfig } from "../../config/env";
 
 let initialized = false;
@@ -10,6 +11,13 @@ let isAvailable = false;
 
 export function initializeMapbox() {
   if (initialized) return isAvailable;
+
+  // Expo Go has no native Mapbox; never require @rnmapbox/maps to avoid throwing
+  if (Constants.appOwnership === "expo") {
+    initialized = true;
+    isAvailable = false;
+    return false;
+  }
 
   const cfg = getRiderAppConfig();
   const token = cfg.mapboxToken;
@@ -134,34 +142,17 @@ export function isMapboxAvailable(): boolean {
   return isAvailable;
 }
 
-export function getMapboxModule() {
-  if (!isMapboxAvailable()) {
-    // Don't spam warnings - only log once
-    return null;
-  }
+export function getMapboxModule(): ReturnType<typeof require> | null {
   try {
+    if (Constants.appOwnership === "expo") return null;
+    if (!isMapboxAvailable()) return null;
     const mapboxModule = require("@rnmapbox/maps");
-    
-    // Handle different export patterns
     let mapbox = mapboxModule;
-    if (mapboxModule.default) {
-      mapbox = mapboxModule.default;
-    } else if (mapboxModule.Mapbox) {
-      mapbox = mapboxModule.Mapbox;
-    }
-    
-    if (!mapbox || !mapbox.MapView) {
-      console.error("[Mapbox] Mapbox module loaded but MapView is missing");
-      console.error("[Mapbox] Available exports:", Object.keys(mapboxModule || {}));
-      return null;
-    }
+    if (mapboxModule?.default) mapbox = mapboxModule.default;
+    else if (mapboxModule?.Mapbox) mapbox = mapboxModule.Mapbox;
+    if (!mapbox?.MapView) return null;
     return mapbox;
-  } catch (error: any) {
-    const errorMsg = error?.message || String(error);
-    // Only log if it's a new error (not the native code error we already logged)
-    if (!errorMsg.includes("native code not available")) {
-      console.error("[Mapbox] Failed to get Mapbox module:", errorMsg);
-    }
+  } catch (_e) {
     return null;
   }
 }

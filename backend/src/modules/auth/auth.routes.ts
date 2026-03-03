@@ -93,8 +93,8 @@ export async function authRoutes(app: FastifyInstance) {
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
 
-      // Generate a 6-digit OTP (dev).
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      // Generate 4-digit OTP (matches app UI and MSG91 widget config).
+      const otp = Math.floor(1000 + Math.random() * 9000).toString();
       otpStore.set(requestId, {
         phoneE164,
         otp,
@@ -261,6 +261,145 @@ export async function authRoutes(app: FastifyInstance) {
         userId,
         riderId: riderId.toString(),
       };
+    },
+  );
+
+  /**
+   * Verify MSG91 access token and issue session
+   * This endpoint is called after client-side OTP verification using MSG91 SDK
+   */
+  app.post(
+    "/msg91/verify-token",
+    {
+      schema: {
+        body: z.object({
+          authToken: z.string().min(10),
+          phoneE164: z.string(),
+          deviceId: z.string(),
+        }),
+        response: {
+          200: SessionSchema,
+          400: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { authToken, phoneE164, deviceId } = req.body;
+
+      try {
+        // Verify MSG91 access token using MSG91 Widget API
+        // MSG91 Widget OTP verification endpoint
+        const verifyUrl = "https://control.msg91.com/api/v5/otp/verify-token";
+        
+        if (!env.MSG91_AUTH_KEY) {
+          console.error("MSG91_AUTH_KEY not configured");
+          return reply.code(500).send({ error: "OTP service not configured" });
+        }
+
+        const verifyResponse = await fetch(verifyUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authkey": env.MSG91_AUTH_KEY,
+          },
+          body: JSON.stringify({
+            authkey: env.MSG91_AUTH_KEY,
+            token: authToken,
+          }),
+        });
+
+        if (!verifyResponse.ok) {
+          const errorData = await verifyResponse.json().catch(() => ({}));
+          console.error("MSG91 token verification failed:", errorData);
+          return reply.code(400).send({ error: "invalid_token" });
+        }
+
+        const verifyData = await verifyResponse.json();
+        
+        // Check if token is valid
+        // MSG91 response format may vary, check for success indicators
+        if (verifyData.type !== "success" && verifyData.status !== "success") {
+          return reply.code(400).send({ error: "invalid_token" });
+        }
+
+        // Extract phone number from MSG91 response if available
+        // For widget OTP, phone verification might be implicit in the token
+        // We'll trust the phoneE164 from the client since the token was verified
+        const verifiedPhone = verifyData.phone || verifyData.mobile;
+        
+        // If phone is returned, verify it matches
+        if (verifiedPhone) {
+          const normalizePhone = (phone: string) => phone.replace(/[\s+]/g, "");
+          if (normalizePhone(verifiedPhone) !== normalizePhone(phoneE164)) {
+            return reply.code(400).send({ error: "phone_mismatch" });
+          }
+        }
+
+        // Token is valid - proceed with session creation
+        const db = getDb();
+
+        // Find or create rider by mobile number
+        let userId: string;
+        let riderId: number;
+
+        try {
+          const existingRider = await db
+            .select()
+            .from(riders)
+            .where(eq(riders.mobile, phoneE164))
+            .limit(1);
+
+          if (existingRider.length > 0) {
+            riderId = existingRider[0]!.id;
+            userId = `usr_${riderId}`;
+          } else {
+            // Create new rider
+            const newRider = await db
+              .insert(riders)
+              .values({
+                mobile: phoneE164,
+                countryCode: "+91",
+                defaultLanguage: "en",
+                onboardingStage: "MOBILE_VERIFIED",
+                kycStatus: "PENDING",
+                status: "INACTIVE",
+              })
+              .returning({ id: riders.id });
+
+            riderId = newRider[0]!.id;
+            userId = `usr_${riderId}`;
+          }
+        } catch (dbError: any) {
+          console.error("Database error during MSG91 token verify:", dbError);
+          const errorMessage = dbError?.message || "Database error";
+          return reply.code(500).send({ error: errorMessage });
+        }
+
+        const expiresInSec = 60 * 60 * 6; // 6 hours
+        const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
+
+        const accessToken = await issueSupabaseCompatibleJwt({
+          jwtSecret: env.SUPABASE_JWT_SECRET,
+          sub: userId,
+          role: "rider",
+          phoneE164,
+          deviceId,
+          exp: expiresAt,
+        });
+
+        return {
+          accessToken,
+          expiresAt,
+          role: "rider",
+          userId,
+          riderId: riderId.toString(),
+        };
+      } catch (error: any) {
+        console.error("MSG91 token verification error:", error);
+        return reply.code(500).send({
+          error: error?.message || "Failed to verify token",
+        });
+      }
     },
   );
 

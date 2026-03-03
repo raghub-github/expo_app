@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, Pressable, Modal, ScrollView, Image } from "react-native";
+import { View, Text, Pressable, Modal, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
@@ -37,13 +37,8 @@ export function GlobalTopBar() {
           <DutyToggle compact />
         </View>
 
-        {/* App Logo (onlylogo.png) */}
-        <View style={{ flex: 1, alignItems: 'center' }} className="flex-1 items-center">
-          <Image
-            source={require('../../assets/images/onlylogo.png')}
-            style={{ width: 50, height: 50, resizeMode: 'contain' }}
-          />
-        </View>
+        {/* Spacer (logo removed per design) */}
+        <View style={{ flex: 1 }} />
 
         {/* Notifications */}
         <Pressable

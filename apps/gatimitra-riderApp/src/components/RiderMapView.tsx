@@ -150,24 +150,34 @@ export const RiderMapView: React.FC<RiderMapViewProps> = ({
   onOrderPress,
   style,
 }) => {
-  const Mapbox = Platform.OS !== "web" ? getMapboxModule() : null;
+  const Mapbox = (() => {
+    if (Platform.OS === "web") return null;
+    try {
+      return getMapboxModule();
+    } catch {
+      return null;
+    }
+  })();
   const cameraRef = useRef<any>(null);
   const [mapReady, setMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
 
-  // Debug: Log Mapbox status (only once, not on every render)
+  // Debug: Log Mapbox status (only once); never throw
   useEffect(() => {
-    if (Platform.OS !== "web" && !Mapbox) {
+    if (Platform.OS === "web" || Mapbox) return;
+    try {
       const config = require("@/src/config/env").getRiderAppConfig();
       const mapboxService = require("@/src/services/maps/mapbox");
       console.log("[RiderMapView] Mapbox Status:", {
         hasMapbox: !!Mapbox,
-        hasToken: !!config.mapboxToken,
-        tokenPrefix: config.mapboxToken?.substring(0, 10),
-        isAvailable: mapboxService.isMapboxAvailable(),
+        hasToken: !!config?.mapboxToken,
+        tokenPrefix: config?.mapboxToken?.substring(0, 10),
+        isAvailable: mapboxService?.isMapboxAvailable?.() ?? false,
       });
+    } catch (_e) {
+      // Ignore so map fallback UI still renders
     }
-  }, []); // Empty deps - only log once
+  }, []);
 
   // Use default location if rider location is not available yet
   const currentLocation = riderLocation || DEFAULT_LOCATION;
@@ -189,10 +199,13 @@ export const RiderMapView: React.FC<RiderMapViewProps> = ({
     }
   }, [riderLocation, mapReady]);
 
-  // If Mapbox is not available, show helpful error message
+  // If Mapbox is not available, show helpful fallback (never throw)
   if (!Mapbox) {
-    const config = require("@/src/config/env").getRiderAppConfig();
-    const hasToken = !!config.mapboxToken;
+    let hasToken = false;
+    try {
+      const config = require("@/src/config/env").getRiderAppConfig();
+      hasToken = !!config?.mapboxToken;
+    } catch (_e) {}
     
     return (
       <View style={[styles.container, style]}>
@@ -210,10 +223,11 @@ export const RiderMapView: React.FC<RiderMapViewProps> = ({
                 Expo Go does not support native modules
               </Text>
               <Text style={[styles.errorText, { marginTop: 12, fontSize: 11 }]}>
+                Map works in development/production builds (not Expo Go).{'\n'}
                 To fix:{'\n'}
-                1. Run: npx expo prebuild{'\n'}
-                2. Then: npx expo run:android (or run:ios){'\n'}
-                3. Or use: eas build --profile development
+                1. npx expo prebuild{'\n'}
+                2. npx expo run:android (or run:ios){'\n'}
+                3. Or: eas build --profile development
               </Text>
             </>
           )}
@@ -321,7 +335,7 @@ export const RiderMapView: React.FC<RiderMapViewProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.gray[100],
+    backgroundColor: "#FFFFFF",
   },
   map: {
     flex: 1,
@@ -330,7 +344,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: colors.gray[100],
+    backgroundColor: "#FFFFFF",
   },
   loadingText: {
     fontSize: 16,

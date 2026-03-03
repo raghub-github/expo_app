@@ -37,6 +37,15 @@ export function installErrorSuppression() {
       // Suppress - we handle this gracefully
       return;
     }
+
+    // Suppress BiometricAuth / MSG91 SDK native module errors (Expo Go or when native module not linked)
+    if (
+      message.includes("BiometricAuth is undefined") ||
+      message.includes("Biometric check error") ||
+      message.includes("Native module not linked properly")
+    ) {
+      return;
+    }
     
     originalError.apply(console, args);
   };
