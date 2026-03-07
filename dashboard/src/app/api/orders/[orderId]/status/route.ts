@@ -72,7 +72,12 @@ export async function PATCH(
       );
     }
 
-    const { updated } = await updateOrderStatus(orderId, status as UpdateableOrderStatus);
+    const userEmail = (user.email ?? "").trim() || "unknown";
+    const { updated } = await updateOrderStatus(
+      orderId,
+      status as UpdateableOrderStatus,
+      userEmail
+    );
     if (!updated) {
       return NextResponse.json(
         { success: false, error: "Order not found or not updated" },
@@ -82,7 +87,7 @@ export async function PATCH(
 
     return NextResponse.json({
       success: true,
-      data: { status, orderId },
+      data: { status, orderId, updatedByEmail: userEmail },
     });
   } catch (error) {
     console.error("[PATCH /api/orders/[orderId]/status] Error:", error);

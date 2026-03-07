@@ -36,7 +36,7 @@ export const cacheStrategies: Record<CacheTier, CacheConfig> = {
     persistMaxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   },
   [CacheTier.MEDIUM]: {
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 5 * 60 * 1000, // 5 minutes — section data (customers, tickets) stays fresh when switching back
     gcTime: 60 * 60 * 1000, // 1 hour
     refetchOnMount: false,
     refetchOnWindowFocus: false,

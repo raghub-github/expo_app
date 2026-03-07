@@ -9,9 +9,12 @@ import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getDb, getSql } from "@/lib/db/client";
 import { dashboardAccess, dashboardAccessPoints, systemUsers } from "@/lib/db/schema";
-import { and, eq, inArray, asc, or, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, asc } from "drizzle-orm";
+import { getCached, setCached, CACHE_KEYS } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
+
+const AGENTS_CACHE_TTL_MS = 60_000; // 60s
 
 export async function GET() {
   try {
@@ -38,6 +41,19 @@ export async function GET() {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
     }
 
+    const currentUser = {
+      id: systemUser.id,
+      name: systemUser.fullName ?? systemUser.email ?? "Me",
+    };
+
+    const cachedAgents = getCached<Array<{ id: number; name: string; email: string }>>(CACHE_KEYS.TICKETS_AGENTS_LIST);
+    if (cachedAgents) {
+      return NextResponse.json({
+        success: true,
+        data: { agents: cachedAgents, currentUser },
+      });
+    }
+
     const db = getDb();
 
     // Get users with TICKET dashboard access
@@ -51,8 +67,6 @@ export async function GET() {
         )
       );
 
-    console.log("[GET /api/tickets/agents] Dashboard access rows:", accessRows.length);
-
     // Also get users with TICKET access points (VIEW or ACTION)
     const accessPointRows = await db
       .select({ systemUserId: dashboardAccessPoints.systemUserId })
@@ -64,14 +78,10 @@ export async function GET() {
         )
       );
 
-    console.log("[GET /api/tickets/agents] Access point rows:", accessPointRows.length);
-
     // Combine both sets of user IDs
     const userIdsFromAccess = accessRows.map((r) => r.systemUserId);
     const userIdsFromAccessPoints = accessPointRows.map((r) => r.systemUserId);
     let userIds = [...new Set([...userIdsFromAccess, ...userIdsFromAccessPoints])];
-    
-    console.log("[GET /api/tickets/agents] Combined user IDs from access:", userIds.length, userIds);
     
     // Also include agents who are currently assigned to tickets
     // This ensures agents working on tickets appear in the dropdown even if they don't have explicit access records
@@ -88,13 +98,12 @@ export async function GET() {
     
     // Merge assigned agents with access-based agents
     userIds = [...new Set([...userIds, ...assignedAgentIds])];
-    console.log("[GET /api/tickets/agents] Final combined user IDs (including assigned):", userIds.length, userIds);
-    
+
     if (userIds.length === 0) {
-      console.log("[GET /api/tickets/agents] No agents found");
+      setCached(CACHE_KEYS.TICKETS_AGENTS_LIST, [], AGENTS_CACHE_TTL_MS);
       return NextResponse.json({
         success: true,
-        data: { agents: [] },
+        data: { agents: [], currentUser },
       });
     }
 
@@ -114,12 +123,7 @@ export async function GET() {
       email: u.email ?? "",
     }));
 
-    console.log("[GET /api/tickets/agents] Returning agents:", agents.length, agents.map((a) => a.name || a.email));
-
-    const currentUser = {
-      id: systemUser.id,
-      name: systemUser.fullName ?? systemUser.email ?? "Me",
-    };
+    setCached(CACHE_KEYS.TICKETS_AGENTS_LIST, agents, AGENTS_CACHE_TTL_MS);
 
     return NextResponse.json({
       success: true,

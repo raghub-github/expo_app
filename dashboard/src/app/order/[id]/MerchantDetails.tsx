@@ -436,7 +436,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
               <h2 className="text-sm font-semibold text-slate-900">Store Timings</h2>
               <button
                 type="button"
-                className="text-xs text-slate-500 hover:text-slate-700"
+                className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
                 onClick={() => setShowTimingsModal(false)}
               >
                 ✕
@@ -509,7 +509,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
               <h2 className="text-sm font-semibold text-slate-900">Store Contacts</h2>
               <button
                 type="button"
-                className="text-xs text-slate-500 hover:text-slate-700"
+                className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
                 onClick={() => setShowPhoneModal(false)}
               >
                 ✕
@@ -566,7 +566,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
               <h2 className="text-base font-semibold text-slate-900">Merchant Details</h2>
               <button
                 type="button"
-                className="text-xs text-slate-500 hover:text-slate-700"
+                className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
                 onClick={() => setShowDetailsModal(false)}
               >
                 ✕
@@ -627,7 +627,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                   <button
                     type="button"
                     onClick={handleViewOnMap}
-                    className="inline-flex items-center gap-0.5 text-emerald-600 hover:text-emerald-700 text-[11px]"
+                    className="inline-flex items-center gap-0.5 text-emerald-600 hover:text-emerald-700 text-[11px] cursor-pointer"
                   >
                     <i className="bi bi-geo-alt" />
                     View on Map

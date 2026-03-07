@@ -10,8 +10,11 @@ import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { getCached, setCached, CACHE_KEYS } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
+
+const REF_CACHE_TTL_MS = 60_000; // 60s
 
 const STATUS_OPTIONS = [
   { value: "open", label: "Open" },
@@ -77,6 +80,20 @@ export async function GET() {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
     }
 
+    const cached = getCached<{ groups: unknown[]; tags: unknown[] }>(CACHE_KEYS.TICKETS_REFERENCE_DATA);
+    if (cached) {
+      return NextResponse.json({
+        success: true,
+        data: {
+          ...cached,
+          statuses: STATUS_OPTIONS,
+          services: SERVICE_OPTIONS,
+          priorities: PRIORITY_OPTIONS,
+          sources: SOURCE_OPTIONS,
+        },
+      });
+    }
+
     const sql = getSql();
     let groups: Array<{ id: number; groupCode: string; groupName: string }> = [];
     let tags: Array<{ id: number; tagCode: string; tagName: string }> = [];
@@ -113,16 +130,12 @@ export async function GET() {
       tags = [];
     }
 
+    const payload = { groups, tags, statuses: STATUS_OPTIONS, services: SERVICE_OPTIONS, priorities: PRIORITY_OPTIONS, sources: SOURCE_OPTIONS };
+    setCached(CACHE_KEYS.TICKETS_REFERENCE_DATA, { groups, tags }, REF_CACHE_TTL_MS);
+
     return NextResponse.json({
       success: true,
-      data: {
-        groups,
-        tags,
-        statuses: STATUS_OPTIONS,
-        services: SERVICE_OPTIONS,
-        priorities: PRIORITY_OPTIONS,
-        sources: SOURCE_OPTIONS,
-      },
+      data: payload,
     });
   } catch (error) {
     console.error("[GET /api/tickets/reference-data] Error:", error);

@@ -174,8 +174,12 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 via-white to-indigo-50 px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-      <div className="w-full max-w-md space-y-5">
+    <div
+      className="relative flex min-h-screen items-center justify-center px-4 py-4 sm:px-6 sm:py-6 lg:px-8 bg-cover bg-center bg-no-repeat"
+      style={{ backgroundImage: "url('/bg.png')" }}
+    >
+      <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px]" aria-hidden />
+      <div className="relative z-10 w-full max-w-md space-y-5">
         {/* Logo Section */}
         <div className="flex flex-col items-center space-y-2">
           <div className="flex justify-center -mb-1">

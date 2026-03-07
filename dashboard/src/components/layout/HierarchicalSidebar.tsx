@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
+import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import {
   Menu,
   X,
@@ -31,11 +33,20 @@ interface HierarchicalSidebarProps {
   isOpen: boolean;
   onToggle: () => void;
   isInSpecificDashboard?: boolean;
+  /** Called on mousedown with target href so layout can show section-specific skeleton. */
+  onNavigationStart?: (targetHref: string) => void;
 }
 
-export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard }: HierarchicalSidebarProps) {
+export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard, onNavigationStart }: HierarchicalSidebarProps) {
   const pathname = usePathname();
+  const queryClient = useQueryClient();
   const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
+  const handleNavPrefetch = useCallback(
+    (href: string) => {
+      prefetchDashboardSection(queryClient, href);
+    },
+    [queryClient]
+  );
   const { isSuperAdmin, loading: permissionsLoading, error: permissionsError } = usePermissions();
   const [isMainMenuOpen, setIsMainMenuOpen] = useState(false);
   const mobileCtx = useLeftSidebarMobile();
@@ -44,6 +55,8 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const setMobileMenuOpen = mobileCtx ? mobileCtx.setMobileMenuOpen : setInternalMobileOpen;
   const [skeletonExpired, setSkeletonExpired] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  /** Optimistic active state: set on mousedown so the clicked item highlights instantly before route/API. */
+  const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
   const { data: sessionData } = useSessionQuery();
   const logoutMutation = useLogout();
   const userEmail = sessionData?.session?.user?.email ?? null;
@@ -85,29 +98,21 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const isLoading = accessLoading || permissionsLoading;
   const hasError = Boolean(accessError || permissionsError);
   const useFallback = isLoading && skeletonExpired;
-  
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'HierarchicalSidebar.tsx:70',message:'Sidebar loading state',data:{accessLoading,permissionsLoading,isLoading,skeletonExpired,useFallback,dashboardsCount:dashboards.length,hasError},timestamp:Date.now(),runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
 
   // null = show all items; Set = filter by access. While loading (useFallback) show all so sidebar isn't empty.
   const accessibleDashboards = useMemo(() => {
     if (hasError) return null;
-    if (useFallback) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'HierarchicalSidebar.tsx:77',message:'useFallback=true: showing all items (FLASH CAUSE)',data:{useFallback,isLoading,skeletonExpired,accessLoading,permissionsLoading},timestamp:Date.now(),runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      return null; // Still loading: show full nav so options appear; filter once data loads
-    }
+    if (useFallback) return null; // Still loading: show full nav; filter once data loads
     if (dashboards.length === 0) return null;
-    const filtered = new Set(
+    return new Set(
       dashboards.filter((d) => d.isActive).map((d) => d.dashboardType)
     );
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'HierarchicalSidebar.tsx:82',message:'Permissions loaded: filtering sidebar',data:{dashboardsCount:dashboards.length,accessibleDashboardsCount:filtered.size},timestamp:Date.now(),runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    return filtered;
-  }, [dashboards, useFallback, hasError, isLoading, skeletonExpired, accessLoading, permissionsLoading]);
+  }, [dashboards, useFallback, hasError]);
+
+  // Clear optimistic active state as soon as pathname changes (navigation completed or user navigated elsewhere)
+  useEffect(() => {
+    setPendingNavHref(null);
+  }, [cleanPathname]);
 
   const effectiveSuperAdmin = hasError || useFallback ? true : isSuperAdmin;
 
@@ -203,7 +208,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <div className="flex h-[52px] min-h-[52px] items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <>
-              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onClick={() => setMobileMenuOpen(false)}>
+              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
                 <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
                 <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
               </Link>
@@ -212,7 +217,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
               </button>
             </>
           ) : (
-            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onClick={() => setMobileMenuOpen(false)}>
+            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
               <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
               <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
             </Link>
@@ -223,17 +228,26 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-4">
           <div className="space-y-0.5">
             {filteredNavigation.map((item) => {
-              // Home: active only on exact /dashboard. Others: active on exact href or any sub-route.
-              const isActive =
+              // Exactly one active: during pending nav only that item is active; otherwise use pathname
+              const isRouteActive =
                 cleanPathname === item.href ||
                 (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/"));
+              const isActive =
+                pendingNavHref !== null
+                  ? item.href === pendingNavHref
+                  : isRouteActive;
               const Icon = item.icon;
               return (
                 <Link
                   key={item.name}
                   href={item.href}
+                  onMouseDown={() => {
+                    onNavigationStart?.(item.href);
+                    setPendingNavHref(item.href);
+                  }}
+                  onMouseEnter={() => handleNavPrefetch(item.href)}
                   onClick={() => setMobileMenuOpen(false)}
-                  className={`group relative flex items-center rounded-xl transition-all duration-200 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
+                  className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
                     isOpen
                       ? `gap-3 px-3 py-2.5 text-sm font-medium ${
                           isActive

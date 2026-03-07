@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Filter, Search, X, ChevronDown } from "lucide-react";
 import { useTicketFilters } from "@/hooks/tickets/useTicketFilters";
+import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
+import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 
 const FILTER_ITEMS: Array<{ key: string; label: string }> = [
   { key: "agent", label: "Agent" },
@@ -46,80 +48,26 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
   const [filterSearchExpanded, setFilterSearchExpanded] = useState(false);
   const isDrawer = variant === "drawer";
 
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string }>>([]);
-  const [currentUserName, setCurrentUserName] = useState<string>("Me");
-  const [referenceData, setReferenceData] = useState<{
-    groups: Array<{ id: number; groupCode: string; groupName: string }>;
-    statuses: Array<{ value: string; label: string }>;
-    services: Array<{ value: string; label: string }>;
-    priorities: Array<{ value: string; label: string }>;
-    sources: Array<{ value: string; label: string }>;
-  } | null>(null);
+  const { data: agentsData } = useTicketsAgentsQuery();
+  const { data: referenceDataRaw } = useTicketsReferenceDataQuery();
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadAgents() {
-      try {
-        const r = await fetch("/api/tickets/agents", { credentials: "include" });
-        const d = r.ok ? await r.json().catch(() => ({ success: false })) : { success: false };
-        if (cancelled) return;
-        if (d.success && d.data) {
-          setAgents(d.data.agents ?? []);
-          if (d.data.currentUser?.name) setCurrentUserName(d.data.currentUser.name);
-        } else {
-          setAgents([]);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("[TicketFilters] Agents fetch failed:", err);
-          setAgents([]);
-        }
+  const agents = agentsData?.agents ?? [];
+  const currentUserName = agentsData?.currentUser?.name ?? "Me";
+  const referenceData = referenceDataRaw
+    ? {
+        groups: referenceDataRaw.groups,
+        statuses: referenceDataRaw.statuses,
+        services: referenceDataRaw.services,
+        priorities: referenceDataRaw.priorities,
+        sources: referenceDataRaw.sources,
       }
-    }
-    loadAgents();
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadRefData() {
-      try {
-        const r = await fetch("/api/tickets/reference-data", { credentials: "include" });
-        const d = r.ok ? await r.json().catch(() => ({ success: false })) : { success: false };
-        if (cancelled) return;
-        if (d.success && d.data) {
-          setReferenceData({
-            groups: d.data.groups ?? [],
-            statuses: d.data.statuses ?? [],
-            services: d.data.services ?? [],
-            priorities: d.data.priorities ?? [],
-            sources: d.data.sources ?? [],
-          });
-        } else {
-          setReferenceData({
-            groups: [],
-            statuses: [],
-            services: [],
-            priorities: [],
-            sources: [],
-          });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("[TicketFilters] Reference data fetch failed:", err);
-          setReferenceData({
-            groups: [],
-            statuses: [],
-            services: [],
-            priorities: [],
-            sources: [],
-          });
-        }
-      }
-    }
-    loadRefData();
-    return () => { cancelled = true; };
-  }, []);
+    : {
+        groups: [] as Array<{ id: number; groupCode: string; groupName: string }>,
+        statuses: [] as Array<{ value: string; label: string }>,
+        services: [] as Array<{ value: string; label: string }>,
+        priorities: [] as Array<{ value: string; label: string }>,
+        sources: [] as Array<{ value: string; label: string }>,
+      };
 
   const visibleLabels = useMemo(() => {
     const q = filterOptionsSearch.trim().toLowerCase();

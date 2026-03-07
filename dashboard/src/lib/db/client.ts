@@ -18,6 +18,7 @@ export function getDb() {
     idle_timeout: 20,
     connect_timeout: 30, // Increased from 10 to 30 seconds
     max_lifetime: 60 * 30, // 30 minutes
+    prepare: false, // Avoid "prepared statement does not exist" with connection pooling
   });
 
   _sql = sql;

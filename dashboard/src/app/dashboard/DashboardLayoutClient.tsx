@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { usePathname } from "next/navigation";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
@@ -14,13 +14,60 @@ import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/T
 import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { queryKeys } from "@/lib/queryKeys";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
+import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
+import { getSectionSkeletonForHref } from "@/components/skeletons/SectionSkeletons";
+
+/** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
+function DashboardBootstrapSkeleton() {
+  return (
+    <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
+      <div className="w-56 shrink-0 bg-[#0f2d42]" aria-hidden>
+        <div className="h-14 border-b border-white/10 flex items-center px-3 gap-2">
+          <div className="h-9 w-9 rounded-lg bg-white/15 animate-pulse" />
+          <div className="h-4 w-24 rounded bg-white/15 animate-pulse" />
+        </div>
+        <div className="p-2 space-y-1">
+          {[1, 2, 3, 4, 5, 6].map((i) => (
+            <div key={i} className="h-10 rounded-xl bg-white/10 animate-pulse" />
+          ))}
+        </div>
+      </div>
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="h-14 border-b border-gray-200 bg-white/80 animate-pulse" />
+        <main className="flex-1 p-4 overflow-auto">
+          <div className="h-8 w-48 rounded bg-gray-200 animate-pulse mb-4" />
+          <div className="rounded-lg border border-gray-200 bg-white p-4">
+            <div className="space-y-3">
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                <div key={i} className="h-4 bg-gray-100 rounded animate-pulse" />
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
 
 /**
- * Page-based API execution: layout does NOT call or prefetch any APIs.
- * Only the active page (when user opens it via sidebar) triggers its own APIs.
- * Sidebar uses permissions/dashboard-access for nav visibility; those hooks run
- * only when sidebar mounts (no prefetch from layout).
+ * Gate: only render dashboard tree after bootstrap has run (or cache already has session).
+ * Ensures a single /api/auth/bootstrap call instead of 4 parallel auth calls.
  */
+function useBootstrapGate(queryClient: ReturnType<typeof useQueryClient>) {
+  const [ready, setReady] = useState(false);
+  const didRun = useRef(false);
+  useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+    const cached = queryClient.getQueryData(["auth", "session"]);
+    if (cached != null) {
+      setReady(true);
+      return;
+    }
+    fetchBootstrapAndSeedCache(queryClient).then(() => setReady(true));
+  }, [queryClient]);
+  return ready;
+}
 
 const SIDEBAR_STATE_KEY = "dashboard-sidebar-open";
 
@@ -52,6 +99,36 @@ function SyncSidebarsOnMobile() {
   return null;
 }
 
+/** Prefetch all dashboard routes so clicks open instantly (no "Compiling..." delay). */
+const DASHBOARD_ROUTES_TO_PREFETCH = [
+  "/dashboard",
+  "/dashboard/super-admin",
+  "/dashboard/customers",
+  "/dashboard/riders",
+  "/dashboard/merchants",
+  "/dashboard/orders",
+  "/dashboard/tickets",
+  "/dashboard/area-managers",
+  "/dashboard/system",
+  "/dashboard/analytics",
+];
+
+function usePrefetchDashboardRoutes() {
+  const router = useRouter();
+  const didPrefetch = useRef(false);
+  useEffect(() => {
+    if (didPrefetch.current) return;
+    didPrefetch.current = true;
+    DASHBOARD_ROUTES_TO_PREFETCH.forEach((href) => {
+      try {
+        router.prefetch(href);
+      } catch {
+        // ignore
+      }
+    });
+  }, [router]);
+}
+
 export default function DashboardLayoutClient({
   children,
 }: {
@@ -59,6 +136,9 @@ export default function DashboardLayoutClient({
 }) {
   const pathname = usePathname();
   const queryClient = useQueryClient();
+  const bootstrapReady = useBootstrapGate(queryClient);
+
+  usePrefetchDashboardRoutes();
 
   // When navigating away from merchant dashboard (e.g. via left sidebar to Customers/Riders), clear store result/cache so it doesn’t persist
   const isOnMerchantDashboard = useMemo(
@@ -167,6 +247,8 @@ export default function DashboardLayoutClient({
     setIsRightSidebarOpen(nextRightOpen);
   };
 
+  if (!bootstrapReady) return <DashboardBootstrapSkeleton />;
+
   return (
     <AuthProvider>
       <TicketFilterSidebarProvider>
@@ -184,6 +266,11 @@ export default function DashboardLayoutClient({
       </TicketFilterSidebarProvider>
     </AuthProvider>
   );
+}
+
+/** Main area skeleton — target path ke hisaab se section-specific skeleton. */
+function MainAreaSkeleton({ targetHref }: { targetHref: string }) {
+  return <>{getSectionSkeletonForHref(targetHref)}</>;
 }
 
 function DashboardLayoutContent({
@@ -206,6 +293,8 @@ function DashboardLayoutContent({
   isInSpecificDashboard: boolean;
 }) {
   const pathname = usePathname();
+  const [navigationPending, setNavigationPending] = useState(false);
+  const [pendingTargetHref, setPendingTargetHref] = useState<string | null>(null);
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(
@@ -214,6 +303,11 @@ function DashboardLayoutContent({
   );
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
+  useEffect(() => {
+    setNavigationPending(false);
+    setPendingTargetHref(null);
+  }, [cleanPathname]);
+
   return (
     <LeftSidebarMobileProvider>
       <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
@@ -221,6 +315,10 @@ function DashboardLayoutContent({
           isOpen={isLeftSidebarOpen}
           onToggle={handleLeftSidebarToggle}
           isInSpecificDashboard={isInSpecificDashboard}
+          onNavigationStart={(targetHref) => {
+          setPendingTargetHref(targetHref);
+          setNavigationPending(true);
+        }}
         />
         <RightSidebarProvider
           value={{
@@ -253,7 +351,11 @@ function DashboardLayoutContent({
               style={{ backgroundColor: "#FFFFFF" }}
             >
               <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0">
-                {children}
+                {navigationPending && pendingTargetHref ? (
+                  <MainAreaSkeleton targetHref={pendingTargetHref} />
+                ) : (
+                  children
+                )}
               </div>
             </main>
             <RightSidebar

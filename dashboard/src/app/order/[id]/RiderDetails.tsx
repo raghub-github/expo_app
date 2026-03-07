@@ -117,7 +117,7 @@ function RiderLogModal({ isOpen, onClose, onCopy }: RiderLogModalProps) {
           </div>
           <button
             type="button"
-            className="text-xs text-slate-500 hover:text-slate-700"
+            className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
             onClick={onClose}
           >
             ✕
@@ -212,7 +212,7 @@ function RiderLogModal({ isOpen, onClose, onCopy }: RiderLogModalProps) {
                           <button
                             type="button"
                             onClick={() => onCopy(log.mobile)}
-                            className="p-1 hover:bg-gray-100 rounded"
+                            className="p-1 hover:bg-gray-100 rounded cursor-pointer"
                             title="Copy number"
                           >
                             <i className="bi bi-clipboard text-[10px] text-gray-500" />
@@ -336,7 +336,7 @@ function RiderLogModal({ isOpen, onClose, onCopy }: RiderLogModalProps) {
           </div>
           <button
             type="button"
-            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-900 text-white rounded-md text-[11px] font-medium"
+            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-900 text-white rounded-md text-[11px] font-medium cursor-pointer"
             onClick={onClose}
           >
             Close
@@ -406,7 +406,7 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
           </div>
           <button
             type="button"
-            className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded-full transition-colors"
+            className="inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded-full transition-colors cursor-pointer"
             onClick={() => setShowLogModal(true)}
           >
             <i className="bi bi-eye" />
@@ -506,7 +506,7 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
           <div className="flex flex-col md:flex-row gap-2 text-[10px] relative">
             <div className="relative flex-1 focus-within:z-20">
               <select
-                className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white"
+                className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer"
                 value={riderAttribute}
                 onChange={(e) => handleAttributeChange(e.target.value)}
               >
@@ -518,7 +518,7 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
               </select>
             </div>
             <div className="relative flex-1 focus-within:z-20">
-              <select className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white">
+              <select className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer">
                 <option>Select Rejection Option</option>
                 {rejectionOptions.map((o) => (
                   <option key={o}>{o}</option>
@@ -526,7 +526,7 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
               </select>
             </div>
             <div className="relative flex-1 focus-within:z-20">
-              <select className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white">
+              <select className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer">
                 <option>Select Option</option>
                 <option value="CANCEL">CANCEL</option>
                 <option value="CANCEL_ASSIGN">CANCEL &amp; ASSIGN</option>
@@ -534,7 +534,7 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
             </div>
             <button
               type="button"
-              className="h-8 px-3 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1 mt-1 md:mt-0"
+              className="h-8 px-3 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1 mt-1 md:mt-0 cursor-pointer"
               onClick={() => {
                 // Placeholder action; cancel flow can be wired later.
                 // eslint-disable-next-line no-alert

@@ -104,22 +104,11 @@ export async function GET(request: NextRequest) {
     fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:96',message:'getUserDashboardAccess completed',data:{dashboardsCount:dashboards.length,durationMs:dashboardsDuration},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
     // #endregion
     
-    // Get access points for each dashboard
-    const accessPointsStartTime = Date.now();
-    const allAccessPoints = [];
-    for (const dashboard of dashboards) {
-      const apStart = Date.now();
-      const accessPoints = await getUserAccessPoints(systemUser.id, dashboard.dashboardType as any);
-      const apDuration = Date.now() - apStart;
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:101',message:'getUserAccessPoints per dashboard',data:{dashboardType:dashboard.dashboardType,accessPointsCount:accessPoints.length,durationMs:apDuration},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      allAccessPoints.push(...accessPoints);
-    }
-    const accessPointsDuration = Date.now() - accessPointsStartTime;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:103',message:'All access points fetched',data:{totalAccessPoints:allAccessPoints.length,totalDurationMs:accessPointsDuration,isSequential:true},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
+    // Get access points for all dashboards in parallel (faster first paint)
+    const accessPointsArrays = await Promise.all(
+      dashboards.map((d) => getUserAccessPoints(systemUser.id, d.dashboardType as "RIDER" | "MERCHANT" | "TICKET" | "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" | "OFFER" | "AREA_MANAGER" | "CUSTOMER" | "PAYMENT" | "SYSTEM" | "ANALYTICS"))
+    );
+    const allAccessPoints = accessPointsArrays.flat();
 
     const totalDuration = Date.now() - startTime;
     // #region agent log
