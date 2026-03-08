@@ -4,6 +4,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } fr
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
+import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
+import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { TicketCard } from "./TicketCard";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
@@ -65,70 +67,16 @@ export function TicketList() {
   const assignDropdownRef = useRef<HTMLDivElement>(null);
   const updateTicket = useTicketUpdate();
 
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string }>>([]);
-  const [currentUser, setCurrentUser] = useState<{ id: number; name: string } | null>(null);
-  const [refData, setRefData] = useState<{ statuses: Option[]; priorities: Option[]; groups: Array<{ id: number; groupCode: string; groupName: string }> } | null>(null);
+  const { data: agentsData } = useTicketsAgentsQuery();
+  const { data: refDataRaw } = useTicketsReferenceDataQuery();
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadAgents() {
-      try {
-        const r = await fetch("/api/tickets/agents", { credentials: "include" });
-        const d = r.ok
-          ? await r.json().catch(() => ({ success: false }))
-          : { success: false };
-        if (cancelled) return;
-        if (d.success && d.data) {
-          setAgents(d.data.agents ?? []);
-          setCurrentUser(
-            d.data.currentUser
-              ? { id: d.data.currentUser.id, name: d.data.currentUser.name || "Me" }
-              : null
-          );
-        } else {
-          setAgents([]);
-          setCurrentUser(null);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("[TicketList] Agents fetch failed:", err);
-          setAgents([]);
-          setCurrentUser(null);
-        }
-      }
-    }
-    loadAgents();
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadRefData() {
-      try {
-        const r = await fetch("/api/tickets/reference-data", { credentials: "include" });
-        const d = r.ok
-          ? await r.json().catch(() => ({ success: false }))
-          : { success: false };
-        if (cancelled) return;
-        if (d.success && d.data) {
-          setRefData({
-            statuses: d.data.statuses ?? [],
-            priorities: d.data.priorities ?? [],
-            groups: d.data.groups ?? [],
-          });
-        } else {
-          setRefData({ statuses: [], priorities: [], groups: [] });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.warn("[TicketList] Reference data fetch failed:", err);
-          setRefData({ statuses: [], priorities: [], groups: [] });
-        }
-      }
-    }
-    loadRefData();
-    return () => { cancelled = true; };
-  }, []);
+  const agents = agentsData?.agents ?? [];
+  const currentUser = agentsData?.currentUser
+    ? { id: agentsData.currentUser.id, name: agentsData.currentUser.name || "Me" }
+    : null;
+  const refData = refDataRaw
+    ? { statuses: refDataRaw.statuses as Option[], priorities: refDataRaw.priorities as Option[], groups: refDataRaw.groups }
+    : { statuses: [] as Option[], priorities: [] as Option[], groups: [] as Array<{ id: number; groupCode: string; groupName: string }> };
 
   useEffect(() => {
     setPage(1);

@@ -4,7 +4,7 @@
  */
 
 import { getDb } from "../client";
-import { ordersCore, customers, riders } from "../schema";
+import { ordersCore, orderManualStatusHistory, ordersFood, customers, riders } from "../schema";
 import { eq, and, or, ilike, sql, desc, asc, inArray } from "drizzle-orm";
 
 export type OrderStatusFilter =
@@ -88,6 +88,8 @@ export interface OrdersCoreRow {
   isBulkOrder: boolean;
   /** Latest internal remark text for this order (for action column). */
   latestRemark: string | null;
+  /** Email of last user who manually updated order status (Dispatch Ready / Dispatched / Delivered). */
+  manualStatusUpdatedByEmail: string | null;
 }
 
 const STATUS_FILTER_TO_DB = {
@@ -290,6 +292,7 @@ export async function listOrdersCore(
         distanceMismatchFlagged: ordersCore.distanceMismatchFlagged,
         distanceKm: ordersCore.distanceKm,
         isBulkOrder: ordersCore.isBulkOrder,
+        manualStatusUpdatedByEmail: ordersCore.manualStatusUpdatedByEmail,
       })
       .from(ordersCore)
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -413,6 +416,7 @@ export async function listOrdersCore(
         distanceMismatchFlagged: ordersCore.distanceMismatchFlagged,
         distanceKm: ordersCore.distanceKm,
         isBulkOrder: ordersCore.isBulkOrder,
+        manualStatusUpdatedByEmail: ordersCore.manualStatusUpdatedByEmail,
       })
       .from(ordersCore)
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -523,6 +527,7 @@ export async function listOrdersCore(
       distanceMismatchFlagged: ordersCore.distanceMismatchFlagged,
       distanceKm: ordersCore.distanceKm,
       isBulkOrder: ordersCore.isBulkOrder,
+      manualStatusUpdatedByEmail: ordersCore.manualStatusUpdatedByEmail,
     })
     .from(ordersCore)
     .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -563,10 +568,12 @@ const STATUS_TO_LABEL: Record<UpdateableOrderStatus, string> = {
 
 /**
  * Update order status and current_status for manual status updates from the dashboard.
+ * Records the updater email on the order and appends a row to order_manual_status_history.
  */
 export async function updateOrderStatus(
   orderId: number,
-  status: UpdateableOrderStatus
+  status: UpdateableOrderStatus,
+  updatedByEmail: string
 ): Promise<{ updated: boolean }> {
   const db = getDb();
   const label = STATUS_TO_LABEL[status];
@@ -575,11 +582,58 @@ export async function updateOrderStatus(
     .set({
       status,
       currentStatus: label,
+      manualStatusUpdatedByEmail: updatedByEmail,
       updatedAt: new Date(),
     })
     .where(eq(ordersCore.id, orderId))
     .returning({ id: ordersCore.id });
-  return { updated: !!result };
+  if (!result) return { updated: false };
+  await db.insert(orderManualStatusHistory).values({
+    orderId,
+    toStatus: status,
+    updatedByEmail,
+  });
+  return { updated: true };
+}
+
+export interface OrderManualStatusHistoryEntry {
+  toStatus: string;
+  updatedByEmail: string;
+  createdAt: Date;
+}
+
+/**
+ * Fetch manual status history for an order (newest first).
+ */
+export async function getOrderManualStatusHistory(
+  orderId: number
+): Promise<OrderManualStatusHistoryEntry[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      toStatus: orderManualStatusHistory.toStatus,
+      updatedByEmail: orderManualStatusHistory.updatedByEmail,
+      createdAt: orderManualStatusHistory.createdAt,
+    })
+    .from(orderManualStatusHistory)
+    .where(eq(orderManualStatusHistory.orderId, orderId))
+    .orderBy(desc(orderManualStatusHistory.createdAt));
+  return rows;
+}
+
+/**
+ * Get delivery_instructions from orders_food for a given order (food orders only).
+ */
+export async function getFoodDeliveryInstructions(
+  orderId: number
+): Promise<string | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ deliveryInstructions: ordersFood.deliveryInstructions })
+    .from(ordersFood)
+    .where(eq(ordersFood.orderId, orderId))
+    .limit(1);
+  return row?.deliveryInstructions ?? null;
 }
 
 export interface UpdateOrdersCoreCancellationInput {

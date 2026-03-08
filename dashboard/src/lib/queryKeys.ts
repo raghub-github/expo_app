@@ -57,6 +57,8 @@ export const queryKeys = {
     details: () => ["tickets", "detail"] as const,
     detail: (id: number | string) => ["tickets", "detail", id] as const,
     activities: (id: number | string) => ["tickets", "activities", id] as const,
+    agents: () => ["tickets", "agents"] as const,
+    referenceData: () => ["tickets", "reference-data"] as const,
   },
 
   // Unified tickets (public.unified_tickets)

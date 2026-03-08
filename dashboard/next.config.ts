@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
   images: {
     qualities: [75, 95],
   },
+  // Compression: Vercel/hosts typically enable gzip; for self-hosted, use nginx or middleware.
   // Reduce chunk load errors with Turbopack (Next 16)
   experimental: {
     optimizePackageImports: ["lucide-react"],

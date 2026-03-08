@@ -12,8 +12,8 @@ import {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  // Only log in development to reduce noise
-  if (process.env.NODE_ENV === 'development' && !pathname.startsWith('/_next') && !pathname.startsWith('/api/audit')) {
+  // Skip logging in production for minimal middleware time
+  if (process.env.NODE_ENV === "development" && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
     console.log("[proxy] Path:", pathname);
   }
   

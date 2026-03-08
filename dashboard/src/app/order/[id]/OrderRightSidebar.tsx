@@ -27,6 +27,8 @@ interface OrderRightSidebarProps {
     riderMobile?: string | null;
     distanceKm?: number | null;
     routedToEmail?: string | null;
+    /** Delivery instructions from orders_food (food orders only). */
+    deliveryInstructions?: string | null;
   };
   /** Counts from order API so "See all (N)" shows instantly without waiting for list fetch. */
   initialRemarksCount?: number;
@@ -139,7 +141,6 @@ export default function OrderRightSidebar({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showCxInstructions, setShowCxInstructions] = useState(false);
   const [cxInstructions, setCxInstructions] = useState<string | null>(null);
-  const [cxLoading, setCxLoading] = useState(false);
   const [cxError, setCxError] = useState<string | null>(null);
 
   // Auto-hide recon warning after 2 seconds
@@ -263,6 +264,51 @@ export default function OrderRightSidebar({
       });
 
       setRemarks(mapped);
+
+      // Prefetch edit history for all edited remarks so "See history" shows instant (no loading).
+      const editedRemarks = mapped.filter((r) => r.editedTimeLabel);
+      editedRemarks.forEach((r) => {
+        const numericId = Number(r.id);
+        if (!Number.isFinite(numericId)) return;
+        fetch(`/api/orders/${order.id}/remarks/${numericId}`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((json) => {
+            if (!json?.data) return;
+            const items = (json.data as Array<{
+              id: number;
+              editedAt: string;
+              editedByActorType: string;
+              editedByActorName: string | null;
+              oldRemark: string;
+              newRemark: string;
+              oldRemarkCategory: string | null;
+              newRemarkCategory: string | null;
+            }>) ?? [];
+            const historyMapped: RemarkEditHistoryEntry[] = items.map((h) => {
+              const editedAt = new Date(h.editedAt);
+              return {
+                id: h.id,
+                editedAt: editedAt.toISOString(),
+                editedTimeLabel: editedAt.toLocaleString("en-IN", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: true,
+                }),
+                editedByActorType: h.editedByActorType,
+                editedByActorName: h.editedByActorName,
+                oldRemark: h.oldRemark,
+                newRemark: h.newRemark,
+                oldRemarkCategory: h.oldRemarkCategory,
+                newRemarkCategory: h.newRemarkCategory,
+              };
+            });
+            setRemarkHistory((prev) => ({ ...prev, [r.id]: historyMapped }));
+          })
+          .catch(() => {});
+      });
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error("Error loading remarks", error);
@@ -720,24 +766,14 @@ export default function OrderRightSidebar({
 
   const openCxInstructions = () => {
     setShowCxInstructions(true);
-    if (cxInstructions || cxLoading) return;
-    setCxLoading(true);
-    setCxError(null);
-    fetch("/api/cx-instructions?context=order-page")
-      .then((res) => res.json())
-      .then((body) => {
-        if (body.success && typeof body.content === "string") {
-          setCxInstructions(body.content);
-        } else {
-          setCxError("Failed to load instructions.");
-        }
-      })
-      .catch(() => {
-        setCxError("Failed to load instructions.");
-      })
-      .finally(() => {
-        setCxLoading(false);
-      });
+    // Use delivery_instructions from orders_food (passed on order); no fetch needed.
+    if (order.deliveryInstructions != null && order.deliveryInstructions !== "") {
+      setCxInstructions(order.deliveryInstructions);
+      setCxError(null);
+    } else {
+      setCxInstructions(null);
+      setCxError(null);
+    }
   };
 
   const startEditRemark = (remark: Remark) => {
@@ -1040,7 +1076,7 @@ export default function OrderRightSidebar({
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
         <button
           type="button"
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-[13px] font-medium text-white shadow-sm transition hover:bg-emerald-600"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-[13px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer"
           onClick={() => setShowItemsRefundModal(true)}
         >
           <i className="bi bi-arrow-counterclockwise" />
@@ -1141,7 +1177,7 @@ export default function OrderRightSidebar({
           />
           <button
             onClick={addNotification}
-            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-emerald-600"
+            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-emerald-600 cursor-pointer"
           >
             <i className="bi bi-send" />
             Send notification
@@ -1487,9 +1523,7 @@ export default function OrderRightSidebar({
                                 : "text-slate-600 hover:bg-slate-100"
                             }`}
                           >
-                            {historyLoadingId === r.id ? (
-                              <span>Loading…</span>
-                            ) : openHistoryId === r.id ? (
+                            {openHistoryId === r.id ? (
                               <>
                                 <span>Hide history</span>
                                 <span className="text-[9px]">▴</span>
@@ -1707,14 +1741,11 @@ export default function OrderRightSidebar({
               </span>
               <div>
                 <h2 className="text-sm font-semibold text-slate-900">CX Instructions</h2>
-                <p className="text-[11px] text-slate-500">
-                  Quick checklist for handling this order with the customer.
-                </p>
               </div>
             </div>
             <button
               type="button"
-              className="text-xs text-slate-500 hover:text-slate-700"
+              className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
               onClick={() => setShowCxInstructions(false)}
             >
               ✕
@@ -1722,14 +1753,16 @@ export default function OrderRightSidebar({
           </div>
 
           <div className="mt-1 max-h-[60vh] overflow-y-auto rounded-md border border-slate-200 bg-slate-50/60 p-3">
-            {cxLoading ? (
-              <p className="text-[12px] text-slate-600">Loading instructions…</p>
-            ) : cxError ? (
+            {cxError ? (
               <p className="text-[12px] text-red-600">{cxError}</p>
-            ) : (
+            ) : cxInstructions ? (
               <pre className="whitespace-pre-wrap text-[12px] text-slate-700">
                 {cxInstructions}
               </pre>
+            ) : (
+              <p className="text-[12px] text-slate-500">
+                No delivery instructions for this order.
+              </p>
             )}
           </div>
         </div>

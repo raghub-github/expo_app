@@ -8,6 +8,8 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import {
   listOrdersCore,
+  getOrderManualStatusHistory,
+  getFoodDeliveryInstructions,
   type OrderSearchType,
   type OrderStatusFilter,
 } from "@/lib/db/operations/orders-core";
@@ -112,7 +114,7 @@ export async function GET(request: NextRequest) {
         .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
         .filter((id): id is number => id != null && Number.isFinite(id))
     );
-    const data = result.orders.map((order) => {
+    let data = result.orders.map((order) => {
       const o = order as { merchantStoreId?: number | null };
       const storeIdDisplay =
         o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
@@ -122,18 +124,33 @@ export async function GET(request: NextRequest) {
     let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
     let remarksCount: number | undefined;
     let reconsCount: number | undefined;
+    let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
     if (result.orders.length === 1) {
-      const first = data[0] as { id?: number; merchantStoreId?: number | null };
+      const first = data[0] as {
+        id?: number;
+        merchantStoreId?: number | null;
+        orderType?: string;
+      };
       const orderId = first?.id;
       const storeId = first?.merchantStoreId;
       if (storeId != null && Number.isFinite(storeId)) {
         merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
       }
       if (orderId != null && Number.isFinite(orderId)) {
-        [remarksCount, reconsCount] = await Promise.all([
+        const [remarks, recons, history, deliveryInstructions] = await Promise.all([
           getOrderRemarksCount(orderId),
           getOrderReconsCount(orderId),
+          getOrderManualStatusHistory(orderId),
+          first?.orderType === "food"
+            ? getFoodDeliveryInstructions(orderId)
+            : Promise.resolve(null),
         ]);
+        remarksCount = remarks;
+        reconsCount = recons;
+        statusHistory = history;
+        if (deliveryInstructions !== undefined) {
+          data = [{ ...data[0], deliveryInstructions: deliveryInstructions ?? null }];
+        }
       }
     }
 
@@ -148,6 +165,7 @@ export async function GET(request: NextRequest) {
       ...(merchantSummary != null && { merchantSummary }),
       ...(remarksCount !== undefined && { remarksCount }),
       ...(reconsCount !== undefined && { reconsCount }),
+      ...(statusHistory !== undefined && { statusHistory }),
     });
   } catch (error) {
     console.error("[GET /api/orders/core] Error:", error);

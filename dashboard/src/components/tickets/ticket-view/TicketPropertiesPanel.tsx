@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { ChevronDown, User, FolderGit2, Filter, X, Calendar } from "lucide-react";
 import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
+import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
+import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 const PRIORITY_DOT: Record<string, string> = {
@@ -32,41 +34,16 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
   const updateTicket = useTicketUpdate();
   const filterSidebar = useTicketFilterSidebar();
 
-  const [agents, setAgents] = useState<Array<{ id: number; name: string; email: string }>>([]);
-  const [currentUser, setCurrentUser] = useState<{ id: number; name: string } | null>(null);
-  const [refData, setRefData] = useState<{
-    groups: Array<{ id: number; groupCode: string; groupName: string }>;
-    statuses: Array<{ value: string; label: string }>;
-    priorities: Array<{ value: string; label: string }>;
-  } | null>(null);
+  const { data: agentsData } = useTicketsAgentsQuery();
+  const { data: refDataRaw } = useTicketsReferenceDataQuery();
 
-  useEffect(() => {
-    fetch("/api/tickets/agents", { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.success && d.data) {
-          setAgents(d.data.agents || []);
-          if (d.data.currentUser)
-            setCurrentUser({ id: d.data.currentUser.id, name: d.data.currentUser.name || "Me" });
-          else setCurrentUser(null);
-        }
-      })
-      .catch(() => { setAgents([]); setCurrentUser(null); });
-  }, []);
-  useEffect(() => {
-    fetch("/api/tickets/reference-data", { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.success && d.data) {
-          setRefData({
-            groups: d.data.groups || [],
-            statuses: d.data.statuses || [],
-            priorities: d.data.priorities || [],
-          });
-        }
-      })
-      .catch(() => {});
-  }, []);
+  const agents = agentsData?.agents ?? [];
+  const currentUser = agentsData?.currentUser
+    ? { id: agentsData.currentUser.id, name: agentsData.currentUser.name || "Me" }
+    : null;
+  const refData = refDataRaw
+    ? { groups: refDataRaw.groups, statuses: refDataRaw.statuses, priorities: refDataRaw.priorities }
+    : null;
 
   const statusOptions = useMemo(
     () => refData?.statuses ?? [

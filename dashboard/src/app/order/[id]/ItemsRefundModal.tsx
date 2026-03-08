@@ -715,7 +715,7 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
               </span>
               <span className="truncate">Items details</span>
             </h3>
-            <button type="button" onClick={handleModalClose} className="p-1 text-slate-500 hover:text-slate-800 hover:bg-white rounded-full transition-colors" aria-label="Close"><X className="w-5 h-5" /></button>
+            <button type="button" onClick={handleModalClose} className="p-1 text-slate-500 hover:text-slate-800 hover:bg-white rounded-full transition-colors cursor-pointer" aria-label="Close"><X className="w-5 h-5" /></button>
           </div>
 
           <div className="p-4">
@@ -830,7 +830,7 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
                 </h4>
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <label className="text-xs font-medium text-slate-600 whitespace-nowrap">Refund reason</label>
-                  <select value={refundAttribute} onChange={(e) => handleAttributeChange(e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs text-slate-800 bg-white min-w-[140px] focus:outline-none focus:ring-1 focus:ring-emerald-500">
+                  <select value={refundAttribute} onChange={(e) => handleAttributeChange(e.target.value)} className="h-8 px-2 border border-slate-200 rounded text-xs text-slate-800 bg-white min-w-[140px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer">
                     <option value="">Select Attribute</option>
                     <option value="CUSTOMER">CUSTOMER</option>
                     <option value="MERCHANT">MERCHANT</option>
@@ -952,11 +952,11 @@ export default function ItemsRefundModal({ isOpen, onClose, onToast, orderId: or
             )}
 
             <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-200">
-              <button type="button" onClick={handleModalClose} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 border-none rounded font-medium text-xs flex items-center gap-1.5">
+              <button type="button" onClick={handleModalClose} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 border-none rounded font-medium text-xs flex items-center gap-1.5 cursor-pointer">
                 <X className="w-4 h-4" /> Close
               </button>
               {canCreateRefund && showSubmit && (
-                <button type="button" ref={submitButtonRef} onClick={handleSubmit} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded font-semibold text-xs flex items-center gap-1.5">
+                <button type="button" ref={submitButtonRef} onClick={handleSubmit} className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white border-none rounded font-semibold text-xs flex items-center gap-1.5 cursor-pointer">
                   <CheckCircle className="w-4 h-4" /> Submit Refund
                 </button>
               )}

@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Ticket, ArrowLeft, Loader2 } from "lucide-react";
+import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 
 const CATEGORY_OPTIONS = [
   { value: "order_related", label: "Order related" },
@@ -11,18 +12,9 @@ const CATEGORY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
-interface RefData {
-  groups: Array<{ id: number; groupCode: string; groupName: string }>;
-  statuses: Array<{ value: string; label: string }>;
-  services: Array<{ value: string; label: string }>;
-  priorities: Array<{ value: string; label: string }>;
-  sources: Array<{ value: string; label: string }>;
-}
-
 export function NewTicketForm() {
   const router = useRouter();
-  const [refData, setRefData] = useState<RefData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data: refData, isLoading: loading, isError, error: queryError } = useTicketsReferenceDataQuery();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,22 +32,8 @@ export function NewTicketForm() {
     isHighValueOrder: false,
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/tickets/reference-data", { credentials: "include" });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || "Failed to load options");
-        if (!cancelled && json?.data) setRefData(json.data);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  const loadError = isError ? (queryError instanceof Error ? queryError.message : "Failed to load") : null;
+  const displayError = loadError ?? error;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -128,9 +106,9 @@ export function NewTicketForm() {
           </div>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          {error && (
+          {displayError && (
             <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800 border border-red-200">
-              {error}
+              {displayError}
             </div>
           )}
 

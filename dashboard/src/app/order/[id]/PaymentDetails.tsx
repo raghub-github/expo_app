@@ -97,7 +97,7 @@ function PaymentDetailsModal({ isOpen, onClose, records, orderRefunds = [] }: Pa
           <h2 className="text-base font-semibold text-slate-900">Payment Details</h2>
           <button
             type="button"
-            className="text-xs text-slate-500 hover:text-slate-700"
+            className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
             onClick={onClose}
           >
             ✕

@@ -709,7 +709,7 @@ export default function RidersPage() {
           <button
             type="button"
             onClick={handleRetryAccess}
-            className="mt-4 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="mt-4 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
             Retry
           </button>
@@ -829,11 +829,11 @@ export default function RidersPage() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {needsVerification && (
-                  <button onClick={() => router.push(`/dashboard/riders/${rider.id}/onboarding`)} className="px-2.5 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-medium flex items-center gap-1">
+                  <button onClick={() => router.push(`/dashboard/riders/${rider.id}/onboarding`)} className="px-2.5 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-xs font-medium flex items-center gap-1 cursor-pointer">
                     <CheckCircle className="h-3.5 w-3.5" /> Verify
                   </button>
                 )}
-                <button onClick={() => router.push(`/dashboard/riders/${rider.id}`)} className="px-3 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 text-xs font-medium">
+                <button onClick={() => router.push(`/dashboard/riders/${rider.id}`)} className="px-3 py-1.5 bg-gray-800 text-white rounded-lg hover:bg-gray-900 text-xs font-medium cursor-pointer">
                   View Full Details
                 </button>
               </div>
@@ -924,7 +924,7 @@ export default function RidersPage() {
                       <button
                         type="button"
                         onClick={() => setVehicleOpen((o) => !o)}
-                        className="flex items-center gap-1 text-sm font-semibold text-gray-900 hover:text-gray-700"
+                        className="flex items-center gap-1 text-sm font-semibold text-gray-900 hover:text-gray-700 cursor-pointer"
                       >
                         {riderSummary?.vehicle?.vehicleType
                           ? String(riderSummary.vehicle.vehicleType).charAt(0).toUpperCase() + String(riderSummary.vehicle.vehicleType).slice(1).toLowerCase()
@@ -990,7 +990,7 @@ export default function RidersPage() {
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
                   <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Orders</h3>
-                  <button type="button" onClick={() => handleRefreshSection('orders')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh orders"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
+                  <button type="button" onClick={() => handleRefreshSection('orders')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 cursor-pointer" title="Refresh orders"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
                   {showOrdersFilters && (
                     <>
                       <input
@@ -1010,19 +1010,19 @@ export default function RidersPage() {
                       <button
                         type="button"
                         onClick={() => setShowOrdersMoreFilters((v) => !v)}
-                        className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border transition-colors ${showOrdersMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
+                        className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border transition-colors cursor-pointer ${showOrdersMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
                         title={showOrdersMoreFilters ? "Hide more filters" : "Show more filters"}
                       >
                         More filters
                         {showOrdersMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                       </button>
-                      <button type="button" onClick={clearOrdersFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
+                      <button type="button" onClick={clearOrdersFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors cursor-pointer" title="Clear all filters">Clear filters</button>
                     </>
                   )}
                   {(summary.recentOrders?.length ?? 0) > 0 && (
                     <>
                       <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
-                      <select value={ordersPageSize} onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+                      <select value={ordersPageSize} onChange={(e) => { setOrdersPageSize(Number(e.target.value)); setOrdersPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 cursor-pointer" aria-label="Rows per page">
                         <option value={5}>5</option>
                         <option value={10}>10</option>
                         <option value={20}>20</option>
@@ -1034,7 +1034,7 @@ export default function RidersPage() {
                   <button
                     type="button"
                     onClick={() => { setShowOrdersFilters((v) => !v); if (!showOrdersFilters) setLoadingSection('orders'); }}
-                    className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border transition-colors ml-auto sm:ml-0 ${showOrdersFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
+                    className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border transition-colors ml-auto sm:ml-0 cursor-pointer ${showOrdersFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
                   >
                     <Filter className="h-3.5 w-3.5 shrink-0" />
                     Filters
@@ -1046,7 +1046,7 @@ export default function RidersPage() {
                     <select
                       value={ordersOrderType}
                       onChange={(e) => { setLoadingSection('orders'); setOrdersOrderType(e.target.value); }}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
+                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 cursor-pointer"
                       title="Order type"
                     >
                       <option value="all">All</option>
@@ -1058,7 +1058,7 @@ export default function RidersPage() {
                     <select
                       value={ordersStatus}
                       onChange={(e) => { setLoadingSection('orders'); setOrdersStatus(e.target.value); }}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
+                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 cursor-pointer"
                       title="Order status"
                     >
                       <option value="all">All</option>
@@ -1140,7 +1140,7 @@ export default function RidersPage() {
                                   }
                                   setOpenOrderMenuId(order.id);
                                 }}
-                                className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 hover:text-gray-800 transition-colors"
+                                className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-200 hover:text-gray-800 transition-colors cursor-pointer"
                                 aria-label="Order actions"
                               >
                                 <MoreVertical className="h-4 w-4" />
@@ -1190,7 +1190,7 @@ export default function RidersPage() {
                                 setOpenOrderMenuId(null);
                                 setOrderMenuPosition(null);
                               }}
-                              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-800 font-medium"
+                              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-800 font-medium cursor-pointer"
                             >
                               Add Amount
                             </button>
@@ -1214,7 +1214,7 @@ export default function RidersPage() {
                               setOpenOrderMenuId(null);
                               setOrderMenuPosition(null);
                             }}
-                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-amber-50 hover:text-amber-800 font-medium"
+                            className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-amber-50 hover:text-amber-800 font-medium cursor-pointer"
                           >
                             Add Penalty
                           </button>
@@ -1262,19 +1262,19 @@ export default function RidersPage() {
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
                   <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Tickets</h3>
-                  <button type="button" onClick={() => handleRefreshSection('tickets')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh tickets"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
+                  <button type="button" onClick={() => handleRefreshSection('tickets')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 cursor-pointer" title="Refresh tickets"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
                   {showTicketsFilters && (
                     <>
                       <input type="date" value={ticketsFrom} onChange={(e) => { setLoadingSection('tickets'); handleTicketsFromChange(e.target.value); }} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]" title="From" />
                       <input type="date" value={ticketsTo} onChange={(e) => { setLoadingSection('tickets'); handleTicketsToChange(e.target.value); }} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-[7.5rem] max-w-[110px]" title="To" />
-                      <button type="button" onClick={() => setShowTicketsMoreFilters((v) => !v)} className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border ${showTicketsMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}>More filters {showTicketsMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}</button>
-                      <button type="button" onClick={clearTicketsFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
+                      <button type="button" onClick={() => setShowTicketsMoreFilters((v) => !v)} className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border cursor-pointer ${showTicketsMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}>More filters {showTicketsMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}</button>
+                      <button type="button" onClick={clearTicketsFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors cursor-pointer" title="Clear all filters">Clear filters</button>
                     </>
                   )}
                   {summary.recentTickets?.length ? (
                     <>
                       <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
-                      <select value={ticketsPageSize} onChange={(e) => { setTicketsPageSize(Number(e.target.value)); setTicketsPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+                      <select value={ticketsPageSize} onChange={(e) => { setTicketsPageSize(Number(e.target.value)); setTicketsPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 cursor-pointer" aria-label="Rows per page">
                         <option value={5}>5</option>
                         <option value={10}>10</option>
                         <option value={20}>20</option>
@@ -1283,7 +1283,7 @@ export default function RidersPage() {
                       <TablePagination page={ticketsPage} pageSize={ticketsPageSize} total={totalTickets} onPageChange={setTicketsPage} disabled={summaryQueryFetching} ariaLabel="Tickets" compact />
                     </>
                   ) : null}
-                  <button type="button" onClick={() => { setShowTicketsFilters((v) => !v); if (!showTicketsFilters) setLoadingSection('tickets'); }} className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border ml-auto sm:ml-0 ${showTicketsFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}><Filter className="h-3.5 w-3.5" /> Filters</button>
+                  <button type="button" onClick={() => { setShowTicketsFilters((v) => !v); if (!showTicketsFilters) setLoadingSection('tickets'); }} className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border ml-auto sm:ml-0 cursor-pointer ${showTicketsFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}><Filter className="h-3.5 w-3.5" /> Filters</button>
                 </div>
                 {showTicketsFilters && showTicketsMoreFilters && (
                   <div className="flex flex-wrap items-center gap-3 mb-4 p-3 rounded-lg border border-gray-200 bg-gray-50/80 shrink-0">
@@ -1297,11 +1297,11 @@ export default function RidersPage() {
                       title="Search by ticket ID, order ID, or title"
                     />
                     <span className="text-xs font-medium text-gray-600">Status:</span>
-                    <select value={ticketsStatus} onChange={(e) => handleTicketsStatusChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900"><option value="all">All</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select>
+                    <select value={ticketsStatus} onChange={(e) => handleTicketsStatusChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 cursor-pointer"><option value="all">All</option><option value="open">Open</option><option value="in_progress">In progress</option><option value="resolved">Resolved</option><option value="closed">Closed</option></select>
                     <span className="text-xs font-medium text-gray-600">Category:</span>
-                    <select value={ticketsCategory} onChange={(e) => handleTicketsCategoryChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900"><option value="all">All</option><option value="payment">Payment</option><option value="order">Order</option><option value="technical">Technical</option><option value="account">Account</option></select>
+                    <select value={ticketsCategory} onChange={(e) => handleTicketsCategoryChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 cursor-pointer"><option value="all">All</option><option value="payment">Payment</option><option value="order">Order</option><option value="technical">Technical</option><option value="account">Account</option></select>
                     <span className="text-xs font-medium text-gray-600">Priority:</span>
-                    <select value={ticketsPriority} onChange={(e) => handleTicketsPriorityChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900"><option value="all">All</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select>
+                    <select value={ticketsPriority} onChange={(e) => handleTicketsPriorityChange(e.target.value)} className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 cursor-pointer"><option value="all">All</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select>
                   </div>
                 )}
                 <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
@@ -1348,7 +1348,7 @@ export default function RidersPage() {
               <div className="rounded-2xl border border-gray-200/90 bg-white p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="flex flex-wrap items-center gap-2 mb-2 shrink-0">
                   <h3 className="text-md font-semibold text-gray-800 shrink-0">Recent Penalties</h3>
-                  <button type="button" onClick={() => handleRefreshSection('penalties')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50" title="Refresh penalties"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
+                  <button type="button" onClick={() => handleRefreshSection('penalties')} disabled={summaryQueryFetching} className="p-1.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 cursor-pointer" title="Refresh penalties"><RefreshCw className={`h-3.5 w-3.5 ${summaryQueryFetching ? 'animate-spin' : ''}`} /></button>
                   {showPenaltiesFilters && (
                     <>
                       <input
@@ -1368,19 +1368,19 @@ export default function RidersPage() {
                       <button
                         type="button"
                         onClick={() => setShowPenaltiesMoreFilters((v) => !v)}
-                        className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border transition-colors ${showPenaltiesMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
+                        className={`flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border transition-colors cursor-pointer ${showPenaltiesMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
                         title={showPenaltiesMoreFilters ? "Hide more filters" : "Show more filters"}
                       >
                         More filters
                         {showPenaltiesMoreFilters ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                       </button>
-                      <button type="button" onClick={clearPenaltiesFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors" title="Clear all filters">Clear filters</button>
+                      <button type="button" onClick={clearPenaltiesFilters} className="w-full sm:w-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors cursor-pointer" title="Clear all filters">Clear filters</button>
                     </>
                   )}
                   {(summary.recentPenalties?.length ?? 0) > 0 && (
                     <>
                       <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
-                      <select value={penaltiesPageSize} onChange={(e) => { setPenaltiesPageSize(Number(e.target.value)); setPenaltiesPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+                      <select value={penaltiesPageSize} onChange={(e) => { setPenaltiesPageSize(Number(e.target.value)); setPenaltiesPage(1); }} className="h-6 sm:h-7 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 cursor-pointer" aria-label="Rows per page">
                         <option value={5}>5</option>
                         <option value={10}>10</option>
                         <option value={20}>20</option>
@@ -1392,7 +1392,7 @@ export default function RidersPage() {
                   <button
                     type="button"
                     onClick={() => setShowPenaltiesFilters((v) => !v)}
-                    className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border transition-colors ml-auto sm:ml-0 ${showPenaltiesFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
+                    className={`flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded border transition-colors ml-auto sm:ml-0 cursor-pointer ${showPenaltiesFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}
                   >
                     <Filter className="h-3.5 w-3.5 shrink-0" />
                     Filters
@@ -1401,7 +1401,7 @@ export default function RidersPage() {
                     <button
                       type="button"
                       onClick={() => { setAddPenaltyFromOrder(null); setAddPenaltyForm((f) => ({ ...f, orderId: '' })); setAddPenaltyModalOpen(true); setAddPenaltyError(null); }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors shadow-sm"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors shadow-sm cursor-pointer"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       Add Penalty
@@ -1413,7 +1413,7 @@ export default function RidersPage() {
                     <button
                       type="button"
                       onClick={() => setAddAmountManualOpen(true)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-sm"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-sm cursor-pointer"
                       title="Create a manual wallet credit request (non-order)"
                     >
                       <Banknote className="h-3.5 w-3.5" />
@@ -1425,7 +1425,7 @@ export default function RidersPage() {
                   <button
                     type="button"
                     onClick={() => { setCreditRequestsModalOpen(true); refetchCreditRequestsForRider(); }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-200"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors border border-blue-200 cursor-pointer"
                     title="View add amount requests (pending/approved/rejected)"
                   >
                     <Banknote className="h-3.5 w-3.5" />
@@ -1438,7 +1438,7 @@ export default function RidersPage() {
                     <select
                       value={penaltiesStatus}
                       onChange={(e) => setPenaltiesStatus(e.target.value)}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
+                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 cursor-pointer"
                       title="Reverted or not"
                     >
                       <option value="all">All</option>
@@ -1449,7 +1449,7 @@ export default function RidersPage() {
                     <select
                       value={penaltiesServiceType}
                       onChange={(e) => setPenaltiesServiceType(e.target.value)}
-                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900"
+                      className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 cursor-pointer"
                       title="Service type"
                     >
                       <option value="all">All</option>
@@ -1528,7 +1528,7 @@ export default function RidersPage() {
                                       <button
                                         type="button"
                                         onClick={() => { setRevertPenaltyId(penalty.id); setRevertReason(''); setRevertError(null); }}
-                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 rounded transition-colors"
+                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 bg-amber-100 hover:bg-amber-200 rounded transition-colors cursor-pointer"
                                       >
                                         <RotateCcw className="h-3 w-3" />
                                         Revert
@@ -1543,7 +1543,7 @@ export default function RidersPage() {
                                     <button
                                       type="button"
                                       onClick={() => setExpandedPenaltyId((prev) => (prev === penalty.id ? null : penalty.id))}
-                                      className="inline-flex items-center justify-center p-1 rounded border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-800 transition-colors"
+                                      className="inline-flex items-center justify-center p-1 rounded border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-600 hover:text-gray-800 transition-colors cursor-pointer"
                                       aria-expanded={isExpanded}
                                       title={isExpanded ? 'Hide agent details' : 'Show agent details'}
                                     >
@@ -1878,8 +1878,8 @@ export default function RidersPage() {
                       )}
                       {blacklistError && <p className="text-sm text-red-700 bg-red-50 px-3 py-2 rounded-lg font-medium">{blacklistError}</p>}
                       <div className="flex justify-end gap-3 pt-2">
-                        <button type="button" onClick={() => !blacklistSubmitting && setBlacklistModal(null)} className="px-4 py-2 text-sm font-medium text-gray-900 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors">Cancel</button>
-                        <button type="button" onClick={handleBlacklistSubmit} disabled={blacklistSubmitting} className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm">
+                        <button type="button" onClick={() => !blacklistSubmitting && setBlacklistModal(null)} className="px-4 py-2 text-sm font-medium text-gray-900 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors cursor-pointer">Cancel</button>
+                        <button type="button" onClick={handleBlacklistSubmit} disabled={blacklistSubmitting} className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm cursor-pointer">
                           {blacklistSubmitting ? 'Submitting...' : 'Submit'}
                         </button>
                       </div>
@@ -1953,7 +1953,7 @@ export default function RidersPage() {
                           type="button"
                           onClick={() => { setWalletFreezeModal('freeze'); setWalletFreezeError(null); setWalletFreezeReason(''); }}
                           disabled={isFrozen || walletFreezeSubmitting}
-                          className="px-3 py-1.5 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          className="px-3 py-1.5 text-sm font-medium bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
                         >
                           Freeze wallet
                         </button>
@@ -1961,7 +1961,7 @@ export default function RidersPage() {
                           type="button"
                           onClick={() => { setWalletFreezeModal('unfreeze'); setWalletFreezeError(null); setWalletFreezeReason(''); }}
                           disabled={!isFrozen || walletFreezeSubmitting}
-                          className="px-3 py-1.5 text-sm font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          className="px-3 py-1.5 text-sm font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
                         >
                           Unfreeze wallet
                         </button>
@@ -1970,7 +1970,7 @@ export default function RidersPage() {
                     <button
                       type="button"
                       onClick={() => { setWalletFreezeHistoryOpen(!walletFreezeHistoryOpen); if (!walletFreezeHistoryOpen) fetchWalletFreezeHistory(); }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors cursor-pointer"
                     >
                       <History className="h-4 w-4" /> View history
                     </button>
@@ -2020,8 +2020,8 @@ export default function RidersPage() {
                       </div>
                       {walletFreezeError && <p className="text-sm text-red-700 bg-red-50 px-3 py-2 rounded-lg">{walletFreezeError}</p>}
                       <div className="flex justify-end gap-3 pt-2">
-                        <button type="button" onClick={() => !walletFreezeSubmitting && setWalletFreezeModal(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg">Cancel</button>
-                        <button type="button" onClick={handleWalletFreezeSubmit} disabled={walletFreezeSubmitting} className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                        <button type="button" onClick={() => !walletFreezeSubmitting && setWalletFreezeModal(null)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg cursor-pointer">Cancel</button>
+                        <button type="button" onClick={handleWalletFreezeSubmit} disabled={walletFreezeSubmitting} className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 cursor-pointer">
                           {walletFreezeSubmitting ? 'Submitting...' : 'Confirm'}
                         </button>
                       </div>
@@ -2086,7 +2086,7 @@ export default function RidersPage() {
                             <button
                               type="button"
                               onClick={() => setCreditRequestsModalOpen(false)}
-                              className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                              className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg cursor-pointer"
                             >
                               Close
                             </button>
@@ -2151,7 +2151,7 @@ export default function RidersPage() {
                                                 type="button"
                                                 onClick={() => handleApproveCreditRequest(r.id)}
                                                 disabled={actioningCreditRequestId !== null || deletingCreditRequestId !== null}
-                                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded disabled:opacity-50 transition-colors"
+                                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded disabled:opacity-50 transition-colors cursor-pointer"
                                                 title="Approve request"
                                                 aria-label="Approve request"
                                               >
@@ -2166,7 +2166,7 @@ export default function RidersPage() {
                                                 type="button"
                                                 onClick={() => setRejectCreditRequestModal({ id: r.id, reason: "" })}
                                                 disabled={actioningCreditRequestId !== null || deletingCreditRequestId !== null}
-                                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 transition-colors"
+                                                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-white bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 transition-colors cursor-pointer"
                                                 title="Reject request"
                                                 aria-label="Reject request"
                                               >
@@ -2183,7 +2183,7 @@ export default function RidersPage() {
                                               type="button"
                                               onClick={() => handleDeleteCreditRequest(r.id, r.orderId)}
                                               disabled={deletingCreditRequestId !== null || actioningCreditRequestId !== null}
-                                              className="inline-flex items-center gap-0.5 p-1 rounded text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors"
+                                              className="inline-flex items-center gap-0.5 p-1 rounded text-red-600 hover:bg-red-50 disabled:opacity-50 transition-colors cursor-pointer"
                                               title="Delete request"
                                               aria-label="Delete request"
                                             >
@@ -2223,7 +2223,7 @@ export default function RidersPage() {
                                   type="button"
                                   onClick={() => setRejectCreditRequestModal(null)}
                                   disabled={!!actioningCreditRequestId}
-                                  className="flex-1 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50 transition-colors"
+                                  className="flex-1 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50 transition-colors cursor-pointer"
                                 >
                                   Cancel
                                 </button>
@@ -2231,7 +2231,7 @@ export default function RidersPage() {
                                   type="button"
                                   onClick={() => rejectCreditRequestModal && handleRejectCreditRequest(rejectCreditRequestModal.id, rejectCreditRequestModal.reason)}
                                   disabled={!!actioningCreditRequestId}
-                                  className="flex-1 px-3 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 transition-colors inline-flex items-center justify-center gap-1.5"
+                                  className="flex-1 px-3 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50 transition-colors inline-flex items-center justify-center gap-1.5 cursor-pointer"
                                 >
                                   {actioningCreditRequestId === rejectCreditRequestModal?.id ? (
                                     <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
@@ -2298,7 +2298,7 @@ export default function RidersPage() {
                             </div>
                             <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">Percentage of order value *</label>
-                              <select value={addPenaltyForm.penaltyPercent} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, penaltyPercent: Number(e.target.value) }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900">
+                              <select value={addPenaltyForm.penaltyPercent} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, penaltyPercent: Number(e.target.value) }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900 cursor-pointer">
                                 <option value={25} className="text-gray-900 bg-white">25%</option>
                                 <option value={50} className="text-gray-900 bg-white">50%</option>
                                 <option value={75} className="text-gray-900 bg-white">75%</option>
@@ -2323,7 +2323,7 @@ export default function RidersPage() {
                             </div>
                             <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">Service (optional)</label>
-                              <select value={addPenaltyForm.serviceType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900">
+                              <select value={addPenaltyForm.serviceType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, serviceType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900 cursor-pointer">
                                 <option value="" className="text-gray-900 bg-white">— Not specified</option>
                                 <option value="food" className="text-gray-900 bg-white">Food</option>
                                 <option value="parcel" className="text-gray-900 bg-white">Parcel</option>
@@ -2332,7 +2332,7 @@ export default function RidersPage() {
                             </div>
                             <div>
                               <label className="block text-sm font-medium text-gray-700 mb-1">Penalty Type</label>
-                              <select value={addPenaltyForm.penaltyType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, penaltyType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900">
+                              <select value={addPenaltyForm.penaltyType} onChange={(e) => setAddPenaltyForm((f) => ({ ...f, penaltyType: e.target.value }))} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 bg-white text-gray-900 cursor-pointer">
                                 {PENALTY_TYPES.map((t) => <option key={t} value={t} className="text-gray-900 bg-white">{t.replace(/_/g, ' ')}</option>)}
                               </select>
                             </div>
@@ -2344,8 +2344,8 @@ export default function RidersPage() {
                         )}
                         {addPenaltyError && <p className="text-sm text-red-700 bg-red-50 px-3 py-2 rounded-lg">{addPenaltyError}</p>}
                         <div className="flex gap-2 pt-2">
-                          <button type="button" onClick={() => { setAddPenaltyModalOpen(false); setAddPenaltyFromOrder(null); setAddPenaltyError(null); }} className="flex-1 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg">Cancel</button>
-                          <button type="submit" disabled={addPenaltySubmitting} className="flex-1 px-3 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-lg">{addPenaltySubmitting ? 'Adding...' : 'Add Penalty'}</button>
+                          <button type="button" onClick={() => { setAddPenaltyModalOpen(false); setAddPenaltyFromOrder(null); setAddPenaltyError(null); }} className="flex-1 px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg cursor-pointer">Cancel</button>
+                          <button type="submit" disabled={addPenaltySubmitting} className="flex-1 px-3 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-lg cursor-pointer">{addPenaltySubmitting ? 'Adding...' : 'Add Penalty'}</button>
                         </div>
                       </form>
                     </div>
@@ -2371,8 +2371,8 @@ export default function RidersPage() {
                         </div>
                         {revertError && <p className="text-sm text-red-700 bg-red-50 px-3 py-2 rounded-lg">{revertError}</p>}
                         <div className="flex gap-3 pt-1">
-                          <button type="button" onClick={() => { setRevertPenaltyId(null); setRevertReason(''); setRevertError(null); }} disabled={revertSubmitting} className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50">Cancel</button>
-                          <button type="button" onClick={() => handleRevertSubmit()} disabled={revertSubmitting || !revertReason.trim()} className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg disabled:opacity-50 flex items-center justify-center gap-2">{revertSubmitting ? 'Reverting…' : <><RotateCcw className="h-4 w-4" /> Confirm revert</>}</button>
+                          <button type="button" onClick={() => { setRevertPenaltyId(null); setRevertReason(''); setRevertError(null); }} disabled={revertSubmitting} className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-50 cursor-pointer">Cancel</button>
+                          <button type="button" onClick={() => handleRevertSubmit()} disabled={revertSubmitting || !revertReason.trim()} className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer">{revertSubmitting ? 'Reverting…' : <><RotateCcw className="h-4 w-4" /> Confirm revert</>}</button>
                         </div>
                       </div>
                     </div>
@@ -2447,7 +2447,7 @@ function RecentDataSection({
       <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-2 shrink-0">
         <h3 className="text-sm sm:text-md font-semibold text-gray-800 shrink-0">{title}</h3>
         {onRefresh && (
-          <button type="button" onClick={onRefresh} disabled={refreshing} className="p-1 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 disabled:opacity-50" title="Refresh"><RefreshCw className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
+          <button type="button" onClick={onRefresh} disabled={refreshing} className="p-1 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 disabled:opacity-50 cursor-pointer" title="Refresh"><RefreshCw className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${refreshing ? 'animate-spin' : ''}`} /></button>
         )}
         {showFilters && (
           <>
@@ -2455,7 +2455,7 @@ function RecentDataSection({
               <select
                 value={limit}
                 onChange={(e) => onLimitChange(Number(e.target.value))}
-                className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-12 sm:w-14"
+                className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-12 sm:w-14 cursor-pointer"
                 title="Number of records"
               >
                 <option value={5}>5</option>
@@ -2467,17 +2467,17 @@ function RecentDataSection({
             <input type="date" value={fromDate} onChange={(e) => onFromDateChange(e.target.value)} className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-24 sm:w-28" title="From" />
             <input type="date" value={toDate} onChange={(e) => onToDateChange(e.target.value)} className="px-1.5 py-0.5 text-[10px] sm:text-xs border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 w-24 sm:w-28" title="To" />
             {onClearFilters && (
-              <button type="button" onClick={onClearFilters} className="shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50" title="Clear filters">Clear filters</button>
+              <button type="button" onClick={onClearFilters} className="shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 cursor-pointer" title="Clear filters">Clear filters</button>
             )}
             {onToggleMoreFilters != null && moreFiltersContent != null && (
-              <button type="button" onClick={onToggleMoreFilters} className={`flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border ${showMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`} title={showMoreFilters ? "Hide more filters" : "More filters"}>More {showMoreFilters ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}</button>
+              <button type="button" onClick={onToggleMoreFilters} className={`flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border cursor-pointer ${showMoreFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`} title={showMoreFilters ? "Hide more filters" : "More filters"}>More {showMoreFilters ? <ChevronUp className="h-2.5 w-2.5" /> : <ChevronDown className="h-2.5 w-2.5" />}</button>
             )}
           </>
         )}
         {page != null && onPageChange != null && (
           <>
             <span className="text-[10px] sm:text-xs text-gray-600 whitespace-nowrap">Rows</span>
-            <select value={pageSize} onChange={(e) => { onPageSizeChange?.(Number(e.target.value)); onPageChange(1); }} className="h-6 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500" aria-label="Rows per page">
+            <select value={pageSize} onChange={(e) => { onPageSizeChange?.(Number(e.target.value)); onPageChange(1); }} className="h-6 min-w-0 w-10 sm:w-12 rounded border border-gray-300 bg-white px-1 text-[10px] sm:text-xs text-gray-900 focus:ring-1 focus:ring-blue-500 cursor-pointer" aria-label="Rows per page">
               <option value={5}>5</option>
               <option value={10}>10</option>
               <option value={20}>20</option>
@@ -2486,7 +2486,7 @@ function RecentDataSection({
             <TablePagination page={page} pageSize={pageSize ?? 10} total={total} onPageChange={onPageChange} disabled={refreshing} ariaLabel={title} compact />
           </>
         )}
-        <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border ml-auto sm:ml-0 ${showFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}>
+        <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] sm:text-xs font-medium rounded border ml-auto sm:ml-0 cursor-pointer ${showFilters ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100"}`}>
           <Filter className="h-3 w-3 sm:h-3.5 sm:w-3.5 shrink-0" /> Filters
         </button>
       </div>

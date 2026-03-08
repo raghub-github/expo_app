@@ -9,7 +9,7 @@ import PaymentDetails from "./PaymentDetails";
 import RiderDetails from "./RiderDetails";
 import RiderRouteMap from "./RiderRouteMap";
 import { useUserEmail } from "@/hooks/queries/useAuthQuery";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, History, X } from "lucide-react";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -17,6 +17,19 @@ const STATUS_OPTIONS = [
   { value: "in_transit" as const, label: "Dispatched" },
   { value: "delivered" as const, label: "Delivered" },
 ] as const;
+
+const STATUS_TO_LABEL: Record<string, string> = {
+  picked_up: "Dispatch Ready",
+  in_transit: "Dispatched",
+  delivered: "Delivered",
+};
+
+/** Single entry from GET /api/orders/core statusHistory (manual status updates). */
+export interface OrderStatusHistoryEntry {
+  toStatus: string;
+  updatedByEmail: string;
+  createdAt: string;
+}
 
 interface OrderDetail {
   id: number;
@@ -60,6 +73,10 @@ interface OrderDetail {
   distanceKm?: number | null;
   merchantStoreId: number | null;
   merchantParentId: number | null;
+  /** Email of last user who manually updated order status. */
+  manualStatusUpdatedByEmail?: string | null;
+  /** Delivery instructions from orders_food (food orders only). */
+  deliveryInstructions?: string | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -195,6 +212,8 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   const [orderRefunds, setOrderRefunds] = useState<OrderRefundListItem[]>([]);
   const [orderTickets, setOrderTickets] = useState<OrderTicketSummary[]>([]);
   const [showTicketsModal, setShowTicketsModal] = useState(false);
+  const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   const loggedInEmail = useUserEmail();
 
   useEffect(() => {
@@ -276,6 +295,17 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
           setInitialReconsCount(
             typeof body.reconsCount === "number" && body.reconsCount >= 0 ? body.reconsCount : 0
           );
+          if (Array.isArray(body.statusHistory)) {
+            setStatusHistory(
+              body.statusHistory.map((h: { toStatus: string; updatedByEmail: string; createdAt: string }) => ({
+                toStatus: h.toStatus,
+                updatedByEmail: h.updatedByEmail,
+                createdAt: h.createdAt,
+              }))
+            );
+          } else {
+            setStatusHistory([]);
+          }
 
           const toNumberOrNull = (v: unknown): number | null => {
             if (v === null || v === undefined) return null;
@@ -328,6 +358,8 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             merchantParentId: row.merchantParentId,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
+            manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
+            deliveryInstructions: row.deliveryInstructions ?? null,
           });
 
           // Load refunds in the same initial load, so payment card stats
@@ -347,6 +379,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
           setMerchantSummary(null);
           setInitialRemarksCount(0);
           setInitialReconsCount(0);
+          setStatusHistory([]);
           setError("Order not found.");
           setOrderRefunds([]);
         }
@@ -448,10 +481,25 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         .replace(/\b\w/g, (c) => c.toUpperCase())
     : "—";
 
-  // For the dropdown trigger, show "Select Opt" unless status is one of our 3 flow statuses.
+  // For the dropdown trigger, show current status label or "Select Option".
   const dbStatus = (order.status ?? "").toString().toLowerCase();
   const statusOptionMatch = STATUS_OPTIONS.find((opt) => opt.value === dbStatus);
-  const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Opt";
+  const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Option";
+
+  // Status rules: no status can be marked twice; flow follows progression.
+  // Dispatch Ready (current): Dispatched & Delivered active; Dispatch Ready not selectable again.
+  // Dispatched (current): Delivered active; Dispatch Ready & Dispatched disabled.
+  // Delivered (current): all options and Update button disabled.
+  const isOptionDisabled = (value: "picked_up" | "in_transit" | "delivered") => {
+    if (dbStatus === "delivered") return true;
+    if (dbStatus === "in_transit") return value === "picked_up" || value === "in_transit";
+    if (dbStatus === "picked_up") return value === "picked_up";
+    return false;
+  };
+  const isUpdateStatusButtonDisabled = dbStatus === "delivered";
+
+  const lastStatusUpdaterEmail = order.manualStatusUpdatedByEmail?.trim() || null;
+  const hasManualStatusUpdate = !!lastStatusUpdaterEmail;
 
   const orderCategoryLabel =
     order.orderType === "parcel"
@@ -536,7 +584,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               <button
                 type="button"
                 onClick={handleCopyId}
-                className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] text-slate-500 hover:bg-slate-50 hover:text-slate-700 cursor-pointer"
                 aria-label="Copy order ID"
               >
                 <span>⧉</span>
@@ -565,7 +613,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               <button
                 type="button"
                 onClick={() => setShowTicketsModal(true)}
-                className="inline-flex items-center gap-1.5 text-[11px] text-slate-700"
+                className="inline-flex items-center gap-1.5 text-[11px] text-slate-700 cursor-pointer"
               >
                 <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
                   Ticket
@@ -594,12 +642,26 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               <span className="font-medium text-slate-900">{orderSourceLabel}</span>
             </span>
           </div>
-          <div className="relative ml-auto flex items-center gap-1.5">
-            <span className="text-[11px] text-slate-500">Update order status</span>
+          <div className="relative ml-auto flex items-center gap-2">
+            {!hasManualStatusUpdate && (
+              <span className="text-[11px] text-slate-500">Update order status</span>
+            )}
+            {hasManualStatusUpdate && (
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(true)}
+                className="inline-flex items-center gap-1.5 text-[12px] text-gati-text-primary cursor-pointer"
+                title="View status history"
+              >
+                <span className="truncate max-w-[200px]">{lastStatusUpdaterEmail}</span>
+                <span className="ml-1 text-[10px] text-slate-500 shrink-0">▾</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={openStatusModal}
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white pl-2 pr-1.5 text-[11px] text-slate-700 shadow-sm transition hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white pl-2 pr-1.5 text-[11px] text-slate-700 shadow-sm transition hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              title="Update order status"
             >
               {statusButtonLabel}
               <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
@@ -616,29 +678,33 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
                     Update order status
                   </p>
                   <div className="space-y-0">
-                    {STATUS_OPTIONS.map((opt) => (
-                      <label
-                        key={opt.value}
-                        className="flex cursor-pointer items-center gap-2 px-2 py-1 rounded hover:bg-slate-50"
-                      >
-                        <input
-                          type="radio"
-                          name="orderStatus"
-                          value={opt.value}
-                          checked={selectedStatus === opt.value}
-                          onChange={() => setSelectedStatus(opt.value)}
-                          className="h-3 w-3 border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <span className="text-[11px] text-slate-800">{opt.label}</span>
-                      </label>
-                    ))}
+                    {STATUS_OPTIONS.map((opt) => {
+                      const disabled = isOptionDisabled(opt.value);
+                      return (
+                        <label
+                          key={opt.value}
+                          className={`flex items-center gap-2 px-2 py-1 rounded ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-slate-50"}`}
+                        >
+                          <input
+                            type="radio"
+                            name="orderStatus"
+                            value={opt.value}
+                            checked={selectedStatus === opt.value}
+                            onChange={() => !disabled && setSelectedStatus(opt.value)}
+                            disabled={disabled}
+                            className="h-3 w-3 border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:cursor-not-allowed"
+                          />
+                          <span className="text-[11px] text-slate-800">{opt.label}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                   <div className="mt-1 border-t border-slate-100 pt-1.5 px-1">
                     <button
                       type="button"
                       onClick={submitStatusUpdate}
-                      disabled={isUpdatingStatus}
-                      className="flex w-full items-center justify-center gap-1 rounded-md bg-emerald-500 px-2 py-1.5 text-[11px] font-medium text-white shadow-sm transition hover:bg-emerald-600 disabled:opacity-70"
+                      disabled={isUpdatingStatus || isUpdateStatusButtonDisabled}
+                      className="flex w-full items-center justify-center gap-1 rounded-md bg-emerald-500 px-2 py-1.5 text-[11px] font-medium text-white shadow-sm transition hover:bg-emerald-600 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer"
                     >
                       {isUpdatingStatus ? (
                         <>
@@ -752,6 +818,65 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
       </div>
     </div>
 
+    {showHistoryModal && (
+        <div
+          className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowHistoryModal(false);
+          }}
+        >
+          <div
+            className="bg-white rounded-lg shadow-lg max-w-md w-full p-4 text-[12px] text-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-2 border-b border-slate-100 pb-2">
+              <div className="flex items-center gap-1.5">
+                <History className="h-3.5 w-3.5 text-emerald-500" />
+                <h2 className="text-xs font-semibold text-slate-900">Order status history</h2>
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-slate-500 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                onClick={() => setShowHistoryModal(false)}
+                aria-label="Close"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {statusHistory.length === 0 ? (
+              <p className="text-[11px] text-slate-500 py-4">No manual status updates yet.</p>
+            ) : (
+              <div className="overflow-x-auto max-h-[50vh] overflow-y-auto">
+                <table className="w-full text-[11px] text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200">
+                      <th className="py-2 pr-4 font-semibold text-slate-700">Status</th>
+                      <th className="py-2 pr-4 font-semibold text-slate-700">Date & time</th>
+                      <th className="py-2 font-semibold text-slate-700">Updated by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statusHistory.map((entry, i) => (
+                      <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/50">
+                        <td className="py-2 pr-4 font-medium text-slate-800">
+                          {STATUS_TO_LABEL[entry.toStatus] ?? entry.toStatus.replace(/_/g, " ")}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-600">
+                          {new Date(entry.createdAt).toLocaleString()}
+                        </td>
+                        <td className="py-2 text-slate-600 truncate max-w-[200px]" title={entry.updatedByEmail}>
+                          {entry.updatedByEmail}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
     {showTicketsModal && orderTickets && orderTickets.length > 0 && (
         <div
           className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center p-4"
@@ -767,7 +892,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               <h2 className="text-sm font-semibold text-slate-900">Tickets for this order</h2>
               <button
                 type="button"
-                className="text-xs text-slate-500 hover:text-slate-700"
+                className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
                 onClick={() => setShowTicketsModal(false)}
               >
                 ✕
@@ -778,7 +903,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
                 <button
                   key={t.id}
                   type="button"
-                  className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5"
+                  className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer"
                   onClick={() => {
                     window.open(`/dashboard/tickets/${t.id}`, "_blank");
                   }}

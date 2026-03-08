@@ -1796,6 +1796,8 @@ export const ordersCore = pgTable(
     placedAt: timestamp("placed_at", { withTimezone: true }),
     formattedOrderId: text("formatted_order_id"),
     orderId: text("order_id"),
+    /** Email of the last dashboard user who manually updated order status (Dispatch Ready / Dispatched / Delivered). */
+    manualStatusUpdatedByEmail: text("manual_status_updated_by_email"),
   },
   (table) => ({
     riderIdIdx: index("orders_core_rider_id_idx").on(table.riderId),
@@ -1823,6 +1825,26 @@ export const ordersCore = pgTable(
     distanceMismatchIdx: index("orders_core_distance_mismatch_idx").on(
       table.distanceMismatchFlagged
     ),
+  })
+);
+
+/** Manual status updates from dashboard (Dispatch Ready / Dispatched / Delivered) with actor email. */
+export const orderManualStatusHistory = pgTable(
+  "order_manual_status_history",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    toStatus: text("to_status").notNull(),
+    updatedByEmail: text("updated_by_email").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_manual_status_history_order_id_idx").on(table.orderId),
+    createdAtIdx: index("order_manual_status_history_created_at_idx").on(table.createdAt),
   })
 );
 
@@ -3269,7 +3291,18 @@ export const ordersCoreRelations = relations(ordersCore, ({ one, many }) => ({
   otps: many(orderOtps),
   deliveryImages: many(orderDeliveryImages),
   routeSnapshots: many(orderRouteSnapshots),
+  manualStatusHistory: many(orderManualStatusHistory),
 }));
+
+export const orderManualStatusHistoryRelations = relations(
+  orderManualStatusHistory,
+  ({ one }) => ({
+    order: one(ordersCore, {
+      fields: [orderManualStatusHistory.orderId],
+      references: [ordersCore.id],
+    }),
+  })
+);
 
 export const ordersFoodRelations = relations(ordersFood, ({ one }) => ({
   order: one(ordersCore, {

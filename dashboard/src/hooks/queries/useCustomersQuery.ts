@@ -30,14 +30,10 @@ export interface CustomersQueryParams {
   enabled?: boolean;
 }
 
-async function fetchCustomers(params: CustomersQueryParams = {}): Promise<{
+/** Exported for prefetch-on-hover (dashboard section preload). */
+export async function fetchCustomers(params: CustomersQueryParams = {}): Promise<{
   customers: CustomerWithStats[];
-  pagination: {
-    page: number;
-    limit: number;
-    total: number;
-    totalPages: number;
-  };
+  pagination: { page: number; limit: number; total: number; totalPages: number };
 }> {
   const searchParams = new URLSearchParams();
   
