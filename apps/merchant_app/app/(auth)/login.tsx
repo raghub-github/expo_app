@@ -2,7 +2,7 @@
  * Professional Partner Login — Google + Phone OTP; both flows call backend and navigate to partner-home.
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -18,15 +18,56 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import * as Google from "expo-auth-session/providers/google";
+import * as AuthSession from "expo-auth-session";
+import * as WebBrowser from "expo-web-browser";
+import Constants from "expo-constants";
 import { useAuth } from "@/context/AuthContext";
 import { getConfig } from "@/config/env";
+import { merchantAuthService } from "@/services/auth.service";
+import { getSupabaseAuth } from "@/lib/supabaseClient";
 import {
   GatiMitraMerchant,
   BUTTON_RADIUS,
   H_PADDING,
   CARD_RADIUS,
 } from "@/constants/theme";
+
+// Android-only: auto-fill OTP from SMS after user grants "Read SMS" permission (like other apps)
+const useAndroidSmsOtp = (step: "phone" | "otp", setOtp: (v: string) => void) => {
+  useEffect(() => {
+    if (Platform.OS !== "android" || step !== "otp") return;
+    let cancelled = false;
+    const ReadSMS = require("@maniac-tech/react-native-expo-read-sms");
+    const parseOtpFromSms = (sms: string): string | null => {
+      if (!sms || typeof sms !== "string") return null;
+      const body = sms.includes(",") ? sms.split(",").slice(1).join(",").trim() : sms;
+      const match = body.match(/\b(\d{6})\b/) ?? body.match(/(\d{6})/);
+      return match ? match[1] : null;
+    };
+    const run = async () => {
+      try {
+        await ReadSMS.requestReadSMSPermission();
+        if (cancelled) return;
+        const { hasReadSmsPermission, hasReceiveSmsPermission } = await ReadSMS.checkIfHasSMSPermission();
+        if (!hasReadSmsPermission || !hasReceiveSmsPermission) return;
+        ReadSMS.startReadSMS((status: string, sms: string) => {
+          if (cancelled || status !== "success" || !sms) return;
+          const code = parseOtpFromSms(sms);
+          if (code) setOtp((prev) => (prev.length === 6 ? prev : code));
+        });
+      } catch (_) {
+        // Native module not linked (e.g. Expo Go) — ignore
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+      try {
+        ReadSMS.stopReadSMS?.();
+      } catch (_) {}
+    };
+  }, [step, setOtp]);
+};
 
 function getDeviceId(): string {
   return "merchant_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
@@ -37,29 +78,40 @@ type TabType = "google" | "phone";
 export default function LoginScreen() {
   const router = useRouter();
   const { setTokenAndPartner } = useAuth();
-  const [activeTab, setActiveTab] = useState<TabType>("phone");
+  const [activeTab, setActiveTab] = useState<TabType>("google");
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<"phone" | "otp">("phone");
-  const [requestId, setRequestId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [resendSeconds, setResendSeconds] = useState(0);
+  const [resending, setResending] = useState(false);
+  const otpInputRef = useRef<TextInput>(null);
 
-  const { apiBaseUrl, googleWebClientId } = getConfig();
+  const { apiBaseUrl } = getConfig();
 
-  const [googleRequest, googlePromptAsync] = Google.useIdTokenAuthRequest({
-    clientId: googleWebClientId ?? "",
-  });
   const phoneE164 =
     phone.replace(/\D/g, "").length >= 10
       ? "+91" + phone.replace(/\D/g, "").slice(-10)
       : "";
 
+  useEffect(() => {
+    if (step !== "otp" || resendSeconds <= 0) return;
+    const id = setInterval(() => setResendSeconds((s) => (s > 0 ? s - 1 : 0)), 1000);
+    return () => clearInterval(id);
+  }, [step, resendSeconds]);
+
+  // Focus OTP field when entering OTP step so iOS shows "From Messages" and keyboard can suggest code
+  useEffect(() => {
+    if (step !== "otp") return;
+    const t = setTimeout(() => otpInputRef.current?.focus(), 300);
+    return () => clearTimeout(t);
+  }, [step]);
+
+  // Android: request "Read SMS" permission and auto-fill OTP when SMS arrives (like other apps)
+  useAndroidSmsOtp(step, setOtp);
+
   const handleRequestOtp = async () => {
-    const url = `${apiBaseUrl}/v1/auth/otp/request`;
-    if (__DEV__) {
-      console.log("[OTP DEBUG] Send OTP clicked. phoneE164:", phoneE164, "| API URL:", url);
-    }
     if (!phoneE164 || phoneE164.length < 12) {
       if (__DEV__) console.log("[OTP DEBUG] Validation failed: invalid phone length");
       setError("Enter a valid 10-digit phone number");
@@ -67,168 +119,146 @@ export default function LoginScreen() {
     }
     setError("");
     setLoading(true);
-    if (__DEV__) console.log("[OTP DEBUG] Request started, loading=true");
-    const controller = new AbortController();
-    const timeoutMs = 30000;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phoneE164 }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (__DEV__) console.log("[OTP DEBUG] Response received. status:", res.status, "ok:", res.ok);
-      let data: { requestId?: string; message?: string };
-      try {
-        const raw = await res.text();
-        if (__DEV__) console.log("[OTP DEBUG] Response body (raw):", raw?.slice(0, 200));
-        data = raw ? JSON.parse(raw) : {};
-      } catch (parseErr) {
-        if (__DEV__) console.log("[OTP DEBUG] JSON parse error:", parseErr);
-        setError("Invalid response from server. Try again.");
-        return;
-      }
-      if (!res.ok) {
-        if (__DEV__) console.log("[OTP DEBUG] res.ok=false. data:", data);
-        setError(data?.message ?? "Could not send OTP");
-        return;
-      }
-      if (data.requestId) {
-        if (__DEV__) console.log("[OTP DEBUG] Success. requestId:", data.requestId, "| Setting step to otp");
-        setRequestId(data.requestId);
-        setStep("otp");
-      } else {
-        if (__DEV__) console.log("[OTP DEBUG] No requestId in response. data:", data);
-        setError("Could not get OTP. Try again.");
-      }
+      if (__DEV__) console.log("[OTP DEBUG] Supabase sendOtp started. phoneE164:", phoneE164);
+      await merchantAuthService.sendOtp({ phoneE164 });
+      setResendSeconds(60);
+      setStep("otp");
+      if (__DEV__) console.log("[OTP DEBUG] Supabase sendOtp success, moved to OTP step");
     } catch (e: unknown) {
-      clearTimeout(timeoutId);
-      if (__DEV__) console.log("[OTP DEBUG] Caught error:", e instanceof Error ? e.name + ": " + e.message : e);
-      if (e instanceof Error && e.name === "AbortError") {
-        setError(`Request timed out (${timeoutMs / 1000}s). Is the backend running at ${apiBaseUrl}?`);
-      } else {
-        setError("Network error. Check connection and that backend is running at " + apiBaseUrl);
-      }
+      if (__DEV__) console.log("[OTP DEBUG] Supabase sendOtp error:", e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : "Could not send OTP. Try again.";
+      setError(msg);
     } finally {
-      if (__DEV__) console.log("[OTP DEBUG] Finally: loading=false");
       setLoading(false);
     }
   };
 
-  const handleVerifyOtp = async () => {
-    const url = `${apiBaseUrl}/v1/auth/otp/verify`;
-    if (__DEV__) {
-      console.log("[OTP DEBUG] Verify OTP clicked. requestId:", requestId, "| otp length:", otp?.length, "| API URL:", url);
+  const handleResendOtp = async () => {
+    if (resendSeconds > 0 || resending || !phoneE164) return;
+    setError("");
+    setResending(true);
+    try {
+      if (__DEV__) console.log("[OTP DEBUG] Supabase resendOtp started. phoneE164:", phoneE164);
+      await merchantAuthService.sendOtp({ phoneE164 });
+      setResendSeconds(60);
+    } catch (e) {
+      if (__DEV__) console.log("[OTP DEBUG] Supabase resendOtp error:", e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
+      setError(msg);
+    } finally {
+      setResending(false);
     }
-    if (!requestId || !otp || otp.length < 4) {
-      if (__DEV__) console.log("[OTP DEBUG] Validation failed: missing requestId or OTP");
+  };
+
+  const handleVerifyOtp = async () => {
+    if (__DEV__) {
+      console.log("[OTP DEBUG] Verify OTP clicked via Supabase. otp length:", otp?.length);
+    }
+    if (!otp || otp.length !== 6) {
+      if (__DEV__) console.log("[OTP DEBUG] Validation failed: OTP length");
       setError("Enter the 6-digit OTP");
       return;
     }
     setError("");
     setLoading(true);
-    if (__DEV__) console.log("[OTP DEBUG] Verify request started, loading=true");
+    if (__DEV__) console.log("[OTP DEBUG] Supabase verifyOtp request started, loading=true");
     try {
       const deviceId = getDeviceId();
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId,
-          phoneE164,
-          otp,
-          deviceId,
-          appType: "merchant",
-        }),
+      const session = await merchantAuthService.verifyOtp({
+        phoneE164,
+        otp,
+        deviceId,
       });
-      if (__DEV__) console.log("[OTP DEBUG] Verify response. status:", res.status, "ok:", res.ok);
-      let data: { accessToken?: string; partner?: unknown; message?: string; error?: string };
-      try {
-        const raw = await res.text();
-        if (__DEV__) console.log("[OTP DEBUG] Verify body (raw):", raw?.slice(0, 300));
-        data = raw ? JSON.parse(raw) : {};
-      } catch (parseErr) {
-        if (__DEV__) console.log("[OTP DEBUG] Verify JSON parse error:", parseErr);
-        setError("Invalid response from server.");
-        return;
-      }
-      if (!res.ok) {
-        if (__DEV__) console.log("[OTP DEBUG] Verify res.ok=false. data:", data);
-        setError(
-          data?.message ?? data?.error ?? "Invalid OTP or partner not found"
-        );
-        return;
-      }
-      if (data.accessToken && data.partner) {
-        if (__DEV__) console.log("[OTP DEBUG] Verify success. Navigating to partner-home");
-        await setTokenAndPartner(data.accessToken, data.partner);
-        router.replace("/(auth)/partner-home");
-      } else {
-        if (__DEV__) console.log("[OTP DEBUG] No accessToken/partner in response. data keys:", data ? Object.keys(data) : []);
-        setError(
-          "No partner account for this number. Sign up at partner.gatimitra.com"
-        );
-      }
+      if (__DEV__) console.log("[OTP DEBUG] Supabase verifyOtp success, setting token and partner");
+      await setTokenAndPartner(session.accessToken, session.partner as any);
+      router.replace("/(auth)/partner-home");
     } catch (e) {
-      if (__DEV__) console.log("[OTP DEBUG] Verify caught error:", e instanceof Error ? e.message : e);
-      setError("Network error. Try again.");
+      if (__DEV__) console.log("[OTP DEBUG] Supabase verifyOtp caught error:", e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : "Invalid OTP or partner not found.";
+      setError(msg);
     } finally {
-      if (__DEV__) console.log("[OTP DEBUG] Verify finally: loading=false");
+      if (__DEV__) console.log("[OTP DEBUG] Supabase verifyOtp finally: loading=false");
       setLoading(false);
     }
   };
 
   const handleGoogleSignIn = async () => {
-    if (!googleWebClientId?.trim()) {
-      setError("Google Sign-In not configured. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in .env");
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      setError("Supabase is not configured. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.");
       return;
     }
     setError("");
     setLoading(true);
-    if (__DEV__) console.log("[OTP DEBUG] Google Sign-In started");
     try {
-      const result = await googlePromptAsync();
-      if (__DEV__) console.log("[OTP DEBUG] Google prompt result:", result?.type, result?.params ? "has params" : "no params");
-      if (result?.type !== "success" || !result.params?.id_token) {
-        if (result?.type === "cancel") {
-          setError("Sign-in was cancelled.");
-        } else {
-          setError("Google sign-in failed. Try again or use Phone Login.");
-        }
-        return;
-      }
-      const idToken = result.params.id_token;
-      const deviceId = getDeviceId();
-      const res = await fetch(`${apiBaseUrl}/v1/auth/google`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken, deviceId }),
+      // Must match a URL in Supabase → Auth → URL Configuration → Redirect URLs exactly, or Supabase uses Site URL (gatimitra.com).
+      // In Expo Go use path "auth/callback" so we get exp://IP:port/--/auth/callback (add that exact URL in Supabase).
+      // In dev build use custom scheme.
+      const isExpoGo = Constants.appOwnership === "expo";
+      const redirectTo = isExpoGo
+        ? AuthSession.makeRedirectUri({ path: "auth/callback" })
+        : AuthSession.makeRedirectUri({
+            scheme: "gatimitra-merchant",
+            path: "auth/callback",
+          });
+      if (__DEV__) console.log("[Google OAuth] redirectTo:", redirectTo, isExpoGo ? "(Expo Go)" : "");
+
+      const { data: oauthData, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo, skipBrowserRedirect: true },
       });
-      if (__DEV__) console.log("[OTP DEBUG] Google backend response status:", res.status);
-      const raw = await res.text();
-      let data: { accessToken?: string; partner?: unknown; message?: string; error?: string };
-      try {
-        data = raw ? JSON.parse(raw) : {};
-      } catch {
-        setError("Invalid response from server.");
+      if (oauthError) {
+        setError(oauthError.message || "Could not start Google sign-in.");
         return;
       }
-      if (!res.ok) {
-        setError(data?.message ?? data?.error ?? "Google sign-in failed.");
+      const authUrl = oauthData?.url;
+      if (!authUrl) {
+        setError("Google sign-in URL not returned. Check Supabase Google provider settings.");
         return;
       }
-      if (data.accessToken && data.partner) {
-        if (__DEV__) console.log("[OTP DEBUG] Google sign-in success, navigating to partner-home");
-        await setTokenAndPartner(data.accessToken, data.partner);
-        router.replace("/(auth)/partner-home");
-      } else {
-        setError(data?.message ?? "No partner account for this Google email. Sign up at partner.gatimitra.com");
+
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectTo);
+      WebBrowser.maybeCompleteAuthSession();
+
+      if (result.type === "cancel" || result.type === "dismiss") {
+        setError("Sign-in was cancelled.");
+        return;
       }
+      if (result.type !== "success" || !result.url) {
+        setError("Google sign-in was not completed. Try again or use Phone Login.");
+        return;
+      }
+
+      const url = result.url;
+      const hash = url.includes("#") ? url.split("#")[1] : "";
+      const params = new URLSearchParams(hash);
+      const accessToken = params.get("access_token");
+      const refreshToken = params.get("refresh_token");
+      if (!accessToken) {
+        const errDesc = params.get("error_description") || params.get("error");
+        const baseMsg = errDesc ? decodeURIComponent(String(errDesc)) : "Google did not return an access token.";
+        const redirectHint = isExpoGo
+          ? ` Add this URL to Supabase → Auth → URL Configuration → Redirect URLs: ${redirectTo}`
+          : "";
+        setError(baseMsg + redirectHint);
+        return;
+      }
+
+      await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken ?? "",
+      });
+
+      const deviceId = getDeviceId();
+      const session = await merchantAuthService.exchangeSupabaseOAuth({ accessToken, deviceId });
+      await setTokenAndPartner(session.accessToken, session.partner as any);
+      if (__DEV__) console.log("[Google OAuth] success, navigating to partner-home");
+      router.replace("/(auth)/partner-home");
     } catch (e) {
-      if (__DEV__) console.log("[OTP DEBUG] Google sign-in error:", e instanceof Error ? e.message : e);
-      setError("Google sign-in failed. Try again or use Phone Login.");
+      const msg = e instanceof Error ? e.message : "Google sign-in failed.";
+      if (__DEV__) console.log("[Google OAuth] error:", msg);
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -352,6 +382,7 @@ export default function LoginScreen() {
                 <Text style={styles.label}>Verification code</Text>
                 <View style={styles.inputBox}>
                   <TextInput
+                    ref={otpInputRef}
                     style={[styles.input, styles.otpInput]}
                     placeholder="Enter 6-digit OTP"
                     placeholderTextColor={GatiMitraMerchant.textTertiary}
@@ -360,8 +391,36 @@ export default function LoginScreen() {
                     keyboardType="number-pad"
                     maxLength={6}
                     editable={!loading}
+                    textContentType="oneTimeCode"
+                    autoComplete="sms-otp"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    importantForAutofill="yes"
                   />
                 </View>
+                <Text style={styles.hint}>
+                  {Platform.OS === "ios"
+                    ? "Tap the code above the keyboard to fill from SMS"
+                    : "Allow SMS access to auto-fill, or paste the code from your message"}
+                </Text>
+                <Pressable
+                  style={styles.resendRow}
+                  onPress={handleResendOtp}
+                  disabled={resendSeconds > 0 || loading || resending}
+                >
+                  <Text
+                    style={[
+                      styles.changeNumberText,
+                      (resendSeconds > 0 || loading || resending) && styles.resendDisabled,
+                    ]}
+                  >
+                    {resending
+                      ? "Sending…"
+                      : resendSeconds > 0
+                        ? `Resend OTP in 0:${resendSeconds.toString().padStart(2, "0")}`
+                        : "Resend OTP"}
+                  </Text>
+                </Pressable>
                 <Pressable
                   style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
                   onPress={handleVerifyOtp}
@@ -381,7 +440,7 @@ export default function LoginScreen() {
                 </Pressable>
                 <Pressable
                   style={styles.changeNumberBtn}
-                  onPress={() => setStep("phone")}
+                  onPress={() => { setStep("phone"); setOtp(""); setError(""); }}
                   disabled={loading}
                 >
                   <Text style={styles.changeNumberText}>Use a different number</Text>
@@ -577,6 +636,14 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   primaryBtnDisabled: { opacity: 0.7 },
+  resendRow: {
+    alignSelf: "center",
+    paddingVertical: 8,
+    marginBottom: 4,
+  },
+  resendDisabled: {
+    opacity: 0.6,
+  },
   changeNumberBtn: {
     alignSelf: "center",
     paddingVertical: 12,

@@ -55,6 +55,10 @@ const EnvSchema = z.object({
   RAZORPAY_KEY_ID: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   RAZORPAY_KEY_SECRET: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   RAZORPAY_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
+
+  // Distance / routing (backend-only; shared by Customer, Rider, Merchant apps)
+  OSRM_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

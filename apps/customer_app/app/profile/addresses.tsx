@@ -2,7 +2,7 @@
  * Saved addresses – list from API, delete, set default, add new.
  */
 
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useRouter } from "expo-router";
@@ -62,6 +62,30 @@ export default function AddressesScreen() {
   });
 
   const handleAddNewAddress = () => router.push("/location");
+
+  const handleShare = async (addr: Address) => {
+    const parts: string[] = [];
+    const label = addr.label ?? t("addresses.other", "Other");
+    const name = addr.contactName ? ` – ${addr.contactName}` : "";
+    parts.push(`${label}${name}`);
+    parts.push(addr.fullAddress);
+    if (addr.contactMobile) {
+      parts.push(`Mobile: ${addr.contactMobile}`);
+    }
+    if (addr.latitude && addr.longitude) {
+      parts.push(
+        `Location: https://maps.google.com/?q=${addr.latitude},${addr.longitude}`
+      );
+    }
+    parts.push("");
+    parts.push("GatiMitra – order food, rides & parcels. Download the app to order now.");
+    const message = parts.join("\n");
+    try {
+      await Share.share({ message });
+    } catch {
+      // ignore
+    }
+  };
 
   const handleDelete = (addr: Address) => {
     Alert.alert(
@@ -131,6 +155,12 @@ export default function AddressesScreen() {
                       </View>
                     )}
                   </View>
+                  {addr.contactName ? (
+                    <Text style={styles.addressLine} numberOfLines={1}>
+                      {addr.contactName}
+                      {addr.contactMobile ? ` • ${addr.contactMobile}` : ""}
+                    </Text>
+                  ) : null}
                   <Text style={styles.addressLine} numberOfLines={2}>
                     {addr.fullAddress}
                   </Text>
@@ -146,6 +176,13 @@ export default function AddressesScreen() {
                       <Text style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</Text>
                     </TouchableOpacity>
                   )}
+                  <TouchableOpacity
+                    hitSlop={12}
+                    style={styles.editBtn}
+                    onPress={() => handleShare(addr)}
+                  >
+                    <Ionicons name="share-social-outline" size={20} color={TEXT_GRAY} />
+                  </TouchableOpacity>
                   <TouchableOpacity
                     hitSlop={12}
                     style={styles.editBtn}

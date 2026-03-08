@@ -8,6 +8,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Modal } from "react-nati
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS } from "@/constants/theme";
 import type { ChildStore } from "@/context/AuthContext";
 
@@ -36,7 +37,10 @@ function ChildStoreCard({
   const statusLabel = store.approval_status === "DELISTED" ? "DELISTED" : store.approval_status === "DRAFT" ? "DRAFT" : store.approval_status ?? "DRAFT";
   const statusVariant = statusLabel === "DELISTED" ? "grey" : statusLabel === "DRAFT" ? "yellow" : "grey";
   const paymentVariant = store.payment_status === "Completed" ? "green" : "orange";
-  const showContinue = (store.approval_status === "DRAFT" || store.current_step < store.total_steps) && store.payment_status !== "Completed";
+  const isApprovedAndPaid = statusLabel !== "DELISTED" && store.payment_status === "Completed";
+  const canOpenDashboard = isApprovedAndPaid;
+  const ctaLabel = canOpenDashboard ? "Open dashboard" : "Continue setup";
+  const canClick = statusLabel !== "DELISTED";
 
   return (
     <View style={styles.childCard}>
@@ -52,11 +56,13 @@ function ChildStoreCard({
         {store.registration_status === "IN_PROGRESS" && (
           <Text style={styles.awaitingText}>Awaiting verification</Text>
         )}
-        {showContinue && (
-          <Pressable style={styles.continueBtn} onPress={onContinue}>
-            <Text style={styles.continueBtnText}>Continue &gt;</Text>
-          </Pressable>
-        )}
+        <Pressable
+          style={[styles.continueBtn, !canClick && styles.continueBtnDisabled]}
+          onPress={canClick ? onContinue : undefined}
+          disabled={!canClick}
+        >
+          <Text style={styles.continueBtnText}>{ctaLabel}</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -65,6 +71,7 @@ function ChildStoreCard({
 export default function PartnerHomeScreen() {
   const router = useRouter();
   const { partner, signOut } = useAuth();
+  const { setSelectedStore } = useSelectedStore();
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
 
   const handleLogoutConfirm = async () => {
@@ -89,7 +96,7 @@ export default function PartnerHomeScreen() {
       <View style={styles.header}>
         <Text style={styles.logo}>GatiMitra</Text>
         <Pressable onPress={() => setLogoutModalVisible(true)} style={styles.headerBtn}>
-          <Ionicons name="arrow-forward" size={22} color={GatiMitraMerchant.textPrimary} />
+          <Ionicons name="log-out-outline" size={22} color={GatiMitraMerchant.textPrimary} />
         </Pressable>
       </View>
 
@@ -164,7 +171,10 @@ export default function PartnerHomeScreen() {
               <ChildStoreCard
                 key={store.id}
                 store={store}
-                onContinue={() => router.push("/(auth)/signup-webview")}
+                onContinue={() => {
+                  setSelectedStore(store);
+                  router.replace("/(tabs)");
+                }}
               />
             ))
           )}
@@ -247,7 +257,16 @@ const styles = StyleSheet.create({
   childFooter: { marginTop: 12, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
   stepText: { fontSize: 13, color: GatiMitraMerchant.textSecondary },
   awaitingText: { fontSize: 13, color: GatiMitraMerchant.warning },
-  continueBtn: { marginLeft: "auto", backgroundColor: GatiMitraMerchant.navy, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
+  continueBtn: {
+    marginLeft: "auto",
+    backgroundColor: GatiMitraMerchant.navy,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: BUTTON_RADIUS,
+  },
+  continueBtnDisabled: {
+    opacity: 0.5,
+  },
   continueBtnText: { fontSize: 14, fontWeight: "600", color: "#fff" },
 
   // Logout confirmation modal (centralized)

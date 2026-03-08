@@ -1,18 +1,20 @@
 /**
  * GatiMitra Merchant — Premium multi-layer header.
- * Layout: [Logo + Greeting] ---- [Radar] ---- [Notification]
+ * Layout: [Logo + Store selector] ---- [Radar] ---- [Notification]
  * Left = Identity, center-right = Live radar, far right = Alerts.
  */
 
-import { useEffect, useRef } from "react";
-import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useSegments, usePathname } from "expo-router";
+import { useSegments, usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE } from "@/constants/theme";
 import { OnlineOfflineToggle } from "@/components/OnlineOfflineToggle";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
 import { useStoreStatus } from "@/context/StoreStatusContext";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useAuth } from "@/context/AuthContext";
 
 const LOGO_SIZE = 32;
 const LOGO_TO_GREETING_GAP = 8;
@@ -30,21 +32,16 @@ const PAGE_TITLES: Record<string, string> = {
   profile: "Profile",
 };
 
-const PARTNER_LABEL = "Partner"; // GatiMitra Partner — from auth/profile when available
-
-function getGreeting(): string {
-  const h = new Date().getHours();
-  if (h < 12) return "Good Morning";
-  if (h < 17) return "Good Afternoon";
-  return "Good Evening";
-}
-
 function MainHeader({ compact }: { compact?: boolean }) {
   const { isOnline } = useStoreStatus();
+  const { selectedStore, setSelectedStore } = useSelectedStore();
+  const { partner } = useAuth();
+  const router = useRouter();
+  const [pickerVisible, setPickerVisible] = useState(false);
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
-  const greeting = getGreeting();
+  const stores = partner?.childStores ?? [];
 
   useEffect(() => {
     if (Platform.OS !== "web") {
@@ -63,14 +60,31 @@ function MainHeader({ compact }: { compact?: boolean }) {
             resizeMode="contain"
             accessibilityLabel="GatiMitra"
           />
-          <View style={styles.greetingBlock}>
-            <Text style={styles.greeting} numberOfLines={1}>
-              {greeting}, {PARTNER_LABEL} 👋
-            </Text>
+          <Pressable
+            disabled={stores.length === 0}
+            onPress={() => setPickerVisible(true)}
+            style={({ pressed }) => [
+              styles.greetingBlock,
+              pressed && stores.length > 0 && styles.pressed,
+              GatiMitraMerchant.cursorPointer,
+            ]}
+          >
+            <View style={styles.greetingRow}>
+              <Text style={styles.greeting} numberOfLines={1}>
+                {selectedStore?.store_name ?? "Select a store"}
+              </Text>
+              {stores.length > 0 && (
+                <Ionicons
+                  name={pickerVisible ? "chevron-up" : "chevron-down"}
+                  size={16}
+                  color={GatiMitraMerchant.textSecondary}
+                />
+              )}
+            </View>
             <Text style={styles.subtitle} numberOfLines={1}>
-              {pageTitle}
+              {selectedStore ? `Store ID: ${selectedStore.store_id}` : pageTitle}
             </Text>
-          </View>
+          </Pressable>
         </View>
         {/* Right: Radar (when online) + Notification bell */}
         <View style={styles.rightSection}>
@@ -95,6 +109,80 @@ function MainHeader({ compact }: { compact?: boolean }) {
           </Pressable>
         </View>
       </View>
+
+      {/* Store switcher modal */}
+      <Modal
+        visible={pickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPickerVisible(false)}
+      >
+        <Pressable style={styles.pickerOverlay} onPress={() => setPickerVisible(false)}>
+          <Pressable style={styles.pickerCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.pickerTitle}>Your stores</Text>
+            <ScrollView style={styles.pickerList} showsVerticalScrollIndicator={false}>
+              {stores.map((store) => {
+                const isActive = selectedStore?.id === store.id;
+                return (
+                  <Pressable
+                    key={store.id}
+                    onPress={() => {
+                      setSelectedStore(store);
+                      setPickerVisible(false);
+                      router.replace("/(tabs)");
+                    }}
+                    style={({ pressed }) => [
+                      styles.pickerItem,
+                      isActive && styles.pickerItemActive,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <View style={styles.pickerItemTextWrap}>
+                      <Text
+                        style={[
+                          styles.pickerItemName,
+                          isActive && styles.pickerItemNameActive,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {store.store_name}
+                      </Text>
+                      <Text style={styles.pickerItemSub} numberOfLines={1}>
+                        ID: {store.store_id}
+                      </Text>
+                    </View>
+                    {isActive && (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={18}
+                        color={GatiMitraMerchant.primary}
+                      />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <Pressable
+              onPress={() => {
+                setPickerVisible(false);
+                router.push("/(auth)/partner-home");
+              }}
+              style={({ pressed }) => [
+                styles.manageStoresBtn,
+                pressed && styles.pressed,
+                GatiMitraMerchant.cursorPointer,
+              ]}
+            >
+              <Text style={styles.manageStoresText}>Manage all stores</Text>
+              <Ionicons
+                name="arrow-forward"
+                size={16}
+                color={GatiMitraMerchant.primary}
+              />
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -232,6 +320,11 @@ const styles = StyleSheet.create({
     minWidth: 0,
     justifyContent: "center",
   },
+  greetingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
   greeting: {
     fontSize: 16,
     fontWeight: "600",
@@ -251,6 +344,83 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
+  },
+  pickerOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.25)",
+    justifyContent: "flex-start",
+    alignItems: "center",
+    paddingTop: 96,
+    paddingHorizontal: 16,
+  },
+  pickerCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 18,
+    backgroundColor: "#fff",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.16,
+        shadowRadius: 12,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 8,
+  },
+  pickerList: {
+    maxHeight: 260,
+    marginBottom: 8,
+  },
+  pickerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.divider,
+    gap: 10,
+  },
+  pickerItemActive: {
+    backgroundColor: "#F0FDF4",
+  },
+  pickerItemTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  pickerItemName: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  pickerItemNameActive: {
+    color: GatiMitraMerchant.primary,
+  },
+  pickerItemSub: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 1,
+  },
+  manageStoresBtn: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 4,
+    paddingVertical: 6,
+  },
+  manageStoresText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.primary,
   },
   statusCard: {
     borderRadius: CARD_RADIUS,

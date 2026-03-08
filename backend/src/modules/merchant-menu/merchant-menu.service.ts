@@ -1,0 +1,1158 @@
+import { ulid } from "ulid";
+import { getSql } from "../../db/client.js";
+
+export type StoreAccess = { storeIdNum: number; storeIdStr: string };
+
+/**
+ * Resolve store by string store_id or numeric id and ensure it belongs to the given parent (merchant).
+ * Returns { storeIdNum, storeIdStr } or null if not found / not owned.
+ */
+export async function assertStoreAccess(
+  parentMerchantId: string,
+  storeIdParam: string
+): Promise<StoreAccess | null> {
+  const sql = getSql();
+  const parentRows = await sql`
+    SELECT id FROM merchant_parents WHERE parent_merchant_id = ${parentMerchantId} LIMIT 1
+  `;
+  const parentRow = parentRows[0];
+  if (!parentRow) return null;
+  const parentId = Number(parentRow.id);
+
+  const isNumeric = /^\d+$/.test(storeIdParam);
+  const storeRows = isNumeric
+    ? await sql`
+        SELECT id, store_id FROM merchant_stores
+        WHERE id = ${parseInt(storeIdParam, 10)} AND parent_id = ${parentId} LIMIT 1
+      `
+    : await sql`
+        SELECT id, store_id FROM merchant_stores
+        WHERE store_id = ${storeIdParam} AND parent_id = ${parentId} LIMIT 1
+      `;
+  const store = storeRows[0];
+  if (!store) return null;
+  return {
+    storeIdNum: Number(store.id),
+    storeIdStr: String(store.store_id),
+  };
+}
+
+/** List categories for a store (tree: root first, then by display_order). */
+export async function listCategories(storeIdNum: number): Promise<
+  Array<{
+    id: number;
+    category_name: string;
+    category_description: string | null;
+    category_image_url: string | null;
+    parent_category_id: number | null;
+    display_order: number;
+    is_active: boolean;
+    created_at: Date;
+    updated_at: Date;
+  }>
+> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, category_name, category_description, category_image_url,
+           parent_category_id, display_order, is_active, created_at, updated_at
+    FROM merchant_menu_categories
+    WHERE store_id = ${storeIdNum}
+    ORDER BY parent_category_id NULLS FIRST, display_order ASC, id ASC
+  `;
+  return rows as any;
+}
+
+/** Create category. */
+export async function createCategory(
+  storeIdNum: number,
+  body: {
+    category_name: string;
+    category_description?: string | null;
+    category_image_url?: string | null;
+    parent_category_id?: number | null;
+    display_order?: number;
+    is_active?: boolean;
+  }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  const [row] = await sql`
+    INSERT INTO merchant_menu_categories (store_id, category_name, category_description, category_image_url, parent_category_id, display_order, is_active)
+    VALUES (${storeIdNum}, ${body.category_name}, ${body.category_description ?? null}, ${body.category_image_url ?? null}, ${body.parent_category_id ?? null}, ${body.display_order ?? 0}, ${body.is_active ?? true})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+/** Update category. */
+export async function updateCategory(
+  categoryId: number,
+  storeIdNum: number,
+  body: {
+    category_name?: string;
+    category_description?: string | null;
+    category_image_url?: string | null;
+    parent_category_id?: number | null;
+    display_order?: number;
+    is_active?: boolean;
+  }
+): Promise<boolean> {
+  const sql = getSql();
+  const [existing] = await sql`
+    SELECT category_name, category_description, category_image_url, parent_category_id, display_order, is_active
+    FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+  `;
+  if (!existing) return false;
+  const e = existing as any;
+  const result = await sql`
+    UPDATE merchant_menu_categories
+    SET category_name = ${body.category_name ?? e.category_name},
+        category_description = ${body.category_description !== undefined ? body.category_description : e.category_description},
+        category_image_url = ${body.category_image_url !== undefined ? body.category_image_url : e.category_image_url},
+        parent_category_id = ${body.parent_category_id !== undefined ? body.parent_category_id : e.parent_category_id},
+        display_order = ${body.display_order ?? e.display_order},
+        is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
+        updated_at = NOW()
+    WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+/** Delete category only when it has no items. Returns { ok, error?, itemCount? }. */
+export async function deleteCategory(
+  categoryId: number,
+  storeIdNum: number
+): Promise<{ ok: true } | { ok: false; error: "category_not_found" | "category_has_items"; itemCount?: number }> {
+  const sql = getSql();
+  const [exists] = await sql`
+    SELECT 1 FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+  `;
+  if (!exists) return { ok: false, error: "category_not_found" };
+
+  const [countRow] = await sql`
+    SELECT COUNT(*)::int AS c FROM merchant_menu_items WHERE category_id = ${categoryId}
+  `;
+  const itemCount = Number((countRow as { c: number })?.c ?? 0);
+  if (itemCount > 0) return { ok: false, error: "category_has_items", itemCount };
+
+  const result = await sql`
+    DELETE FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+  `;
+  return (result.count ?? 0) > 0 ? { ok: true } : { ok: false, error: "category_not_found" };
+}
+
+/** List items with optional category, search, approval_status, and in_stock filters. */
+export async function listItems(
+  storeIdNum: number,
+  opts: {
+    categoryId?: number | null;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
+    inStock?: boolean | null;
+  }
+): Promise<{
+  items: Array<{
+    id: number;
+    item_id: string;
+    item_name: string;
+    item_description: string | null;
+    item_image_url: string | null;
+    category_id: number | null;
+    food_type: string | null;
+    base_price: string;
+    selling_price: string;
+    in_stock: boolean;
+    is_active: boolean;
+    is_deleted: boolean | null;
+    display_order: number;
+    has_customizations: boolean;
+    has_addons: boolean;
+    has_variants: boolean;
+    preparation_time_minutes: number | null;
+  }>;
+  total: number;
+}> {
+  const sql = getSql();
+  const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+  const offset = Math.max(0, opts.offset ?? 0);
+  const search = opts.search?.trim();
+  const categoryId = opts.categoryId;
+  const approvalStatus = opts.approvalStatus ?? null;
+  const inStock = opts.inStock ?? null;
+
+  const categoryCondition =
+    categoryId == null ? sql`true` : sql`category_id = ${categoryId}`;
+  const searchPattern = search ? "%" + search + "%" : null;
+  const approvalCondition =
+    approvalStatus == null ? sql`true` : sql`approval_status = ${approvalStatus}::merchant_menu_item_approval_status`;
+  const stockCondition =
+    inStock == null ? sql`true` : sql`in_stock = ${inStock}`;
+
+  const baseWhere = sql`
+    store_id = ${storeIdNum} AND (is_deleted IS NULL OR is_deleted = false)
+    AND ${categoryCondition}
+    AND ${approvalCondition}
+    AND ${stockCondition}
+  `;
+  const searchCondition = searchPattern
+    ? sql`AND (item_name ILIKE ${searchPattern} OR item_description ILIKE ${searchPattern})`
+    : sql``;
+
+  const countResult = await sql`
+    SELECT COUNT(*)::int AS c FROM merchant_menu_items
+    WHERE ${baseWhere} ${searchCondition}
+  `;
+
+  const itemsResult = await sql`
+    SELECT id, item_id, item_name, item_description, item_image_url, category_id, food_type,
+           base_price, selling_price, in_stock, is_active, is_deleted, display_order,
+           has_customizations, has_addons, has_variants, preparation_time_minutes,
+           approval_status
+    FROM merchant_menu_items
+    WHERE ${baseWhere} ${searchCondition}
+    ORDER BY category_id NULLS FIRST, display_order ASC, id ASC
+    LIMIT ${limit} OFFSET ${offset}
+  `;
+
+  const total = Number((countResult[0] as any)?.c ?? 0);
+  return { items: itemsResult as any, total };
+}
+
+/** Get single item by numeric id; ensure it belongs to store. */
+export async function getItem(
+  itemId: number,
+  storeIdNum: number
+): Promise<{
+  id: number;
+  item_id: string;
+  item_name: string;
+  item_description: string | null;
+  item_image_url: string | null;
+  short_name: string | null;
+  category_id: number | null;
+  food_type: string | null;
+  spice_level: string | null;
+  cuisine_type: string | null;
+  base_price: string;
+  selling_price: string;
+  in_stock: boolean;
+  is_active: boolean;
+  is_deleted: boolean | null;
+  display_order: number;
+  has_customizations: boolean;
+  has_addons: boolean;
+  has_variants: boolean;
+  preparation_time_minutes: number | null;
+  serves: number | null;
+  allergens: string[] | null;
+  nutritional_info: object | null;
+  variants: Array<{ id: number; variant_id: string; variant_name: string; variant_type: string | null; variant_price: string; is_default: boolean; display_order: number; in_stock: boolean }>;
+  customizations: Array<{
+    id: number;
+    customization_id: string;
+    customization_title: string;
+    is_required: boolean;
+    min_selection: number;
+    max_selection: number;
+    display_order: number;
+    options: Array<{ id: number; addon_id: string; addon_name: string; addon_price: string; display_order: number; in_stock: boolean }>;
+  }>;
+  images: Array<{ id: number; image_url: string; is_primary: boolean; display_order: number }>;
+} | null> {
+  const sql = getSql();
+  const [item] = await sql`
+    SELECT id, item_id, item_name, item_description, item_image_url, short_name, category_id,
+           food_type, spice_level, cuisine_type, base_price, selling_price, in_stock, is_active,
+           is_deleted, display_order, has_customizations, has_addons, has_variants,
+           preparation_time_minutes, serves, serves_label, allergens, nutritional_info,
+           item_size_value, item_size_unit, available_for_delivery,
+           weight_per_serving, weight_per_serving_unit, calories_kcal,
+           protein, protein_unit, carbohydrates, carbohydrates_unit,
+           fat, fat_unit, fibre, fibre_unit, item_tags,
+           approval_status, approved_at, approved_by
+    FROM merchant_menu_items
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  if (!item) return null;
+  const itemRow = item as any;
+
+  const [variants, customizationsRows, imagesRows] = await Promise.all([
+    sql`
+      SELECT id, variant_id, variant_name, variant_type, variant_price, is_default, display_order, in_stock
+      FROM merchant_menu_item_variants WHERE menu_item_id = ${itemId} ORDER BY display_order ASC, id ASC
+    `,
+    sql`
+      SELECT id, customization_id, customization_title, is_required, min_selection, max_selection, display_order
+      FROM merchant_menu_item_customizations WHERE menu_item_id = ${itemId} ORDER BY display_order ASC, id ASC
+    `,
+    sql`
+      SELECT id, image_url, is_primary, display_order FROM merchant_menu_item_images
+      WHERE menu_item_id = ${itemId} ORDER BY display_order ASC, id ASC
+    `,
+  ]);
+
+  const customizations = customizationsRows as any[];
+  const optionRows = await Promise.all(
+    customizations.map((c: any) =>
+      sql`
+        SELECT id, addon_id, addon_name, addon_price, display_order, in_stock
+        FROM merchant_menu_item_addons WHERE customization_id = ${c.id} ORDER BY display_order ASC, id ASC
+      `
+    )
+  );
+
+  const customizationsWithOptions = customizations.map((c: any, i: number) => ({
+    id: c.id,
+    customization_id: c.customization_id,
+    customization_title: c.customization_title,
+    is_required: c.is_required ?? false,
+    min_selection: c.min_selection ?? 0,
+    max_selection: c.max_selection ?? 1,
+    display_order: c.display_order ?? 0,
+    options: (optionRows[i] as any[]).map((o: any) => ({
+      id: o.id,
+      addon_id: o.addon_id,
+      addon_name: o.addon_name,
+      addon_price: o.addon_price,
+      display_order: o.display_order ?? 0,
+      in_stock: o.in_stock ?? true,
+    })),
+  }));
+
+  return {
+    ...itemRow,
+    variants: (variants as any[]).map((v: any) => ({
+      id: v.id,
+      variant_id: v.variant_id,
+      variant_name: v.variant_name,
+      variant_type: v.variant_type,
+      variant_price: v.variant_price,
+      is_default: v.is_default ?? false,
+      display_order: v.display_order ?? 0,
+      in_stock: v.in_stock ?? true,
+    })),
+    customizations: customizationsWithOptions,
+    images: (imagesRows as any[]).map((i: any) => ({
+      id: i.id,
+      image_url: i.image_url,
+      is_primary: i.is_primary ?? false,
+      display_order: i.display_order ?? 0,
+    })),
+  };
+}
+
+/** Generate unique item_id (e.g. ITEM_ulid). */
+function newItemId(): string {
+  return "ITEM_" + ulid();
+}
+
+export type ItemBodyFields = {
+  item_name: string;
+  item_description?: string | null;
+  category_id?: number | null;
+  food_type?: string | null;
+  spice_level?: string | null;
+  cuisine_type?: string | null;
+  base_price: number;
+  selling_price: number;
+  preparation_time_minutes?: number | null;
+  serves?: number | null;
+  serves_label?: string | null;
+  short_name?: string | null;
+  display_order?: number;
+  item_size_value?: number | null;
+  item_size_unit?: string | null;
+  available_for_delivery?: boolean;
+  weight_per_serving?: number | null;
+  weight_per_serving_unit?: string | null;
+  calories_kcal?: number | null;
+  protein?: number | null;
+  protein_unit?: string | null;
+  carbohydrates?: number | null;
+  carbohydrates_unit?: string | null;
+  fat?: number | null;
+  fat_unit?: string | null;
+  fibre?: number | null;
+  fibre_unit?: string | null;
+  allergens?: string[] | null;
+  item_tags?: string[] | null;
+};
+
+/** Create item. When createdByRole is 'agent' or 'admin', item is APPROVED; otherwise PENDING. */
+export async function createItem(
+  storeIdNum: number,
+  body: ItemBodyFields,
+  opts: { createdByRole: string; createdBySub?: string | null }
+): Promise<{ id: number; item_id: string }> {
+  const sql = getSql();
+  const itemId = newItemId();
+  const isAgent = opts.createdByRole === "agent" || opts.createdByRole === "admin";
+  const approvalStatus = isAgent ? "APPROVED" : "PENDING";
+  const approvedAt = isAgent ? new Date() : null;
+  const approvedBy = isAgent ? opts.createdBySub ?? null : null;
+
+  const [row] = await sql`
+    INSERT INTO merchant_menu_items (
+      store_id, category_id, item_id, item_name, item_description, food_type, spice_level, cuisine_type,
+      base_price, selling_price, preparation_time_minutes, serves, serves_label, short_name, display_order,
+      item_size_value, item_size_unit, available_for_delivery,
+      weight_per_serving, weight_per_serving_unit, calories_kcal,
+      protein, protein_unit, carbohydrates, carbohydrates_unit,
+      fat, fat_unit, fibre, fibre_unit, allergens, item_tags,
+      approval_status, approved_at, approved_by
+    )
+    VALUES (
+      ${storeIdNum}, ${body.category_id ?? null}, ${itemId}, ${body.item_name}, ${body.item_description ?? null},
+      ${body.food_type ?? null}, ${body.spice_level ?? null}, ${body.cuisine_type ?? null},
+      ${body.base_price}, ${body.selling_price}, ${body.preparation_time_minutes ?? null}, ${body.serves ?? null},
+      ${body.serves_label ?? null}, ${body.short_name ?? null}, ${body.display_order ?? 0},
+      ${body.item_size_value ?? null}, ${body.item_size_unit ?? null}, ${body.available_for_delivery ?? true},
+      ${body.weight_per_serving ?? null}, ${body.weight_per_serving_unit ?? null}, ${body.calories_kcal ?? null},
+      ${body.protein ?? null}, ${body.protein_unit ?? null}, ${body.carbohydrates ?? null}, ${body.carbohydrates_unit ?? null},
+      ${body.fat ?? null}, ${body.fat_unit ?? null}, ${body.fibre ?? null}, ${body.fibre_unit ?? null},
+      ${body.allergens ?? null}, ${body.item_tags ?? null},
+      ${approvalStatus}::merchant_menu_item_approval_status, ${approvedAt}, ${approvedBy}
+    )
+    RETURNING id, item_id
+  `;
+  const r = row as any;
+  return { id: Number(r.id), item_id: r.item_id };
+}
+
+/** Update item. When updatedByRole is 'merchant', item is set back to PENDING and logged. */
+export async function updateItem(
+  itemId: number,
+  storeIdNum: number,
+  body: Partial<ItemBodyFields> & { is_active?: boolean },
+  opts?: { updatedByRole?: string; updatedBySub?: string | null }
+): Promise<boolean> {
+  const sql = getSql();
+  const [existing] = await sql`
+    SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
+           base_price, selling_price, preparation_time_minutes, serves, serves_label, short_name,
+           display_order, is_active, allergens,
+           item_size_value, item_size_unit, available_for_delivery,
+           weight_per_serving, weight_per_serving_unit, calories_kcal,
+           protein, protein_unit, carbohydrates, carbohydrates_unit,
+           fat, fat_unit, fibre, fibre_unit, item_tags
+    FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  if (!existing) return false;
+  const e = existing as any;
+  const v = (field: keyof typeof body, fallback: any) =>
+    (body as any)[field] !== undefined ? (body as any)[field] : fallback;
+  const result = await sql`
+    UPDATE merchant_menu_items
+    SET
+      item_name = ${body.item_name ?? e.item_name},
+      item_description = ${v("item_description", e.item_description)},
+      category_id = ${v("category_id", e.category_id)},
+      food_type = ${v("food_type", e.food_type)},
+      spice_level = ${v("spice_level", e.spice_level)},
+      cuisine_type = ${v("cuisine_type", e.cuisine_type)},
+      base_price = ${body.base_price ?? e.base_price},
+      selling_price = ${body.selling_price ?? e.selling_price},
+      preparation_time_minutes = ${v("preparation_time_minutes", e.preparation_time_minutes)},
+      serves = ${v("serves", e.serves)},
+      serves_label = ${v("serves_label", e.serves_label)},
+      short_name = ${v("short_name", e.short_name)},
+      display_order = ${body.display_order ?? e.display_order},
+      is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
+      allergens = ${v("allergens", e.allergens)},
+      item_size_value = ${v("item_size_value", e.item_size_value)},
+      item_size_unit = ${v("item_size_unit", e.item_size_unit)},
+      available_for_delivery = ${v("available_for_delivery", e.available_for_delivery)},
+      weight_per_serving = ${v("weight_per_serving", e.weight_per_serving)},
+      weight_per_serving_unit = ${v("weight_per_serving_unit", e.weight_per_serving_unit)},
+      calories_kcal = ${v("calories_kcal", e.calories_kcal)},
+      protein = ${v("protein", e.protein)},
+      protein_unit = ${v("protein_unit", e.protein_unit)},
+      carbohydrates = ${v("carbohydrates", e.carbohydrates)},
+      carbohydrates_unit = ${v("carbohydrates_unit", e.carbohydrates_unit)},
+      fat = ${v("fat", e.fat)},
+      fat_unit = ${v("fat_unit", e.fat_unit)},
+      fibre = ${v("fibre", e.fibre)},
+      fibre_unit = ${v("fibre_unit", e.fibre_unit)},
+      item_tags = ${v("item_tags", e.item_tags)},
+      updated_at = NOW()
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  const updated = (result.count ?? 0) > 0;
+  if (updated && opts?.updatedByRole === "merchant" && opts?.updatedBySub) {
+    await setItemPendingForReReview(itemId, storeIdNum, { changed_by: opts.updatedBySub, changed_by_role: "merchant" });
+  }
+  return updated;
+}
+
+/** Soft delete item. */
+export async function deleteItem(itemId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const result = await sql`
+    UPDATE merchant_menu_items SET is_deleted = true, updated_at = NOW() WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+/** Agent/Admin: set approval_status to APPROVED or REJECTED and log. */
+export async function setItemApproval(
+  itemId: number,
+  storeIdNum: number,
+  body: { approval_status: "APPROVED" | "REJECTED"; approved_by: string; approved_by_role?: string }
+): Promise<boolean> {
+  const sql = getSql();
+  const [before] = await sql`
+    SELECT approval_status::text FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  const previousStatus = before ? (before as any).approval_status : null;
+  const result = await sql`
+    UPDATE merchant_menu_items
+    SET approval_status = ${body.approval_status}::merchant_menu_item_approval_status,
+        approved_at = NOW(),
+        approved_by = ${body.approved_by},
+        updated_at = NOW()
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  if ((result.count ?? 0) > 0) {
+    try {
+      await sql`
+        INSERT INTO merchant_menu_item_approval_log (menu_item_id, previous_status, new_status, changed_by, changed_by_role)
+        VALUES (${itemId}, ${previousStatus}, ${body.approval_status}, ${body.approved_by}, ${body.approved_by_role ?? "agent"})
+      `;
+    } catch {
+      /* log table may not exist yet */
+    }
+  }
+  return (result.count ?? 0) > 0;
+}
+
+/** When merchant edits an item or its variants/addons/customizations, set item back to PENDING and log. */
+export async function setItemPendingForReReview(
+  itemId: number,
+  storeIdNum: number,
+  opts: { changed_by: string; changed_by_role?: string }
+): Promise<boolean> {
+  const sql = getSql();
+  const [before] = await sql`
+    SELECT approval_status::text FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  const previousStatus = before ? (before as any).approval_status : null;
+  const result = await sql`
+    UPDATE merchant_menu_items
+    SET approval_status = 'PENDING'::merchant_menu_item_approval_status,
+        approved_at = NULL,
+        approved_by = NULL,
+        updated_at = NOW()
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  if ((result.count ?? 0) > 0 && previousStatus !== "PENDING") {
+    try {
+      await sql`
+        INSERT INTO merchant_menu_item_approval_log (menu_item_id, previous_status, new_status, changed_by, changed_by_role, note)
+        VALUES (${itemId}, ${previousStatus}, 'PENDING', ${opts.changed_by}, ${opts.changed_by_role ?? "merchant"}, 'Edited by merchant – pending re-review')
+      `;
+    } catch {
+      /* log table may not exist */
+    }
+  }
+  return (result.count ?? 0) > 0;
+}
+
+/** Resolve menu_item_id for approval re-review (variant/customization/addon edits). */
+export async function getMenuItemIdByVariantId(variantId: number): Promise<number | null> {
+  const sql = getSql();
+  const [r] = await sql`SELECT menu_item_id FROM merchant_menu_item_variants WHERE id = ${variantId}`;
+  return r ? Number((r as any).menu_item_id) : null;
+}
+export async function getMenuItemIdByCustomizationGroupId(groupId: number): Promise<number | null> {
+  const sql = getSql();
+  const [r] = await sql`SELECT menu_item_id FROM merchant_menu_item_customizations WHERE id = ${groupId}`;
+  return r ? Number((r as any).menu_item_id) : null;
+}
+export async function getMenuItemIdByCustomizationOptionId(optionId: number): Promise<number | null> {
+  const sql = getSql();
+  const [r] = await sql`
+    SELECT c.menu_item_id FROM merchant_menu_item_addons a
+    INNER JOIN merchant_menu_item_customizations c ON c.id = a.customization_id WHERE a.id = ${optionId}
+  `;
+  return r ? Number((r as any).menu_item_id) : null;
+}
+export async function getMenuItemIdByAddonGroupId(groupId: number): Promise<number | null> {
+  const sql = getSql();
+  const [r] = await sql`SELECT menu_item_id FROM merchant_menu_addon_groups WHERE id = ${groupId}`;
+  return r ? Number((r as any).menu_item_id) : null;
+}
+export async function getMenuItemIdByAddonId(addonId: number): Promise<number | null> {
+  const sql = getSql();
+  const [r] = await sql`
+    SELECT ag.menu_item_id FROM merchant_menu_addons ad
+    INNER JOIN merchant_menu_addon_groups ag ON ag.id = ad.addon_group_id WHERE ad.id = ${addonId}
+  `;
+  return r ? Number((r as any).menu_item_id) : null;
+}
+export async function getMenuItemIdByImageId(imageId: number): Promise<number | null> {
+  const sql = getSql();
+  const [r] = await sql`SELECT menu_item_id FROM merchant_menu_item_images WHERE id = ${imageId}`;
+  return r ? Number((r as any).menu_item_id) : null;
+}
+
+/** Toggle in_stock or set available_quantity. */
+export async function patchItemStock(
+  itemId: number,
+  storeIdNum: number,
+  body: { in_stock?: boolean; available_quantity?: number | null }
+): Promise<boolean> {
+  const sql = getSql();
+  if (body.in_stock !== undefined) {
+    const result = await sql`
+      UPDATE merchant_menu_items SET in_stock = ${body.in_stock}, updated_at = NOW() WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    `;
+    return (result.count ?? 0) > 0;
+  }
+  if (body.available_quantity !== undefined) {
+    const result = await sql`
+      UPDATE merchant_menu_items SET available_quantity = ${body.available_quantity}, updated_at = NOW() WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    `;
+    return (result.count ?? 0) > 0;
+  }
+  return false;
+}
+
+// --- Variants
+export async function addVariant(
+  menuItemId: number,
+  storeIdNum: number,
+  body: { variant_name: string; variant_type?: string | null; variant_price: number; is_default?: boolean; display_order?: number }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const variantId = "VAR_" + ulid();
+  const [row] = await sql`
+    INSERT INTO merchant_menu_item_variants (menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order)
+    VALUES (${menuItemId}, ${variantId}, ${body.variant_name}, ${body.variant_type ?? null}, ${body.variant_price}, ${body.is_default ?? false}, ${body.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+async function assertItemOwnership(menuItemId: number, storeIdNum: number): Promise<void> {
+  const sql = getSql();
+  const [r] = await sql`SELECT 1 FROM merchant_menu_items WHERE id = ${menuItemId} AND store_id = ${storeIdNum} LIMIT 1`;
+  if (!r) throw new Error("ITEM_NOT_FOUND");
+}
+
+export async function updateVariant(
+  variantId: number,
+  storeIdNum: number,
+  body: { variant_name?: string; variant_type?: string | null; variant_price?: number; is_default?: boolean; display_order?: number; in_stock?: boolean }
+): Promise<boolean> {
+  const sql = getSql();
+  const [v] = await sql`
+    SELECT menu_item_id, variant_name, variant_type, variant_price, is_default, display_order, in_stock
+    FROM merchant_menu_item_variants WHERE id = ${variantId}
+  `;
+  if (!v) return false;
+  await assertItemOwnership(Number((v as any).menu_item_id), storeIdNum);
+  const e = v as any;
+  const result = await sql`
+    UPDATE merchant_menu_item_variants
+    SET variant_name = ${body.variant_name ?? e.variant_name},
+        variant_type = ${body.variant_type !== undefined ? body.variant_type : e.variant_type},
+        variant_price = ${body.variant_price ?? e.variant_price},
+        is_default = ${body.is_default !== undefined ? body.is_default : e.is_default},
+        display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
+        in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+        updated_at = NOW()
+    WHERE id = ${variantId}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+export async function deleteVariant(variantId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [v] = await sql`SELECT menu_item_id FROM merchant_menu_item_variants WHERE id = ${variantId}`;
+  if (!v) return false;
+  await assertItemOwnership(Number((v as any).menu_item_id), storeIdNum);
+  const result = await sql`DELETE FROM merchant_menu_item_variants WHERE id = ${variantId}`;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Customization groups (merchant_menu_item_customizations)
+export async function addCustomizationGroup(
+  menuItemId: number,
+  storeIdNum: number,
+  body: { customization_title: string; customization_type?: string | null; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<{ id: number; customization_id: string }> {
+  const sql = getSql();
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const customizationId = "CUST_" + ulid();
+  const [row] = await sql`
+    INSERT INTO merchant_menu_item_customizations (menu_item_id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order)
+    VALUES (${menuItemId}, ${customizationId}, ${body.customization_title}, ${body.customization_type ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
+    RETURNING id, customization_id
+  `;
+  const r = row as any;
+  return { id: Number(r.id), customization_id: r.customization_id };
+}
+
+export async function updateCustomizationGroup(
+  groupId: number,
+  storeIdNum: number,
+  body: { customization_title?: string; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<boolean> {
+  const sql = getSql();
+  const [g] = await sql`
+    SELECT c.id, c.customization_title, c.is_required, c.min_selection, c.max_selection, c.display_order
+    FROM merchant_menu_item_customizations c
+    INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE c.id = ${groupId}
+  `;
+  if (!g) return false;
+  const e = g as any;
+  const result = await sql`
+    UPDATE merchant_menu_item_customizations
+    SET customization_title = ${body.customization_title ?? e.customization_title},
+        is_required = ${body.is_required !== undefined ? body.is_required : e.is_required},
+        min_selection = ${body.min_selection ?? e.min_selection},
+        max_selection = ${body.max_selection ?? e.max_selection},
+        display_order = ${body.display_order ?? e.display_order},
+        updated_at = NOW()
+    WHERE id = ${groupId}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+export async function deleteCustomizationGroup(groupId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [g] = await sql`
+    SELECT c.id FROM merchant_menu_item_customizations c
+    INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE c.id = ${groupId}
+  `;
+  if (!g) return false;
+  const result = await sql`DELETE FROM merchant_menu_item_customizations WHERE id = ${groupId}`;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Customization options (merchant_menu_item_addons)
+export async function addCustomizationOption(
+  customizationId: number,
+  storeIdNum: number,
+  body: { addon_name: string; addon_price?: number; addon_image_url?: string | null; display_order?: number }
+): Promise<{ id: number; addon_id: string }> {
+  const sql = getSql();
+  const [c] = await sql`
+    SELECT c.id, c.menu_item_id FROM merchant_menu_item_customizations c
+    INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE c.id = ${customizationId}
+  `;
+  if (!c) throw new Error("CUSTOMIZATION_GROUP_NOT_FOUND");
+  const addonId = "ADDON_" + ulid();
+  const [row] = await sql`
+    INSERT INTO merchant_menu_item_addons (customization_id, addon_id, addon_name, addon_price, addon_image_url, display_order)
+    VALUES (${customizationId}, ${addonId}, ${body.addon_name}, ${body.addon_price ?? 0}, ${body.addon_image_url ?? null}, ${body.display_order ?? 0})
+    RETURNING id, addon_id
+  `;
+  const r = row as any;
+  return { id: Number(r.id), addon_id: r.addon_id };
+}
+
+export async function updateCustomizationOption(
+  optionId: number,
+  storeIdNum: number,
+  body: { addon_name?: string; addon_price?: number; addon_image_url?: string | null; display_order?: number; in_stock?: boolean }
+): Promise<boolean> {
+  const sql = getSql();
+  const [o] = await sql`
+    SELECT a.id, a.addon_name, a.addon_price, a.addon_image_url, a.display_order, a.in_stock
+    FROM merchant_menu_item_addons a
+    INNER JOIN merchant_menu_item_customizations c ON c.id = a.customization_id
+    INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE a.id = ${optionId}
+  `;
+  if (!o) return false;
+  const e = o as any;
+  const result = await sql`
+    UPDATE merchant_menu_item_addons
+    SET addon_name = ${body.addon_name ?? e.addon_name},
+        addon_price = ${body.addon_price ?? e.addon_price},
+        addon_image_url = ${body.addon_image_url !== undefined ? body.addon_image_url : e.addon_image_url},
+        display_order = ${body.display_order ?? e.display_order},
+        in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+        updated_at = NOW()
+    WHERE id = ${optionId}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Images: add row (URL set by upload route), delete, set primary
+export async function addItemImageRow(
+  menuItemId: number,
+  storeIdNum: number,
+  data: { image_url: string; r2_key?: string | null; is_primary?: boolean; format?: string | null; display_order?: number }
+): Promise<{ id: number }> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  if (data.is_primary) {
+    await sql`UPDATE merchant_menu_item_images SET is_primary = false WHERE menu_item_id = ${menuItemId}`;
+  }
+  const [row] = await sql`
+    INSERT INTO merchant_menu_item_images (menu_item_id, image_url, r2_key, is_primary, format, display_order)
+    VALUES (${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${data.is_primary ?? false}, ${data.format ?? null}, ${data.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function deleteItemImage(
+  imageId: number,
+  storeIdNum: number,
+  r2Key?: string | null
+): Promise<boolean> {
+  const sql = getSql();
+  const [img] = await sql`
+    SELECT i.id, i.r2_key FROM merchant_menu_item_images i
+    INNER JOIN merchant_menu_items m ON m.id = i.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE i.id = ${imageId}
+  `;
+  if (!img) return false;
+  const keyToDelete = r2Key ?? (img as any).r2_key;
+  if (keyToDelete && typeof keyToDelete === "string") {
+    try {
+      const { deleteFromR2 } = await import("../../services/r2/r2Service.js");
+      await deleteFromR2(keyToDelete);
+    } catch {
+      // Log but still remove DB row
+    }
+  }
+  const result = await sql`DELETE FROM merchant_menu_item_images WHERE id = ${imageId}`;
+  return (result.count ?? 0) > 0;
+}
+
+export async function setPrimaryImage(imageId: number, menuItemId: number, storeIdNum: number): Promise<boolean> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  await sql`UPDATE merchant_menu_item_images SET is_primary = false WHERE menu_item_id = ${menuItemId}`;
+  const result = await sql`
+    UPDATE merchant_menu_item_images SET is_primary = true, updated_at = NOW() WHERE id = ${imageId} AND menu_item_id = ${menuItemId}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Addon groups (merchant_menu_addon_groups, per-item)
+export async function listAddonGroups(menuItemId: number, storeIdNum: number): Promise<
+  Array<{ id: number; group_name: string; min_selection: number; max_selection: number; is_required: boolean; display_order: number }>
+> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, group_name, min_selection, max_selection, is_required, display_order
+    FROM merchant_menu_addon_groups WHERE menu_item_id = ${menuItemId} ORDER BY display_order ASC, id ASC
+  `;
+  return rows as any;
+}
+
+export async function addAddonGroup(
+  menuItemId: number,
+  storeIdNum: number,
+  body: { group_name: string; min_selection?: number; max_selection?: number; is_required?: boolean; display_order?: number }
+): Promise<{ id: number }> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  const [row] = await sql`
+    INSERT INTO merchant_menu_addon_groups (menu_item_id, group_name, min_selection, max_selection, is_required, display_order)
+    VALUES (${menuItemId}, ${body.group_name}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.is_required ?? false}, ${body.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function updateAddonGroup(
+  groupId: number,
+  storeIdNum: number,
+  body: { group_name?: string; min_selection?: number; max_selection?: number; is_required?: boolean; display_order?: number }
+): Promise<boolean> {
+  const sql = getSql();
+  const [g] = await sql`
+    SELECT ag.id, ag.group_name, ag.min_selection, ag.max_selection, ag.is_required, ag.display_order
+    FROM merchant_menu_addon_groups ag
+    INNER JOIN merchant_menu_items m ON m.id = ag.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE ag.id = ${groupId}
+  `;
+  if (!g) return false;
+  const e = g as any;
+  const result = await sql`
+    UPDATE merchant_menu_addon_groups
+    SET group_name = ${body.group_name ?? e.group_name},
+        min_selection = ${body.min_selection ?? e.min_selection},
+        max_selection = ${body.max_selection ?? e.max_selection},
+        is_required = ${body.is_required !== undefined ? body.is_required : e.is_required},
+        display_order = ${body.display_order ?? e.display_order},
+        updated_at = NOW()
+    WHERE id = ${groupId}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+export async function deleteAddonGroup(groupId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [g] = await sql`
+    SELECT ag.id FROM merchant_menu_addon_groups ag
+    INNER JOIN merchant_menu_items m ON m.id = ag.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE ag.id = ${groupId}
+  `;
+  if (!g) return false;
+  const result = await sql`DELETE FROM merchant_menu_addon_groups WHERE id = ${groupId}`;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Addons (merchant_menu_addons, within addon group)
+export async function addAddon(
+  addonGroupId: number,
+  storeIdNum: number,
+  body: { addon_name: string; addon_price?: number; image_url?: string | null; in_stock?: boolean; display_order?: number }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  const [gr] = await sql`
+    SELECT ag.id FROM merchant_menu_addon_groups ag
+    INNER JOIN merchant_menu_items m ON m.id = ag.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE ag.id = ${addonGroupId}
+  `;
+  if (!gr) throw new Error("ADDON_GROUP_NOT_FOUND");
+  const [row] = await sql`
+    INSERT INTO merchant_menu_addons (addon_group_id, addon_name, addon_price, image_url, in_stock, display_order)
+    VALUES (${addonGroupId}, ${body.addon_name}, ${body.addon_price ?? 0}, ${body.image_url ?? null}, ${body.in_stock ?? true}, ${body.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function updateAddon(
+  addonId: number,
+  storeIdNum: number,
+  body: { addon_name?: string; addon_price?: number; image_url?: string | null; in_stock?: boolean; display_order?: number }
+): Promise<boolean> {
+  const sql = getSql();
+  const [a] = await sql`
+    SELECT ad.id, ad.addon_name, ad.addon_price, ad.image_url, ad.in_stock, ad.display_order
+    FROM merchant_menu_addons ad
+    INNER JOIN merchant_menu_addon_groups ag ON ag.id = ad.addon_group_id
+    INNER JOIN merchant_menu_items m ON m.id = ag.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE ad.id = ${addonId}
+  `;
+  if (!a) return false;
+  const e = a as any;
+  const result = await sql`
+    UPDATE merchant_menu_addons
+    SET addon_name = ${body.addon_name ?? e.addon_name},
+        addon_price = ${body.addon_price ?? e.addon_price},
+        image_url = ${body.image_url !== undefined ? body.image_url : e.image_url},
+        in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+        display_order = ${body.display_order ?? e.display_order},
+        updated_at = NOW()
+    WHERE id = ${addonId}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+export async function deleteAddon(addonId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [a] = await sql`
+    SELECT ad.id FROM merchant_menu_addons ad
+    INNER JOIN merchant_menu_addon_groups ag ON ag.id = ad.addon_group_id
+    INNER JOIN merchant_menu_items m ON m.id = ag.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE ad.id = ${addonId}
+  `;
+  if (!a) return false;
+  const result = await sql`DELETE FROM merchant_menu_addons WHERE id = ${addonId}`;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Combos
+export async function listCombos(storeIdNum: number): Promise<
+  Array<{ id: number; combo_name: string; description: string | null; combo_price: string; image_url: string | null; is_active: boolean; is_deleted: boolean; display_order: number }>
+> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order
+    FROM merchant_menu_combos WHERE store_id = ${storeIdNum} AND (is_deleted IS NULL OR is_deleted = false)
+    ORDER BY display_order ASC, id ASC
+  `;
+  return rows as any;
+}
+
+export async function createCombo(
+  storeIdNum: number,
+  body: { combo_name: string; description?: string | null; combo_price: number; image_url?: string | null; display_order?: number }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  const [row] = await sql`
+    INSERT INTO merchant_menu_combos (store_id, combo_name, description, combo_price, image_url, display_order)
+    VALUES (${storeIdNum}, ${body.combo_name}, ${body.description ?? null}, ${body.combo_price}, ${body.image_url ?? null}, ${body.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function getCombo(comboId: number, storeIdNum: number): Promise<{
+  id: number;
+  combo_name: string;
+  description: string | null;
+  combo_price: string;
+  image_url: string | null;
+  is_active: boolean;
+  is_deleted: boolean;
+  display_order: number;
+  components: Array<{ id: number; menu_item_id: number; variant_id: number | null; quantity: number; display_order: number }>;
+} | null> {
+  const sql = getSql();
+  const [c] = await sql`
+    SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order
+    FROM merchant_menu_combos WHERE id = ${comboId} AND store_id = ${storeIdNum}
+  `;
+  if (!c) return null;
+  const components = await sql`
+    SELECT id, menu_item_id, variant_id, quantity, display_order
+    FROM merchant_menu_combo_components WHERE combo_id = ${comboId} ORDER BY display_order ASC, id ASC
+  `;
+  return { ...(c as any), components: components as any };
+}
+
+export async function updateCombo(
+  comboId: number,
+  storeIdNum: number,
+  body: { combo_name?: string; description?: string | null; combo_price?: number; image_url?: string | null; is_active?: boolean; display_order?: number }
+): Promise<boolean> {
+  const sql = getSql();
+  const [existing] = await sql`
+    SELECT combo_name, description, combo_price, image_url, is_active, display_order
+    FROM merchant_menu_combos WHERE id = ${comboId} AND store_id = ${storeIdNum}
+  `;
+  if (!existing) return false;
+  const e = existing as any;
+  const result = await sql`
+    UPDATE merchant_menu_combos
+    SET combo_name = ${body.combo_name ?? e.combo_name},
+        description = ${body.description !== undefined ? body.description : e.description},
+        combo_price = ${body.combo_price ?? e.combo_price},
+        image_url = ${body.image_url !== undefined ? body.image_url : e.image_url},
+        is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
+        display_order = ${body.display_order ?? e.display_order},
+        updated_at = NOW()
+    WHERE id = ${comboId} AND store_id = ${storeIdNum}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+export async function deleteCombo(comboId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const result = await sql`
+    UPDATE merchant_menu_combos SET is_deleted = true, updated_at = NOW() WHERE id = ${comboId} AND store_id = ${storeIdNum}
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+export async function addComboComponent(
+  comboId: number,
+  storeIdNum: number,
+  body: { menu_item_id: number; variant_id?: number | null; quantity?: number; display_order?: number }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  const [c] = await sql`SELECT id FROM merchant_menu_combos WHERE id = ${comboId} AND store_id = ${storeIdNum}`;
+  if (!c) throw new Error("COMBO_NOT_FOUND");
+  const [row] = await sql`
+    INSERT INTO merchant_menu_combo_components (combo_id, menu_item_id, variant_id, quantity, display_order)
+    VALUES (${comboId}, ${body.menu_item_id}, ${body.variant_id ?? null}, ${body.quantity ?? 1}, ${body.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function deleteComboComponent(componentId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [comp] = await sql`
+    SELECT cc.id FROM merchant_menu_combo_components cc
+    INNER JOIN merchant_menu_combos c ON c.id = cc.combo_id AND c.store_id = ${storeIdNum}
+    WHERE cc.id = ${componentId}
+  `;
+  if (!comp) return false;
+  const result = await sql`DELETE FROM merchant_menu_combo_components WHERE id = ${componentId}`;
+  return (result.count ?? 0) > 0;
+}
+
+// --- Category availability
+export async function listCategoryAvailability(categoryId: number, storeIdNum: number): Promise<
+  Array<{ id: number; category_id: number; day_of_week: number; start_time: string; end_time: string }>
+> {
+  const sql = getSql();
+  const [cat] = await sql`SELECT id FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}`;
+  if (!cat) return [];
+  const rows = await sql`
+    SELECT id, category_id, day_of_week, start_time::text, end_time::text
+    FROM merchant_menu_category_availability WHERE category_id = ${categoryId} ORDER BY day_of_week, start_time
+  `;
+  return rows as any;
+}
+
+export async function addCategoryAvailability(
+  categoryId: number,
+  storeIdNum: number,
+  body: { day_of_week: number; start_time: string; end_time: string }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  const [cat] = await sql`SELECT id FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}`;
+  if (!cat) throw new Error("CATEGORY_NOT_FOUND");
+  const [row] = await sql`
+    INSERT INTO merchant_menu_category_availability (category_id, day_of_week, start_time, end_time)
+    VALUES (${categoryId}, ${body.day_of_week}, ${body.start_time}, ${body.end_time})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function deleteCategoryAvailability(windowId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [w] = await sql`
+    SELECT ca.id FROM merchant_menu_category_availability ca
+    INNER JOIN merchant_menu_categories c ON c.id = ca.category_id AND c.store_id = ${storeIdNum}
+    WHERE ca.id = ${windowId}
+  `;
+  if (!w) return false;
+  const result = await sql`DELETE FROM merchant_menu_category_availability WHERE id = ${windowId}`;
+  return (result.count ?? 0) > 0;
+}
+
+/** Returns category_id -> count of availability windows for all categories of a store (for UI badges). */
+export async function getCategoryAvailabilityCounts(storeIdNum: number): Promise<Record<number, number>> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT ca.category_id, COUNT(*)::int AS cnt
+    FROM merchant_menu_category_availability ca
+    INNER JOIN merchant_menu_categories c ON c.id = ca.category_id AND c.store_id = ${storeIdNum}
+    GROUP BY ca.category_id
+  `;
+  const out: Record<number, number> = {};
+  for (const r of rows as Array<{ category_id: number; cnt: number }>) {
+    out[r.category_id] = r.cnt;
+  }
+  return out;
+}
+
+// --- Ranking: increment order_count when order is placed (call from order placement)
+export async function incrementRankingOrderCount(menuItemIds: number[]): Promise<void> {
+  if (menuItemIds.length === 0) return;
+  const sql = getSql();
+  for (const menuItemId of menuItemIds) {
+    const [item] = await sql`SELECT id, store_id FROM merchant_menu_items WHERE id = ${menuItemId}`;
+    if (!item) continue;
+    const storeIdNum = Number((item as any).store_id);
+    await sql`
+      INSERT INTO merchant_menu_item_ranking (menu_item_id, store_id, order_count, last_ordered_at, updated_at)
+      VALUES (${menuItemId}, ${storeIdNum}, 1, NOW(), NOW())
+      ON CONFLICT (menu_item_id) DO UPDATE SET
+        order_count = merchant_menu_item_ranking.order_count + 1,
+        last_ordered_at = NOW(),
+        updated_at = NOW()
+    `;
+  }
+}

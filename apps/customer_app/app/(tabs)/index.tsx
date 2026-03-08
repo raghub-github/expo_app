@@ -153,6 +153,9 @@ export default function HomeScreen() {
   const router = useRouter();
   const { address, requestPermissionAndFetch } = useLocationStore();
 
+  // On first open of the app, immediately fetch current location.
+  // If location is turned off, this will trigger the system prompt
+  // and our LocationPermissionModal to guide the user.
   useEffect(() => {
     requestPermissionAndFetch();
   }, [requestPermissionAndFetch]);

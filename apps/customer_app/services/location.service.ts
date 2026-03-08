@@ -19,6 +19,12 @@ export type ReverseGeocodeResult = {
   primary: string;
   secondary: string;
   fullAddress: string;
+  /** City (from Mapbox place context). */
+  city?: string | null;
+  /** State (from Mapbox region context). */
+  state?: string | null;
+  /** Pincode / postal code (from Mapbox postcode context). */
+  pincode?: string | null;
 };
 
 /**
@@ -35,6 +41,9 @@ export async function reverseGeocode(
       primary: "Current location",
       secondary: "Enable location or add MAPBOX token",
       fullAddress: "Location not available",
+      city: null,
+      state: null,
+      pincode: null,
     };
   }
 
@@ -58,6 +67,9 @@ export async function reverseGeocode(
       primary: "Current location",
       secondary: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
       fullAddress: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+      city: null,
+      state: null,
+      pincode: null,
     };
   }
 
@@ -66,6 +78,8 @@ export async function reverseGeocode(
   const locality = context.find((c) => c.id.startsWith("locality"))?.text;
   const place = context.find((c) => c.id.startsWith("place"))?.text;
   const neighborhood = context.find((c) => c.id.startsWith("neighborhood"))?.text;
+  const region = context.find((c) => c.id.startsWith("region"))?.text;
+  const postcode = context.find((c) => c.id.startsWith("postcode"))?.text;
   const primary = feature.text ?? locality ?? neighborhood ?? place ?? "Current location";
   const secondary = [locality, place, neighborhood].filter(Boolean).join(", ") || placeName.split(",").slice(1, 3).join(", ").trim() || "—";
 
@@ -73,6 +87,9 @@ export async function reverseGeocode(
     primary,
     secondary: secondary.slice(0, 80),
     fullAddress: placeName,
+    city: place ?? locality ?? null,
+    state: region ?? null,
+    pincode: postcode ?? null,
   };
 }
 
