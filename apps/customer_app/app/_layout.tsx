@@ -186,6 +186,7 @@ function RootStack({ onLayoutRootView }: { onLayoutRootView: () => void }) {
           <Stack.Screen name="search" />
           <Stack.Screen name="location" />
           <Stack.Screen name="location-map" />
+          <Stack.Screen name="location-address" />
           <Stack.Screen name="home" />
           <Stack.Screen name="checkout" />
           <Stack.Screen name="group" />

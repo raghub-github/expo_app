@@ -22,6 +22,8 @@ export type AddressRow = {
   country: string | null;
   latitude: string;
   longitude: string;
+  contactName: string | null;
+  contactMobile: string | null;
   isDefault: boolean | null;
   isLastUsed: boolean | null;
   createdAt: Date | null;
@@ -53,6 +55,8 @@ function rowToAddressRow(r: typeof customerAddresses.$inferSelect): AddressRow {
     country: r.country,
     latitude: r.latitude ?? "",
     longitude: r.longitude ?? "",
+    contactName: r.contactName ?? null,
+    contactMobile: r.contactMobile ?? null,
     isDefault: r.isDefault ?? false,
     isLastUsed: r.isLastUsed ?? false,
     createdAt: r.createdAt,
@@ -99,6 +103,8 @@ export async function addAddress(
     latitude: number;
     longitude: number;
     isDefault?: boolean;
+    contactName?: string | null;
+    contactMobile?: string | null;
   }
 ): Promise<AddressRow> {
   const db = getDb();
@@ -106,6 +112,29 @@ export async function addAddress(
   const city = (data.city ?? "").trim() || "—";
   const state = (data.state ?? "").trim() || "—";
   const postalCode = (data.pincode ?? "").trim() || "—";
+
+  // Home/Work uniqueness: only one active Home and one active Work per customer
+  if (addressType === "HOME" || addressType === "WORK") {
+    const existingLabel = await db
+      .select({ id: customerAddresses.id })
+      .from(customerAddresses)
+      .where(
+        and(
+          eq(customerAddresses.customerId, customerId),
+          eq(customerAddresses.label, addressType),
+          eq(customerAddresses.isActive, true),
+          isNull(customerAddresses.deletedAt)
+        )
+      )
+      .limit(1);
+    if (existingLabel.length > 0) {
+      throw new Error(
+        addressType === "HOME"
+          ? "You already have a Home address. Please edit or delete it first."
+          : "You already have a Work address. Please edit or delete it first."
+      );
+    }
+  }
 
   // Duplicate detection: same customer + same location (within tolerance) → update existing, do not insert
   const existing = await db
@@ -138,6 +167,8 @@ export async function addAddress(
         state,
         postalCode,
         country: data.country ?? "IN",
+        contactName: data.contactName ?? existingRow.contactName ?? null,
+        contactMobile: data.contactMobile ?? existingRow.contactMobile ?? null,
         ...(data.isDefault != null && { isDefault: data.isDefault }),
         updatedAt: new Date(),
       })
@@ -168,6 +199,8 @@ export async function addAddress(
       country: data.country ?? "IN",
       latitude: data.latitude != null ? String(data.latitude) : null,
       longitude: data.longitude != null ? String(data.longitude) : null,
+      contactName: data.contactName ?? null,
+      contactMobile: data.contactMobile ?? null,
       isDefault: data.isDefault ?? false,
       isLastUsed: false,
     })

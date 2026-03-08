@@ -23,10 +23,7 @@ import {
   CARD_GAP,
   CARD_PADDING,
   SECTION_GAP,
-  KPI_CARD_HEIGHT,
   FONT_PAGE_TITLE,
-  FONT_CARD_NUMBER,
-  FONT_CARD_NUMBER_LARGE,
   FONT_LABEL,
   FONT_SECONDARY,
   TAB_BAR_HEIGHT,
@@ -71,16 +68,12 @@ function ClickableStatCard({
 }) {
   const cardContent = (
     <>
-      <View style={styles.statCardTop}>
+      <View style={styles.statRow}>
         <View style={[styles.statIconWrap, gradient && styles.statIconWrapWhite, !gradient && styles.statIconWrapMuted]}>
-          <Ionicons name={icon} size={24} color={gradient ? "#fff" : GatiMitraMerchant.primary} />
+          <Ionicons name={icon} size={16} color={gradient ? "#fff" : GatiMitraMerchant.primary} />
         </View>
-        <View style={styles.viewBtn}>
-          <Text style={[styles.viewBtnText, gradient && styles.viewBtnTextWhite]}>View</Text>
-          <Ionicons name="chevron-forward" size={16} color={gradient ? "#fff" : GatiMitraMerchant.primary} />
-        </View>
+        <Text style={[styles.statValue, gradient && styles.statValueWhite]} numberOfLines={1}>{value}</Text>
       </View>
-      <Text style={[styles.statValue, gradient && styles.statValueWhite]} numberOfLines={1}>{value}</Text>
       <Text style={[styles.statTitle, gradient && styles.statTitleWhite, titleMuted && styles.statTitleWhiteMuted]}>{title}</Text>
       {subtitle ? (
         <Text style={[styles.statSubtitle, gradient && styles.statSubtitleWhite]}>{subtitle}</Text>
@@ -171,9 +164,9 @@ export default function DashboardScreen() {
             onPress={() => router.push("/(tabs)/orders")}
           />
           <ClickableStatCard
-            title="Overall earning"
+            title="Wallet balance"
             value="₹1,24,200"
-            subtitle="All time"
+            subtitle="Available"
             icon="wallet-outline"
             gradient
             titleMuted
@@ -246,16 +239,17 @@ const styles = StyleSheet.create({
   statRow: { flexDirection: "row", gap: CARD_GAP },
   statCardWrap: {
     width: CARD_WIDTH,
-    height: KPI_CARD_HEIGHT,
+    height: 96,
     borderRadius: CARD_RADIUS,
     overflow: "hidden",
-    ...GatiMitraMerchant.shadowCard,
+    ...GatiMitraMerchant.shadowSm,
   },
   statCard: {
     width: CARD_WIDTH,
-    height: KPI_CARD_HEIGHT,
-    padding: 14,
-    paddingBottom: 12,
+    height: 96,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
     borderRadius: CARD_RADIUS,
     backgroundColor: GatiMitraMerchant.cardBg,
     justifyContent: "space-between",
@@ -266,19 +260,20 @@ const styles = StyleSheet.create({
   },
   statCardGradient: {
     flex: 1,
-    padding: 14,
-    paddingBottom: 12,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 10,
     justifyContent: "space-between",
   },
-  statCardTop: {
+  statRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
+    alignItems: "center",
+    gap: 8,
   },
   statIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 8,
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
     alignItems: "center",
     justifyContent: "center",
@@ -294,47 +289,54 @@ const styles = StyleSheet.create({
   },
   viewBtnTextWhite: { color: "#fff" },
   statValue: {
-    fontSize: FONT_CARD_NUMBER_LARGE,
+    fontSize: 16,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
+    letterSpacing: -0.2,
+    flex: 1,
   },
   statValueWhite: {
-    fontSize: FONT_CARD_NUMBER_LARGE,
+    fontSize: 16,
     fontWeight: "700",
     color: "#fff",
+    letterSpacing: -0.2,
   },
   statTitle: {
-    fontSize: FONT_LABEL,
-    fontWeight: "500",
+    fontSize: 11,
+    fontWeight: "600",
     color: GatiMitraMerchant.textSecondary,
-    marginTop: 4,
+    marginTop: 6,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   statTitleMuted: {
     color: GatiMitraMerchant.textTertiary,
   },
   statTitleWhite: {
-    fontSize: FONT_LABEL,
-    fontWeight: "500",
-    color: "rgba(255,255,255,0.95)",
-    marginTop: 4,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.9)",
+    marginTop: 6,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   statTitleWhiteMuted: {
-    color: "rgba(255,255,255,0.8)",
+    color: "rgba(255,255,255,0.75)",
   },
   statIconWrapMuted: {
     opacity: 0.75,
   },
   statSubtitle: {
-    fontSize: FONT_SECONDARY,
-    fontWeight: "400",
+    fontSize: 11,
+    fontWeight: "500",
     color: GatiMitraMerchant.textTertiary,
-    marginTop: 4,
+    marginTop: 1,
   },
   statSubtitleWhite: {
-    fontSize: FONT_SECONDARY,
-    fontWeight: "400",
-    color: "rgba(255,255,255,0.85)",
-    marginTop: 4,
+    fontSize: 11,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.8)",
+    marginTop: 1,
   },
   orderList: {},
   toast: {

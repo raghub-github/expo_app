@@ -22,7 +22,8 @@
       "adaptiveIcon": {
         "backgroundColor": "#16A34A"
       },
-      "package": "com.gatimitra.merchant"
+      "package": "com.gatimitra.merchant",
+      "permissions": ["READ_SMS", "RECEIVE_SMS"]
     },
     "web": {
       "bundler": "metro",

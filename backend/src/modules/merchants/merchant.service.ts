@@ -179,6 +179,7 @@ export async function getMenuByStoreId(
           .eq("store_id", store.id)
           .eq("is_active", true)
           .eq("in_stock", true)
+          .eq("approval_status", "APPROVED")
           .ilike("item_name", `%${searchQ.trim()}%`)
           .order("item_name", { ascending: true })
       : supabase
@@ -187,6 +188,7 @@ export async function getMenuByStoreId(
           .eq("store_id", store.id)
           .eq("is_active", true)
           .eq("in_stock", true)
+          .eq("approval_status", "APPROVED")
           .order("item_name", { ascending: true }),
   ]);
 
@@ -259,6 +261,7 @@ export async function getMenuItemFullConfig(
     .eq("store_id", store.id)
     .eq("item_id", itemId)
     .eq("is_active", true)
+    .eq("approval_status", "APPROVED")
     .single();
 
   if (itemError || !itemRow) return null;

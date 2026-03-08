@@ -48,6 +48,7 @@ import Animated, {
 
 const AnimatedSectionList = createAnimatedComponent(SectionList<MenuItem>) as typeof SectionList;
 import { merchantService, type MenuItem } from "@/services/merchant.service";
+import { getRoute } from "@/services/distance.service";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
@@ -511,6 +512,21 @@ export default function MerchantDetailScreen() {
   );
 
   const coords = useLocationStore((s) => s.coords);
+  const hasOriginDest =
+    coords &&
+    merchant?.latitude != null &&
+    merchant?.longitude != null;
+  const { data: routeResult } = useQuery({
+    queryKey: ["distance-route", coords?.latitude, coords?.longitude, merchant?.latitude, merchant?.longitude],
+    queryFn: () =>
+      getRoute({
+        origin: { lat: coords!.latitude, lng: coords!.longitude },
+        destination: { lat: merchant!.latitude!, lng: merchant!.longitude! },
+        profile: "driving",
+      }),
+    enabled: !!hasOriginDest && !!merchant?.id,
+    staleTime: 5 * 60 * 1000,
+  });
   const addItem = useCartStore((s) => s.addItem);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const cartItems = useCartStore((s) => s.items) ?? [];
@@ -815,9 +831,12 @@ export default function MerchantDetailScreen() {
   }
 
   const distanceKm =
-    coords && merchant.latitude != null && merchant.longitude != null
-      ? haversineKm(coords.latitude, coords.longitude, merchant.latitude, merchant.longitude)
-      : null;
+    routeResult != null
+      ? routeResult.distanceKm
+      : coords && merchant.latitude != null && merchant.longitude != null
+        ? haversineKm(coords.latitude, coords.longitude, merchant.latitude, merchant.longitude)
+        : null;
+  const etaMinutes = routeResult?.etaMinutes ?? null;
   const prepMins = merchant.avgPreparationTimeMinutes != null && merchant.avgPreparationTimeMinutes > 0
     ? `${Math.round(merchant.avgPreparationTimeMinutes)} mins`
     : null;
@@ -1005,6 +1024,9 @@ export default function MerchantDetailScreen() {
                     </View>
                     {distanceKm != null ? (
                       <Text style={styles.headerMetaText}> · {distanceKm < 1 ? `${Math.round(distanceKm * 1000)} m` : `${distanceKm.toFixed(1)} km`}</Text>
+                    ) : null}
+                    {etaMinutes != null ? (
+                      <Text style={styles.headerMetaText}> · ~{etaMinutes} min</Text>
                     ) : null}
                     {merchant.city ? (
                       <Text style={styles.headerMetaText}> · {merchant.city}</Text>

@@ -116,7 +116,8 @@ const CATEGORY_ITEMS = buildCategoryItems();
 export default function FoodMerchantsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { address, coords } = useLocationStore();
+  const { address, coords, permissionStatus, refetchLocation, requestPermissionAndFetch } =
+    useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
   const [vegOnly, setVegOnly] = useState(false);
   const [openNow, setOpenNow] = useState(true);
@@ -152,6 +153,15 @@ export default function FoodMerchantsScreen() {
   const isServiceable = !showSkeleton && merchants.length > 0;
   const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
   const statusMap = useStoreStatusStore((s) => s.statusMap);
+
+  // When user opens \"Order Food\", ensure we have a fresh, high-accuracy location.
+  useEffect(() => {
+    if (permissionStatus === "granted") {
+      void refetchLocation();
+    } else if (permissionStatus === "undetermined") {
+      void requestPermissionAndFetch();
+    }
+  }, [permissionStatus, refetchLocation, requestPermissionAndFetch]);
 
   useEffect(() => {
     merchants.forEach((m) => {

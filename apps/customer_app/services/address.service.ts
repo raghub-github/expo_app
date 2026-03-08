@@ -16,6 +16,8 @@ export type Address = {
   country: string | null;
   latitude: number;
   longitude: number;
+  contactName?: string | null;
+  contactMobile?: string | null;
   isDefault: boolean;
   isLastUsed: boolean;
 };
@@ -44,6 +46,8 @@ export const addressService = {
     latitude: number;
     longitude: number;
     isDefault?: boolean;
+    contactName?: string | null;
+    contactMobile?: string | null;
   }): Promise<{ id: number }> {
     const { data } = await api.post<{ id: number }>("/v1/me/addresses", body);
     return data;

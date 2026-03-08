@@ -29,7 +29,8 @@ import {
   BUTTON_RADIUS,
 } from "@/constants/theme";
 import { ACTIVE_PLAN_CODE as FALLBACK_ACTIVE_PLAN_CODE } from "@/lib/activePlan";
-import { fetchSubscription, STORE_ID } from "@/services/api";
+import { fetchSubscription } from "@/services/api";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -331,6 +332,8 @@ export default function PlansScreen() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [activePlanCode, setActivePlanCode] = useState(FALLBACK_ACTIVE_PLAN_CODE);
 
+  const { selectedStore } = useSelectedStore();
+
   const circularData = buildCircularData(plans);
   const realCount = plans.length;
 
@@ -354,13 +357,13 @@ export default function PlansScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchSubscription(STORE_ID).then((r) => {
+    fetchSubscription(selectedStore?.id ?? null).then((r) => {
       if (cancelled) return;
       const code = r.plan?.plan_code?.trim();
       setActivePlanCode(code ? code.toUpperCase() : FALLBACK_ACTIVE_PLAN_CODE);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [selectedStore?.id]);
 
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;

@@ -23,7 +23,9 @@ import {
   BUTTON_RADIUS,
 } from "@/constants/theme";
 import { getActivePlanDisplayName } from "@/lib/activePlan";
-import { fetchSubscription, STORE_ID, type SubscriptionPlan } from "@/services/api";
+import { fetchSubscription, type SubscriptionPlan } from "@/services/api";
+import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useAuth } from "@/context/AuthContext";
 
 const CONTENT_TOP = 18; // 16–20px below header to prevent overlap
 
@@ -68,18 +70,21 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
 
+  const { selectedStore } = useSelectedStore();
+   const { signOut } = useAuth();
+
   const [subscriptionPlan, setSubscriptionPlan] = useState<SubscriptionPlan | null>(null);
   const subscriptionActive = subscriptionPlan != null;
   const subscriptionInactive = !subscriptionActive;
 
   useEffect(() => {
     let cancelled = false;
-    fetchSubscription(STORE_ID).then((r) => {
+    fetchSubscription(selectedStore?.id ?? null).then((r) => {
       if (cancelled) return;
       setSubscriptionPlan(r.plan);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [selectedStore?.id]);
 
   const navigate = (slug: string) => () => router.push(`/(tabs)/profile/${slug}` as any);
 
@@ -158,8 +163,12 @@ export default function ProfileScreen() {
             <Ionicons name="storefront" size={36} color={GatiMitraMerchant.primary} />
           </View>
           <View style={styles.storeInfo}>
-            <Text style={styles.storeName}>My Store</Text>
-            <Text style={styles.storeId}>Store ID: GMMC001</Text>
+            <Text style={styles.storeName}>
+              {selectedStore?.store_name ?? "Select a store from Partner Home"}
+            </Text>
+            <Text style={styles.storeId}>
+              {selectedStore ? `Store ID: ${selectedStore.store_id}` : "No store selected"}
+            </Text>
           </View>
           <Pressable
             onPress={navigate("edit-store")}
@@ -234,7 +243,10 @@ export default function ProfileScreen() {
       </View>
 
       <Pressable
-        onPress={() => {}}
+        onPress={async () => {
+          await signOut();
+          router.replace("/(auth)/welcome");
+        }}
         style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed, GatiMitraMerchant.cursorPointer]}
       >
         <Ionicons name="log-out-outline" size={22} color={GatiMitraMerchant.error} />

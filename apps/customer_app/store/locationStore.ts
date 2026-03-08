@@ -58,7 +58,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           // ignore; we'll use getCurrentPositionAsync result
         }
         const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
+          // High accuracy for precise distance / fare calculations
+          accuracy: Location.Accuracy.High,
         });
         const { latitude, longitude } = loc.coords;
         set({ coords: { latitude, longitude } });
@@ -88,7 +89,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
           // ignore
         }
         const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
+          accuracy: Location.Accuracy.High,
         });
         const { latitude, longitude } = loc.coords;
         set({ coords: { latitude, longitude } });
@@ -117,7 +118,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const loc = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+        accuracy: Location.Accuracy.High,
       });
       const { latitude, longitude } = loc.coords;
       set({ coords: { latitude, longitude } });

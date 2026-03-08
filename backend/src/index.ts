@@ -22,8 +22,10 @@ import { bookmarkRoutes } from "./modules/bookmarks/bookmark.routes.js";
 import { orderRoutes } from "./modules/orders/order.routes.js";
 import { addressRoutes } from "./modules/addresses/address.routes.js";
 import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
+import { distanceRoutes } from "./modules/distance/distance.routes.js";
 import { plansRoutes } from "./modules/plans/plans.routes.js";
 import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
+import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 
@@ -206,9 +208,11 @@ await app.register(supportRoutes, { prefix: "/v1/support" });
 await app.register(merchantRoutes, { prefix: "/v1" });
 await app.register(plansRoutes, { prefix: "/v1" });
 await app.register(merchantPartnerRoutes, { prefix: "/v1" });
+await app.register(merchantMenuRoutes, { prefix: "/v1" });
 await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
 await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
+await app.register(distanceRoutes, { prefix: "/v1/distance" });
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {

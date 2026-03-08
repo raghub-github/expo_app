@@ -15,12 +15,13 @@ import {
   Platform,
   LayoutAnimation,
   Alert,
+  Share,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { searchPlacesEnriched, isPincodeSearchMode, type EnrichedPlaceResult } from "@/services/location.service";
@@ -91,15 +92,19 @@ export default function SelectLocationScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ fromOnboarding?: string }>();
   const insets = useSafeAreaInsets();
-  const { address, coords, requestPermissionAndFetch, setAddress, setAddressAndCoords, loading } = useLocationStore();
+  const { address, coords, requestPermissionAndFetch, setAddress, setAddressAndCoords, loading } =
+    useLocationStore();
   const { getRecentLocationKeys, addRecentLocation, hydrate: hydrateRecentLocations } = useRecentLocationStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchFailsafe, setSearchFailsafe] = useState(false);
   const [savedAddressLoading, setSavedAddressLoading] = useState<number | null>(null);
+  const [confirmAddress, setConfirmAddress] = useState<Address | null>(null);
+  const [menuForId, setMenuForId] = useState<number | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     hydrateRecentLocations();
@@ -110,6 +115,34 @@ export default function SelectLocationScreen() {
     queryFn: () => addressService.getAddresses(),
     retry: false,
   });
+
+  const { data: activeLocation } = useQuery({
+    queryKey: ["active-location"],
+    queryFn: () => addressService.getActiveLocation(),
+    staleTime: 0,
+  });
+
+  const activeAddressId = useMemo(() => {
+    if (
+      !activeLocation ||
+      activeLocation.latitude == null ||
+      activeLocation.longitude == null ||
+      savedAddresses.length === 0
+    ) {
+      return null;
+    }
+    const { latitude, longitude } = activeLocation;
+    let best: { id: number; distance: number } | null = null;
+    for (const addr of savedAddresses) {
+      const d = distanceMeters(latitude!, longitude!, addr.latitude, addr.longitude);
+      if (!best || d < best.distance) {
+        best = { id: addr.id, distance: d };
+      }
+    }
+    // Only treat as \"selected\" if within 50m of active_location
+    if (best && best.distance <= 50) return best.id;
+    return null;
+  }, [activeLocation, savedAddresses]);
 
   // One entry per location (rounded to 4 decimals ~11m); Current location first, then default, then last used
   const dedupedAndSortedAddresses = useMemo(() => {
@@ -332,26 +365,35 @@ export default function SelectLocationScreen() {
     });
   };
 
-  const handleSelectSaved = async (addr: Address) => {
+  const applySavedAddress = async (addr: Address) => {
     setSavedAddressLoading(addr.id);
     try {
+      await addressService.setActiveLocation({
+        latitude: addr.latitude,
+        longitude: addr.longitude,
+        address: addr.fullAddress,
+      });
       const primary = addr.label ?? "Address";
       setAddressAndCoords(
         { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
         { latitude: addr.latitude, longitude: addr.longitude }
       );
-      router.push({
-        pathname: "/location-map",
-        params: {
-          latitude: String(addr.latitude),
-          longitude: String(addr.longitude),
-          primary,
-          fullAddress: addr.fullAddress,
-        },
-      });
+      router.back();
+    } catch {
+      router.back();
     } finally {
       setSavedAddressLoading(null);
     }
+  };
+
+  const handleSelectSaved = (addr: Address) => {
+    // Tapping the three-dot menu should not trigger selection
+    if (menuForId === addr.id) return;
+    if (activeAddressId != null && activeAddressId !== addr.id) {
+      setConfirmAddress(addr);
+      return;
+    }
+    void applySavedAddress(addr);
   };
 
   const showSearchSection = searchQuery.trim().length >= 2;
@@ -579,38 +621,165 @@ export default function SelectLocationScreen() {
           </View>
         ) : (
           filteredSaved.map((saved) => (
-            <TouchableOpacity
-              key={saved.id}
-              style={[styles.addressCard, styles.addressCardBorder, SHADOW]}
-              onPress={() => handleSelectSaved(saved)}
-              disabled={savedAddressLoading !== null}
-              activeOpacity={0.85}
-            >
-              <View style={styles.addressCardLeft}>
+            <View key={saved.id} style={[styles.addressCard, styles.addressCardBorder, SHADOW]}>
+              <TouchableOpacity
+                style={styles.addressCardLeft}
+                onPress={() => handleSelectSaved(saved)}
+                disabled={savedAddressLoading !== null}
+                activeOpacity={0.85}
+              >
                 <View style={[styles.addressIconWrap, { backgroundColor: TEAL_LIGHT }]}>
                   <Ionicons name={addressIcon(saved.label)} size={22} color={TEAL} />
                 </View>
                 <View style={styles.addressCardContent}>
-                  <Text style={styles.addressLabel}>{saved.label ?? "Address"}</Text>
+                  <View style={styles.addressLabelRow}>
+                    <Text style={styles.addressLabel}>{saved.label ?? "Address"}</Text>
+                    {saved.id === activeAddressId && (
+                      <View style={styles.selectedPill}>
+                        <Text style={styles.selectedPillText}>SELECTED</Text>
+                      </View>
+                    )}
+                  </View>
+                  {saved.contactName ? (
+                    <Text style={styles.addressLine} numberOfLines={1}>
+                      {saved.contactName}
+                      {saved.contactMobile ? ` • ${saved.contactMobile}` : ""}
+                    </Text>
+                  ) : null}
                   <Text style={styles.addressLine} numberOfLines={2}>
                     {saved.fullAddress}
                   </Text>
                 </View>
-              </View>
-              <View style={styles.chevronWrap}>
-                {savedAddressLoading === saved.id ? (
+              </TouchableOpacity>
+              <View style={styles.cardRight}>
+                <TouchableOpacity
+                  hitSlop={12}
+                  style={styles.moreBtn}
+                  onPress={() => setMenuForId((id) => (id === saved.id ? null : saved.id))}
+                >
+                  <Ionicons name="ellipsis-vertical" size={18} color={TEXT_GRAY} />
+                </TouchableOpacity>
+                {savedAddressLoading === saved.id && (
                   <ActivityIndicator size="small" color={TEAL} />
-                ) : (
-                  <Ionicons name="chevron-forward" size={20} color={TEAL} />
+                )}
+                {menuForId === saved.id && (
+                  <View style={styles.moreMenu}>
+                    <TouchableOpacity
+                      style={styles.moreMenuItem}
+                      onPress={() => {
+                        setMenuForId(null);
+                        router.push("/profile/addresses");
+                      }}
+                    >
+                      <Ionicons name="create-outline" size={16} color="#F9FAFB" />
+                      <Text style={styles.moreMenuText}>Edit</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.moreMenuItem}
+                      onPress={async () => {
+                        setMenuForId(null);
+                        // Share same as profile screen
+                        const parts: string[] = [];
+                        const label = saved.label ?? "Address";
+                        const name = saved.contactName ? ` – ${saved.contactName}` : "";
+                        parts.push(`${label}${name}`);
+                        parts.push(saved.fullAddress);
+                        if (saved.contactMobile) {
+                          parts.push(`Mobile: ${saved.contactMobile}`);
+                        }
+                        if (saved.latitude && saved.longitude) {
+                          parts.push(
+                            `Location: https://maps.google.com/?q=${saved.latitude},${saved.longitude}`
+                          );
+                        }
+                        parts.push("");
+                        parts.push(
+                          "GatiMitra – order food, rides & parcels. Download the app to order now."
+                        );
+                        const message = parts.join("\n");
+                        try {
+                          await Share.share({ message });
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    >
+                      <Ionicons name="share-social-outline" size={16} color="#F9FAFB" />
+                      <Text style={styles.moreMenuText}>Share</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.moreMenuItem, styles.moreMenuItemDestructive]}
+                      onPress={() => {
+                        setMenuForId(null);
+                        Alert.alert(
+                          "Delete address?",
+                          "Remove this saved address?",
+                          [
+                            { text: "Cancel", style: "cancel" },
+                            {
+                              text: "Delete",
+                              style: "destructive",
+                              onPress: async () => {
+                                try {
+                                  await addressService.deleteAddress(saved.id);
+                                  queryClient.invalidateQueries({ queryKey: ["addresses"] });
+                                } catch {
+                                  // ignore
+                                }
+                              },
+                            },
+                          ]
+                        );
+                      }}
+                    >
+                      <Ionicons name="trash-outline" size={16} color="#FCA5A5" />
+                      <Text style={[styles.moreMenuText, styles.moreMenuTextDestructive]}>
+                        Delete
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
               </View>
-            </TouchableOpacity>
+            </View>
           ))
         )}
 
         <BrandingFooter />
       </ScrollView>
       </View>
+      {confirmAddress && (
+        <View style={styles.confirmOverlay}>
+          <View style={styles.confirmCard}>
+            <Text style={styles.confirmTitle}>Are you sure about this address?</Text>
+            <Text style={styles.confirmSubtitle}>
+              You’re switching to \"{confirmAddress.label ?? "Address"}\". Use this as your delivery
+              location?
+            </Text>
+            <View style={styles.confirmAddressBox}>
+              <Text style={styles.confirmAddressLabel}>{confirmAddress.label ?? "Address"}</Text>
+              <Text style={styles.confirmAddressText} numberOfLines={2}>
+                {confirmAddress.fullAddress}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.confirmPrimaryBtn}
+              onPress={async () => {
+                const addr = confirmAddress;
+                setConfirmAddress(null);
+                await applySavedAddress(addr);
+              }}
+            >
+              <Text style={styles.confirmPrimaryText}>Yes, continue with this address</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.confirmSecondaryBtn}
+              onPress={() => setConfirmAddress(null)}
+            >
+              <Text style={styles.confirmSecondaryText}>No, change address</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </>
   );
 }
@@ -747,4 +916,46 @@ const styles = StyleSheet.create({
   emptyIconWrap: { marginBottom: 12 },
   emptySavedText: { fontSize: 14, color: TEXT_GRAY, textAlign: "center" },
   addAddressLink: { fontSize: 15, color: TEAL, fontWeight: "600", marginTop: 10 },
+  confirmOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    alignItems: "center",
+    justifyContent: "flex-end",
+  },
+  confirmCard: {
+    width: "100%",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 26,
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+  },
+  confirmTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: TITLE_DARK,
+    marginBottom: 6,
+  },
+  confirmSubtitle: { fontSize: 14, color: TEXT_GRAY, marginBottom: 16 },
+  confirmAddressBox: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 12,
+    backgroundColor: "#F9FAFB",
+    marginBottom: 16,
+  },
+  confirmAddressLabel: { fontSize: 14, fontWeight: "600", color: TITLE_DARK, marginBottom: 4 },
+  confirmAddressText: { fontSize: 13, color: TEXT_GRAY },
+  confirmPrimaryBtn: {
+    backgroundColor: TEAL,
+    borderRadius: 999,
+    paddingVertical: 13,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  confirmPrimaryText: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" },
+  confirmSecondaryBtn: { borderRadius: 999, paddingVertical: 11, alignItems: "center" },
+  confirmSecondaryText: { color: TITLE_DARK, fontSize: 15, fontWeight: "500" },
 });
