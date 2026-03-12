@@ -1,16 +1,33 @@
 /**
- * Placeholder for profile sub-routes (e.g. edit-store, business-details).
- * No in-app back button — user returns via device back (gesture / Android back).
+ * Profile sub-routes. edit-store → full Outlet Info page (data from backend).
+ * Others → placeholder until implemented.
  */
 
+import { useEffect } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
+import OutletInfoScreen from "./OutletInfoScreen";
+import BankAccountScreen from "./BankAccountScreen";
+import AuditScreen from "./AuditScreen";
+import BusinessHoursScreen from "./BusinessHoursScreen";
+import ContactScreen from "./ContactScreen";
+import StaffScreen from "./StaffScreen";
+import NotificationsScreen from "./NotificationsScreen";
+import ManageCommunicationsScreen from "./ManageCommunicationsScreen";
+import DeliverySettingsScreen from "./DeliverySettingsScreen";
+import PreparationTimeScreen from "./PreparationTimeScreen";
+import VacationScreen from "./VacationScreen";
+import ContactUsScreen from "./ContactUsScreen";
+import HelpChatScreen from "./HelpChatScreen";
+import MyTicketsScreen from "./MyTicketsScreen";
+import { useProfileNav } from "@/context/ProfileNavContext";
 
 const SLUG_TITLES: Record<string, string> = {
   "edit-store": "Edit Store",
+  "change-history": "Change history",
   "business-details": "Business Details",
-  address: "Address & Delivery Area",
+  address: "Delivery settings",
   hours: "Business Hours",
   bank: "Bank Account",
   gst: "GST Information",
@@ -35,6 +52,68 @@ const CONTENT_TOP = 18;
 
 export default function ProfileSlugScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
+  const { setLastProfileSlug } = useProfileNav();
+
+  useEffect(() => {
+    if (slug) {
+      setLastProfileSlug(String(slug));
+    }
+  }, [slug, setLastProfileSlug]);
+
+  if (slug === "edit-store") {
+    return <OutletInfoScreen />;
+  }
+  if (slug === "change-history") {
+    return <AuditScreen />;
+  }
+  if (slug === "hours") {
+    return <BusinessHoursScreen />;
+  }
+
+  if (slug === "business-details") {
+    return <ContactScreen />;
+  }
+
+  if (slug === "staff") {
+    return <StaffScreen />;
+  }
+
+  if (slug === "notifications") {
+    return <NotificationsScreen />;
+  }
+
+  if (slug === "communications") {
+    return <ManageCommunicationsScreen />;
+  }
+
+  if (slug === "address") {
+    return <DeliverySettingsScreen />;
+  }
+
+  if (slug === "preparation-time") {
+    return <PreparationTimeScreen />;
+  }
+
+  if (slug === "vacation") {
+    return <VacationScreen />;
+  }
+
+  if (slug === "bank") {
+    return <BankAccountScreen />;
+  }
+
+  if (slug === "contact") {
+    return <ContactUsScreen />;
+  }
+
+  if (slug === "help") {
+    return <HelpChatScreen />;
+  }
+
+  if (slug === "tickets") {
+    return <MyTicketsScreen />;
+  }
+
   const title = (slug && SLUG_TITLES[slug]) || slug || "Settings";
 
   return (

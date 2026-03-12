@@ -1,11 +1,165 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 import { getSql } from "../../db/client.js";
 import { auth } from "../../plugins/auth.js";
 
-/**
- * Merchant partner routes: GET /me returns parent + child stores.
- * Requires Authorization: Bearer <jwt> with role=merchant; sub = parent_merchant_id.
- */
+type AuditContext = {
+  performedBy: string;
+  performedById: number | null;
+  performedByName: string | null;
+  performedByEmail: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  requestId: string;
+};
+
+function auditSectionForField(field: string | null): string {
+  const f = String(field ?? "").toLowerCase();
+  if (
+    [
+      "full_address",
+      "landmark",
+      "city",
+      "state",
+      "postal_code",
+      "country",
+      "latitude",
+      "longitude",
+    ].includes(f)
+  ) {
+    return "address";
+  }
+  if (["cuisine_types", "food_categories"].includes(f)) return "cuisines";
+  if (["store_name", "store_display_name", "store_description", "store_email", "store_phones"].includes(f)) {
+    return "store_info";
+  }
+  if (["banner_url", "logo_url", "parent_logo_url"].includes(f)) return "media";
+  if (["pickup_instruction"].includes(f)) return "pickup";
+  return "store";
+}
+
+/** Resolve parent id from JWT; return null if not merchant or not found. */
+async function getPartnerParentId(sql: ReturnType<typeof getSql>, parentMerchantId: string): Promise<number | null> {
+  const rows = await sql`
+    SELECT id FROM merchant_parents WHERE parent_merchant_id = ${parentMerchantId} LIMIT 1
+  `;
+  const row = rows[0] as { id: number } | undefined;
+  return row ? Number(row.id) : null;
+}
+
+type PushPayload = {
+  title: string;
+  body: string;
+  data?: Record<string, unknown>;
+};
+
+async function sendExpoPush(tokens: string[], payload: PushPayload): Promise<void> {
+  if (!tokens.length) return;
+  // Expo push endpoint accepts an array of messages.
+  const messages = tokens.map((to) => ({
+    to,
+    sound: "default",
+    title: payload.title,
+    body: payload.body,
+    data: payload.data ?? {},
+    priority: "high",
+  }));
+  try {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(messages),
+    });
+  } catch {
+    // best-effort; in-app notification still exists
+  }
+}
+
+/** Ensure store belongs to partner; return store row with parent store_logo (parent_logo_url) and child banner_url. Logo for UI = parent only; banner = child only. */
+async function getStoreForPartner(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  parentId: number
+): Promise<any | null> {
+  const rows = await sql`
+    SELECT ms.id, ms.store_id, ms.store_name, ms.store_display_name, ms.store_description,
+           ms.store_email, ms.store_phones, ms.full_address, ms.landmark, ms.city, ms.state,
+           ms.postal_code, ms.country, ms.latitude, ms.longitude,
+           ms.logo_url, ms.banner_url, ms.cuisine_types, ms.food_categories,
+           ms.min_order_amount, ms.delivery_radius_km, ms.avg_preparation_time_minutes,
+           ms.is_pure_veg, ms.accepts_online_payment, ms.accepts_cash,
+           mp.store_logo AS parent_logo_url
+    FROM merchant_stores ms
+    LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+    WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+/** Get parent row for audit (name, email). */
+async function getParentForAudit(
+  sql: ReturnType<typeof getSql>,
+  parentId: number
+): Promise<{ parent_name: string | null; owner_name: string | null; owner_email: string | null } | null> {
+  const rows = await sql`
+    SELECT parent_name, owner_name, owner_email FROM merchant_parents WHERE id = ${parentId} LIMIT 1
+  `;
+  return (rows[0] as any) ?? null;
+}
+
+function getAuditContext(
+  req: FastifyRequest,
+  parentRow: { parent_name?: string | null; owner_name?: string | null; owner_email?: string | null } | null,
+  parentId: number
+): AuditContext {
+  const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
+  const userAgent = (req.headers["user-agent"] as string) ?? null;
+  const requestId = String((req as any).id ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  return {
+    performedBy: "merchant",
+    performedById: parentId,
+    performedByName: parentRow?.owner_name ?? parentRow?.parent_name ?? null,
+    performedByEmail: parentRow?.owner_email ?? null,
+    ipAddress: ip,
+    userAgent,
+    requestId,
+  };
+}
+
+/** Insert one row into merchant_audit_logs. Values for old_value/new_value are sent as JSON-serializable; driver will handle JSONB. */
+async function insertAuditLog(
+  sql: ReturnType<typeof getSql>,
+  entityType: string,
+  entityId: number,
+  action: string,
+  ctx: AuditContext,
+  actionField: string | null,
+  oldValue: unknown,
+  newValue: unknown,
+  auditMetadata?: Record<string, unknown>
+): Promise<void> {
+  const oldJson = oldValue !== undefined && oldValue !== null ? JSON.stringify(oldValue) : null;
+  const newJson = newValue !== undefined && newValue !== null ? JSON.stringify(newValue) : null;
+  const metaJson = JSON.stringify({ ...(auditMetadata ?? {}), request_id: ctx.requestId });
+  await sql`
+    INSERT INTO merchant_audit_logs (
+      entity_type, entity_id, action, action_field, old_value, new_value,
+      performed_by, performed_by_id, performed_by_name, performed_by_email,
+      ip_address, user_agent, audit_metadata
+    ) VALUES (
+      ${entityType}, ${entityId}, ${action}, ${actionField},
+      ${oldJson}::jsonb, ${newJson}::jsonb,
+      ${ctx.performedBy}, ${ctx.performedById}, ${ctx.performedByName}, ${ctx.performedByEmail},
+      ${ctx.ipAddress}, ${ctx.userAgent}, ${metaJson}::jsonb
+    )
+  `;
+}
+
 export async function merchantPartnerRoutes(app: FastifyInstance) {
   await app.register(
     async (protectedApp) => {
@@ -15,52 +169,41 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
             return reply.code(401).send({ error: "merchant_required" });
           }
-
           const parentMerchantId = req.auth.sub;
           const sql = getSql();
-
           const parentRows = await sql`
             SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
-            FROM merchant_parents
-            WHERE parent_merchant_id = ${parentMerchantId}
-            LIMIT 1
+          FROM merchant_parents WHERE parent_merchant_id = ${parentMerchantId} LIMIT 1
           `;
           const parentRow = parentRows[0];
-          if (!parentRow) {
-            return reply.code(404).send({ error: "partner_not_found" });
-          }
-
+        if (!parentRow) return reply.code(404).send({ error: "partner_not_found" });
           const parentId = Number(parentRow.id);
-
           const storeRows = await sql`
             SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
                    msrp.current_step, msrp.total_steps, msrp.registration_status
             FROM merchant_stores ms
             LEFT JOIN merchant_store_registration_progress msrp ON msrp.store_id = ms.id AND msrp.parent_id = ${parentId}
-            WHERE ms.parent_id = ${parentId}
-            ORDER BY ms.created_at ASC
-          `;
-
-          let subscriptionRows: Array<{ store_id: number; payment_status: string }> = [];
-          try {
-            subscriptionRows = (await sql`
-              SELECT store_id, payment_status
-              FROM merchant_subscriptions
-              WHERE merchant_id = ${parentId}
-            `) as any;
-          } catch {
-            // table may not exist
-          }
-
-          const subByStore = new Map<number, string>();
-          for (const row of subscriptionRows) {
-            if (row?.store_id != null) subByStore.set(Number(row.store_id), String(row?.payment_status ?? "PENDING"));
-          }
-
+          WHERE ms.parent_id = ${parentId} ORDER BY ms.created_at ASC
+        `;
+        // Onboarding payment status from merchant_onboarding_payments: latest row per store for this parent.
+        const paymentRows = (await sql`
+          SELECT DISTINCT ON (merchant_store_id)
+                 merchant_store_id,
+                 status
+          FROM merchant_onboarding_payments
+          WHERE merchant_parent_id = ${parentId} AND merchant_store_id IS NOT NULL
+          ORDER BY merchant_store_id, created_at DESC
+        `) as Array<{ merchant_store_id: number | null; status: string | null }>;
+        const paymentByStore = new Map<number, string>();
+        for (const row of paymentRows) {
+          if (row?.merchant_store_id != null) paymentByStore.set(Number(row.merchant_store_id), String(row?.status ?? "pending"));
+        }
           const childStores = (storeRows as any[]).map((s) => {
             const step = s?.current_step != null ? Number(s.current_step) : 1;
             const total = s?.total_steps != null ? Number(s.total_steps) : 9;
-            const paymentStatus = s?.id != null && subByStore.get(Number(s.id)) === "PAID" ? "Completed" : "Pending";
+          const rawStatus = s?.id != null ? paymentByStore.get(Number(s.id)) ?? "pending" : "pending";
+          const paidStatuses = new Set(["captured", "refunded", "partially_refunded"]);
+          const paymentStatus = paidStatuses.has(rawStatus) ? "Completed" : "Pending";
             return {
               id: s?.id,
               store_id: s?.store_id,
@@ -73,8 +216,22 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               registration_status: s?.registration_status ?? "IN_PROGRESS",
             };
           });
+        // Count active user sessions for this merchant user (all stores).
+        let activeDevices = 0;
+        try {
+          const merchantId = req.auth?.sub ?? "";
+          if (merchantId) {
+            const sessionRows = await sql`
+              SELECT COUNT(*)::int AS c
+              FROM user_device_sessions
+              WHERE user_id = ${merchantId} AND is_active = TRUE
+            `;
+            activeDevices = Number((sessionRows[0] as any)?.c ?? 0);
+          }
+        } catch {}
 
-          const parent = {
+        return {
+          parent: {
             id: parentId,
             parent_merchant_id: String(parentRow.parent_merchant_id),
             parent_name: parentRow.parent_name,
@@ -82,9 +239,3962 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             owner_email: parentRow.owner_email ?? "",
             brand_name: parentRow.brand_name ?? "",
             registered_phone: parentRow.registered_phone,
+          },
+          childStores,
+          activeDevices,
+        };
+      });
+
+      // User device sessions (account-level across all stores).
+      protectedApp.get("/user-sessions", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const sql = getSql();
+        try {
+          const rows = await sql`
+            SELECT id,
+                   user_id,
+                   parent_store_id,
+                   child_store_id,
+                   device_type,
+                   device_name,
+                   os,
+                   ip_address,
+                   location,
+                   login_method,
+                   login_time,
+                   last_active,
+                   is_active,
+                   device_id
+            FROM user_device_sessions
+            WHERE user_id = ${req.auth.sub} AND is_active = TRUE
+            ORDER BY last_active DESC, login_time DESC
+          `;
+          return rows;
+        } catch {
+          return [];
+        }
+      });
+
+      const logoutSessionsBody = z.object({
+        session_ids: z.array(z.union([z.number(), z.string()])).min(1),
+      });
+
+      protectedApp.post<{ Body: z.infer<typeof logoutSessionsBody> }>(
+        "/user-sessions/logout",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const sql = getSql();
+          const body = logoutSessionsBody.parse(req.body);
+          const ids: number[] = body.session_ids
+            .map((v) => (typeof v === "string" ? Number(v) : v))
+            .filter((v): v is number => Number.isFinite(v) && v > 0);
+          if (ids.length === 0) {
+            return reply.code(400).send({ error: "invalid_session_ids" });
+          }
+          try {
+            // Use postgres.js tuple expansion for a safe IN (...) clause.
+            await sql`
+              UPDATE user_device_sessions
+              SET is_active = FALSE, last_active = now()
+              WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)}
+            `;
+            return { ok: true };
+          } catch {
+            return reply.code(500).send({ error: "logout_failed" });
+          }
+        }
+      );
+
+      const logoutAllBody = z
+        .object({
+          includeCurrent: z.boolean().optional(),
+        })
+        .optional();
+
+      protectedApp.post<{ Body: z.infer<NonNullable<typeof logoutAllBody>> }>(
+        "/user-sessions/logout-all",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const sql = getSql();
+          const body = logoutAllBody.parse(req.body);
+          const includeCurrent = body?.includeCurrent ?? false;
+          const currentDeviceId = req.auth.device_id;
+          try {
+            if (!includeCurrent && currentDeviceId) {
+              await sql`
+                UPDATE user_device_sessions
+                SET is_active = FALSE, last_active = now()
+                WHERE user_id = ${req.auth.sub} AND device_id IS DISTINCT FROM ${currentDeviceId}
+              `;
+            } else {
+              await sql`
+                UPDATE user_device_sessions
+                SET is_active = FALSE, last_active = now()
+                WHERE user_id = ${req.auth.sub}
+              `;
+            }
+            return { ok: true };
+          } catch {
+            return reply.code(500).send({ error: "logout_all_failed" });
+          }
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId — outlet info for partner app. */
+      protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const store = await getStoreForPartner(sql, storeId, parentId);
+        if (!store) return reply.code(404).send({ error: "store_not_found" });
+
+        const pickupRows = await sql`
+          SELECT instruction_text
+          FROM pickup_instructions
+          WHERE store_id = ${storeId}
+            AND is_active = true
+          LIMIT 1
+        `;
+        const pickupInstruction = pickupRows[0]?.instruction_text != null ? String(pickupRows[0].instruction_text) : null;
+
+        return {
+          id: store.id,
+          store_id: store.store_id,
+          store_name: store.store_name,
+          store_display_name: store.store_display_name ?? null,
+          store_description: store.store_description ?? null,
+          store_email: store.store_email ?? null,
+          store_phones: store.store_phones ?? [],
+          full_address: store.full_address,
+          landmark: store.landmark ?? null,
+          city: store.city,
+          state: store.state,
+          postal_code: store.postal_code,
+          country: store.country ?? "IN",
+          latitude: store.latitude != null ? Number(store.latitude) : null,
+          longitude: store.longitude != null ? Number(store.longitude) : null,
+          logo_url: store.logo_url ?? null,
+          banner_url: store.banner_url ?? null,
+          parent_logo_url: store.parent_logo_url ?? null,
+          cuisine_types: store.cuisine_types ?? [],
+          food_categories: store.food_categories ?? [],
+          pickup_instruction: pickupInstruction,
+          min_order_amount: store.min_order_amount ?? 0,
+          delivery_radius_km: store.delivery_radius_km ?? null,
+          avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? 30,
+          is_pure_veg: store.is_pure_veg === true,
+          accepts_online_payment: store.accepts_online_payment !== false,
+          accepts_cash: store.accepts_cash !== false,
+        };
+      });
+
+      /** GET /merchant-partner/stores/:storeId/bank-account — primary payout account for this store (if any). */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/bank-account",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const rows = await sql`
+            SELECT
+              id,
+              store_id,
+              account_holder_name,
+              account_number,
+              ifsc_code,
+              bank_name,
+              branch_name,
+              account_type,
+              is_verified,
+              verification_status,
+              upi_id,
+              upi_verified,
+              is_primary,
+              is_active,
+              is_disabled,
+              payout_method,
+              beneficiary_name,
+              created_at,
+              updated_at
+            FROM merchant_store_bank_accounts
+            WHERE store_id = ${storeId}
+              AND is_primary = TRUE
+              AND is_active = TRUE
+              AND (is_disabled IS NULL OR is_disabled = FALSE)
+            ORDER BY id DESC
+            LIMIT 1
+          `;
+          if (rows.length === 0) {
+            return reply.send(null);
+          }
+          const r = rows[0] as {
+            id: number;
+            store_id: number;
+            account_holder_name: string;
+            account_number: string;
+            ifsc_code: string;
+            bank_name: string;
+            branch_name: string | null;
+            account_type: string | null;
+            is_verified: boolean | null;
+            verification_status: string | null;
+            upi_id: string | null;
+            upi_verified: boolean | null;
+            is_primary: boolean | null;
+            is_active: boolean | null;
+            is_disabled: boolean | null;
+            payout_method: string | null;
+            beneficiary_name: string | null;
+            created_at: Date;
+            updated_at: Date;
           };
 
-          return { parent, childStores };
+          return reply.send({
+            id: r.id,
+            store_id: r.store_id,
+            account_holder_name: r.account_holder_name,
+            account_number: r.account_number,
+            ifsc_code: r.ifsc_code,
+            bank_name: r.bank_name,
+            branch_name: r.branch_name,
+            account_type: r.account_type,
+            is_verified: r.is_verified === true,
+            verification_status: r.verification_status ?? null,
+            upi_id: r.upi_id ?? null,
+            upi_verified: r.upi_verified === true,
+            is_primary: r.is_primary !== false,
+            is_active: r.is_active !== false,
+            is_disabled: r.is_disabled === true,
+            payout_method: r.payout_method ?? null,
+            beneficiary_name: r.beneficiary_name ?? null,
+            created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+            updated_at: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+          });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId — update outlet info. */
+      protectedApp.patch<{ Params: { storeId: string }; Body: any }>("/stores/:storeId", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const existing = await getStoreForPartner(sql, storeId, parentId);
+        if (!existing) return reply.code(404).send({ error: "store_not_found" });
+        const b = (req.body || {}) as Record<string, unknown>;
+        const updates: Record<string, any> = {};
+        if (typeof b.store_name === "string") updates.store_name = b.store_name;
+        if (typeof b.store_display_name === "string" || b.store_display_name === null) updates.store_display_name = b.store_display_name;
+        if (typeof b.store_description === "string" || b.store_description === null) updates.store_description = b.store_description;
+        if (typeof b.store_email === "string" || b.store_email === null) updates.store_email = b.store_email;
+        if (Array.isArray(b.store_phones)) updates.store_phones = b.store_phones;
+        if (typeof b.full_address === "string") updates.full_address = b.full_address;
+        if (typeof b.landmark === "string" || b.landmark === null) updates.landmark = b.landmark;
+        if (typeof b.city === "string") updates.city = b.city;
+        if (typeof b.state === "string") updates.state = b.state;
+        if (typeof b.postal_code === "string") updates.postal_code = b.postal_code;
+        if (typeof b.country === "string" || b.country === null) updates.country = b.country ?? "IN";
+        if (b.latitude !== undefined) updates.latitude = b.latitude == null ? null : Number(b.latitude);
+        if (b.longitude !== undefined) updates.longitude = b.longitude == null ? null : Number(b.longitude);
+        if (typeof b.logo_url === "string" || b.logo_url === null) updates.logo_url = b.logo_url;
+        if (typeof b.banner_url === "string" || b.banner_url === null) updates.banner_url = b.banner_url;
+        if (Array.isArray(b.cuisine_types)) updates.cuisine_types = b.cuisine_types;
+        if (Array.isArray(b.food_categories)) updates.food_categories = b.food_categories;
+        if (b.min_order_amount !== undefined) {
+          const v = Number(b.min_order_amount);
+          if (!Number.isFinite(v) || v < 0) {
+            return reply.code(400).send({ error: "invalid_min_order_amount" });
+          }
+          updates.min_order_amount = v;
+        }
+        if (b.delivery_radius_km !== undefined) {
+          const v = Number(b.delivery_radius_km);
+          if (!Number.isFinite(v) || v < 1 || v > 50) {
+            return reply
+              .code(400)
+              .send({ error: "invalid_delivery_radius", message: "delivery_radius_km must be between 1 and 50 km" });
+          }
+          updates.delivery_radius_km = v;
+        }
+        if (b.avg_preparation_time_minutes !== undefined) {
+          const v = Number(b.avg_preparation_time_minutes);
+          if (!Number.isInteger(v) || v <= 0) {
+            return reply
+              .code(400)
+              .send({ error: "invalid_prep_time", message: "avg_preparation_time_minutes must be a positive integer" });
+          }
+          updates.avg_preparation_time_minutes = v;
+        }
+        if (typeof b.is_pure_veg === "boolean") updates.is_pure_veg = b.is_pure_veg;
+        if (typeof b.accepts_online_payment === "boolean") updates.accepts_online_payment = b.accepts_online_payment;
+        if (typeof b.accepts_cash === "boolean") updates.accepts_cash = b.accepts_cash;
+        if (Object.keys(updates).length === 0) {
+          return reply.send({ ok: true, message: "no_updates" });
+        }
+        updates.updated_at = new Date().toISOString();
+        const setClause = Object.keys(updates)
+          .map((k, i) => `${k} = $${i + 1}`)
+          .join(", ");
+        const values = Object.values(updates);
+        await sql.unsafe(
+          `UPDATE merchant_stores SET ${setClause} WHERE id = $${values.length + 1} AND parent_id = $${values.length + 2}`,
+          [...values, storeId, parentId]
+        );
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        for (const key of Object.keys(updates)) {
+          if (key === "updated_at") continue;
+          const oldVal = (existing as any)[key];
+          const newVal = updates[key];
+          await insertAuditLog(sql, "STORE", storeId, "UPDATE", auditCtx, key, oldVal, newVal, {
+            section: auditSectionForField(key),
+            route: "PATCH /merchant-partner/stores/:storeId",
+          });
+        }
+        return reply.send({ ok: true });
+      });
+
+      /** PUT /merchant-partner/stores/:storeId/pickup-instruction — set or clear pickup instruction for the store. */
+      protectedApp.put<{ Params: { storeId: string }; Body: { instruction_text?: string | null } }>(
+        "/stores/:storeId/pickup-instruction",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const store = await getStoreForPartner(sql, storeId, parentId);
+          if (!store) return reply.code(404).send({ error: "store_not_found" });
+
+          const instructionText = typeof req.body?.instruction_text === "string" ? req.body.instruction_text.trim() : null;
+          const hasText = instructionText != null && instructionText.length > 0;
+
+          const existing = await sql`
+            SELECT id, instruction_text FROM pickup_instructions WHERE store_id = ${storeId} LIMIT 1
+          `;
+          const row = existing[0] as { id: number; instruction_text: string | null } | undefined;
+          const oldInstruction = row?.instruction_text ?? null;
+
+          if (row) {
+            await sql`
+              UPDATE pickup_instructions
+              SET instruction_text = ${hasText ? instructionText : ""},
+                  is_active = ${hasText},
+                  updated_at = NOW()
+              WHERE id = ${row.id}
+            `;
+          } else if (hasText) {
+            await sql`
+              INSERT INTO pickup_instructions (store_id, instruction_text, is_active)
+              VALUES (${storeId}, ${instructionText}, true)
+            `;
+          }
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "UPDATE",
+            auditCtx,
+            "pickup_instruction",
+            oldInstruction != null ? { text: oldInstruction } : null,
+            hasText ? { text: instructionText } : null,
+            { section: "pickup", route: "PUT /merchant-partner/stores/:storeId/pickup-instruction" }
+          );
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/audit-logs — list audit records for this store (edited by, last changes at, old/new data). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>("/stores/:storeId/audit-logs", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const limit = Math.min(Number(req.query?.limit) || 50, 200);
+        const rows = await sql`
+          SELECT id, entity_type, entity_id, action, action_field, old_value, new_value,
+                 performed_by, performed_by_id, performed_by_name, performed_by_email,
+                 audit_metadata, created_at
+          FROM merchant_audit_logs
+          WHERE entity_type = 'STORE' AND entity_id = ${storeId}
+          ORDER BY created_at DESC
+          LIMIT ${limit}
+        `;
+        const list = (rows as any[]).map((r) => ({
+          id: r.id,
+          entity_type: r.entity_type,
+          entity_id: r.entity_id,
+          action: r.action,
+          action_field: r.action_field,
+          old_value: r.old_value,
+          new_value: r.new_value,
+          performed_by: r.performed_by,
+          performed_by_id: r.performed_by_id,
+          performed_by_name: r.performed_by_name,
+          performed_by_email: r.performed_by_email,
+          audit_metadata: r.audit_metadata ?? {},
+          created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        }));
+        return reply.send(list);
+      });
+
+      /** GET /merchant-partner/stores/:storeId/rush — current rush-in-kitchen window, if any. */
+      protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId/rush", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const now = new Date();
+        const rushRows = await sql`
+          SELECT id, duration_minutes, started_at, ends_at, is_active
+          FROM merchant_store_rush_windows
+          WHERE store_id = ${storeId}
+            AND is_active = TRUE
+            AND ends_at > NOW()
+          ORDER BY started_at DESC
+          LIMIT 1
+        `;
+        const row = rushRows[0] as
+          | {
+              id: number;
+              duration_minutes: number;
+              started_at: Date | string;
+              ends_at: Date | string;
+              is_active: boolean;
+            }
+          | undefined;
+        if (!row) {
+          return reply.send({
+            store_id: storeId,
+            is_active: false,
+            duration_minutes: null,
+            started_at: null,
+            ends_at: null,
+            remaining_minutes: 0,
+          });
+        }
+        const endsAtMs = new Date(String(row.ends_at)).getTime();
+        const remainingMs = Math.max(0, endsAtMs - now.getTime());
+        const remainingMinutes = Math.floor(remainingMs / 60000);
+        return reply.send({
+          store_id: storeId,
+          is_active: true,
+          duration_minutes: Number(row.duration_minutes),
+          started_at: new Date(String(row.started_at)).toISOString(),
+          ends_at: new Date(String(row.ends_at)).toISOString(),
+          remaining_minutes: remainingMinutes,
+        });
+      });
+
+      /** POST /merchant-partner/stores/:storeId/rush — start a rush-in-kitchen window. */
+      protectedApp.post<{ Params: { storeId: string }; Body: { duration_minutes?: number } }>(
+        "/stores/:storeId/rush",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const durationRaw = req.body?.duration_minutes;
+          const duration = typeof durationRaw === "number" ? Math.floor(durationRaw) : NaN;
+          if (!Number.isInteger(duration) || duration <= 0 || duration > 240) {
+            return reply
+              .code(400)
+              .send({ error: "invalid_duration", message: "duration_minutes must be between 1 and 240." });
+          }
+
+          const now = new Date();
+          const istDateFormatter = new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          });
+          const endsAt = new Date(now.getTime() + duration * 60000);
+
+          const existingActive = await sql`
+            SELECT id, duration_minutes, started_at, ends_at, is_active
+            FROM merchant_store_rush_windows
+            WHERE store_id = ${storeId} AND is_active = TRUE
+            ORDER BY started_at DESC
+            LIMIT 1
+          `;
+          const oldRow = existingActive[0] as
+            | { id: number; duration_minutes: number; started_at: Date; ends_at: Date; is_active: boolean }
+            | undefined;
+
+          if (oldRow) {
+            await sql`
+              UPDATE merchant_store_rush_windows
+              SET is_active = FALSE
+              WHERE id = ${oldRow.id}
+            `;
+          }
+
+          const inserted = await sql`
+            INSERT INTO merchant_store_rush_windows (store_id, duration_minutes, started_at, ends_at, is_active, created_by)
+            VALUES (${storeId}, ${duration}, ${now.toISOString()}, ${endsAt.toISOString()}, TRUE, NULL)
+            RETURNING id, duration_minutes, started_at, ends_at, is_active
+          `;
+          const newRow = inserted[0] as {
+            id: number;
+            duration_minutes: number;
+            started_at: Date | string;
+            ends_at: Date | string;
+            is_active: boolean;
+          };
+
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          const oldValue = oldRow
+            ? {
+                id: oldRow.id,
+                duration_minutes: Number(oldRow.duration_minutes),
+                started_at:
+                  oldRow.started_at instanceof Date
+                    ? oldRow.started_at.toISOString()
+                    : String(oldRow.started_at),
+                ends_at:
+                  oldRow.ends_at instanceof Date
+                    ? oldRow.ends_at.toISOString()
+                    : String(oldRow.ends_at),
+                is_active: oldRow.is_active,
+              }
+            : null;
+          const newValue = {
+            id: newRow.id,
+            duration_minutes: Number(newRow.duration_minutes),
+            started_at:
+              newRow.started_at instanceof Date
+                ? newRow.started_at.toISOString()
+                : String(newRow.started_at),
+            ends_at:
+              newRow.ends_at instanceof Date
+                ? newRow.ends_at.toISOString()
+                : String(newRow.ends_at),
+            is_active: newRow.is_active,
+          };
+
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            oldRow ? "UPDATE" : "CREATE",
+            auditCtx,
+            "rush_window",
+            oldValue,
+            newValue,
+            { section: "operations", route: "POST /merchant-partner/stores/:storeId/rush" }
+          );
+
+          const remainingMs = Math.max(0, endsAt.getTime() - now.getTime());
+          const remainingMinutes = Math.floor(remainingMs / 60000);
+
+          return reply.send({
+            ok: true,
+            store_id: storeId,
+            is_active: true,
+            duration_minutes: duration,
+            started_at: now.toISOString(),
+            ends_at: endsAt.toISOString(),
+            remaining_minutes: remainingMinutes,
+          });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/rush — manually stop current rush window. */
+      protectedApp.patch<{ Params: { storeId: string }; Body: { is_active?: boolean } }>(
+        "/stores/:storeId/rush",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const body = req.body || {};
+          if (body.is_active !== false) {
+            return reply.code(400).send({ error: "invalid_body", message: "Only is_active=false is supported." });
+          }
+
+          const existingRows = await sql`
+            SELECT id, duration_minutes, started_at, ends_at, is_active
+            FROM merchant_store_rush_windows
+            WHERE store_id = ${storeId} AND is_active = TRUE
+            ORDER BY started_at DESC
+            LIMIT 1
+          `;
+          const row = existingRows[0] as
+            | {
+                id: number;
+                duration_minutes: number;
+                started_at: Date | string;
+                ends_at: Date | string;
+                is_active: boolean;
+              }
+            | undefined;
+
+          if (!row) {
+            return reply.send({
+              ok: true,
+              store_id: storeId,
+              is_active: false,
+              duration_minutes: null,
+              started_at: null,
+              ends_at: null,
+              remaining_minutes: 0,
+            });
+          }
+
+          const now = new Date();
+
+          await sql`
+            UPDATE merchant_store_rush_windows
+            SET is_active = FALSE,
+                ends_at = ${now.toISOString()}
+            WHERE id = ${row.id}
+          `;
+
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          const oldValue = {
+            id: row.id,
+            duration_minutes: Number(row.duration_minutes),
+            started_at:
+              row.started_at instanceof Date
+                ? row.started_at.toISOString()
+                : String(row.started_at),
+            ends_at:
+              row.ends_at instanceof Date
+                ? row.ends_at.toISOString()
+                : String(row.ends_at),
+            is_active: row.is_active,
+          };
+          const newValue = {
+            id: row.id,
+            duration_minutes: Number(row.duration_minutes),
+            started_at:
+              row.started_at instanceof Date
+                ? row.started_at.toISOString()
+                : String(row.started_at),
+            ends_at: now.toISOString(),
+            is_active: false,
+          };
+
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "UPDATE",
+            auditCtx,
+            "rush_window",
+            oldValue,
+            newValue,
+            { section: "operations", route: "PATCH /merchant-partner/stores/:storeId/rush" }
+          );
+
+          return reply.send({
+            ok: true,
+            store_id: storeId,
+            is_active: false,
+            duration_minutes: null,
+            started_at: null,
+            ends_at: null,
+            remaining_minutes: 0,
+          });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/operating-hours */
+      protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId/operating-hours", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const hoursRows = await sql`
+          SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
+        `;
+        const row = hoursRows[0] as any;
+        if (!row) {
+          return reply.send(null);
+        }
+        const dayKeys = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+        const out: any = { id: row.id, store_id: row.store_id, is_24_hours: row.is_24_hours, same_for_all_days: row.same_for_all_days, closed_days: row.closed_days ?? [] };
+        for (const d of dayKeys) {
+          out[d] = {
+            open: row[`${d}_open`],
+            slot1_start: row[`${d}_slot1_start`],
+            slot1_end: row[`${d}_slot1_end`],
+            slot2_start: row[`${d}_slot2_start`],
+            slot2_end: row[`${d}_slot2_end`],
+          };
+        }
+        return reply.send(out);
+      });
+
+      /** PATCH /merchant-partner/stores/:storeId/operating-hours — upsert. */
+      protectedApp.patch<{ Params: { storeId: string }; Body: any }>("/stores/:storeId/operating-hours", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const b = (req.body || {}) as Record<string, unknown>;
+        const is24 = b.is_24_hours === true;
+        const sameForAll = b.same_for_all_days === true;
+        const closedDays = is24 ? [] : Array.isArray(b.closed_days) ? b.closed_days : [];
+        const existingRows = await sql`SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1`;
+        const existing = existingRows as any[];
+        const dayKeys = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+        const dayPayload = (b.days || {}) as Record<string, Record<string, unknown>>;
+        const buildSlots = (day: string) => {
+          if (is24) {
+            return {
+              open: true,
+              slot1_start: "00:00:00",
+              slot1_end: "23:59:00",
+              slot2_start: null,
+              slot2_end: null,
+            };
+          }
+          const d = dayPayload[day] || {};
+          return {
+            open: d.open === true,
+            slot1_start: d.slot1_start ?? null,
+            slot1_end: d.slot1_end ?? null,
+            slot2_start: d.slot2_start ?? null,
+            slot2_end: d.slot2_end ?? null,
+          };
+        };
+        if (existing.length > 0) {
+          const id = (existing[0] as any).id;
+          await sql.unsafe(
+            `UPDATE merchant_store_operating_hours SET
+              is_24_hours = $1, same_for_all_days = $2, closed_days = $3,
+              monday_open = $4, monday_slot1_start = $5, monday_slot1_end = $6, monday_slot2_start = $7, monday_slot2_end = $8,
+              tuesday_open = $9, tuesday_slot1_start = $10, tuesday_slot1_end = $11, tuesday_slot2_start = $12, tuesday_slot2_end = $13,
+              wednesday_open = $14, wednesday_slot1_start = $15, wednesday_slot1_end = $16, wednesday_slot2_start = $17, wednesday_slot2_end = $18,
+              thursday_open = $19, thursday_slot1_start = $20, thursday_slot1_end = $21, thursday_slot2_start = $22, thursday_slot2_end = $23,
+              friday_open = $24, friday_slot1_start = $25, friday_slot1_end = $26, friday_slot2_start = $27, friday_slot2_end = $28,
+              saturday_open = $29, saturday_slot1_start = $30, saturday_slot1_end = $31, saturday_slot2_start = $32, saturday_slot2_end = $33,
+              sunday_open = $34, sunday_slot1_start = $35, sunday_slot1_end = $36, sunday_slot2_start = $37, sunday_slot2_end = $38,
+              updated_at = NOW() WHERE id = $39`,
+            [
+              is24, sameForAll, closedDays,
+              ...dayKeys.flatMap((d) => {
+                const s = buildSlots(d);
+                return [s.open, s.slot1_start, s.slot1_end, s.slot2_start, s.slot2_end];
+              }),
+              id,
+            ]
+          );
+        } else {
+          const slots = dayKeys.flatMap((d) => {
+            const s = buildSlots(d);
+            return [s.open, s.slot1_start, s.slot1_end, s.slot2_start, s.slot2_end];
+          });
+          const placeholders = [1, 2, 3, 4].concat(slots.map((_, i) => i + 5)).map((i) => `$${i}`).join(", ");
+          await sql.unsafe(
+            `INSERT INTO merchant_store_operating_hours (store_id, is_24_hours, same_for_all_days, closed_days,
+              monday_open, monday_slot1_start, monday_slot1_end, monday_slot2_start, monday_slot2_end,
+              tuesday_open, tuesday_slot1_start, tuesday_slot1_end, tuesday_slot2_start, tuesday_slot2_end,
+              wednesday_open, wednesday_slot1_start, wednesday_slot1_end, wednesday_slot2_start, wednesday_slot2_end,
+              thursday_open, thursday_slot1_start, thursday_slot1_end, thursday_slot2_start, thursday_slot2_end,
+              friday_open, friday_slot1_start, friday_slot1_end, friday_slot2_start, friday_slot2_end,
+              saturday_open, saturday_slot1_start, saturday_slot1_end, saturday_slot2_start, saturday_slot2_end,
+              sunday_open, sunday_slot1_start, sunday_slot1_end, sunday_slot2_start, sunday_slot2_end)
+              VALUES (${placeholders})`,
+            [storeId, is24, sameForAll, closedDays, ...slots] as any[]
+          );
+        }
+        const afterRows = await sql`SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1`;
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        await insertAuditLog(
+          sql,
+          "STORE",
+          storeId,
+          existing.length > 0 ? "UPDATE" : "CREATE",
+          auditCtx,
+          "operating_hours",
+          existing[0] ?? null,
+          (afterRows[0] as any) ?? null,
+          { section: "operating_hours", route: "PATCH /merchant-partner/stores/:storeId/operating-hours" }
+        );
+        return reply.send({ ok: true });
+      });
+
+      /** STAFF MANAGEMENT */
+
+      /** GET /merchant-partner/stores/:storeId/staff — list active staff for this store. */
+      protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId/staff", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const rows = await sql`
+          SELECT id, store_id, name, phone_number, role, status, created_at, updated_at
+          FROM store_staff
+          WHERE store_id = ${storeId} AND status = TRUE
+          ORDER BY created_at ASC
+        `;
+        return reply.send(rows);
+      });
+
+      /** POST /merchant-partner/stores/:storeId/staff — add staff member. */
+      protectedApp.post<{ Params: { storeId: string }; Body: { name?: string; phone_number?: string; role?: string } }>(
+        "/stores/:storeId/staff",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const { name, phone_number, role } = req.body || {};
+          if (!name || !phone_number || !role) {
+            return reply.code(400).send({ error: "missing_fields" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const inserted = await sql`
+            INSERT INTO store_staff (store_id, name, phone_number, role)
+            VALUES (${storeId}, ${name}, ${phone_number}, ${role})
+            RETURNING id, store_id, name, phone_number, role, status, created_at, updated_at
+          `;
+          const staff = inserted[0] as any;
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "CREATE",
+            auditCtx,
+            "staff",
+            null,
+            staff,
+            { section: "staff", route: "POST /merchant-partner/stores/:storeId/staff" }
+          );
+          return reply.code(201).send(staff);
+        }
+      );
+
+      /** SELF-DELIVERY RIDERS */
+
+      /** GET /merchant-partner/stores/:storeId/self-delivery-riders — list self-delivery riders for this store. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { active_only?: string } }>(
+        "/stores/:storeId/self-delivery-riders",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const activeOnly = req.query?.active_only !== "false";
+          const rows = activeOnly
+            ? await sql`
+                SELECT id,
+                       store_id,
+                       rider_name,
+                       rider_mobile,
+                       rider_email,
+                       vehicle_number,
+                       is_primary,
+                       is_active,
+                       created_at,
+                       updated_at
+                FROM merchant_store_self_delivery_riders
+                WHERE store_id = ${storeId} AND is_active = TRUE
+                ORDER BY is_primary DESC NULLS LAST, rider_name ASC
+              `
+            : await sql`
+                SELECT id,
+                       store_id,
+                       rider_name,
+                       rider_mobile,
+                       rider_email,
+                       vehicle_number,
+                       is_primary,
+                       is_active,
+                       created_at,
+                       updated_at
+                FROM merchant_store_self_delivery_riders
+                WHERE store_id = ${storeId}
+                ORDER BY is_primary DESC NULLS LAST, rider_name ASC
+              `;
+
+          return reply.send(
+            (rows as any[]).map((r) => ({
+              id: r.id,
+              store_id: r.store_id,
+              rider_name: r.rider_name,
+              rider_mobile: r.rider_mobile,
+              rider_email: r.rider_email ?? null,
+              vehicle_number: r.vehicle_number ?? null,
+              is_primary: r.is_primary === true,
+              is_active: r.is_active !== false,
+              created_at: r.created_at,
+              updated_at: r.updated_at,
+            }))
+          );
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/self-delivery-riders — add a new self-delivery rider. */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: { rider_name?: string; rider_mobile?: string; rider_email?: string | null; vehicle_number?: string | null; is_primary?: boolean };
+      }>("/stores/:storeId/self-delivery-riders", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const { rider_name, rider_mobile, rider_email, vehicle_number, is_primary } = req.body || {};
+        if (!rider_name || !rider_mobile) {
+          return reply.code(400).send({ error: "missing_fields", message: "rider_name and rider_mobile are required" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        // If this rider is marked as primary, unset existing primary riders for this store.
+        if (is_primary === true) {
+          await sql`
+            UPDATE merchant_store_self_delivery_riders
+            SET is_primary = FALSE, updated_at = NOW()
+            WHERE store_id = ${storeId} AND is_primary = TRUE
+          `;
+        }
+
+        const inserted = await sql`
+          INSERT INTO merchant_store_self_delivery_riders (
+            store_id,
+            rider_name,
+            rider_mobile,
+            rider_email,
+            vehicle_number,
+            is_primary
+          )
+          VALUES (
+            ${storeId},
+            ${rider_name},
+            ${rider_mobile},
+            ${rider_email ?? null},
+            ${vehicle_number ?? null},
+            ${is_primary === true}
+          )
+          RETURNING id,
+                    store_id,
+                    rider_name,
+                    rider_mobile,
+                    rider_email,
+                    vehicle_number,
+                    is_primary,
+                    is_active,
+                    created_at,
+                    updated_at
+        `;
+        const rider = inserted[0] as any;
+
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        await insertAuditLog(
+          sql,
+          "STORE",
+          storeId,
+          "CREATE",
+          auditCtx,
+          "self_delivery_rider",
+          null,
+          rider,
+          { section: "delivery_settings", route: "POST /merchant-partner/stores/:storeId/self-delivery-riders" }
+        );
+
+        return reply.code(201).send(rider);
+      });
+
+      /** PATCH /merchant-partner/stores/:storeId/self-delivery-riders/:riderId — edit rider or toggle active/primary. */
+      protectedApp.patch<{
+        Params: { storeId: string; riderId: string };
+        Body: {
+          rider_name?: string;
+          rider_mobile?: string;
+          rider_email?: string | null;
+          vehicle_number?: string | null;
+          is_primary?: boolean;
+          is_active?: boolean;
+        };
+      }>("/stores/:storeId/self-delivery-riders/:riderId", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const riderId = Number(req.params.riderId);
+        if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(riderId) || riderId < 1) {
+          return reply.code(400).send({ error: "invalid_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const riderRows = await sql`
+          SELECT *
+          FROM merchant_store_self_delivery_riders
+          WHERE id = ${riderId} AND store_id = ${storeId}
+          LIMIT 1
+        `;
+        const existing = riderRows[0] as any;
+        if (!existing) return reply.code(404).send({ error: "rider_not_found" });
+
+        const body = req.body || {};
+        const updates: Record<string, any> = {};
+        if (typeof body.rider_name === "string") updates.rider_name = body.rider_name;
+        if (typeof body.rider_mobile === "string") updates.rider_mobile = body.rider_mobile;
+        if (body.rider_email !== undefined) updates.rider_email = body.rider_email;
+        if (body.vehicle_number !== undefined) updates.vehicle_number = body.vehicle_number;
+        if (typeof body.is_active === "boolean") updates.is_active = body.is_active;
+        const setPrimary = body.is_primary === true;
+
+        if (Object.keys(updates).length === 0 && !setPrimary && body.is_primary !== false) {
+          return reply.send(existing);
+        }
+
+        // If becoming primary, clear previous primaries.
+        if (setPrimary) {
+          await sql`
+            UPDATE merchant_store_self_delivery_riders
+            SET is_primary = FALSE, updated_at = NOW()
+            WHERE store_id = ${storeId} AND is_primary = TRUE AND id <> ${riderId}
+          `;
+          updates.is_primary = true;
+        } else if (body.is_primary === false) {
+          updates.is_primary = false;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updates.updated_at = new Date().toISOString();
+          const setClause = Object.keys(updates)
+            .map((k, i) => `${k} = $${i + 1}`)
+            .join(", ");
+          const values = Object.values(updates);
+          await (sql as any).unsafe?.(
+            `UPDATE merchant_store_self_delivery_riders SET ${setClause} WHERE id = $${values.length + 1} AND store_id = $${values.length + 2}`,
+            [...values, riderId, storeId]
+          ) ??
+            (await sql`
+              UPDATE merchant_store_self_delivery_riders
+              SET ${sql([setClause])}
+              WHERE id = ${riderId} AND store_id = ${storeId}
+            `);
+        }
+
+        const updatedRows = await sql`
+          SELECT *
+          FROM merchant_store_self_delivery_riders
+          WHERE id = ${riderId} AND store_id = ${storeId}
+          LIMIT 1
+        `;
+        const updated = updatedRows[0] as any;
+
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        await insertAuditLog(
+          sql,
+          "STORE",
+          storeId,
+          "UPDATE",
+          auditCtx,
+          "self_delivery_rider",
+          existing,
+          updated,
+          { section: "delivery_settings", route: "PATCH /merchant-partner/stores/:storeId/self-delivery-riders/:riderId" }
+        );
+
+        return reply.send(updated);
+      });
+
+      /** DELETE /merchant-partner/stores/:storeId/self-delivery-riders/:riderId — soft delete rider (mark inactive). */
+      protectedApp.delete<{ Params: { storeId: string; riderId: string } }>(
+        "/stores/:storeId/self-delivery-riders/:riderId",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const riderId = Number(req.params.riderId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(riderId) || riderId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const riderRows = await sql`
+            SELECT *
+            FROM merchant_store_self_delivery_riders
+            WHERE id = ${riderId} AND store_id = ${storeId}
+            LIMIT 1
+          `;
+          const existing = riderRows[0] as any;
+          if (!existing) return reply.code(404).send({ error: "rider_not_found" });
+
+          await sql`
+            UPDATE merchant_store_self_delivery_riders
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE id = ${riderId} AND store_id = ${storeId}
+          `;
+
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "UPDATE",
+            auditCtx,
+            "self_delivery_rider",
+            existing,
+            { ...existing, is_active: false },
+            { section: "delivery_settings", route: "DELETE /merchant-partner/stores/:storeId/self-delivery-riders/:riderId" }
+          );
+
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/delivery-charges — packaging + per-km delivery charges with edit windows. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/delivery-charges",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const rows = await sql`
+            SELECT packaging_charge_amount,
+                   packaging_charge_last_updated_at,
+                   delivery_charge_per_km,
+                   delivery_charge_per_km_last_updated_at
+            FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (rows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const r = rows[0] as {
+            packaging_charge_amount: number | null;
+            packaging_charge_last_updated_at: Date | string | null;
+            delivery_charge_per_km: number | null;
+            delivery_charge_per_km_last_updated_at: Date | string | null;
+          };
+          const now = Date.now();
+          const windowMs = 30 * 24 * 60 * 60 * 1000;
+
+          function computeLock(last: Date | string | null) {
+            if (!last) {
+              return {
+                locked: false,
+                next_edit_at: null as string | null,
+                seconds_until_edit: 0,
+              };
+            }
+            const lastTime =
+              last instanceof Date ? last.getTime() : new Date(String(last)).getTime();
+            if (!Number.isFinite(lastTime)) {
+              return {
+                locked: false,
+                next_edit_at: null,
+                seconds_until_edit: 0,
+              };
+            }
+            const next = lastTime + windowMs;
+            if (next <= now) {
+              return {
+                locked: false,
+                next_edit_at: new Date(next).toISOString(),
+                seconds_until_edit: 0,
+              };
+            }
+            const diffSec = Math.floor((next - now) / 1000);
+            return {
+              locked: true,
+              next_edit_at: new Date(next).toISOString(),
+              seconds_until_edit: diffSec,
+            };
+          }
+
+          const packLock = computeLock(r.packaging_charge_last_updated_at);
+          const delivLock = computeLock(r.delivery_charge_per_km_last_updated_at);
+
+          return reply.send({
+            store_id: storeId,
+            packaging_charge_amount:
+              r.packaging_charge_amount != null ? Number(r.packaging_charge_amount) : null,
+            packaging_charge_last_updated_at:
+              r.packaging_charge_last_updated_at instanceof Date
+                ? r.packaging_charge_last_updated_at.toISOString()
+                : r.packaging_charge_last_updated_at != null
+                  ? String(r.packaging_charge_last_updated_at)
+                  : null,
+            packaging_charge_locked: packLock.locked,
+            packaging_charge_next_edit_at: packLock.next_edit_at,
+            packaging_charge_seconds_until_edit: packLock.seconds_until_edit,
+            delivery_charge_per_km:
+              r.delivery_charge_per_km != null ? Number(r.delivery_charge_per_km) : null,
+            delivery_charge_per_km_last_updated_at:
+              r.delivery_charge_per_km_last_updated_at instanceof Date
+                ? r.delivery_charge_per_km_last_updated_at.toISOString()
+                : r.delivery_charge_per_km_last_updated_at != null
+                  ? String(r.delivery_charge_per_km_last_updated_at)
+                  : null,
+            delivery_charge_locked: delivLock.locked,
+            delivery_charge_next_edit_at: delivLock.next_edit_at,
+            delivery_charge_seconds_until_edit: delivLock.seconds_until_edit,
+          });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/delivery-charges — update packaging or per-km delivery charges (30-day window). */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: { packaging_charge_amount?: number | null; delivery_charge_per_km?: number | null };
+      }>("/stores/:storeId/delivery-charges", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const body = (req.body || {}) as {
+          packaging_charge_amount?: number | null;
+          delivery_charge_per_km?: number | null;
+        };
+        const hasPackaging = body.packaging_charge_amount != null;
+        const hasDelivery = body.delivery_charge_per_km != null;
+        if (!hasPackaging && !hasDelivery) {
+          return reply.code(400).send({ error: "invalid_body", message: "At least one charge field required" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        const storeRows = await sql`
+          SELECT id,
+                 packaging_charge_amount,
+                 packaging_charge_last_updated_at,
+                 delivery_charge_per_km,
+                 delivery_charge_per_km_last_updated_at
+          FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const existing = storeRows[0] as {
+          id: number;
+          packaging_charge_amount: number | null;
+          packaging_charge_last_updated_at: Date | string | null;
+          delivery_charge_per_km: number | null;
+          delivery_charge_per_km_last_updated_at: Date | string | null;
+        };
+
+        const now = Date.now();
+        const windowMs = 30 * 24 * 60 * 60 * 1000;
+
+        function locked(last: Date | string | null): boolean {
+          if (!last) return false;
+          const t =
+            last instanceof Date ? last.getTime() : new Date(String(last)).getTime();
+          if (!Number.isFinite(t)) return false;
+          return t + windowMs > now;
+        }
+
+        // Validate ranges and lock windows.
+        if (hasPackaging) {
+          const v = Number(body.packaging_charge_amount);
+          if (!Number.isFinite(v) || v < 6 || v > 15) {
+            return reply
+              .code(400)
+              .send({ error: "invalid_packaging_charge", message: "Packaging charge must be between 6 and 15." });
+          }
+          if (locked(existing.packaging_charge_last_updated_at)) {
+            return reply
+              .code(400)
+              .send({ error: "packaging_locked", message: "Packaging charge can only be edited once every 30 days." });
+          }
+        }
+        if (hasDelivery) {
+          const v = Number(body.delivery_charge_per_km);
+          if (!Number.isFinite(v) || v < 7 || v > 15) {
+            return reply
+              .code(400)
+              .send({ error: "invalid_delivery_charge", message: "Delivery charge per km must be between 7 and 15." });
+          }
+          if (locked(existing.delivery_charge_per_km_last_updated_at)) {
+            return reply
+              .code(400)
+              .send({ error: "delivery_locked", message: "Delivery charge per km can only be edited once every 30 days." });
+          }
+        }
+
+        const updates: string[] = [];
+        const vals: any[] = [];
+
+        if (hasPackaging) {
+          updates.push(`packaging_charge_amount = $${updates.length + 1}`);
+          vals.push(Number(body.packaging_charge_amount));
+          updates.push(
+            `packaging_charge_last_updated_at = $${updates.length + 1}`
+          );
+          vals.push(new Date().toISOString());
+        }
+        if (hasDelivery) {
+          updates.push(`delivery_charge_per_km = $${updates.length + 1}`);
+          vals.push(Number(body.delivery_charge_per_km));
+          updates.push(
+            `delivery_charge_per_km_last_updated_at = $${updates.length + 1}`
+          );
+          vals.push(new Date().toISOString());
+        }
+        updates.push(`updated_at = $${updates.length + 1}`);
+        vals.push(new Date().toISOString());
+
+        const setClause = updates.join(", ");
+        await (sql as any).unsafe?.(
+          `UPDATE merchant_stores SET ${setClause} WHERE id = $${
+            vals.length + 1
+          } AND parent_id = $${vals.length + 2}`,
+          [...vals, storeId, parentId]
+        ) ??
+          (await sql`
+            UPDATE merchant_stores
+            SET ${sql([setClause])}
+            WHERE id = ${storeId} AND parent_id = ${parentId}
+          `);
+
+        const afterRows = await sql`
+          SELECT packaging_charge_amount,
+                 packaging_charge_last_updated_at,
+                 delivery_charge_per_km,
+                 delivery_charge_per_km_last_updated_at
+          FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        const after = afterRows[0] as typeof existing;
+
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        await insertAuditLog(
+          sql,
+          "STORE",
+          storeId,
+          "UPDATE",
+          auditCtx,
+          "delivery_charges",
+          {
+            packaging_charge_amount: existing.packaging_charge_amount,
+            packaging_charge_last_updated_at: existing.packaging_charge_last_updated_at,
+            delivery_charge_per_km: existing.delivery_charge_per_km,
+            delivery_charge_per_km_last_updated_at:
+              existing.delivery_charge_per_km_last_updated_at,
+          },
+          {
+            packaging_charge_amount: after.packaging_charge_amount,
+            packaging_charge_last_updated_at: after.packaging_charge_last_updated_at,
+            delivery_charge_per_km: after.delivery_charge_per_km,
+            delivery_charge_per_km_last_updated_at:
+              after.delivery_charge_per_km_last_updated_at,
+          },
+          { section: "delivery_settings", route: "PATCH /merchant-partner/stores/:storeId/delivery-charges" }
+        );
+
+        const now2 = Date.now();
+        function computeLock2(last: Date | string | null) {
+          if (!last) {
+            return {
+              locked: false,
+              next_edit_at: null as string | null,
+              seconds_until_edit: 0,
+            };
+          }
+          const lastTime =
+            last instanceof Date ? last.getTime() : new Date(String(last)).getTime();
+          if (!Number.isFinite(lastTime)) {
+            return {
+              locked: false,
+              next_edit_at: null,
+              seconds_until_edit: 0,
+            };
+          }
+          const next = lastTime + windowMs;
+          if (next <= now2) {
+            return {
+              locked: false,
+              next_edit_at: new Date(next).toISOString(),
+              seconds_until_edit: 0,
+            };
+          }
+          const diffSec = Math.floor((next - now2) / 1000);
+          return {
+            locked: true,
+            next_edit_at: new Date(next).toISOString(),
+            seconds_until_edit: diffSec,
+          };
+        }
+
+        const packLock2 = computeLock2(after.packaging_charge_last_updated_at);
+        const delivLock2 = computeLock2(after.delivery_charge_per_km_last_updated_at);
+
+        return reply.send({
+          store_id: storeId,
+          packaging_charge_amount:
+            after.packaging_charge_amount != null ? Number(after.packaging_charge_amount) : null,
+          packaging_charge_last_updated_at:
+            after.packaging_charge_last_updated_at instanceof Date
+              ? after.packaging_charge_last_updated_at.toISOString()
+              : after.packaging_charge_last_updated_at != null
+                ? String(after.packaging_charge_last_updated_at)
+                : null,
+          packaging_charge_locked: packLock2.locked,
+          packaging_charge_next_edit_at: packLock2.next_edit_at,
+          packaging_charge_seconds_until_edit: packLock2.seconds_until_edit,
+          delivery_charge_per_km:
+            after.delivery_charge_per_km != null ? Number(after.delivery_charge_per_km) : null,
+          delivery_charge_per_km_last_updated_at:
+            after.delivery_charge_per_km_last_updated_at instanceof Date
+              ? after.delivery_charge_per_km_last_updated_at.toISOString()
+              : after.delivery_charge_per_km_last_updated_at != null
+                ? String(after.delivery_charge_per_km_last_updated_at)
+                : null,
+          delivery_charge_locked: delivLock2.locked,
+          delivery_charge_next_edit_at: delivLock2.next_edit_at,
+          delivery_charge_seconds_until_edit: delivLock2.seconds_until_edit,
+        });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/communication-settings — notification & report preferences for this store. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/communication-settings",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const rows = await sql`
+            SELECT settings_metadata
+            FROM merchant_store_settings
+            WHERE store_id = ${storeId}
+            LIMIT 1
+          `;
+          const meta = (rows[0] as { settings_metadata?: any } | undefined)?.settings_metadata ?? {};
+          const prefs = (meta.notification_preferences as any) ?? {};
+
+          const response = {
+            store_id: storeId,
+            whatsapp_notifications: prefs.whatsapp_notifications === true,
+            reports: {
+              daily_whatsapp: prefs.reports?.daily_whatsapp === true,
+              daily_email: prefs.reports?.daily_email === true,
+              weekly_whatsapp: prefs.reports?.weekly_whatsapp === true,
+              weekly_email: prefs.reports?.weekly_email === true,
+            },
+            order_notifications: {
+              enabled: prefs.order_notifications?.enabled !== false,
+              ring_volume:
+                typeof prefs.order_notifications?.ring_volume === "number"
+                  ? Math.min(Math.max(prefs.order_notifications.ring_volume, 0), 1)
+                  : 0.7,
+              ring_in_silent: prefs.order_notifications?.ring_in_silent === true,
+            },
+            live_complaint_notifications: prefs.live_complaint_notifications !== false,
+            rider_notifications: prefs.rider_notifications !== false,
+          };
+
+          return reply.send(response);
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/communication-settings — update notification & report preferences. */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: {
+          settings?: {
+            whatsapp_notifications?: boolean;
+            reports?: {
+              daily_whatsapp?: boolean;
+              daily_email?: boolean;
+              weekly_whatsapp?: boolean;
+              weekly_email?: boolean;
+            };
+            order_notifications?: {
+              enabled?: boolean;
+              ring_volume?: number;
+              ring_in_silent?: boolean;
+            };
+            live_complaint_notifications?: boolean;
+            rider_notifications?: boolean;
+          };
+        };
+      }>("/stores/:storeId/communication-settings", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const body = (req.body || {}) as {
+          settings?: {
+            whatsapp_notifications?: boolean;
+            reports?: {
+              daily_whatsapp?: boolean;
+              daily_email?: boolean;
+              weekly_whatsapp?: boolean;
+              weekly_email?: boolean;
+            };
+            order_notifications?: {
+              enabled?: boolean;
+              ring_volume?: number;
+              ring_in_silent?: boolean;
+            };
+            live_complaint_notifications?: boolean;
+            rider_notifications?: boolean;
+          };
+        };
+        if (!body.settings || typeof body.settings !== "object") {
+          return reply.code(400).send({ error: "invalid_body", message: "settings object required" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const rows = await sql`
+          SELECT id, settings_metadata
+          FROM merchant_store_settings
+          WHERE store_id = ${storeId}
+          LIMIT 1
+        `;
+        const existingRow = rows[0] as { id: number; settings_metadata: any } | undefined;
+        const existingMeta = existingRow?.settings_metadata ?? {};
+        const existingPrefs = (existingMeta.notification_preferences as any) ?? {};
+
+        const mergedPrefs = {
+          ...existingPrefs,
+          ...body.settings,
+          reports: {
+            ...(existingPrefs.reports ?? {}),
+            ...(body.settings.reports ?? {}),
+          },
+          order_notifications: {
+            ...(existingPrefs.order_notifications ?? {}),
+            ...(body.settings.order_notifications ?? {}),
+          },
+        };
+
+        const nextMeta = {
+          ...existingMeta,
+          notification_preferences: mergedPrefs,
+        };
+
+        const metaJson = JSON.stringify(nextMeta);
+
+        if (!existingRow) {
+          await sql`
+            INSERT INTO merchant_store_settings (store_id, settings_metadata)
+            VALUES (${storeId}, ${metaJson}::jsonb)
+          `;
+        } else {
+          await sql`
+            UPDATE merchant_store_settings
+            SET settings_metadata = ${metaJson}::jsonb,
+                updated_at = NOW()
+            WHERE id = ${existingRow.id}
+          `;
+        }
+
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        await insertAuditLog(
+          sql,
+          "STORE",
+          storeId,
+          existingRow ? "UPDATE" : "CREATE",
+          auditCtx,
+          "notification_preferences",
+          existingPrefs ?? null,
+          mergedPrefs,
+          { section: "store_settings", route: "PATCH /merchant-partner/stores/:storeId/communication-settings" }
+        );
+
+        return reply.send({ ok: true });
+      });
+
+      /** PATCH /merchant-partner/stores/:storeId/bank-account — upsert primary payout account for this store. */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: {
+          account_holder_name?: string;
+          account_number?: string;
+          ifsc_code?: string;
+          bank_name?: string;
+          branch_name?: string | null;
+          account_type?: string | null;
+          upi_id?: string | null;
+          payout_method?: string | null;
+          beneficiary_name?: string | null;
+        };
+      }>("/stores/:storeId/bank-account", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const body = (req.body || {}) as {
+          account_holder_name?: string;
+          account_number?: string;
+          ifsc_code?: string;
+          bank_name?: string;
+          branch_name?: string | null;
+          account_type?: string | null;
+          upi_id?: string | null;
+          payout_method?: string | null;
+          beneficiary_name?: string | null;
+        };
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const hasCoreFields =
+          typeof body.account_holder_name === "string" ||
+          typeof body.account_number === "string" ||
+          typeof body.ifsc_code === "string" ||
+          typeof body.bank_name === "string";
+
+        const hasOnlyPayoutToggle =
+          !hasCoreFields &&
+          typeof body.payout_method === "string" &&
+          body.branch_name === undefined &&
+          body.account_type === undefined &&
+          body.upi_id === undefined &&
+          body.beneficiary_name === undefined;
+
+        const existingRows = await sql`
+          SELECT id,
+                 account_holder_name,
+                 account_number,
+                 ifsc_code,
+                 bank_name,
+                 branch_name,
+                 account_type,
+                 upi_id,
+                 is_verified,
+                 verification_status,
+                 is_primary,
+                 is_active,
+                 is_disabled,
+                 payout_method,
+                 beneficiary_name
+          FROM merchant_store_bank_accounts
+          WHERE store_id = ${storeId}
+            AND is_primary = TRUE
+          ORDER BY id DESC
+          LIMIT 1
+        `;
+        const existing = existingRows[0] as
+          | {
+              id: number;
+              account_holder_name: string;
+              account_number: string;
+              ifsc_code: string;
+              bank_name: string;
+              branch_name: string | null;
+              account_type: string | null;
+              upi_id: string | null;
+              is_verified: boolean | null;
+              verification_status: string | null;
+              is_primary: boolean | null;
+              is_active: boolean | null;
+              is_disabled: boolean | null;
+              payout_method: string | null;
+              beneficiary_name: string | null;
+            }
+          | undefined;
+
+        if (!hasOnlyPayoutToggle) {
+          const requiredCreateOrUpdate =
+            typeof body.account_holder_name === "string" &&
+            typeof body.account_number === "string" &&
+            typeof body.ifsc_code === "string" &&
+            typeof body.bank_name === "string";
+          if (!requiredCreateOrUpdate) {
+            return reply.code(400).send({
+              error: "invalid_body",
+              message: "account_holder_name, account_number, ifsc_code and bank_name are required",
+            });
+          }
+        } else if (!existing) {
+          return reply.code(400).send({
+            error: "invalid_body",
+            message: "Cannot toggle payout method before adding bank details",
+          });
+        }
+
+        const next = {
+          account_holder_name:
+            body.account_holder_name != null
+              ? String(body.account_holder_name).trim()
+              : existing?.account_holder_name ?? "",
+          account_number:
+            body.account_number != null
+              ? String(body.account_number).trim()
+              : existing?.account_number ?? "",
+          ifsc_code:
+            body.ifsc_code != null
+              ? String(body.ifsc_code).trim().toUpperCase()
+              : existing?.ifsc_code ?? "",
+          bank_name:
+            body.bank_name != null
+              ? String(body.bank_name).trim()
+              : existing?.bank_name ?? "",
+          branch_name:
+            body.branch_name !== undefined
+              ? body.branch_name != null && String(body.branch_name).trim()
+                ? String(body.branch_name).trim()
+                : null
+              : existing?.branch_name ?? null,
+          account_type:
+            body.account_type !== undefined
+              ? body.account_type != null && String(body.account_type).trim()
+                ? String(body.account_type).trim().toUpperCase()
+                : null
+              : existing?.account_type ?? null,
+          upi_id:
+            body.upi_id !== undefined
+              ? body.upi_id != null && String(body.upi_id).trim()
+                ? String(body.upi_id).trim()
+                : null
+              : existing?.upi_id ?? null,
+          payout_method:
+            body.payout_method != null && String(body.payout_method).trim()
+              ? String(body.payout_method).trim().toUpperCase()
+              : existing?.payout_method ?? null,
+          beneficiary_name:
+            body.beneficiary_name !== undefined
+              ? body.beneficiary_name != null && String(body.beneficiary_name).trim()
+                ? String(body.beneficiary_name).trim()
+                : null
+              : existing?.beneficiary_name ?? null,
+        };
+
+        const now = new Date();
+
+        if (!existing) {
+          const rows = await sql`
+            INSERT INTO merchant_store_bank_accounts (
+              store_id,
+              account_holder_name,
+              account_number,
+              ifsc_code,
+              bank_name,
+              branch_name,
+              account_type,
+              upi_id,
+              is_verified,
+              verification_status,
+              is_primary,
+              is_active,
+              is_disabled,
+              payout_method,
+              beneficiary_name,
+              attempt_count,
+              last_attempt_at
+            ) VALUES (
+              ${storeId},
+              ${next.account_holder_name},
+              ${next.account_number},
+              ${next.ifsc_code},
+              ${next.bank_name},
+              ${next.branch_name},
+              ${next.account_type},
+              ${next.upi_id},
+              FALSE,
+              'pending',
+              TRUE,
+              TRUE,
+              FALSE,
+              ${next.payout_method},
+              ${next.beneficiary_name},
+              0,
+              NULL
+            )
+            RETURNING id
+          `;
+          const row = rows[0] as { id: number };
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "CREATE",
+            auditCtx,
+            "bank_account",
+            null,
+            { id: row.id, ...next },
+            { section: "bank_account", route: "PATCH /merchant-partner/stores/:storeId/bank-account" }
+          );
+        } else {
+          const oldSnapshot = {
+            account_holder_name: existing.account_holder_name,
+            account_number: existing.account_number,
+            ifsc_code: existing.ifsc_code,
+            bank_name: existing.bank_name,
+            branch_name: existing.branch_name,
+            account_type: existing.account_type,
+            upi_id: existing.upi_id,
+            payout_method: existing.payout_method,
+            beneficiary_name: existing.beneficiary_name,
+            is_verified: existing.is_verified,
+            verification_status: existing.verification_status,
+          };
+          await sql`
+            UPDATE merchant_store_bank_accounts
+            SET
+              account_holder_name = ${next.account_holder_name},
+              account_number = ${next.account_number},
+              ifsc_code = ${next.ifsc_code},
+              bank_name = ${next.bank_name},
+              branch_name = ${next.branch_name},
+              account_type = ${next.account_type},
+              upi_id = ${next.upi_id},
+              payout_method = ${next.payout_method},
+              beneficiary_name = ${next.beneficiary_name},
+              is_primary = TRUE,
+              is_active = TRUE,
+              is_disabled = FALSE,
+              is_verified = FALSE,
+              verification_status = 'pending',
+              attempt_count = 0,
+              last_attempt_at = NULL,
+              updated_at = ${now}
+            WHERE id = ${existing.id}
+          `;
+
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "UPDATE",
+            auditCtx,
+            "bank_account",
+            oldSnapshot,
+            next,
+            { section: "bank_account", route: "PATCH /merchant-partner/stores/:storeId/bank-account" }
+          );
+        }
+
+        return reply.send({ ok: true });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/status — real-time store open/closed status + availability metadata for partner app. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/status",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const rows = await sql`
+            SELECT ms.id,
+                   ms.is_accepting_orders,
+                   ms.is_active,
+                   msa.is_available,
+                   msa.is_accepting_orders AS avail_accepting,
+                   msa.auto_open_from_schedule,
+                   msa.block_auto_open,
+                   msa.manual_close_until,
+                   msa.restriction_type
+            FROM merchant_stores ms
+            LEFT JOIN merchant_store_availability msa ON msa.store_id = ms.id
+            WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (rows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const row = rows[0] as {
+            is_accepting_orders: boolean | null;
+            is_active: boolean | null;
+            is_available: boolean | null;
+            avail_accepting: boolean | null;
+            auto_open_from_schedule?: boolean | null;
+            block_auto_open?: boolean | null;
+            manual_close_until?: Date | string | null;
+            restriction_type?: string | null;
+          };
+          const autoOpenFromSchedule = row.auto_open_from_schedule !== false;
+          const blockAutoOpen = row.block_auto_open === true;
+          let manualCloseUntil: string | null = null;
+          if (row.manual_close_until != null) {
+            const raw = row.manual_close_until instanceof Date
+              ? row.manual_close_until
+              : new Date(String(row.manual_close_until).trim().replace(" ", "T"));
+            manualCloseUntil = Number.isNaN(raw.getTime()) ? null : raw.toISOString();
+          }
+          let restrictionType = row.restriction_type != null ? String(row.restriction_type) : null;
+
+          const now = new Date();
+          const nowMs = now.getTime();
+          let untilMs = manualCloseUntil != null ? new Date(manualCloseUntil).getTime() : 0;
+          let isInScheduledClosure = manualCloseUntil != null && nowMs < untilMs;
+
+          // Scheduled closures (future schedule): activates only when starts_at is reached.
+          // Support multiple entries: pick the earliest ACTIVE window and earliest UPCOMING one.
+          const rawSchedRows = await sql`
+            SELECT id, reason, starts_at, ends_at, status, reminder_sent_at
+            FROM merchant_store_scheduled_closures
+            WHERE store_id = ${storeId} AND status IN ('scheduled', 'active')
+            ORDER BY starts_at ASC
+            LIMIT 20
+          `;
+          type SchedRow = {
+            id: number;
+            reason: string;
+            starts_at: Date | string;
+            ends_at: Date | string;
+            status: string;
+            reminder_sent_at: Date | string | null;
+          };
+          let activeSched: (SchedRow & { startsAt: Date; endsAt: Date }) | null = null;
+          let upcomingSched: (SchedRow & { startsAt: Date; endsAt: Date }) | null = null;
+
+          for (const rowRaw of rawSchedRows as SchedRow[]) {
+            const startsAt = new Date(
+              rowRaw.starts_at instanceof Date ? rowRaw.starts_at.toISOString() : String(rowRaw.starts_at)
+            );
+            const endsAt = new Date(
+              rowRaw.ends_at instanceof Date ? rowRaw.ends_at.toISOString() : String(rowRaw.ends_at)
+            );
+            if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) continue;
+
+            const startsMs = startsAt.getTime();
+            const endsMs = endsAt.getTime();
+
+            // Reminder 1 hour before start (only once, while still scheduled)
+            const reminderAtMs = startsMs - 60 * 60 * 1000;
+            const reminderSent = rowRaw.reminder_sent_at != null;
+            if (rowRaw.status === "scheduled" && !reminderSent && nowMs >= reminderAtMs && nowMs < startsMs) {
+              await sql`
+                UPDATE merchant_store_scheduled_closures
+                SET reminder_sent_at = NOW(), updated_at = NOW()
+                WHERE id = ${rowRaw.id}
+              `;
+              const reminderTitle = "Scheduled closure reminder";
+              const reminderBody =
+                "Reminder: Your scheduled store closure will start in 1 hour. If you want to cancel or modify it, you can do so from the Scheduled Off settings.";
+              await sql`
+                INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+                VALUES (${storeId}, 'store', ${reminderTitle}, ${reminderBody}, FALSE, '/(tabs)/profile/vacation')
+              `;
+              const tokenRows = await sql`
+                SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
+              `;
+              const tokens = (tokenRows as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+              await sendExpoPush(tokens, {
+                title: reminderTitle,
+                body: reminderBody,
+                data: { url: "/(tabs)/profile/vacation", screen: "scheduled_off" },
+              });
+            }
+
+            const inWindow = nowMs >= startsMs && nowMs < endsMs;
+            const upcoming = nowMs < startsMs;
+
+            // Mark active when starts_at reached
+            if (rowRaw.status === "scheduled" && inWindow) {
+              await sql`
+                UPDATE merchant_store_scheduled_closures
+                SET status = 'active', updated_at = NOW()
+                WHERE id = ${rowRaw.id}
+              `;
+            }
+
+            // Mark completed when ended
+            if (nowMs >= endsMs && (rowRaw.status === "scheduled" || rowRaw.status === "active")) {
+              await sql`
+                UPDATE merchant_store_scheduled_closures
+                SET status = 'completed', updated_at = NOW()
+                WHERE id = ${rowRaw.id}
+              `;
+              await sql`
+                INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+                VALUES (
+                  ${storeId},
+                  'store',
+                  'Scheduled closure ended',
+                  'Your scheduled store closure has ended. Your store can now accept orders.',
+                  FALSE,
+                  '/(tabs)/profile/vacation'
+                )
+              `;
+              continue;
+            }
+
+            if (inWindow) {
+              if (!activeSched || startsMs < activeSched.startsAt.getTime()) {
+                activeSched = { ...rowRaw, startsAt, endsAt };
+              }
+            } else if (upcoming) {
+              if (!upcomingSched || startsMs < upcomingSched.startsAt.getTime()) {
+                upcomingSched = { ...rowRaw, startsAt, endsAt };
+              }
+            }
+          }
+
+          const isActiveSchedule = !!activeSched;
+          const isUpcomingSchedule = !!upcomingSched;
+
+          // When availability has no manual_close_until, derive from *today's* active merchant_store_holidays window.
+          // This must NOT close the store on future holidays; only when current time is inside today's [closed_from, closed_till] in IST.
+          let resolvedManualCloseUntil = manualCloseUntil;
+          if (!isInScheduledClosure && manualCloseUntil == null) {
+            const istDateFormatter = new Intl.DateTimeFormat("en-CA", {
+              timeZone: "Asia/Kolkata",
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+            });
+            const todayStr = istDateFormatter.format(now); // YYYY-MM-DD in IST
+            const holidayRows = await sql`
+              SELECT holiday_date, closed_from, closed_till, closure_reason, holiday_type
+              FROM merchant_store_holidays
+              WHERE store_id = ${storeId}
+                AND holiday_date = ${todayStr}
+              ORDER BY closed_till DESC NULLS LAST
+              LIMIT 10
+            `;
+            for (const h of holidayRows as Array<{ holiday_date?: string | Date; closed_from?: string | null; closed_till?: string | null; closure_reason?: string | null; holiday_type?: string | null }>) {
+              const dateStr = h.holiday_date instanceof Date ? h.holiday_date.toISOString().slice(0, 10) : String(h.holiday_date ?? "").slice(0, 10);
+              if (!dateStr) continue;
+              // Only consider holidays for *today*; derive full [from,to] window and close store only if now is inside.
+              const fromTimeRaw =
+                h.closed_from != null && String(h.closed_from).trim() !== ""
+                  ? String(h.closed_from).trim().slice(0, 8)
+                  : "00:00:00";
+              const tillTimeRaw =
+                h.closed_till != null && String(h.closed_till).trim() !== ""
+                  ? String(h.closed_till).trim().slice(0, 8)
+                  : "23:59:59";
+              const fromIso = `${dateStr}T${fromTimeRaw}.000Z`;
+              const untilIso = `${dateStr}T${tillTimeRaw}.000Z`;
+              const fromDate = new Date(fromIso);
+              const untilDate = new Date(untilIso);
+              const fromMs = Number.isNaN(fromDate.getTime()) ? 0 : fromDate.getTime();
+              const untilRowMs = Number.isNaN(untilDate.getTime()) ? 0 : untilDate.getTime();
+              if (fromMs <= nowMs && nowMs < untilRowMs) {
+                resolvedManualCloseUntil = untilDate.toISOString();
+                untilMs = untilRowMs;
+                isInScheduledClosure = true;
+                if (restrictionType == null && h.holiday_type != null) restrictionType = String(h.holiday_type);
+                break;
+              }
+            }
+          }
+
+          if (!isInScheduledClosure && manualCloseUntil != null && nowMs >= untilMs) {
+            await sql`
+              UPDATE merchant_store_availability
+              SET is_available = TRUE, is_accepting_orders = TRUE,
+                  manual_close_until = NULL, restriction_type = NULL, updated_at = NOW()
+              WHERE store_id = ${storeId}
+            `;
+            resolvedManualCloseUntil = null;
+          }
+
+          const baseAccepting = row.is_accepting_orders === true;
+          const availAccepting = row.avail_accepting !== false;
+          let available = row.is_available !== false;
+          const active = row.is_active !== false;
+          if (isActiveSchedule) {
+            available = false;
+          } else if (isInScheduledClosure) {
+            available = false;
+          } else if (manualCloseUntil != null && nowMs >= untilMs) {
+            available = true;
+          }
+          const isOpen = baseAccepting && availAccepting && available && active;
+
+          let scheduledClosure: { from: string; to: string; reason: string } | null = null;
+          if (isActiveSchedule && activeSched) {
+            scheduledClosure = {
+              from: activeSched.startsAt.toISOString(),
+              to: activeSched.endsAt.toISOString(),
+              reason: String(activeSched.reason || "Scheduled off"),
+            };
+          } else if (isInScheduledClosure && resolvedManualCloseUntil) {
+            const holidayRows = await sql`
+              SELECT holiday_date, closed_from, closed_till, closure_reason
+              FROM merchant_store_holidays
+              WHERE store_id = ${storeId}
+              ORDER BY created_at DESC
+              LIMIT 1
+            `;
+            const h = holidayRows[0] as { holiday_date?: string | Date; closed_from?: string | null; closed_till?: string | null; closure_reason?: string | null } | undefined;
+            const reason = (h?.closure_reason != null && String(h.closure_reason).trim() !== "") ? String(h.closure_reason).trim() : "Scheduled off";
+            if (h?.holiday_date != null) {
+              const dateStr = h.holiday_date instanceof Date ? h.holiday_date.toISOString().slice(0, 10) : String(h.holiday_date).slice(0, 10);
+              const fromTime = (h.closed_from != null && String(h.closed_from).trim() !== "") ? String(h.closed_from).trim().slice(0, 8) : "00:00:00";
+              const fromIso = `${dateStr}T${fromTime}.000Z`;
+              const fromDate = new Date(fromIso);
+              scheduledClosure = {
+                from: Number.isNaN(fromDate.getTime()) ? `${dateStr}T00:00:00.000Z` : fromDate.toISOString(),
+                to: resolvedManualCloseUntil,
+                reason,
+              };
+            } else {
+              scheduledClosure = { from: resolvedManualCloseUntil, to: resolvedManualCloseUntil, reason };
+            }
+          }
+
+          return reply.send({
+            store_id: storeId,
+            is_open: isOpen,
+            is_accepting_orders: baseAccepting,
+            is_available: available,
+            auto_open_from_schedule: autoOpenFromSchedule,
+            block_auto_open: blockAutoOpen,
+            manual_close_until: resolvedManualCloseUntil,
+            restriction_type: resolvedManualCloseUntil != null ? restrictionType : null,
+            scheduled_closure: scheduledClosure,
+            scheduled_closure_upcoming: isUpcomingSchedule && upcomingSched ? {
+              from: upcomingSched.startsAt.toISOString(),
+              to: upcomingSched.endsAt.toISOString(),
+              reason: String(upcomingSched.reason || "Scheduled off"),
+            } : null,
+          });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/status — toggle store open/closed and update availability flags for partner app. */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: { is_open?: boolean; auto_open_from_schedule?: boolean; block_auto_open?: boolean };
+      }>("/stores/:storeId/status", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const body = (req.body || {}) as {
+          is_open?: boolean;
+          auto_open_from_schedule?: boolean;
+          block_auto_open?: boolean;
+        };
+        const hasIsOpen = typeof body.is_open === "boolean";
+        const hasAutoOpen = typeof body.auto_open_from_schedule === "boolean";
+        const hasBlockAutoOpen = typeof body.block_auto_open === "boolean";
+        if (!hasIsOpen && !hasAutoOpen && !hasBlockAutoOpen) {
+          return reply.code(400).send({
+            error: "invalid_body",
+            message: "At least one of is_open, auto_open_from_schedule or block_auto_open is required",
+          });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id, is_accepting_orders, is_active
+          FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const storeRow = storeRows[0] as {
+          id: number;
+          is_accepting_orders: boolean | null;
+          is_active: boolean | null;
+        };
+
+        const availRows = await sql`
+          SELECT id,
+                 is_available,
+                 is_accepting_orders,
+                 auto_open_from_schedule,
+                 block_auto_open,
+                 manual_close_until,
+                 restriction_type
+          FROM merchant_store_availability
+          WHERE store_id = ${storeId}
+          LIMIT 1
+        `;
+        const availRow = availRows[0] as
+          | {
+              id: number;
+              is_available: boolean | null;
+              is_accepting_orders: boolean | null;
+              auto_open_from_schedule?: boolean | null;
+              block_auto_open?: boolean | null;
+              manual_close_until?: Date | string | null;
+              restriction_type?: string | null;
+            }
+          | undefined;
+
+        const nextAccepting = hasIsOpen ? body.is_open === true : undefined;
+        const nextAvailable = hasIsOpen ? body.is_open === true : undefined;
+        const nextAutoOpen = hasAutoOpen ? body.auto_open_from_schedule === true : undefined;
+        const nextBlockAutoOpen = hasBlockAutoOpen ? body.block_auto_open === true : undefined;
+
+        // When merchant manually opens store (is_open true), clear scheduled off so store can go online.
+        const openingStore = hasIsOpen && body.is_open === true;
+        const currentManualCloseUntil = availRow?.manual_close_until ?? null;
+        const currentRestrictionType = availRow?.restriction_type ?? null;
+        const hadScheduledClosure = currentManualCloseUntil != null;
+
+        const mergedManualCloseUntil = openingStore ? null : (availRow?.manual_close_until ?? null);
+        const mergedRestrictionType = openingStore ? null : (availRow?.restriction_type ?? null);
+
+        // Update merchant_stores if is_open was provided (maps to is_accepting_orders).
+        if (hasIsOpen) {
+          const accepting = body.is_open === true;
+          await sql`
+            UPDATE merchant_stores
+            SET is_accepting_orders = ${accepting}, updated_at = NOW()
+            WHERE id = ${storeId} AND parent_id = ${parentId}
+          `;
+        }
+
+        // Clear today and future holiday rows when opening so GET status does not re-apply closure.
+        if (openingStore && hadScheduledClosure) {
+          const todayStr = new Date().toISOString().slice(0, 10);
+          await sql`
+            DELETE FROM merchant_store_holidays
+            WHERE store_id = ${storeId} AND holiday_date >= ${todayStr}
+          `;
+        }
+
+        // Upsert merchant_store_availability with merged values (including clearing manual_close_until when opening).
+        const currentAvailable = availRow?.is_available ?? true;
+        const currentAvailAccepting = availRow?.is_accepting_orders ?? true;
+        const currentAutoOpen = availRow?.auto_open_from_schedule ?? true;
+        const currentBlockAutoOpen = availRow?.block_auto_open ?? false;
+
+        const mergedAvailable = nextAvailable ?? currentAvailable;
+        const mergedAvailAccepting = nextAccepting ?? currentAvailAccepting;
+        const mergedAutoOpen = nextAutoOpen ?? currentAutoOpen;
+        const mergedBlockAutoOpen = nextBlockAutoOpen ?? currentBlockAutoOpen;
+
+        if (availRow) {
+          await sql`
+            UPDATE merchant_store_availability
+            SET
+              is_available = ${mergedAvailable},
+              is_accepting_orders = ${mergedAvailAccepting},
+              auto_open_from_schedule = ${mergedAutoOpen},
+              block_auto_open = ${mergedBlockAutoOpen},
+              manual_close_until = ${mergedManualCloseUntil},
+              restriction_type = ${mergedRestrictionType},
+              updated_at = NOW()
+            WHERE store_id = ${storeId}
+          `;
+        } else {
+          await sql`
+            INSERT INTO merchant_store_availability (
+              store_id,
+              is_available,
+              is_accepting_orders,
+              auto_open_from_schedule,
+              block_auto_open,
+              manual_close_until,
+              restriction_type
+            )
+            VALUES (
+              ${storeId},
+              ${mergedAvailable},
+              ${mergedAvailAccepting},
+              ${mergedAutoOpen},
+              ${mergedBlockAutoOpen},
+              ${mergedManualCloseUntil},
+              ${mergedRestrictionType}
+            )
+          `;
+        }
+
+        // Real notification: when store was in scheduled off and merchant opens, record for in-app list.
+        if (openingStore && hadScheduledClosure) {
+          await sql`
+            INSERT INTO merchant_store_notifications (store_id, type, title, body, read)
+            VALUES (
+              ${storeId},
+              'store',
+              'Store opened',
+              'Scheduled off cleared. Store is now open and accepting orders.',
+              FALSE
+            )
+          `;
+        }
+
+        const parentRow = await getParentForAudit(sql, parentId);
+        const auditCtx = getAuditContext(req, parentRow, parentId);
+        await insertAuditLog(
+          sql,
+          "STORE",
+          storeId,
+          "UPDATE",
+          auditCtx,
+          "store_status",
+          {
+            is_accepting_orders: storeRow.is_accepting_orders === true,
+            is_available: currentAvailable,
+            auto_open_from_schedule: currentAutoOpen,
+            block_auto_open: currentBlockAutoOpen,
+            manual_close_until: currentManualCloseUntil,
+            restriction_type: currentRestrictionType,
+          },
+          {
+            is_accepting_orders: mergedAvailAccepting,
+            is_available: mergedAvailable,
+            auto_open_from_schedule: mergedAutoOpen,
+            block_auto_open: mergedBlockAutoOpen,
+            manual_close_until: mergedManualCloseUntil,
+            restriction_type: mergedRestrictionType,
+          },
+          { section: "store_operations", route: "PATCH /merchant-partner/stores/:storeId/status" }
+        );
+
+        return reply.send({
+          store_id: storeId,
+          is_open: mergedAvailAccepting && mergedAvailable && (storeRow.is_active ?? true),
+          is_accepting_orders: mergedAvailAccepting,
+          is_available: mergedAvailable,
+          auto_open_from_schedule: mergedAutoOpen,
+          block_auto_open: mergedBlockAutoOpen,
+          manual_close_until: mergedManualCloseUntil,
+          restriction_type: mergedRestrictionType,
+        });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/ratings/complaints — list low-rated reviews (complaints) for this store. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/ratings/complaints",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          // Complaints = ratings 1–3 for this merchant store.
+          const rows = await sql`
+            SELECT id,
+                   store_id,
+                   order_id,
+                   customer_id,
+                   rating,
+                   review_title,
+                   review_text,
+                   merchant_response,
+                   merchant_responded_at,
+                   is_flagged,
+                   created_at
+            FROM merchant_store_ratings
+            WHERE store_id = ${storeId}
+              AND rating <= 3
+            ORDER BY created_at DESC
+            LIMIT 200
+          `;
+
+          const data = (rows as Array<{
+            id: number;
+            store_id: number;
+            order_id: number | null;
+            customer_id: number | null;
+            rating: number;
+            review_title: string | null;
+            review_text: string | null;
+            merchant_response: string | null;
+            merchant_responded_at: Date | string | null;
+            is_flagged: boolean | null;
+            created_at: Date | string;
+          }>).map((r) => ({
+            id: r.id,
+            overallRating: r.rating,
+            reviewTitle: r.review_title,
+            reviewText: r.review_text,
+            replyText: r.merchant_response,
+            repliedAt:
+              r.merchant_responded_at instanceof Date
+                ? r.merchant_responded_at.toISOString()
+                : r.merchant_responded_at
+                ? String(r.merchant_responded_at)
+                : null,
+            isFlagged: r.is_flagged === true,
+            createdAt:
+              r.created_at instanceof Date
+                ? r.created_at.toISOString()
+                : String(r.created_at),
+          }));
+
+          return reply.send({ success: true, data });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/ratings/reviews — list reviews with optional date & rating filters. */
+      protectedApp.get<{
+        Params: { storeId: string };
+        Querystring: { from?: string; to?: string; minRating?: string };
+      }>("/stores/:storeId/ratings/reviews", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const minRating = req.query.minRating ? Number(req.query.minRating) : null;
+        const from =
+          req.query.from && !Number.isNaN(Date.parse(req.query.from))
+            ? new Date(req.query.from)
+            : null;
+        const to =
+          req.query.to && !Number.isNaN(Date.parse(req.query.to))
+            ? new Date(req.query.to)
+            : null;
+
+        const rows = await sql`
+          SELECT id,
+                 store_id,
+                 order_id,
+                 customer_id,
+                 rating,
+                 review_title,
+                 review_text,
+                 merchant_response,
+                 merchant_responded_at,
+                 created_at
+          FROM merchant_store_ratings
+          WHERE store_id = ${storeId}
+          ORDER BY created_at DESC
+          LIMIT 200
+        `;
+
+        const typedRows = rows as Array<{
+          id: number;
+          store_id: number;
+          order_id: number | null;
+          customer_id: number | null;
+          rating: number;
+          review_title: string | null;
+          review_text: string | null;
+          merchant_response: string | null;
+          merchant_responded_at: Date | string | null;
+          created_at: Date | string;
+        }>;
+
+        const filteredRows = typedRows.filter((r) => {
+          const created =
+            r.created_at instanceof Date ? r.created_at : new Date(String(r.created_at));
+          if (Number.isNaN(created.getTime())) return false;
+
+          if (from && created < from) return false;
+          if (to && created > to) return false;
+          if (minRating != null && Number.isFinite(minRating) && r.rating < minRating) {
+            return false;
+          }
+          return true;
+        });
+
+        const data = filteredRows.map((r) => ({
+          id: r.id,
+          overallRating: r.rating,
+          reviewTitle: r.review_title,
+          reviewText: r.review_text,
+          replyText: r.merchant_response,
+          repliedAt:
+            r.merchant_responded_at instanceof Date
+              ? r.merchant_responded_at.toISOString()
+              : r.merchant_responded_at ? String(r.merchant_responded_at) : null,
+          createdAt:
+            r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        }));
+
+        return reply.send({ success: true, data });
+      });
+
+      /** POST /merchant-partner/stores/:storeId/ratings/reviews/:reviewId/reply — save merchant reply to a review. */
+      protectedApp.post<{
+        Params: { storeId: string; reviewId: string };
+        Body: { replyText: string };
+      }>("/stores/:storeId/ratings/reviews/:reviewId/reply", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const reviewId = Number(req.params.reviewId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        if (!Number.isInteger(reviewId) || reviewId < 1) {
+          return reply.code(400).send({ error: "invalid_review_id" });
+        }
+        const replyText = (req.body?.replyText ?? "").trim();
+        if (!replyText) {
+          return reply.code(400).send({ error: "empty_reply" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const result = await sql`
+          UPDATE merchant_store_ratings
+          SET merchant_response = ${replyText},
+              merchant_responded_at = now(),
+              updated_at = now()
+          WHERE id = ${reviewId} AND store_id = ${storeId}
+          RETURNING id
+        `;
+        if (result.length === 0) {
+          return reply.code(404).send({ error: "review_not_found" });
+        }
+
+        return reply.send({ success: true });
+      });
+
+      /** DELETE /merchant-partner/stores/:storeId/ratings/reviews/:reviewId/reply — delete merchant reply for a review. */
+      protectedApp.delete<{
+        Params: { storeId: string; reviewId: string };
+      }>("/stores/:storeId/ratings/reviews/:reviewId/reply", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const reviewId = Number(req.params.reviewId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        if (!Number.isInteger(reviewId) || reviewId < 1) {
+          return reply.code(400).send({ error: "invalid_review_id" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const result = await sql`
+          UPDATE merchant_store_ratings
+          SET merchant_response = NULL,
+              merchant_responded_at = NULL,
+              updated_at = now()
+          WHERE id = ${reviewId} AND store_id = ${storeId}
+          RETURNING id
+        `;
+        if (result.length === 0) {
+          return reply.code(404).send({ error: "review_not_found" });
+        }
+
+        return reply.send({ success: true });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/notifications — list in-app notifications for the store. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
+        "/stores/:storeId/notifications",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const limit = Math.min(Math.max(Number(req.query?.limit) || 50, 1), 100);
+          const rows = await sql`
+            SELECT id, store_id, type, title, body, read, order_id, action_url, created_at
+            FROM merchant_store_notifications
+            WHERE store_id = ${storeId}
+            ORDER BY created_at DESC
+            LIMIT ${limit}
+          `;
+          const notifications = (rows as Array<{
+            id: number;
+            store_id: number;
+            type: string;
+            title: string;
+            body: string;
+            read: boolean;
+            order_id: number | null;
+            action_url?: string | null;
+            created_at: Date | string;
+          }>).map((r) => ({
+            id: String(r.id),
+            store_id: r.store_id,
+            type: r.type,
+            title: r.title,
+            body: r.body,
+            read: r.read === true,
+            order_id: r.order_id ?? undefined,
+            action_url: r.action_url ?? undefined,
+            created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+          }));
+          return reply.send({ notifications });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/holidays — list holidays (default: upcoming scheduled_off days). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { type?: string; from?: string } }>(
+        "/stores/:storeId/holidays",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const istDateFormatter = new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          });
+          const fromDateStr =
+            typeof req.query.from === "string" && req.query.from.trim() !== ""
+              ? req.query.from.trim().slice(0, 10)
+              : istDateFormatter.format(new Date());
+          const typeFilter = typeof req.query.type === "string" && req.query.type.trim() !== "" ? req.query.type.trim() : "scheduled_off";
+
+          const rows = await sql`
+            SELECT id,
+                   store_id,
+                   holiday_name,
+                   holiday_type,
+                   holiday_date,
+                   is_full_day,
+                   closed_from,
+                   closed_till,
+                   closure_reason,
+                   created_at
+            FROM merchant_store_holidays
+            WHERE store_id = ${storeId}
+              AND holiday_type = ${typeFilter}
+              AND holiday_date >= ${fromDateStr}
+            ORDER BY holiday_date ASC, closed_from ASC NULLS FIRST
+          `;
+
+          const holidays = (rows as Array<{
+            id: number;
+            store_id: number;
+            holiday_name: string;
+            holiday_type: string | null;
+            holiday_date: string | Date;
+            is_full_day: boolean | null;
+            closed_from: string | null;
+            closed_till: string | null;
+            closure_reason: string | null;
+            created_at: Date | string;
+          }>).map((h) => ({
+            id: String(h.id),
+            store_id: h.store_id,
+            holiday_name: h.holiday_name,
+            holiday_type: h.holiday_type,
+            holiday_date:
+              h.holiday_date instanceof Date ? h.holiday_date.toISOString().slice(0, 10) : String(h.holiday_date).slice(0, 10),
+            is_full_day: h.is_full_day === true,
+            closed_from: h.closed_from,
+            closed_till: h.closed_till,
+            closure_reason: h.closure_reason,
+            created_at: h.created_at instanceof Date ? h.created_at.toISOString() : String(h.created_at),
+          }));
+
+          return reply.send({ holidays });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/notifications/:notificationId/read — mark one as read. */
+      protectedApp.patch<{ Params: { storeId: string; notificationId: string } }>(
+        "/stores/:storeId/notifications/:notificationId/read",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const notificationId = Number(req.params.notificationId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(notificationId) || notificationId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            UPDATE merchant_store_notifications
+            SET read = TRUE
+            WHERE id = ${notificationId} AND store_id = ${storeId}
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/push-token — register an Expo push token for background reminders. */
+      protectedApp.post<{ Params: { storeId: string }; Body: { token: string; platform?: string } }>(
+        "/stores/:storeId/push-token",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const token = String(req.body?.token ?? "").trim();
+          if (!token) return reply.code(400).send({ error: "invalid_body", message: "token is required" });
+          const platform = req.body?.platform != null ? String(req.body.platform) : null;
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            INSERT INTO merchant_store_push_tokens (store_id, token, platform)
+            VALUES (${storeId}, ${token}, ${platform})
+            ON CONFLICT (store_id, token) DO UPDATE SET updated_at = NOW()
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/notifications/:notificationId — delete a notification. */
+      protectedApp.delete<{ Params: { storeId: string; notificationId: string } }>(
+        "/stores/:storeId/notifications/:notificationId",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const notificationId = Number(req.params.notificationId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(notificationId) || notificationId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            DELETE FROM merchant_store_notifications
+            WHERE id = ${notificationId} AND store_id = ${storeId}
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /**
+       * POST /merchant-partner/stores/:storeId/schedule-off
+       *
+       * Schedule a manual time-off / vacation for the store.
+       * Backend owns all logic: it updates merchant_store_availability, inserts a row into
+       * merchant_store_status_log, and (optionally) creates a merchant_store_holidays entry.
+       *
+       * The mobile app only passes the human-readable reason selected by the merchant.
+       */
+      protectedApp.post<{ Params: { storeId: string }; Body: { reason: string; close_until?: string; permanent?: boolean } }>(
+        "/stores/:storeId/schedule-off",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const reason = (req.body?.reason ?? "").trim();
+          if (!reason) {
+            return reply.code(400).send({ error: "invalid_body", message: "reason is required" });
+          }
+          const closeUntilRaw = typeof req.body?.close_until === "string" ? req.body.close_until : undefined;
+          const startsAtRaw = typeof (req.body as any)?.starts_at === "string" ? String((req.body as any).starts_at) : undefined;
+          const endsAtRaw = typeof (req.body as any)?.ends_at === "string" ? String((req.body as any).ends_at) : undefined;
+          const permanent = req.body?.permanent === true;
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+          // Ensure store belongs to this partner
+          const storeRows = await sql`
+            SELECT id
+            FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          // Permanent shutdown: keep existing behavior.
+          if (permanent) {
+            const restrictionType = "PERMANENT_SHUT";
+            await sql`
+              UPDATE merchant_store_availability
+              SET is_available = FALSE, is_accepting_orders = FALSE,
+                  manual_close_until = NULL, restriction_type = ${restrictionType}, updated_at = NOW()
+              WHERE store_id = ${storeId}
+            `;
+            await sql`
+              UPDATE merchant_stores
+              SET is_accepting_orders = FALSE, is_active = FALSE, updated_at = NOW()
+              WHERE id = ${storeId}
+            `;
+            await sql`
+              INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+              VALUES (
+                ${storeId},
+                'store',
+                'Store marked permanently closed',
+                'Your store has been marked as permanently closed.',
+                FALSE,
+                '/(tabs)/profile/vacation'
+              )
+            `;
+            return reply.send({
+              store_id: storeId,
+              manual_close_until: null,
+              restriction_type: restrictionType,
+              reason,
+              permanent,
+            });
+          }
+
+          // Scheduled closure: create a future schedule (does not close store until starts_at).
+          const now = new Date();
+          const startsAt = startsAtRaw ? new Date(startsAtRaw) : now;
+          const endsAt = endsAtRaw
+            ? new Date(endsAtRaw)
+            : closeUntilRaw
+              ? new Date(closeUntilRaw)
+              : new Date(now.getTime() + 2 * 60 * 60 * 1000); // default 2h
+
+          if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt.getTime() <= startsAt.getTime()) {
+            return reply.code(400).send({ error: "invalid_body", message: "starts_at/ends_at are invalid" });
+          }
+
+          // Cancel existing open schedule (if any) then insert new one.
+          await sql`
+            UPDATE merchant_store_scheduled_closures
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE store_id = ${storeId} AND status IN ('scheduled', 'active')
+          `;
+          const schedRows = await sql`
+            INSERT INTO merchant_store_scheduled_closures (store_id, reason, starts_at, ends_at, status)
+            VALUES (${storeId}, ${reason}, ${startsAt.toISOString()}, ${endsAt.toISOString()}, 'scheduled')
+            RETURNING id
+          `;
+          const schedId = Number((schedRows[0] as any)?.id ?? 0) || null;
+
+          // Create a holiday entry so scheduled off appears in holidays table too.
+          // Use Asia/Kolkata calendar date for the holiday_date to match what merchants select.
+          const istDateFormatter = new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          });
+          const startDateStr = istDateFormatter.format(startsAt); // YYYY-MM-DD in IST
+          const startTimeStr = startsAt.toISOString().slice(11, 19);
+          const endTimeStr = endsAt.toISOString().slice(11, 19);
+          const isFullDay = startTimeStr === "00:00:00" && endTimeStr >= "23:59:00";
+          await sql`
+            INSERT INTO merchant_store_holidays (
+              store_id,
+              holiday_name,
+              holiday_type,
+              holiday_date,
+              is_full_day,
+              closed_from,
+              closed_till,
+              closure_reason
+            )
+            VALUES (
+              ${storeId},
+              'Scheduled off',
+              'scheduled_off',
+              ${startDateStr},
+              ${isFullDay},
+              ${startTimeStr},
+              ${endTimeStr},
+              ${reason}
+            )
+          `;
+
+          await sql`
+            INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+            VALUES (
+              ${storeId},
+              'store',
+              'Scheduled store closure set',
+              'Your store closure schedule has been set successfully.',
+              FALSE,
+              '/(tabs)/profile/vacation'
+            )
+          `;
+
+          const tokenRows = await sql`
+            SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
+          `;
+          const tokens = (tokenRows as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+          await sendExpoPush(tokens, {
+            title: "Scheduled store closure set",
+            body: "Your store closure schedule has been set successfully.",
+            data: { url: "/(tabs)/profile/vacation", scheduledClosureId: schedId },
+          });
+
+          // Log the action in merchant_store_status_log for analytics and audit.
+          const parentRow = await getParentForAudit(sql, parentId);
+          const performedByEmail = parentRow?.owner_email ?? null;
+          const performedByName = parentRow?.owner_name ?? null;
+          const performedById = String(parentId);
+          const statusAction = "scheduled_close";
+
+          await sql`
+            INSERT INTO merchant_store_status_log (
+              store_id,
+              action,
+              restriction_type,
+              performed_by_id,
+              performed_by_email,
+              performed_by_name,
+              close_reason
+            )
+            VALUES (
+              ${storeId},
+              ${statusAction},
+              'SCHEDULED',
+              ${performedById},
+              ${performedByEmail},
+              ${performedByName},
+              ${reason}
+            )
+          `;
+
+          return reply.send({
+            store_id: storeId,
+            manual_close_until: null,
+            restriction_type: "SCHEDULED",
+            reason,
+            permanent,
+            starts_at: startsAt.toISOString(),
+            ends_at: endsAt.toISOString(),
+          });
+        }
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/schedule-off — cancel upcoming/active scheduled closure. */
+      protectedApp.delete<{ Params: { storeId: string } }>(
+        "/stores/:storeId/schedule-off",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          // Remove schedule rows entirely when merchant inactivates (requested behavior).
+          await sql`
+            DELETE FROM merchant_store_scheduled_closures
+            WHERE store_id = ${storeId} AND status IN ('scheduled', 'active')
+          `;
+          await sql`
+            DELETE FROM merchant_store_holidays
+            WHERE store_id = ${storeId}
+              AND holiday_type = 'scheduled_off'
+              AND holiday_date >= CURRENT_DATE
+          `;
+          await sql`
+            INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+            VALUES (
+              ${storeId},
+              'store',
+              'Scheduled closure cancelled',
+              'Your scheduled store closure has been cancelled.',
+              FALSE,
+              '/(tabs)/profile/vacation'
+            )
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/staff/:staffId — update staff member. */
+      protectedApp.patch<{ Params: { storeId: string; staffId: string }; Body: { name?: string; phone_number?: string; role?: string; status?: boolean } }>(
+        "/stores/:storeId/staff/:staffId",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const staffId = Number(req.params.staffId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(staffId) || staffId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const existingRows = await sql`
+            SELECT * FROM store_staff WHERE id = ${staffId} AND store_id = ${storeId} LIMIT 1
+          `;
+          const existing = existingRows[0] as any;
+          if (!existing) return reply.code(404).send({ error: "staff_not_found" });
+          const updates: Record<string, any> = {};
+          if (typeof req.body.name === "string") updates.name = req.body.name;
+          if (typeof req.body.phone_number === "string") updates.phone_number = req.body.phone_number;
+          if (typeof req.body.role === "string") updates.role = req.body.role;
+          if (typeof req.body.status === "boolean") updates.status = req.body.status;
+          if (Object.keys(updates).length === 0) return reply.send(existing);
+          updates.updated_at = new Date().toISOString();
+          const setClause = Object.keys(updates)
+            .map((k, i) => `${k} = $${i + 1}`)
+            .join(", ");
+          const values = Object.values(updates);
+          await sql.unsafe(
+            `UPDATE store_staff SET ${setClause} WHERE id = $${values.length + 1} AND store_id = $${values.length + 2}`,
+            [...values, staffId, storeId]
+          );
+          const afterRows = await sql`
+            SELECT id, store_id, name, phone_number, role, status, created_at, updated_at
+            FROM store_staff WHERE id = ${staffId} AND store_id = ${storeId} LIMIT 1
+          `;
+          const updated = afterRows[0] as any;
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "UPDATE",
+            auditCtx,
+            "staff",
+            existing,
+            updated,
+            { section: "staff", route: "PATCH /merchant-partner/stores/:storeId/staff/:staffId" }
+          );
+          return reply.send(updated);
+        }
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/staff/:staffId — soft-delete staff. */
+      protectedApp.delete<{ Params: { storeId: string; staffId: string } }>(
+        "/stores/:storeId/staff/:staffId",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const staffId = Number(req.params.staffId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(staffId) || staffId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const existingRows = await sql`
+            SELECT * FROM store_staff WHERE id = ${staffId} AND store_id = ${storeId} LIMIT 1
+          `;
+          const existing = existingRows[0] as any;
+          if (!existing) return reply.code(404).send({ error: "staff_not_found" });
+          await sql`
+            UPDATE store_staff
+            SET status = FALSE, updated_at = NOW()
+            WHERE id = ${staffId} AND store_id = ${storeId}
+          `;
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "UPDATE",
+            auditCtx,
+            "staff",
+            existing,
+            { ...existing, status: false },
+            { section: "staff", route: "DELETE /merchant-partner/stores/:storeId/staff/:staffId" }
+          );
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/sessions — active + recent device sessions. */
+      protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId/sessions", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+        const rows = await sql`
+          SELECT id, store_id, staff_id, device_type, device_name, ip_address, location,
+                 login_time, last_active, is_active
+          FROM store_sessions
+          WHERE store_id = ${storeId}
+          ORDER BY is_active DESC, last_active DESC
+          LIMIT 50
+        `;
+        return reply.send(rows);
+      });
+
+      /** POST /merchant-partner/stores/:storeId/sessions/:sessionId/logout — logout specific device. */
+      protectedApp.post<{ Params: { storeId: string; sessionId: string } }>(
+        "/stores/:storeId/sessions/:sessionId/logout",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const sessionId = Number(req.params.sessionId);
+          if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(sessionId) || sessionId < 1) {
+            return reply.code(400).send({ error: "invalid_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            UPDATE store_sessions
+            SET is_active = FALSE, last_active = NOW()
+            WHERE id = ${sessionId} AND store_id = ${storeId}
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/sessions/logout-all — logout all devices for this store. */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/sessions/logout-all",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            UPDATE store_sessions
+            SET is_active = FALSE, last_active = NOW()
+            WHERE store_id = ${storeId} AND is_active = TRUE
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/tickets — list tickets for this store (merchant view). */
+      protectedApp.get<{
+        Params: { storeId: string };
+      }>("/stores/:storeId/tickets", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const rows = await sql`
+          SELECT id,
+                 ticket_id,
+                 status,
+                 priority,
+                 ticket_title,
+                 ticket_category,
+                 created_at,
+                 to_char(created_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon YYYY, HH24:MI') AS created_at_ist
+          FROM unified_tickets
+          WHERE merchant_store_id = ${storeId}
+            AND merchant_parent_id = ${parentId}
+          ORDER BY created_at DESC, id DESC
+          LIMIT 50
+        `;
+
+        const tickets = (rows as any[]).map((t) => ({
+          id: t.id as number,
+          ticket_id: String(t.ticket_id),
+          status: String(t.status),
+          priority: String(t.priority),
+          ticket_title: String(t.ticket_title),
+          ticket_category: String(t.ticket_category),
+          created_at:
+            t.created_at instanceof Date ? t.created_at.toISOString() : String(t.created_at),
+          created_at_display: t.created_at_ist ? String(t.created_at_ist) : undefined,
+        }));
+
+        return reply.send({ tickets });
+      });
+
+      /** POST /merchant-partner/stores/:storeId/tickets — create a unified ticket for this store (merchant-raised). */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: {
+          section_code?: string;
+          subject?: string;
+          description?: string;
+          order_id?: number | null;
+        };
+      }>("/stores/:storeId/tickets", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const body = (req.body || {}) as {
+          section_code?: string;
+          subject?: string;
+          description?: string;
+          order_id?: number | null;
+        };
+        const sectionCode = (body.section_code || "").toLowerCase();
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id, parent_id
+          FROM merchant_stores
+          WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        type MappedConfig = {
+          title: string;
+          category: string;
+          priority: string;
+        };
+        const mapSection = (code: string): MappedConfig => {
+          switch (code) {
+            case "orders":
+              return { title: "ORDER_RELATED", category: "ORDER", priority: "HIGH" };
+            case "payments":
+              return { title: "PAYOUT_NOT_RECEIVED", category: "EARNINGS", priority: "URGENT" };
+            case "restaurant":
+              return { title: "MERCHANT_APP_TECHNICAL_ISSUE", category: "TECHNICAL", priority: "MEDIUM" };
+            case "address":
+              return { title: "STORE_STATUS_ISSUE", category: "TECHNICAL", priority: "MEDIUM" };
+            case "menu":
+              return { title: "MENU_UPDATE_ISSUE", category: "TECHNICAL", priority: "MEDIUM" };
+            case "taxes":
+              return { title: "VERIFICATION_ISSUE", category: "VERIFICATION", priority: "MEDIUM" };
+            case "ads":
+              return { title: "OTHER", category: "OTHER", priority: "LOW" };
+            case "branding":
+              return { title: "OTHER", category: "OTHER", priority: "LOW" };
+            case "reports":
+              return { title: "OTHER", category: "OTHER", priority: "LOW" };
+            case "hygiene_audit":
+              return { title: "COMPLAINT", category: "COMPLAINT", priority: "MEDIUM" };
+            case "outlet_status":
+              return { title: "STORE_STATUS_ISSUE", category: "TECHNICAL", priority: "MEDIUM" };
+            case "other":
+            default:
+              return { title: "COMPLAINT", category: "COMPLAINT", priority: "MEDIUM" };
+          }
+        };
+
+        const mapped = mapSection(sectionCode);
+
+        const ticketType =
+          body.order_id != null && Number.isInteger(Number(body.order_id))
+            ? "ORDER_RELATED"
+            : "NON_ORDER_RELATED";
+        const serviceType = "GENERAL";
+
+        const subject =
+          body.subject && String(body.subject).trim()
+            ? String(body.subject).trim()
+            : mapped.title
+                .toLowerCase()
+                .split("_")
+                .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+                .join(" ");
+        const description =
+          body.description && String(body.description).trim()
+            ? String(body.description).trim()
+            : "Merchant has raised a support request from contact centre.";
+
+        const raisedName = (req.auth as any)?.name ?? null;
+
+        const rows = await sql`
+          INSERT INTO unified_tickets (
+            ticket_type,
+            ticket_source,
+            service_type,
+            ticket_title,
+            ticket_category,
+            order_id,
+            customer_id,
+            rider_id,
+            merchant_store_id,
+            merchant_parent_id,
+            raised_by_type,
+            raised_by_id,
+            raised_by_name,
+            subject,
+            description,
+            priority,
+            status,
+            auto_generated
+          ) VALUES (
+            ${ticketType}::unified_ticket_type,
+            'MERCHANT'::unified_ticket_source,
+            ${serviceType}::unified_ticket_service_type,
+            ${mapped.title}::unified_ticket_title,
+            ${mapped.category}::unified_ticket_category,
+            ${body.order_id ?? null},
+            NULL,
+            NULL,
+            ${storeId},
+            ${parentId},
+            'MERCHANT'::unified_ticket_source,
+            ${storeId},
+            ${raisedName},
+            ${subject},
+            ${description},
+            ${mapped.priority}::unified_ticket_priority,
+            'OPEN'::unified_ticket_status,
+            FALSE
+          )
+          RETURNING id,
+                    ticket_id,
+                    status,
+                    priority,
+                    created_at,
+                    to_char(created_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon YYYY, HH24:MI') AS created_at_ist
+        `;
+        const row = rows[0] as {
+          id: number;
+          ticket_id: string;
+          status: string;
+          priority: string;
+          created_at: Date;
+          created_at_ist?: string | null;
+        };
+
+        return reply.send({
+          ok: true,
+          ticket: {
+            id: row.id,
+            ticket_id: row.ticket_id,
+            status: row.status,
+            priority: row.priority,
+            created_at:
+              row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+            created_at_display: row.created_at_ist ?? undefined,
+          },
+        });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/tickets/:ticketId/messages — list conversation messages for a ticket. */
+      protectedApp.get<{
+        Params: { storeId: string; ticketId: string };
+      }>("/stores/:storeId/tickets/:ticketId/messages", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const ticketIdNum = Number(req.params.ticketId);
+        if (!Number.isInteger(ticketIdNum) || ticketIdNum < 1) {
+          return reply.code(400).send({ error: "invalid_ticket_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        const ticketRows = await sql`
+          SELECT id, ticket_id, status, priority, created_at
+          FROM unified_tickets
+          WHERE id = ${ticketIdNum}
+            AND merchant_store_id = ${storeId}
+            AND merchant_parent_id = ${parentId}
+          LIMIT 1
+        `;
+        if (ticketRows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
+
+        const msgRows = await sql`
+          SELECT id,
+                 message_text,
+                 message_type,
+                 sender_type,
+                 sender_id,
+                 sender_name,
+                 attachments,
+                 created_at
+          FROM unified_ticket_messages
+          WHERE ticket_id = ${ticketIdNum}
+            AND COALESCE(is_internal_note, false) = false
+          ORDER BY created_at ASC, id ASC
+          LIMIT 200
+        `;
+
+        const messages = (msgRows as any[]).map((m) => ({
+          id: m.id,
+          message_text: m.message_text,
+          message_type: m.message_type,
+          sender_type: m.sender_type,
+          sender_id: m.sender_id,
+          sender_name: m.sender_name,
+          attachments: m.attachments ?? [],
+          created_at:
+            m.created_at instanceof Date ? m.created_at.toISOString() : String(m.created_at),
+        }));
+
+        return reply.send({
+          ticket: ticketRows[0],
+          messages,
+        });
+      });
+
+      /** POST /merchant-partner/stores/:storeId/tickets/:ticketId/messages — add a message to a ticket (merchant chat). */
+      protectedApp.post<{
+        Params: { storeId: string; ticketId: string };
+        Body: { message_text?: string; attachments?: string[] };
+      }>("/stores/:storeId/tickets/:ticketId/messages", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const ticketIdNum = Number(req.params.ticketId);
+        if (!Number.isInteger(ticketIdNum) || ticketIdNum < 1) {
+          return reply.code(400).send({ error: "invalid_ticket_id" });
+        }
+        const body = (req.body || {}) as { message_text?: string; attachments?: string[] };
+        const text = (body.message_text || "").trim();
+        if (!text) {
+          return reply.code(400).send({ error: "invalid_body", message: "message_text required" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        const ticketRows = await sql`
+          SELECT id
+          FROM unified_tickets
+          WHERE id = ${ticketIdNum}
+            AND merchant_store_id = ${storeId}
+            AND merchant_parent_id = ${parentId}
+          LIMIT 1
+        `;
+        if (ticketRows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
+
+        const senderName = (req.auth as any)?.name ?? null;
+
+        const rows = await sql`
+          INSERT INTO unified_ticket_messages (
+            ticket_id,
+            message_text,
+            message_type,
+            sender_type,
+            sender_id,
+            sender_name,
+            attachments,
+            is_internal_note
+          ) VALUES (
+            ${ticketIdNum},
+            ${text},
+            'TEXT',
+            'MERCHANT'::unified_ticket_source,
+            ${storeId},
+            ${senderName},
+            ${Array.isArray(body.attachments) ? body.attachments : []}::text[],
+            FALSE
+          )
+          RETURNING id, created_at
+        `;
+        const row = rows[0] as { id: number; created_at: Date };
+
+        return reply.send({
+          ok: true,
+          message: {
+            id: row.id,
+            message_text: text,
+            created_at:
+              row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+          },
+        });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/settings — lightweight store settings for partner app (preferences + delivery mode). */
+      protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId/settings", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const settingsRows = await sql`
+          SELECT show_floating_orders, platform_delivery, self_delivery
+          FROM merchant_store_settings
+          WHERE store_id = ${storeId}
+          LIMIT 1
+        `;
+        const row =
+          (settingsRows[0] as
+            | { show_floating_orders?: boolean; platform_delivery?: boolean; self_delivery?: boolean }
+            | undefined) ?? null;
+        const showFloating = row?.show_floating_orders === true;
+        const platformDelivery = row?.platform_delivery !== false;
+        const selfDelivery = row?.self_delivery === true;
+
+        return reply.send({
+          store_id: storeId,
+          show_floating_orders: showFloating,
+          platform_delivery: platformDelivery,
+          self_delivery: selfDelivery,
+        });
+      });
+
+      /** PATCH /merchant-partner/stores/:storeId/settings — update store settings (floating orders + delivery mode). */
+      protectedApp.patch<{
+        Params: { storeId: string };
+        Body: { show_floating_orders?: boolean; platform_delivery?: boolean; self_delivery?: boolean };
+      }>(
+        "/stores/:storeId/settings",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const body = (req.body || {}) as {
+            show_floating_orders?: boolean;
+            platform_delivery?: boolean;
+            self_delivery?: boolean;
+          };
+          const hasFloating = typeof body.show_floating_orders === "boolean";
+          const hasPlatform = typeof body.platform_delivery === "boolean";
+          const hasSelf = typeof body.self_delivery === "boolean";
+          if (!hasFloating && !hasPlatform && !hasSelf) {
+            return reply.code(400).send({
+              error: "invalid_body",
+              message: "At least one of show_floating_orders, platform_delivery or self_delivery is required",
+            });
+          }
+
+          const existingRows = await sql`
+            SELECT id, show_floating_orders, platform_delivery, self_delivery
+            FROM merchant_store_settings
+            WHERE store_id = ${storeId}
+            LIMIT 1
+          `;
+          const existing = existingRows[0] as
+            | {
+                id: number;
+                show_floating_orders: boolean | null;
+                platform_delivery: boolean | null;
+                self_delivery: boolean | null;
+              }
+            | undefined;
+
+          const oldShowFloating = existing?.show_floating_orders === true;
+          const oldPlatform = existing?.platform_delivery !== false;
+          const oldSelf = existing?.self_delivery === true;
+
+          const nextShowFloating = hasFloating ? body.show_floating_orders === true : oldShowFloating;
+          const nextPlatform = hasPlatform ? body.platform_delivery === true : oldPlatform;
+          const nextSelf = hasSelf ? body.self_delivery === true : oldSelf;
+
+          if (!existing) {
+            await sql`
+              INSERT INTO merchant_store_settings (store_id, show_floating_orders, platform_delivery, self_delivery)
+              VALUES (${storeId}, ${nextShowFloating}, ${nextPlatform}, ${nextSelf})
+            `;
+          } else {
+            await sql`
+              UPDATE merchant_store_settings
+              SET
+                show_floating_orders = ${nextShowFloating},
+                platform_delivery = ${nextPlatform},
+                self_delivery = ${nextSelf},
+                updated_at = NOW()
+              WHERE id = ${existing.id}
+            `;
+          }
+
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            existing ? "UPDATE" : "CREATE",
+            auditCtx,
+            "store_settings",
+            {
+              show_floating_orders: oldShowFloating,
+              platform_delivery: oldPlatform,
+              self_delivery: oldSelf,
+            },
+            {
+              show_floating_orders: nextShowFloating,
+              platform_delivery: nextPlatform,
+              self_delivery: nextSelf,
+            },
+            { section: "store_settings", route: "PATCH /merchant-partner/stores/:storeId/settings" }
+          );
+
+          return reply.send({
+            ok: true,
+            store_id: storeId,
+            show_floating_orders: nextShowFloating,
+            platform_delivery: nextPlatform,
+            self_delivery: nextSelf,
+          });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/active-orders-count — live count of active orders for this store. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/active-orders-count",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          // Active = orders that are not completed/cancelled. We map business "pending/accepted/preparing"
+          // to core statuses used in orders_core.
+          const rows = await sql`
+            SELECT COUNT(*)::int AS c
+            FROM orders_core
+            WHERE merchant_store_id = ${storeId}
+              AND status IN ('assigned', 'accepted', 'reached_store', 'picked_up')
+          `;
+          const countRow = rows[0] as { c?: number } | undefined;
+          const active = countRow?.c != null ? Number(countRow.c) : 0;
+
+          return reply.send({
+            store_id: storeId,
+            active_orders: active,
+          });
         }
       );
     },

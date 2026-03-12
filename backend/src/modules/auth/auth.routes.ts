@@ -160,6 +160,49 @@ export async function authRoutes(app: FastifyInstance) {
           exp: expiresAt,
         });
 
+        // Record device session for this merchant user (Google login).
+        try {
+          const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
+            (req.ip ?? null);
+          const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+          const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+          const location =
+            city && country ? `${city}, ${country}` : city ?? country ?? null;
+
+          const firstStore = (storeRows as any[])[0];
+          const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+          const childStoreId = firstStore ? Number(firstStore.id) : null;
+          await sql`
+            INSERT INTO user_device_sessions (
+              user_id,
+              parent_store_id,
+              child_store_id,
+              device_type,
+              device_name,
+              os,
+              ip_address,
+              location,
+              login_method,
+              device_id
+            )
+            VALUES (
+              ${parentMerchantId},
+              ${parentStoreId},
+              ${childStoreId},
+              'mobile',
+              ${deviceId},
+              'android',
+              ${ip},
+              ${location},
+              'google',
+              ${deviceId}
+            )
+          `;
+        } catch {
+          // best-effort only
+        }
+
         const parent = {
           id: parentId,
           parent_merchant_id: parentMerchantId,
@@ -404,6 +447,49 @@ export async function authRoutes(app: FastifyInstance) {
             deviceId,
             exp: expiresAt,
           });
+
+          // Record device session for this merchant user (OTP phone login).
+          try {
+            const ip =
+              (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
+              (req.ip ?? null);
+            const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+            const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+            const location =
+              city && country ? `${city}, ${country}` : city ?? country ?? null;
+
+            const firstStore = (storeRows as any[])[0];
+            const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+            const childStoreId = firstStore ? Number(firstStore.id) : null;
+            await sql`
+              INSERT INTO user_device_sessions (
+                user_id,
+                parent_store_id,
+                child_store_id,
+                device_type,
+                device_name,
+                os,
+                ip_address,
+                location,
+                login_method,
+                device_id
+              )
+              VALUES (
+                ${parentMerchantId},
+                ${parentStoreId},
+                ${childStoreId},
+                'mobile',
+                ${deviceId},
+                'android',
+                ${ip},
+                ${location},
+                'phone',
+                ${deviceId}
+              )
+            `;
+          } catch {
+            // ignore
+          }
 
           const parent = {
             id: parentId,
@@ -904,6 +990,49 @@ export async function authRoutes(app: FastifyInstance) {
           deviceId,
           exp: expiresAt,
         });
+
+        // Record device session for this merchant user (Supabase exchange).
+        try {
+          const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
+            (req.ip ?? null);
+          const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+          const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+          const location =
+            city && country ? `${city}, ${country}` : city ?? country ?? null;
+
+          const firstStore = (storeRows as any[])[0];
+          const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+          const childStoreId = firstStore ? Number(firstStore.id) : null;
+          await sql`
+            INSERT INTO user_device_sessions (
+              user_id,
+              parent_store_id,
+              child_store_id,
+              device_type,
+              device_name,
+              os,
+              ip_address,
+              location,
+              login_method,
+              device_id
+            )
+            VALUES (
+              ${parentMerchantId},
+              ${parentStoreId},
+              ${childStoreId},
+              'mobile',
+              ${deviceId},
+              'android',
+              ${ip},
+              ${location},
+              'supabase',
+              ${deviceId}
+            )
+          `;
+        } catch {
+          // ignore
+        }
 
         const parent = {
           id: parentId,

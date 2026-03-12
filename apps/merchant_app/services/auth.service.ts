@@ -24,6 +24,18 @@ export type VerifyOtpPayload = {
 
 const { apiBaseUrl } = getConfig();
 
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
+  const { timeoutMs = 15000, ...rest } = init;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(input, { ...rest, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 export const merchantAuthService = {
   /**
    * Send OTP via Supabase Auth (triggers the Send SMS hook → MSG91).
@@ -70,7 +82,7 @@ export const merchantAuthService = {
       throw new Error("No session returned from Supabase after OTP verify.");
     }
 
-    const res = await fetch(`${apiBaseUrl}${AUTH_PREFIX}/supabase/exchange-merchant`, {
+    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/supabase/exchange-merchant`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -116,7 +128,7 @@ export const merchantAuthService = {
     userId: string;
     partner: { parent: unknown; childStores: unknown[] };
   }> {
-    const res = await fetch(`${apiBaseUrl}${AUTH_PREFIX}/supabase/exchange-merchant`, {
+    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/supabase/exchange-merchant`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

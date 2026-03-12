@@ -41,6 +41,7 @@ import {
   useDeleteCategory,
 } from "@/hooks/useMenuQueries";
 import { uploadItemImage, fetchStoreProfile, type MenuItemPayload, type MenuCategory } from "@/services/menuApi";
+import { resolveImageUrl } from "@/services/outletApi";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -691,7 +692,11 @@ export default function AddEditItemScreen() {
           disabled={uploadingImage}
         >
           {images.length > 0 ? (
-            <Image source={{ uri: images[0].image_url }} style={styles.imagePreview} resizeMode="cover" />
+            <Image
+              source={{ uri: resolveImageUrl(images[0].image_url) ?? images[0].image_url }}
+              style={styles.imagePreview}
+              resizeMode="cover"
+            />
           ) : pendingImage ? (
             <View style={styles.imagePreviewWrap}>
               <Image source={{ uri: pendingImage.uri }} style={styles.imagePreview} resizeMode="cover" />
@@ -717,7 +722,11 @@ export default function AddEditItemScreen() {
           <ScrollView horizontal style={styles.thumbnailScroll} showsHorizontalScrollIndicator={false}>
             {images.map((img) => (
               <View key={img.id} style={styles.thumbnailWrap}>
-                <Image source={{ uri: img.image_url }} style={styles.thumbnail} resizeMode="cover" />
+                <Image
+                  source={{ uri: resolveImageUrl(img.image_url) ?? img.image_url }}
+                  style={styles.thumbnail}
+                  resizeMode="cover"
+                />
                 {img.is_primary && (
                   <View style={styles.primaryBadge}>
                     <Text style={styles.primaryBadgeText}>Primary</Text>

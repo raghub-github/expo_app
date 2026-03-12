@@ -14,8 +14,9 @@ import {
   ImageSourcePropType,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
-import { GatiMitraMerchant, BUTTON_RADIUS } from "@/constants/theme";
+import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 
 const { width, height } = Dimensions.get("window");
 const SLIDE_INTERVAL_MS = 4000;
@@ -41,6 +42,7 @@ function getBackgroundSource(index: number): ImageSourcePropType {
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(0);
   const loginScale = useRef(new Animated.Value(1)).current;
   const signupScale = useRef(new Animated.Value(1)).current;
@@ -71,7 +73,7 @@ export default function WelcomeScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) }]}>
       <ImageBackground
         source={getBackgroundSource(currentIndex)}
         style={styles.background}

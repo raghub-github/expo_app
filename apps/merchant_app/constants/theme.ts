@@ -14,6 +14,9 @@ export const CARD_PADDING = 16;
 export const CARD_RADIUS = 15; // 14–16px
 export const BUTTON_RADIUS = 12;
 
+// Safe area — minimum top padding so status bar is always visible on all devices
+export const SAFE_AREA_TOP_MIN = 10;
+
 // Header
 export const HEADER_HEIGHT = 60; // 56–64px
 export const HEADER_RIGHT_EDGE = 20; // min 20px from right for toggle

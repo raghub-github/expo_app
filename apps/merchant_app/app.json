@@ -16,19 +16,41 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.gatimitra.merchant"
+      "bundleIdentifier": "com.gatimitra.merchant",
+      "infoPlist": {
+        "UIViewControllerBasedStatusBarAppearance": true
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#16A34A"
       },
-      "package": "com.gatimitra.merchant",
-      "permissions": ["READ_SMS", "RECEIVE_SMS"]
+      "package": "com.anonymous.gatimitramerchantapp",
+      "permissions": [
+        "READ_SMS",
+        "RECEIVE_SMS",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE"
+      ],
+      "useNextNotificationsApi": true
     },
     "web": {
       "bundler": "metro",
       "output": "static"
     },
-    "plugins": ["expo-router", "expo-font"]
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      "expo-floating-bubble",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/onlylogo.png",
+          "color": "#3EB489",
+          "sounds": [],
+          "defaultChannel": "merchant_default"
+        }
+      ]
+    ]
   }
 }

@@ -32,6 +32,7 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useMenuCategories, useMenuItems, usePatchItemStock, useDeleteCategory } from "@/hooks/useMenuQueries";
 import type { MenuItemRow } from "@/services/menuApi";
 import type { MenuCategory } from "@/services/menuApi";
+import { resolveImageUrl } from "@/services/outletApi";
 import { useRouter } from "expo-router";
 
 type ApprovalFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
@@ -49,11 +50,15 @@ function MenuItemCard({
   onEdit: (id: number) => void;
 }) {
   const [toggling, setToggling] = useState(false);
+  const [imageError, setImageError] = useState(false);
   const price = `₹${Number(item.selling_price).toFixed(0)}`;
   const tags: string[] = [];
   if (item.has_variants) tags.push("Variants");
   if (item.has_customizations) tags.push("Customizations");
   if (item.has_addons) tags.push("Add-ons");
+
+  const imageUri = resolveImageUrl(item.item_image_url);
+  const showImage = imageUri && !imageError;
 
   const handleToggle = () => {
     if (toggling) return;
@@ -70,11 +75,12 @@ function MenuItemCard({
         activeOpacity={0.85}
       >
         <View style={styles.itemImageWrap}>
-          {item.item_image_url ? (
+          {showImage ? (
             <Image
-              source={{ uri: item.item_image_url }}
+              source={{ uri: imageUri }}
               style={styles.itemImage}
               resizeMode="cover"
+              onError={() => setImageError(true)}
             />
           ) : (
             <View style={styles.itemImagePlaceholder}>

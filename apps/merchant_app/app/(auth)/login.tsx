@@ -16,6 +16,7 @@ import {
   Image,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import * as AuthSession from "expo-auth-session";
@@ -25,14 +26,9 @@ import { useAuth } from "@/context/AuthContext";
 import { getConfig } from "@/config/env";
 import { merchantAuthService } from "@/services/auth.service";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
-import {
-  GatiMitraMerchant,
-  BUTTON_RADIUS,
-  H_PADDING,
-  CARD_RADIUS,
-} from "@/constants/theme";
+import { GatiMitraMerchant, BUTTON_RADIUS, H_PADDING, CARD_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 
-// Android-only: auto-fill OTP from SMS after user grants "Read SMS" permission (like other apps)
+// Android-only: auto-fill OTP from SMS when user grants "Read SMS" permission
 const useAndroidSmsOtp = (step: "phone" | "otp", setOtp: (v: string) => void) => {
   useEffect(() => {
     if (Platform.OS !== "android" || step !== "otp") return;
@@ -56,7 +52,7 @@ const useAndroidSmsOtp = (step: "phone" | "otp", setOtp: (v: string) => void) =>
           if (code) setOtp((prev) => (prev.length === 6 ? prev : code));
         });
       } catch (_) {
-        // Native module not linked (e.g. Expo Go) — ignore
+        // Native module not available (e.g. Expo Go) — user can still type OTP manually
       }
     };
     run();
@@ -73,12 +69,12 @@ function getDeviceId(): string {
   return "merchant_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
 }
 
-type TabType = "google" | "phone";
+const TOP_BAR_PADDING_BELOW_STATUS = 12;
 
 export default function LoginScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { setTokenAndPartner } = useAuth();
-  const [activeTab, setActiveTab] = useState<TabType>("google");
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<"phone" | "otp">("phone");
@@ -271,8 +267,8 @@ export default function LoginScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 44 : 0}
       >
-        {/* Top bar */}
-        <View style={styles.topBar}>
+        {/* Top bar — respects status bar on all devices */}
+        <View style={[styles.topBar, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) + TOP_BAR_PADDING_BELOW_STATUS }]}>
           <Pressable
             onPress={() => router.replace("/(auth)/welcome")}
             style={styles.backBtn}
@@ -301,48 +297,25 @@ export default function LoginScreen() {
             </View>
             <Text style={styles.welcomeText}>Welcome back</Text>
             <Text style={styles.heroSubtext}>
-              Sign in with Google or use phone OTP to continue
+              Sign in using your registered phone number to continue
             </Text>
           </View>
 
           {/* Card */}
           <View style={styles.card}>
-            {/* Tabs */}
-            <View style={styles.tabRow}>
-              <Pressable
-                style={[styles.tab, activeTab === "google" && styles.tabActive]}
-                onPress={() => { setActiveTab("google"); setError(""); }}
-              >
-                <Text style={[styles.tabText, activeTab === "google" && styles.tabTextActive]}>
-                  Google
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.tab, activeTab === "phone" && styles.tabActive]}
-                onPress={() => { setActiveTab("phone"); setError(""); }}
-              >
-                <Text style={[styles.tabText, activeTab === "phone" && styles.tabTextActive]}>
-                  Phone
-                </Text>
-              </Pressable>
+            {/* Login method indicator */}
+            <View style={styles.methodPillRow}>
+              <View style={[styles.methodPill, styles.methodPillActive]}>
+                <Ionicons name="call-outline" size={16} color={GatiMitraMerchant.primary} />
+                <Text style={styles.methodPillText}>Phone OTP</Text>
+              </View>
+              <View style={[styles.methodPill, styles.methodPillDisabled]}>
+                <Ionicons name="logo-google" size={16} color={GatiMitraMerchant.textTertiary} />
+                <Text style={styles.methodPillDisabledText}>Google (coming soon)</Text>
+              </View>
             </View>
 
-            {activeTab === "google" ? (
-              <Pressable
-                style={({ pressed }) => [styles.outlineBtn, pressed && styles.btnPressed, loading && styles.primaryBtnDisabled]}
-                onPress={handleGoogleSignIn}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
-                ) : (
-                  <>
-                    <Text style={styles.outlineBtnText}>Continue with Google</Text>
-                    <Ionicons name="arrow-forward" size={20} color={GatiMitraMerchant.primary} />
-                  </>
-                )}
-              </Pressable>
-            ) : step === "phone" ? (
+            {step === "phone" ? (
               <>
                 <Text style={styles.label}>Mobile number</Text>
                 <View style={styles.inputBox}>
@@ -380,12 +353,31 @@ export default function LoginScreen() {
             ) : (
               <>
                 <Text style={styles.label}>Verification code</Text>
-                <View style={styles.inputBox}>
+                <View style={styles.otpBoxRow}>
+                  {Array.from({ length: 6 }).map((_, index) => {
+                    const char = otp[index] ?? "";
+                    const isFilled = Boolean(char);
+                    const isActive = !isFilled && index === otp.length;
+                    return (
+                      <Pressable
+                        key={index}
+                        onPress={() => otpInputRef.current?.focus()}
+                        hitSlop={8}
+                        style={[
+                          styles.otpBox,
+                          isFilled && styles.otpBoxFilled,
+                          isActive && styles.otpBoxActive,
+                        ]}
+                      >
+                        <Text style={[styles.otpChar, isFilled && styles.otpCharFilled]}>
+                          {char}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
                   <TextInput
                     ref={otpInputRef}
-                    style={[styles.input, styles.otpInput]}
-                    placeholder="Enter 6-digit OTP"
-                    placeholderTextColor={GatiMitraMerchant.textTertiary}
+                    style={styles.otpHiddenInput}
                     value={otp}
                     onChangeText={(t) => setOtp(t.replace(/\D/g, "").slice(0, 6))}
                     keyboardType="number-pad"
@@ -396,6 +388,7 @@ export default function LoginScreen() {
                     autoCapitalize="none"
                     autoCorrect={false}
                     importantForAutofill="yes"
+                    autoFocus={step === "otp"}
                   />
                 </View>
                 <Text style={styles.hint}>
@@ -492,7 +485,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: H_PADDING,
-    paddingTop: 56,
     paddingBottom: 16,
     backgroundColor: GatiMitraMerchant.background,
     borderBottomWidth: 1,
@@ -544,50 +536,40 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: GatiMitraMerchant.background,
     borderRadius: CARD_RADIUS,
-    padding: 24,
-    ...GatiMitraMerchant.shadowCard,
-  },
-  tabRow: {
-    flexDirection: "row",
-    marginBottom: 24,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    borderRadius: BUTTON_RADIUS,
-    padding: 4,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderRadius: BUTTON_RADIUS - 2,
-  },
-  tabActive: {
-    backgroundColor: GatiMitraMerchant.background,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
     ...GatiMitraMerchant.shadowSm,
   },
-  tabText: {
-    fontSize: 15,
-    fontWeight: "500",
-    color: GatiMitraMerchant.textTertiary,
-  },
-  tabTextActive: {
-    color: GatiMitraMerchant.textPrimary,
-    fontWeight: "600",
-  },
-  outlineBtn: {
+  methodPillRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    paddingVertical: 16,
-    borderRadius: BUTTON_RADIUS,
-    borderWidth: 1.5,
-    borderColor: GatiMitraMerchant.border,
-    backgroundColor: GatiMitraMerchant.background,
+    justifyContent: "space-between",
+    marginBottom: 20,
   },
-  outlineBtnText: {
-    fontSize: 16,
+  methodPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  methodPillActive: {
+    backgroundColor: "#DCFCE7",
+  },
+  methodPillText: {
+    fontSize: 12,
     fontWeight: "600",
-    color: GatiMitraMerchant.textPrimary,
+    color: "#166534",
+  },
+  methodPillDisabled: {
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  methodPillDisabledText: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textTertiary,
   },
   btnPressed: { opacity: 0.9 },
   label: {
@@ -614,8 +596,45 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textPrimary,
     paddingVertical: 0,
   },
-  otpInput: {
-    paddingLeft: 0,
+  otpBoxRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 12,
+    marginTop: 6,
+  },
+  otpBox: {
+    width: 44,
+    height: 52,
+    borderRadius: BUTTON_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.background,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  otpBoxFilled: {
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  otpBoxActive: {
+    borderColor: GatiMitraMerchant.primary,
+  },
+  otpChar: {
+    fontSize: 18,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  otpCharFilled: {
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  otpHiddenInput: {
+    position: "absolute",
+    opacity: 0,
+    // Non-zero height so Android reliably shows keyboard when focused,
+    // but narrow width and fully transparent so it doesn't affect layout.
+    width: 1,
+    height: 40,
   },
   hint: {
     fontSize: 13,

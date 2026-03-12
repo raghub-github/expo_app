@@ -4,6 +4,7 @@
  */
 
 import { getApiBaseUrl } from "./api";
+import { authFetch } from "@/services/authFetch";
 
 export type MenuCategory = {
   id: number;
@@ -40,21 +41,6 @@ export type MenuItemRow = {
 
 export type ListCategoriesResponse = { categories: MenuCategory[] };
 export type ListItemsResponse = { items: MenuItemRow[]; total: number };
-
-async function authFetch(
-  url: string,
-  token: string,
-  opts: RequestInit = {}
-): Promise<Response> {
-  return fetch(url, {
-    ...opts,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...opts.headers,
-    },
-  });
-}
 
 /** Store profile (e.g. cuisines chosen during onboarding). Used for item cuisine picker. */
 export async function fetchStoreProfile(

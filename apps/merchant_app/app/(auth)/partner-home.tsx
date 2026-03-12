@@ -1,16 +1,48 @@
 /**
- * Partner home — after login: Partner account card + Your child stores + Add new child store.
- * Matches second image: GatiMitra logo, Partner account (ID, Business, Owner, Email), child stores list.
+ * Partner home — after login: Portal header (Welcome + store name) + Partner account card + Your child stores.
+ * Header uses portalheader.png; store name truncated with .... if long; status bar visible via SafeAreaView.
  */
 
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Modal } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Modal, ImageBackground, Platform, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Path } from "react-native-svg";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import type { ChildStore } from "@/context/AuthContext";
+
+const DIVIDER_HEIGHT = 32;
+/** Diagonal offset at left: how far down the diagonal starts (lower-left → up to top-right). */
+const DIAGONAL_LEFT_OFFSET = 20;
+
+/** Diagonal bottom edge for the header — clean diagonal cut from lower-left upward to the right (matches portalheader style). */
+function HeaderDiagonalDivider() {
+  const { width } = useWindowDimensions();
+  const w = width;
+  const h = DIVIDER_HEIGHT;
+  // Diagonal from (0, d) to (w, 0); fill below it so header appears to have a diagonal cut
+  const d = DIAGONAL_LEFT_OFFSET;
+  const path = `M 0 ${d} L ${w} 0 L ${w} ${h} L 0 ${h} Z`;
+  return (
+    <View style={styles.waveWrap}>
+      <Svg width="100%" height="100%" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+        <Path d={path} fill={GatiMitraMerchant.surfaceWarm} />
+      </Svg>
+    </View>
+  );
+}
+
+const STORE_NAME_MAX_CHARS = 22;
+const HEADER_IMAGE = require("../../public/portalheader.png");
+
+function truncateStoreName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length <= STORE_NAME_MAX_CHARS) return trimmed;
+  return trimmed.slice(0, STORE_NAME_MAX_CHARS) + "....";
+}
 
 function StatusPill({ label, variant }: { label: string; variant: "grey" | "green" | "yellow" | "orange" }) {
   const colors = {
@@ -37,9 +69,8 @@ function ChildStoreCard({
   const statusLabel = store.approval_status === "DELISTED" ? "DELISTED" : store.approval_status === "DRAFT" ? "DRAFT" : store.approval_status ?? "DRAFT";
   const statusVariant = statusLabel === "DELISTED" ? "grey" : statusLabel === "DRAFT" ? "yellow" : "grey";
   const paymentVariant = store.payment_status === "Completed" ? "green" : "orange";
-  const isApprovedAndPaid = statusLabel !== "DELISTED" && store.payment_status === "Completed";
-  const canOpenDashboard = isApprovedAndPaid;
-  const ctaLabel = canOpenDashboard ? "Open dashboard" : "Continue setup";
+  const isApproved = statusLabel === "APPROVED";
+  const ctaLabel = isApproved ? "Manage Store" : "Continue setup";
   const canClick = statusLabel !== "DELISTED";
 
   return (
@@ -70,6 +101,7 @@ function ChildStoreCard({
 
 export default function PartnerHomeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { partner, signOut } = useAuth();
   const { setSelectedStore } = useSelectedStore();
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
@@ -90,14 +122,39 @@ export default function PartnerHomeScreen() {
 
   const { parent, childStores } = partner;
   const businessName = parent.brand_name || parent.parent_name || "—";
+  const displayStoreName = truncateStoreName(businessName);
+  const topInset = Math.max(insets.top, SAFE_AREA_TOP_MIN);
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.logo}>GatiMitra</Text>
-        <Pressable onPress={() => setLogoutModalVisible(true)} style={styles.headerBtn}>
-          <Ionicons name="log-out-outline" size={22} color={GatiMitraMerchant.textPrimary} />
-        </Pressable>
+      <View style={[styles.headerWrap, { paddingTop: topInset }]}>
+        <ImageBackground
+          source={HEADER_IMAGE}
+          style={styles.headerBg}
+          resizeMode="cover"
+        />
+        <View style={styles.waveContainer}>
+          <HeaderDiagonalDivider />
+        </View>
+      </View>
+
+      {/* Welcome + sign out card — below header so text and button are always visible */}
+      <View style={styles.welcomeCardWrap}>
+        <View style={styles.welcomeCard}>
+          <View style={styles.welcomeCardContent}>
+            <Text style={styles.welcomeTitle} numberOfLines={1}>
+              Welcome, {displayStoreName}
+            </Text>
+            <Text style={styles.welcomeSubtitle}>Manage Your Partner Account</Text>
+          </View>
+          <Pressable
+            onPress={() => setLogoutModalVisible(true)}
+            style={({ pressed }) => [styles.signOutBtn, pressed && styles.signOutBtnPressed]}
+          >
+            <Ionicons name="log-out-outline" size={20} color={GatiMitraMerchant.textPrimary} />
+            <Text style={styles.signOutBtnText}>Sign out</Text>
+          </Pressable>
+        </View>
       </View>
 
       {/* Centralized logout confirmation modal */}
@@ -145,7 +202,8 @@ export default function PartnerHomeScreen() {
             <Row label="ID" value={parent.parent_merchant_id} last={false} />
             <Row label="Business" value={businessName} last={false} />
             <Row label="Owner" value={parent.owner_name} last={false} />
-            <Row label="Email" value={parent.owner_email || "—"} last />
+            <Row label="Email" value={parent.owner_email || "—"} last={false} />
+            <Row label="Child stores" value={String(childStores.length)} last />
           </View>
         </View>
 
@@ -197,19 +255,69 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
   muted: { fontSize: 14, color: GatiMitraMerchant.textTertiary },
-  header: {
+  headerWrap: {
+    position: "relative",
+    paddingHorizontal: H_PADDING,
+    paddingBottom: 0,
+    backgroundColor: "#fff",
+  },
+  headerBg: {
+    width: "100%",
+    minHeight: 160,
+    justifyContent: "flex-end",
+    overflow: "hidden",
+  },
+  waveContainer: {
+    position: "absolute",
+    bottom: 0,
+    left: -H_PADDING,
+    right: -H_PADDING,
+    height: DIVIDER_HEIGHT,
+  },
+  waveWrap: {
+    width: "100%",
+    height: "100%",
+  },
+  welcomeCardWrap: {
+    paddingHorizontal: H_PADDING,
+    marginTop: -8,
+    marginBottom: 8,
+  },
+  welcomeCard: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: H_PADDING,
-    paddingTop: 56,
-    paddingBottom: 16,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    padding: CARD_PADDING,
+    ...GatiMitraMerchant.shadowCard,
   },
-  logo: { fontSize: 20, fontWeight: "700", color: GatiMitraMerchant.navy },
-  headerBtn: { padding: 8 },
+  welcomeCardContent: { flex: 1, minWidth: 0, marginRight: 12 },
+  welcomeTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  welcomeSubtitle: {
+    fontSize: 14,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 4,
+  },
+  signOutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: BUTTON_RADIUS,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  signOutBtnPressed: { opacity: 0.85 },
+  signOutBtnText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
   scroll: { flex: 1 },
   scrollContent: { padding: H_PADDING, paddingBottom: 40 },
   section: { marginBottom: 24 },

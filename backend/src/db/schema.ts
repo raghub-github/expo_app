@@ -2254,9 +2254,6 @@ export const offerParticipation = pgTable(
 // RATINGS & REVIEWS
 // ============================================================================
 
-/**
- * Ratings table
- */
 export const ratings = pgTable(
   "ratings",
   {
@@ -2266,19 +2263,122 @@ export const ratings = pgTable(
       .references(() => riders.id, { onDelete: "cascade" }),
     orderId: integer("order_id").references(() => orders.id),
     fromType: ratingFromTypeEnum("from_type").notNull(),
-    fromId: integer("from_id"), // customer_id or merchant_id
-    rating: smallint("rating").notNull(), // 1-5
+    fromId: integer("from_id"),
+    rating: smallint("rating").notNull(),
     comment: text("comment"),
     metadata: jsonb("metadata").default({}),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     riderIdIdx: index("ratings_rider_id_idx").on(table.riderId),
     orderIdIdx: index("ratings_order_id_idx").on(table.orderId),
     fromTypeIdx: index("ratings_from_type_idx").on(table.fromType),
     createdAtIdx: index("ratings_created_at_idx").on(table.createdAt),
+  })
+);
+
+export const merchantStoreRatings = pgTable(
+  "merchant_store_ratings",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    storeId: bigserial("store_id", { mode: "number" }),
+    orderId: bigserial("order_id", { mode: "number" }),
+    customerId: bigserial("customer_id", { mode: "number" }),
+    rating: smallint("rating").notNull(),
+    foodRating: smallint("food_rating"),
+    serviceRating: smallint("service_rating"),
+    packagingRating: smallint("packaging_rating"),
+    reviewText: text("review_text"),
+    reviewTitle: text("review_title"),
+    reviewImages: jsonb("review_images").$type<string[] | null>().default(null),
+    helpfulCount: integer("helpful_count").default(0),
+    notHelpfulCount: integer("not_helpful_count").default(0),
+    merchantResponse: text("merchant_response"),
+    merchantRespondedAt: timestamp("merchant_responded_at", {
+      withTimezone: true,
+    }),
+    isVerified: boolean("is_verified").default(false),
+    isFlagged: boolean("is_flagged").default(false),
+    flagReason: text("flag_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    storeIdIdx: index("merchant_store_ratings_store_id_idx").on(table.storeId),
+    orderIdIdx: index("merchant_store_ratings_order_id_idx").on(table.orderId),
+    customerIdIdx: index("merchant_store_ratings_customer_id_idx").on(table.customerId),
+    ratingIdx: index("merchant_store_ratings_rating_idx").on(table.rating),
+    createdAtIdx: index("merchant_store_ratings_created_at_idx").on(table.createdAt),
+    storeIdCreatedIdx: index("merchant_store_ratings_store_id_created_idx").on(
+      table.storeId,
+      table.createdAt
+    ),
+    merchantResponseIdx: index("merchant_store_ratings_merchant_response_idx").on(
+      table.merchantRespondedAt
+    ),
+  })
+);
+
+export const customerRatingsGiven = pgTable(
+  "customer_ratings_given",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    customerId: bigserial("customer_id", { mode: "number" }),
+    orderId: bigserial("order_id", { mode: "number" }),
+    // For now model service_type as a free-text column; when a dedicated
+    // enum type is added we can switch this to that helper.
+    serviceType: text("service_type").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: bigserial("target_id", { mode: "number" }),
+    overallRating: smallint("overall_rating").notNull(),
+    foodQualityRating: smallint("food_quality_rating"),
+    deliveryRating: smallint("delivery_rating"),
+    packagingRating: smallint("packaging_rating"),
+    reviewTitle: text("review_title"),
+    reviewText: text("review_text"),
+    reviewImages: jsonb("review_images").$type<string[] | null>().default(null),
+    reviewTags: jsonb("review_tags").$type<string[] | null>().default(null),
+    helpfulCount: integer("helpful_count").default(0),
+    notHelpfulCount: integer("not_helpful_count").default(0),
+    merchantResponse: text("merchant_response"),
+    merchantRespondedAt: timestamp("merchant_responded_at", {
+      withTimezone: true,
+    }),
+    isVerified: boolean("is_verified").default(false),
+    isFeatured: boolean("is_featured").default(false),
+    isFlagged: boolean("is_flagged").default(false),
+    flagReason: text("flag_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    customerIdIdx: index("customer_ratings_given_customer_id_idx").on(table.customerId),
+    orderIdIdx: index("customer_ratings_given_order_id_idx").on(table.orderId),
+    targetIdx: index("customer_ratings_given_target_idx").on(
+      table.targetType,
+      table.targetId
+    ),
+    serviceTypeIdx: index("customer_ratings_given_service_type_idx").on(
+      table.serviceType
+    ),
+    overallRatingIdx: index("customer_ratings_given_overall_rating_idx").on(
+      table.overallRating
+    ),
+    createdAtIdx: index("customer_ratings_given_created_at_idx").on(table.createdAt),
+    targetMerchantIdx: index("customer_ratings_given_target_merchant_idx").on(
+      table.targetType,
+      table.targetId
+    ),
+    merchantResponseIdx: index("customer_ratings_given_merchant_response_idx").on(
+      table.merchantRespondedAt
+    ),
+    isFlaggedIdx: index("customer_ratings_given_is_flagged_idx").on(table.isFlagged),
+    merchantRatingIdx: index("customer_ratings_given_merchant_rating_idx").on(
+      table.targetType,
+      table.targetId,
+      table.overallRating,
+      table.createdAt
+    ),
   })
 );
 

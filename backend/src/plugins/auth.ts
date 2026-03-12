@@ -3,7 +3,7 @@ import fp from "fastify-plugin";
 import { jwtVerify } from "jose";
 import { createSecretKey } from "node:crypto";
 import { getEnv } from "../config/env.js";
-import { getDb } from "../db/client.js";
+import { getDb, getSql } from "../db/client.js";
 import { userProfiles, customers } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 
@@ -74,6 +74,28 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
           if (iat < invalidBeforeSec) {
             return reply.code(401).send({ error: "session_revoked", message: "Signed out from all devices." });
           }
+        }
+      }
+
+      // Merchant sessions: ensure this device session is still active and bump last_active.
+      if (role === "merchant") {
+        const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
+        if (deviceId) {
+          const sql = getSql();
+          const rows = await sql`
+            SELECT id
+            FROM user_device_sessions
+            WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
+            LIMIT 1
+          `;
+          if (!rows[0]) {
+            return reply.code(401).send({ error: "session_revoked", message: "Signed out from this device." });
+          }
+          await sql`
+            UPDATE user_device_sessions
+            SET last_active = now()
+            WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
+          `;
         }
       }
     } catch {

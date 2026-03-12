@@ -12,7 +12,9 @@
     "expo": "^54.0.33",
     "expo-image": "~3.0.11",
     "i18next": "^25.8.13",
-    "react-i18next": "^16.5.4"
+    "react-i18next": "^16.5.4",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
   },
   "scripts": {
     "dev:customer": "npm --workspace apps/customer_app run start",
@@ -24,6 +26,9 @@
     "dev:merchant_db": "npm --workspace merchant_db run dev",
     "build": "npm -ws run build",
     "lint": "npm -ws run lint",
-    "typecheck": "npm -ws run typecheck"
-  }
+    "typecheck": "npm -ws run typecheck",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "version": "1.0.0"
 }

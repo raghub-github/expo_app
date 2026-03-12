@@ -24,7 +24,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -579,12 +579,16 @@ function OrderCard({
 export default function OrdersScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const params = useLocalSearchParams<{ tab?: string }>();
   const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
 
   const { orders, loading, error, refetch, transitionOrder, counts } = useOrders();
 
   const [search, setSearch] = useState("");
-  const [filterKey, setFilterKey] = useState<FilterKey>("created");
+  const initialTabParam = typeof params.tab === "string" ? params.tab.toLowerCase() : "";
+  const [filterKey, setFilterKey] = useState<FilterKey>(
+    initialTabParam === "active" ? "preparing" : "created"
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
 

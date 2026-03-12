@@ -8,6 +8,7 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet, Platform, LayoutAnimation } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
+import { CommonActions } from "@react-navigation/native";
 import { GatiMitraMerchant, TAB_BAR_HEIGHT } from "@/constants/theme";
 const BAR_PADDING_H = 14;
 const TOP_RADIUS = 12;
@@ -35,8 +36,24 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
 
           const onPress = () => {
             if (Platform.OS !== "web") {
-              LayoutAnimation.configureNext(LayoutAnimation.create(200, "easeOut", "opacity"));
+              LayoutAnimation.configureNext(
+                LayoutAnimation.create(200, "easeOut", "opacity"),
+              );
             }
+
+            // Profile tab: always reset to the Profile index screen (main menu).
+            // This prevents landing on inner pages like "My tickets" when opening
+            // the Profile tab from anywhere in the app.
+            if (route.name === "profile") {
+              navigation.dispatch(
+                CommonActions.navigate({
+                  name: "profile",
+                  params: { screen: "index" },
+                } as never)
+              );
+              return;
+            }
+
             navigation.navigate(route.name);
           };
 

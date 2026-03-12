@@ -1,28 +1,30 @@
 /**
  * GatiMitra Merchant — Premium multi-layer header.
- * Layout: [Logo + Store selector] ---- [Radar] ---- [Notification]
- * Left = Identity, center-right = Live radar, far right = Alerts.
+ * Layout: [Logo + Store selector] ---- [Radar] ---- [Share Restaurant]
+ * Left = Identity, center-right = Live radar, far right = Share store link.
  */
 
 import { useEffect, useRef, useState } from "react";
-import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView } from "react-native";
+import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSegments, usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE, CARD_RADIUS, CARD_PADDING, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
+import { getConfig } from "@/config/env";
 import { OnlineOfflineToggle } from "@/components/OnlineOfflineToggle";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
+import { useNotifications } from "@/context/NotificationContext";
+import type { ChildStore } from "@/context/AuthContext";
 
 const LOGO_SIZE = 32;
 const LOGO_TO_GREETING_GAP = 8;
 const RADAR_TO_BELL_GAP = 12;
 const RADAR_LEFT_MARGIN = 12;
 const BELL_SIZE = 23;
-const CARD_RADIUS = 14;
-const CARD_PADDING = 15;
+const DEVICES_GAP = 12;
 
 const PAGE_TITLES: Record<string, string> = {
   index: "Dashboard",
@@ -32,14 +34,32 @@ const PAGE_TITLES: Record<string, string> = {
   profile: "Profile",
 };
 
-function MainHeader({ compact }: { compact?: boolean }) {
-  const { isOnline } = useStoreStatus();
-  const { selectedStore, setSelectedStore } = useSelectedStore();
+function MainHeader({
+  compact,
+  pickerVisible,
+  setPickerVisible,
+  onRequestSwitchStore,
+}: {
+  compact?: boolean;
+  pickerVisible: boolean;
+  setPickerVisible: (v: boolean) => void;
+  onRequestSwitchStore: (store: ChildStore) => void;
+}) {
+  const { isOnline, scheduledClosure, manualCloseUntil, restrictionType } = useStoreStatus();
+  const { selectedStore } = useSelectedStore();
+  const { unreadCount } = useNotifications();
+  const hasScheduledClosure =
+    scheduledClosure != null ||
+    restrictionType === "PERMANENT_SHUT" ||
+    restrictionType === "VACATION" ||
+    (manualCloseUntil != null &&
+      manualCloseUntil !== "" &&
+      new Date(manualCloseUntil).getTime() > Date.now());
   const { partner } = useAuth();
   const router = useRouter();
-  const [pickerVisible, setPickerVisible] = useState(false);
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
+  const isProfileSection = segments.includes("profile");
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = partner?.childStores ?? [];
 
@@ -49,10 +69,10 @@ function MainHeader({ compact }: { compact?: boolean }) {
     }
   }, [isOnline]);
 
+
   return (
     <View style={[styles.mainHeader, compact && styles.mainHeaderCompact]}>
       <View style={styles.mainHeaderInner}>
-        {/* Left: Identity — logo + greeting (may truncate on small screens) */}
         <View style={styles.leftSection}>
           <Image
             source={require("../assets/onlylogo.png")}
@@ -86,31 +106,70 @@ function MainHeader({ compact }: { compact?: boolean }) {
             </Text>
           </Pressable>
         </View>
-        {/* Right: Radar (when online) + Notification bell */}
         <View style={styles.rightSection}>
           {isOnline && (
             <View style={styles.radarWrap}>
               <RadarLiveIndicator />
             </View>
           )}
-          <Pressable
-            onPress={() => {}}
-            style={({ pressed }) => [
-              styles.bellWrap,
-              pressed && styles.pressed,
-              GatiMitraMerchant.cursorPointer,
-            ]}
-          >
-            <Ionicons
-              name="notifications-outline"
-              size={BELL_SIZE}
-              color={GatiMitraMerchant.textPrimary}
-            />
-          </Pressable>
+          {isProfileSection ? (
+            <Pressable
+              onPress={async () => {
+                const store = selectedStore;
+                if (!store) return;
+                const base = getConfig().storeWebBaseUrl;
+                const url = `${base}/home/merchant/${store.id}`;
+                const message = `${store.store_name}\n${store.full_address || ""}\n${url}`;
+                try {
+                  await Share.share({ url, message, title: "Share Restaurant" });
+                } catch {
+                  // user cancelled or share not available
+                }
+              }}
+              style={({ pressed }) => [
+                styles.bellWrap,
+                pressed && styles.pressed,
+                GatiMitraMerchant.cursorPointer,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Share Restaurant"
+            >
+              <Ionicons
+                name="share-social"
+                size={BELL_SIZE}
+                color={GatiMitraMerchant.textPrimary}
+              />
+            </Pressable>
+          ) : (
+            <View style={styles.bellWrap}>
+              <Pressable
+                onPress={() => router.push("/notifications")}
+                style={({ pressed }) => [
+                  styles.bellPressable,
+                  pressed && styles.pressed,
+                  GatiMitraMerchant.cursorPointer,
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Notifications"
+              >
+                <Ionicons
+                  name="notifications-outline"
+                  size={BELL_SIZE}
+                  color={GatiMitraMerchant.textPrimary}
+                />
+                {unreadCount > 0 ? (
+                  <View style={styles.notificationCountBadge}>
+                    <Text style={styles.notificationCountText}>
+                      {unreadCount > 99 ? "99+" : String(unreadCount)}
+                    </Text>
+                  </View>
+                ) : null}
+              </Pressable>
+            </View>
+          )}
         </View>
       </View>
 
-      {/* Store switcher modal */}
       <Modal
         visible={pickerVisible}
         transparent
@@ -127,9 +186,11 @@ function MainHeader({ compact }: { compact?: boolean }) {
                   <Pressable
                     key={store.id}
                     onPress={() => {
-                      setSelectedStore(store);
-                      setPickerVisible(false);
-                      router.replace("/(tabs)");
+                      if (isActive) {
+                        setPickerVisible(false);
+                        return;
+                      }
+                      onRequestSwitchStore(store);
                     }}
                     style={({ pressed }) => [
                       styles.pickerItem,
@@ -187,8 +248,8 @@ function MainHeader({ compact }: { compact?: boolean }) {
   );
 }
 
-function StoreStatusCard() {
-  const { isOnline, toggle } = useStoreStatus();
+function StoreStatusCard({ onToggleRequest }: { onToggleRequest: () => void }) {
+  const { isOnline } = useStoreStatus();
   useEffect(() => {
     if (Platform.OS !== "web") {
       const { LayoutAnimation } = require("react-native");
@@ -205,33 +266,147 @@ function StoreStatusCard() {
           </Text>
         </View>
         <View style={styles.statusCardRight}>
-          <OnlineOfflineToggle isOnline={isOnline} onToggle={toggle} />
+          <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
         </View>
       </View>
     </View>
   );
 }
 
+type WarningModalType = "store-status" | "switch-store";
+
 export function MerchantCustomHeader() {
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
+  const router = useRouter();
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
-  // Home = first tab: path "/" or "/(tabs)" or last segment "index" (segment can be "(tabs)" when only group is set)
+  const { isOnline, toggle, scheduledClosure, manualCloseUntil } = useStoreStatus();
+  const hasScheduledClosure =
+    scheduledClosure != null ||
+    (manualCloseUntil != null &&
+      manualCloseUntil !== "" &&
+      new Date(manualCloseUntil).getTime() > Date.now());
+  const { setSelectedStore } = useSelectedStore();
+
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [warningModal, setWarningModal] = useState<{
+    visible: boolean;
+    type: WarningModalType;
+    goingOffline?: boolean;
+    storeToSwitch?: ChildStore;
+  }>({ visible: false, type: "store-status" });
+
   const isHomeScreen =
     pathname === "/" ||
     pathname === "/(tabs)" ||
     pathname === "/(tabs)/" ||
     tab === "index";
-  // Use full top inset so the system status bar is always visible on all pages
-  const topPadding = Math.max(insets.top, 8);
+  const topPadding = Math.max(insets.top, SAFE_AREA_TOP_MIN);
+
+  const showStoreStatusWarning = () => {
+    setWarningModal({
+      visible: true,
+      type: "store-status",
+      goingOffline: isOnline,
+    });
+  };
+
+  const showSwitchStoreWarning = (store: ChildStore) => {
+    setWarningModal({
+      visible: true,
+      type: "switch-store",
+      storeToSwitch: store,
+    });
+  };
+
+  const closeWarningModal = () => {
+    setWarningModal((prev) => ({ ...prev, visible: false }));
+  };
+
+  const confirmWarningModal = () => {
+    if (warningModal.type === "store-status") {
+      const wasOpening = !warningModal.goingOffline;
+      const hadClosure = hasScheduledClosure;
+      closeWarningModal();
+      toggle()
+        .then(() => {
+          if (wasOpening && hadClosure) {
+            Alert.alert("Store opened", "Scheduled off cleared. Store is now open and accepting orders.");
+          }
+        })
+        .catch(() => {});
+    } else if (warningModal.type === "switch-store" && warningModal.storeToSwitch) {
+      setSelectedStore(warningModal.storeToSwitch);
+      setPickerVisible(false);
+      router.replace("/(tabs)");
+      closeWarningModal();
+    } else {
+      closeWarningModal();
+    }
+  };
+
+  const warningMessage =
+    warningModal.type === "store-status"
+      ? warningModal.goingOffline
+        ? "Mark store as closed? You will stop receiving new orders."
+        : hasScheduledClosure
+          ? "Store is in scheduled off. Clear scheduled off and open store?"
+          : "Mark store as open? You will start receiving orders."
+      : warningModal.storeToSwitch
+        ? `Switch store? You will be managing ${warningModal.storeToSwitch.store_name}.`
+        : "";
 
   return (
     <View style={[styles.wrapper, { paddingTop: topPadding }]}>
       <View style={[styles.mainSection, !isHomeScreen && styles.mainSectionNoCard]}>
-        <MainHeader compact={!isHomeScreen} />
-        {isHomeScreen && <StoreStatusCard />}
+        <MainHeader
+          compact={!isHomeScreen}
+          pickerVisible={pickerVisible}
+          setPickerVisible={setPickerVisible}
+          onRequestSwitchStore={showSwitchStoreWarning}
+        />
+        {isHomeScreen && <StoreStatusCard onToggleRequest={showStoreStatusWarning} />}
       </View>
+
+      <Modal
+        visible={warningModal.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeWarningModal}
+      >
+        <Pressable style={styles.warningOverlay} onPress={closeWarningModal}>
+          <Pressable style={styles.warningCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.warningIconWrap}>
+              <Ionicons name="warning-outline" size={28} color={GatiMitraMerchant.warning} />
+            </View>
+            <Text style={styles.warningTitle}>Confirm</Text>
+            <Text style={styles.warningMessage}>{warningMessage}</Text>
+            <View style={styles.warningActions}>
+              <Pressable
+                onPress={closeWarningModal}
+                style={({ pressed }) => [
+                  styles.warningBtn,
+                  styles.warningBtnCancel,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.warningBtnCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmWarningModal}
+                style={({ pressed }) => [
+                  styles.warningBtn,
+                  styles.warningBtnConfirm,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.warningBtnConfirmText}>Confirm</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -247,13 +422,33 @@ export function MerchantHeaderLogo() {
   );
 }
 
+/** Share Restaurant button (replaces notification icon in header). */
 export function MerchantHeaderNotification({ onPress }: { onPress?: () => void }) {
+  const { selectedStore } = useSelectedStore();
+  const handlePress = async () => {
+    if (onPress) {
+      onPress();
+      return;
+    }
+    const store = selectedStore;
+    if (!store) return;
+    const base = getConfig().storeWebBaseUrl;
+    const url = `${base}/home/merchant/${store.id}`;
+    const message = `${store.store_name}\n${store.full_address || ""}\n${url}`;
+    try {
+      await Share.share({ url, message, title: "Share Restaurant" });
+    } catch {
+      // user cancelled or share not available
+    }
+  };
   return (
     <Pressable
-      onPress={onPress}
+      onPress={handlePress}
       style={({ pressed }) => [styles.bellWrap, pressed && styles.pressed, GatiMitraMerchant.cursorPointer]}
+      accessibilityRole="button"
+      accessibilityLabel="Share Restaurant"
     >
-      <Ionicons name="notifications-outline" size={BELL_SIZE} color={GatiMitraMerchant.textPrimary} />
+      <Ionicons name="share-social" size={BELL_SIZE} color={GatiMitraMerchant.textPrimary} />
     </Pressable>
   );
 }
@@ -341,6 +536,39 @@ const styles = StyleSheet.create({
     height: 44,
     justifyContent: "center",
     alignItems: "center",
+    position: "relative",
+  },
+  bellPressable: {
+    width: 44,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  notificationBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#DC2626",
+  },
+  notificationCountBadge: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#DC2626",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  notificationCountText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
   pressed: {
     opacity: 0.7,
@@ -468,5 +696,73 @@ const styles = StyleSheet.create({
   },
   statusCardRight: {
     marginLeft: 12,
+  },
+  warningOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  warningCard: {
+    width: "100%",
+    maxWidth: 340,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    padding: 24,
+    alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.12,
+        shadowRadius: 12,
+      },
+      android: { elevation: 8 },
+    }),
+  },
+  warningIconWrap: {
+    marginBottom: 12,
+  },
+  warningTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 8,
+  },
+  warningMessage: {
+    fontSize: 15,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  warningActions: {
+    flexDirection: "row",
+    gap: 12,
+    width: "100%",
+  },
+  warningBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: BUTTON_RADIUS,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  warningBtnCancel: {
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  warningBtnConfirm: {
+    backgroundColor: GatiMitraMerchant.navy,
+  },
+  warningBtnCancelText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  warningBtnConfirmText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#fff",
   },
 });

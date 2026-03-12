@@ -6,6 +6,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import * as SecureStore from "expo-secure-store";
 import { getConfig } from "@/config/env";
+import { resetSessionRevokedFlag } from "@/services/sessionEvents";
 
 const TOKEN_KEY = "gatimitra_merchant_access_token";
 const PARTNER_KEY = "gatimitra_merchant_partner";
@@ -35,6 +36,7 @@ export type ChildStore = {
 export type PartnerData = {
   parent: PartnerParent;
   childStores: ChildStore[];
+  activeDevices?: number;
 };
 
 type AuthContextValue = {
@@ -73,9 +75,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   const setTokenAndPartner = useCallback(async (newToken: string, newPartner: PartnerData) => {
+    // New login/session – allow future session_revoked events to fire again.
+    resetSessionRevokedFlag();
     await SecureStore.setItemAsync(TOKEN_KEY, newToken);
-    await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(newPartner));
     setTokenState(newToken);
+
+    // Prefer fresh data from /me (ensures activeDevices and latest child stores).
+    try {
+      const { apiBaseUrl } = getConfig();
+      const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
+        headers: { Authorization: `Bearer ${newToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const partnerData: PartnerData = {
+          parent: data.parent,
+          childStores: data.childStores ?? [],
+          activeDevices: data.activeDevices ?? 0,
+        };
+        await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(partnerData));
+        setPartnerState(partnerData);
+        return;
+      }
+    } catch {
+      // fall back to partner from login response
+    }
+
+    await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(newPartner));
     setPartnerState(newPartner);
   }, []);
 
@@ -96,7 +122,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (res.ok) {
         const data = await res.json();
-        const partnerData: PartnerData = { parent: data.parent, childStores: data.childStores ?? [] };
+        const partnerData: PartnerData = {
+          parent: data.parent,
+          childStores: data.childStores ?? [],
+          activeDevices: data.activeDevices ?? 0,
+        };
         await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(partnerData));
         setPartnerState(partnerData);
       }
@@ -115,22 +145,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const p = await getStoredPartner();
         if (cancelled) return;
         setPartnerState(p);
-        // Optionally refresh partner from API
+        // Refresh partner from API in the background so the app can render
+        // immediately using cached data instead of blocking on the network.
         const { apiBaseUrl } = getConfig();
-        try {
-          const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
-            headers: { Authorization: `Bearer ${t}` },
-          });
-          if (cancelled) return;
-          if (res.ok) {
+        (async () => {
+          try {
+            const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
+              headers: { Authorization: `Bearer ${t}` },
+            });
+            if (cancelled || !res.ok) return;
             const data = await res.json();
-            const partnerData: PartnerData = { parent: data.parent, childStores: data.childStores ?? [] };
+            const partnerData: PartnerData = {
+              parent: data.parent,
+              childStores: data.childStores ?? [],
+              activeDevices: data.activeDevices ?? 0,
+            };
             await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(partnerData));
             setPartnerState(partnerData);
+          } catch {
+            // keep stored partner
           }
-        } catch {
-          // keep stored partner
-        }
+        })();
       }
       if (!cancelled) setIsLoading(false);
     })();
