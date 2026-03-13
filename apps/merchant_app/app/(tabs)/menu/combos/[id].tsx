@@ -1,8 +1,9 @@
 /**
- * Edit combo — name, description, price, components list. Add component by menu_item_id.
+ * Edit combo — name, description, price, components list.
+ * Components can be added either by menu_item_id or by picking from a list of existing approved items.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -18,6 +19,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useMenuItems } from "@/hooks/useMenuQueries";
 import {
   fetchCombo,
   updateCombo,
@@ -45,6 +47,25 @@ export default function ComboEditScreen() {
   const [saving, setSaving] = useState(false);
   const [addItemId, setAddItemId] = useState("");
   const [adding, setAdding] = useState(false);
+  const [addingItemId, setAddingItemId] = useState<number | null>(null);
+
+  const {
+    data: itemsData,
+    isLoading: itemsLoading,
+  } = useMenuItems(storeId, token, {
+    approvalStatus: "APPROVED",
+    inStock: true,
+    limit: 200,
+  });
+
+  const availableItems = (itemsData?.items ?? []) as any[];
+  const itemById = useMemo(() => {
+    const map = new Map<number, any>();
+    for (const it of availableItems) {
+      if (typeof it.id === "number") map.set(it.id, it);
+    }
+    return map;
+  }, [availableItems]);
 
   const load = useCallback(async () => {
     if (!token || !storeId || id == null || Number.isNaN(id)) return;
@@ -111,13 +132,26 @@ export default function ComboEditScreen() {
     if (!token || !storeId || id == null || Number.isNaN(id) || Number.isNaN(itemId) || itemId < 1) return;
     setAdding(true);
     try {
-      await addComboComponent(storeId, id, token, { menu_item_id: itemId, quantity: 1 });
+    await addComboComponent(storeId, id, token, { menu_item_id: itemId, quantity: 1 });
+    await load();
+    setAddItemId("");
+  } catch (e) {
+    Alert.alert("Error", e instanceof Error ? e.message : "Add item failed. Use a valid menu item ID.");
+  } finally {
+    setAdding(false);
+  }
+};
+
+  const handleAddComponentFromList = async (menuItemId: number) => {
+    if (!token || !storeId || id == null || Number.isNaN(id)) return;
+    setAddingItemId(menuItemId);
+    try {
+      await addComboComponent(storeId, id, token, { menu_item_id: menuItemId, quantity: 1 });
       await load();
-      setAddItemId("");
     } catch (e) {
-      Alert.alert("Error", e instanceof Error ? e.message : "Add item failed. Use a valid menu item ID.");
+      Alert.alert("Error", e instanceof Error ? e.message : "Add item failed.");
     } finally {
-      setAdding(false);
+      setAddingItemId(null);
     }
   };
 
@@ -212,7 +246,17 @@ export default function ComboEditScreen() {
           {combo.components?.length ? (
             combo.components.map((comp) => (
               <View key={comp.id} style={styles.componentRow}>
-                <Text style={styles.componentText}>Item ID: {comp.menu_item_id} × {comp.quantity}</Text>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={styles.componentText}>
+                    {itemById.get(comp.menu_item_id)?.item_name ?? "Menu item"} (ID {comp.menu_item_id})
+                  </Text>
+                  <Text style={styles.componentMeta}>
+                    Qty {comp.quantity}
+                    {itemById.get(comp.menu_item_id)?.selling_price
+                      ? ` · ₹${Number(itemById.get(comp.menu_item_id).selling_price).toFixed(0)}`
+                      : ""}
+                  </Text>
+                </View>
                 <TouchableOpacity onPress={() => handleRemoveComponent(comp.id)}>
                   <Ionicons name="close-circle" size={22} color={GatiMitraMerchant.error} />
                 </TouchableOpacity>
@@ -238,6 +282,48 @@ export default function ComboEditScreen() {
               {adding ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.addComponentBtnText}>Add</Text>}
             </TouchableOpacity>
           </View>
+
+          <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Add from existing items</Text>
+          {itemsLoading ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+              <Text style={styles.loadingText}>Loading items…</Text>
+            </View>
+          ) : availableItems.length === 0 ? (
+            <Text style={styles.hint}>
+              No approved items found. Create and approve menu items first, then add them to this combo.
+            </Text>
+          ) : (
+            <View style={styles.availableList}>
+              {availableItems.map((item: any) => (
+                <TouchableOpacity
+                  key={item.id}
+                  onPress={() => handleAddComponentFromList(item.id)}
+                  style={styles.availableItemRow}
+                  activeOpacity={0.8}
+                  disabled={addingItemId === item.id}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.availableItemName} numberOfLines={1}>
+                      {item.item_name}
+                    </Text>
+                    <Text style={styles.availableItemMeta} numberOfLines={1}>
+                      ID {item.id}
+                      {item.category_id != null ? " · Category ID " + item.category_id : ""}
+                      {item.selling_price ? " · ₹" + Number(item.selling_price).toFixed(0) : ""}
+                    </Text>
+                  </View>
+                  <View style={styles.availableItemAddBtn}>
+                    {addingItemId === item.id ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.availableItemAddText}>Add</Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
         </View>
       </ScrollView>
     </View>
@@ -285,12 +371,12 @@ const styles = StyleSheet.create({
   componentRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraMerchant.border,
   },
   componentText: { fontSize: 14, color: GatiMitraMerchant.textPrimary },
+  componentMeta: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
   hint: { fontSize: 13, color: GatiMitraMerchant.textTertiary, marginBottom: 12 },
   addRow: { flexDirection: "row", gap: 8, alignItems: "center" },
   addInput: { flex: 1, marginBottom: 0 },
@@ -305,4 +391,24 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 14, color: GatiMitraMerchant.textSecondary },
   backLink: { marginTop: 12 },
   backLinkText: { fontSize: 14, color: GatiMitraMerchant.primary, fontWeight: "600" },
+  loadingRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
+  loadingText: { fontSize: 13, color: GatiMitraMerchant.textSecondary },
+  availableList: { marginTop: 8, borderRadius: 10, borderWidth: 1, borderColor: GatiMitraMerchant.border },
+  availableItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  availableItemName: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
+  availableItemMeta: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
+  availableItemAddBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  availableItemAddText: { color: "#fff", fontSize: 12, fontWeight: "600" },
 });

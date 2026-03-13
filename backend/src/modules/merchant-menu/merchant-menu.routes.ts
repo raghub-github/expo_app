@@ -4,7 +4,7 @@ import multipart from "@fastify/multipart";
 import { auth } from "../../plugins/auth.js";
 import { randomUUID } from "crypto";
 import { getEnv } from "../../config/env.js";
-import { uploadToR2 } from "../../services/r2/r2Service.js";
+import { uploadToR2, deleteFromR2, getR2SignedUrl } from "../../services/r2/r2Service.js";
 import { buildMenuItemImageKey, buildPublicUrl } from "../../services/r2/merchantMenuR2Paths.js";
 import {
   assertStoreAccess,
@@ -26,6 +26,7 @@ import {
   deleteCustomizationGroup,
   addCustomizationOption,
   updateCustomizationOption,
+  deleteCustomizationOption,
   deleteItemImage,
   setPrimaryImage,
   listAddonGroups,
@@ -55,6 +56,13 @@ import {
   getMenuItemIdByAddonGroupId,
   getMenuItemIdByAddonId,
   getMenuItemIdByImageId,
+  getItemApprovalStatus,
+  createChangeRequest,
+  listChangeRequestsForItem,
+  listChangeRequests,
+  getChangeRequestById,
+  approveChangeRequest,
+  rejectChangeRequest,
 } from "./merchant-menu.service.js";
 
 // Allow parent_category_id as number or string (client may send string); preserve null/undefined
@@ -289,7 +297,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
       // Items
       protectedApp.get<{
         Params: { storeId: string };
-        Querystring: { categoryId?: string; search?: string; limit?: string; offset?: string; approvalStatus?: string; inStock?: string };
+        Querystring: { categoryId?: string; search?: string; limit?: string; offset?: string; approvalStatus?: string; inStock?: string; changeRequestType?: string };
       }>(
         "/:storeId/items",
         async (req, reply) => {
@@ -301,6 +309,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const approvalStatus = req.query.approvalStatus === "PENDING" || req.query.approvalStatus === "APPROVED" || req.query.approvalStatus === "REJECTED" ? req.query.approvalStatus : undefined;
           const inStockParam = req.query.inStock;
           const inStock = inStockParam === "true" ? true : inStockParam === "false" ? false : undefined;
+          const changeRequestType = req.query.changeRequestType === "DELETE" || req.query.changeRequestType === "UPDATE" ? req.query.changeRequestType : undefined;
           const { items, total } = await listItems(access.storeIdNum, {
             categoryId: Number.isNaN(categoryId as number) ? undefined : (categoryId as number),
             search: req.query.search,
@@ -308,6 +317,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
             offset,
             approvalStatus: approvalStatus ?? null,
             inStock: inStock ?? null,
+            changeRequestType: changeRequestType ?? null,
           });
           return reply.send({ items, total });
         }
@@ -358,6 +368,16 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
           const role = req.auth?.role ?? "merchant";
+          if (role === "merchant") {
+            const approvalStatus = await getItemApprovalStatus(id, access.storeIdNum);
+            if (approvalStatus === "APPROVED") {
+              return reply.code(403).send({
+                error: "item_approved_use_change_request",
+                code: "item_approved_use_change_request",
+                message: "Approved items cannot be edited directly. Submit an update request for agent review.",
+              });
+            }
+          }
           const ok = await updateItem(id, access.storeIdNum, req.body, {
             updatedByRole: role,
             updatedBySub: req.auth?.sub ?? null,
@@ -376,6 +396,17 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!access) return;
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          const role = req.auth?.role ?? "merchant";
+          if (role === "merchant") {
+            const approvalStatus = await getItemApprovalStatus(id, access.storeIdNum);
+            if (approvalStatus === "APPROVED") {
+              return reply.code(403).send({
+                error: "item_approved_use_change_request",
+                code: "item_approved_use_change_request",
+                message: "Approved items cannot be deleted directly. Submit a delete request for agent review.",
+              });
+            }
+          }
           const ok = await deleteItem(id, access.storeIdNum);
           if (!ok) return reply.code(404).send({ error: "item_not_found" });
           return reply.send({ ok: true });
@@ -398,6 +429,185 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
           const ok = await patchItemStock(id, access.storeIdNum, req.body);
           if (!ok) return reply.code(404).send({ error: "item_not_found_or_invalid_body" });
+          return reply.send({ ok: true });
+        }
+      );
+
+      const changeRequestCreateSchema = z.object({
+        requested_payload: z.record(z.unknown()).default({}),
+        reason: z.string().max(500).optional().nullable(),
+      });
+      const deleteRequestCreateSchema = z.object({
+        reason: z.string().max(500).optional().nullable(),
+      });
+
+      protectedApp.post<{
+        Params: { id: string };
+        Body: z.infer<typeof changeRequestCreateSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/items/:id/change-requests",
+        { schema: { body: changeRequestCreateSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          const approvalStatus = await getItemApprovalStatus(id, access.storeIdNum);
+          if (approvalStatus !== "APPROVED") {
+            return reply.code(400).send({
+              error: "change_request_only_for_approved",
+              message: "Update requests are only for approved items. Edit the item directly.",
+            });
+          }
+          const created = await createChangeRequest(
+            access.storeIdNum,
+            id,
+            "UPDATE",
+            req.body.requested_payload ?? {},
+            { created_by: req.auth?.sub ?? "unknown", created_by_role: req.auth?.role ?? "merchant", reason: req.body.reason ?? null }
+          );
+          return reply.code(201).send(created);
+        }
+      );
+
+      protectedApp.post<{
+        Params: { id: string };
+        Body: z.infer<typeof deleteRequestCreateSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/items/:id/delete-requests",
+        { schema: { body: deleteRequestCreateSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          const approvalStatus = await getItemApprovalStatus(id, access.storeIdNum);
+          if (approvalStatus !== "APPROVED") {
+            return reply.code(400).send({
+              error: "delete_request_only_for_approved",
+              message: "Delete requests are only for approved items. Delete the item directly.",
+            });
+          }
+          const created = await createChangeRequest(
+            access.storeIdNum,
+            id,
+            "DELETE",
+            {},
+            { created_by: req.auth?.sub ?? "unknown", created_by_role: req.auth?.role ?? "merchant", reason: req.body.reason ?? null }
+          );
+          return reply.code(201).send(created);
+        }
+      );
+
+      protectedApp.get<{ Params: { id: string }; Querystring: { storeId: string } }>(
+        "/items/:id/change-requests",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          const list = await listChangeRequestsForItem(id, access.storeIdNum);
+          return reply.send({ change_requests: list });
+        }
+      );
+
+      // Agent/Admin: list and manage change requests
+      protectedApp.get<{
+        Querystring: { storeId?: string; status?: string; request_type?: string; limit?: string; offset?: string };
+      }>(
+        "/change-requests",
+        async (req, reply) => {
+          const role = req.auth?.role;
+          if (role !== "agent" && role !== "admin") {
+            return reply.code(403).send({ error: "agent_or_admin_required" });
+          }
+          const storeId = (req.query as any).storeId;
+          const status = (req.query as any).status as string | undefined;
+          const request_type = (req.query as any).request_type as string | undefined;
+          const limit = Math.min(100, Math.max(1, parseInt((req.query as any).limit ?? "20", 10) || 20));
+          const offset = Math.max(0, parseInt((req.query as any).offset ?? "0", 10) || 0);
+          let storeIdNum: number | null = null;
+          if (storeId) {
+            const { getSql } = await import("../../db/client.js");
+            const sql = getSql();
+            const rows = await sql`SELECT id FROM merchant_stores WHERE store_id = ${storeId} LIMIT 1`;
+            if (rows[0]) storeIdNum = Number((rows[0] as any).id);
+          }
+          const { requests, total } = await listChangeRequests({
+            storeIdNum: storeIdNum ?? undefined,
+            status: status === "PENDING" || status === "APPROVED" || status === "REJECTED" || status === "CANCELLED" ? status : undefined,
+            request_type: request_type === "CREATE" || request_type === "UPDATE" || request_type === "DELETE" ? request_type : undefined,
+            limit,
+            offset,
+          });
+          return reply.send({ change_requests: requests, total });
+        }
+      );
+
+      protectedApp.get<{ Params: { id: string } }>(
+        "/change-requests/:id",
+        async (req, reply) => {
+          const role = req.auth?.role;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_id" });
+          const request = await getChangeRequestById(id, null);
+          if (!request) return reply.code(404).send({ error: "request_not_found" });
+          if (role !== "agent" && role !== "admin") {
+            return reply.code(403).send({ error: "agent_or_admin_required" });
+          }
+          return reply.send(request);
+        }
+      );
+
+      protectedApp.post<{ Params: { id: string } }>(
+        "/change-requests/:id/approve",
+        async (req, reply) => {
+          const role = req.auth?.role;
+          if (role !== "agent" && role !== "admin") {
+            return reply.code(403).send({ error: "agent_or_admin_required" });
+          }
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_id" });
+          const result = await approveChangeRequest(id, {
+            reviewed_by: req.auth?.sub ?? "unknown",
+            reviewed_by_role: role,
+          });
+          if (!result.ok) {
+            const code = result.error === "request_not_found" ? 404 : 400;
+            return reply.code(code).send({ error: result.error ?? "approve_failed" });
+          }
+          return reply.send({ ok: true });
+        }
+      );
+
+      const rejectChangeRequestSchema = z.object({ reviewed_reason: z.string().max(1000).optional().nullable() });
+      protectedApp.post<{
+        Params: { id: string };
+        Body: z.infer<typeof rejectChangeRequestSchema>;
+      }>(
+        "/change-requests/:id/reject",
+        { schema: { body: rejectChangeRequestSchema } },
+        async (req, reply) => {
+          const role = req.auth?.role;
+          if (role !== "agent" && role !== "admin") {
+            return reply.code(403).send({ error: "agent_or_admin_required" });
+          }
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_id" });
+          const ok = await rejectChangeRequest(id, {
+            reviewed_by: req.auth?.sub ?? "unknown",
+            reviewed_by_role: role,
+            reviewed_reason: req.body?.reviewed_reason ?? null,
+          });
+          if (!ok) return reply.code(404).send({ error: "request_not_found_or_not_pending" });
           return reply.send({ ok: true });
         }
       );
@@ -633,6 +843,25 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         }
       );
 
+      protectedApp.delete<{ Params: { id: string }; Querystring: { storeId: string } }>(
+        "/customization-options/:id",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_option_id" });
+          const ok = await deleteCustomizationOption(id, access.storeIdNum);
+          if (!ok) return reply.code(404).send({ error: "customization_option_not_found" });
+          if (req.auth?.role === "merchant" && req.auth?.sub) {
+            const menuItemId = await getMenuItemIdByCustomizationOptionId(id);
+            if (menuItemId != null) await setItemPendingForReReview(menuItemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
+          }
+          return reply.send({ ok: true });
+        }
+      );
+
       // Images: upload (multipart -> R2 -> DB), delete, set primary
       protectedApp.post<{
         Params: { itemId: string };
@@ -646,7 +875,19 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!access) return;
           const itemId = parseInt(req.params.itemId, 10);
           if (Number.isNaN(itemId)) return reply.code(400).send({ error: "invalid_item_id" });
+
+          let uploadedKey: string | null = null;
           try {
+            const { getSql } = await import("../../db/client.js");
+            const sql = getSql();
+            const [itemRow] = await sql`
+              SELECT item_id FROM merchant_menu_items
+              WHERE id = ${itemId} AND store_id = ${access.storeIdNum}
+              LIMIT 1
+            `;
+            if (!itemRow) return reply.code(404).send({ error: "item_not_found" });
+            const itemPublicId = String((itemRow as any).item_id);
+
             const data = await req.file();
             if (!data) return reply.code(400).send({ error: "No file provided" });
             const buffer = await data.toBuffer();
@@ -654,20 +895,24 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               return reply.code(400).send({ error: "File size exceeds 10MB limit" });
             const ext = (data.filename && /\.(webp|jpe?g|png|gif)$/i.exec(data.filename)?.[1]) || "jpg";
             const fileId = randomUUID();
-            const key = buildMenuItemImageKey(access.storeIdNum, itemId, fileId, ext);
-            const { key: uploadedKey } = await uploadToR2(
+            const key = buildMenuItemImageKey(access.storeIdStr, itemPublicId, fileId, ext);
+            const uploadResult = await uploadToR2(
               buffer,
               key,
               data.mimetype || "image/jpeg"
             );
+            uploadedKey = uploadResult.key;
             const env = getEnv();
-            const imageUrl = env.R2_PUBLIC_BASE_URL
-              ? buildPublicUrl(env.R2_PUBLIC_BASE_URL, uploadedKey)
-              : (await import("../../services/r2/r2Service.js").then((m) => m.getR2SignedUrl(uploadedKey)));
+            // Prefer proxy URL (never expires, works with private R2 bucket)
+            const imageUrl = env.API_BASE_URL
+              ? `${env.API_BASE_URL.replace(/\/$/, "")}/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`
+              : env.R2_PUBLIC_BASE_URL
+                ? buildPublicUrl(env.R2_PUBLIC_BASE_URL, uploadedKey)
+                : await getR2SignedUrl(uploadedKey);
             const created = await addItemImageRow(itemId, access.storeIdNum, {
               image_url: imageUrl,
               r2_key: uploadedKey,
-              is_primary: false,
+              is_primary: true,
               format: ext,
               display_order: 0,
             });
@@ -680,6 +925,13 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               r2_key: uploadedKey,
             });
           } catch (e: any) {
+            if (uploadedKey) {
+              try {
+                await deleteFromR2(uploadedKey);
+              } catch (cleanupErr: any) {
+                req.log.error({ cleanupErr, uploadedKey }, "Failed to cleanup R2 object after DB error");
+              }
+            }
             if (e?.message === "ITEM_NOT_FOUND") return reply.code(404).send({ error: "item_not_found" });
             req.log.error(e);
             return reply.code(500).send({ error: "upload_failed", message: e?.message });

@@ -50,6 +50,7 @@ export type MenuItemsFilters = {
   search?: string;
   approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
   inStock?: boolean | null;
+  changeRequestType?: "DELETE" | "UPDATE" | null;
   limit?: number;
   offset?: number;
 };
@@ -67,6 +68,7 @@ export function useMenuItems(
         search: filters.search ?? undefined,
         approvalStatus: filters.approvalStatus ?? undefined,
         inStock: filters.inStock ?? undefined,
+        changeRequestType: filters.changeRequestType ?? undefined,
         limit: filters.limit ?? 100,
         offset: filters.offset ?? 0,
       }),

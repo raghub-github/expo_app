@@ -35,7 +35,13 @@ export type MenuItemRow = {
   has_addons: boolean;
   has_variants: boolean;
   preparation_time_minutes: number | null;
+  serves: number | null;
+  serves_label: string | null;
+  item_size_value: number | null;
+  item_size_unit: string | null;
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  has_pending_change_request?: boolean;
+  pending_change_request_type?: "CREATE" | "UPDATE" | "DELETE" | null;
 };
 
 export type ListCategoriesResponse = { categories: MenuCategory[] };
@@ -46,12 +52,17 @@ async function authFetch(
   token: string,
   opts: RequestInit = {}
 ): Promise<Response> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  };
+  if (opts.body !== undefined && opts.body !== null) {
+    headers["Content-Type"] = "application/json";
+  }
   return fetch(url, {
     ...opts,
     headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...opts.headers,
+      ...headers,
+      ...(opts.headers as Record<string, string> | undefined),
     },
   });
 }
@@ -238,6 +249,7 @@ export async function fetchMenuItems(
     offset?: number;
     approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
     inStock?: boolean | null;
+    changeRequestType?: "DELETE" | "UPDATE" | null;
   } = {}
 ): Promise<ListItemsResponse> {
   const base = getApiBaseUrl();
@@ -248,6 +260,7 @@ export async function fetchMenuItems(
   if (opts.offset != null) params.set("offset", String(opts.offset));
   if (opts.approvalStatus != null && opts.approvalStatus !== undefined) params.set("approvalStatus", opts.approvalStatus);
   if (opts.inStock !== undefined && opts.inStock !== null) params.set("inStock", String(opts.inStock));
+  if (opts.changeRequestType) params.set("changeRequestType", opts.changeRequestType);
   const qs = params.toString();
   const url = `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/items${qs ? `?${qs}` : ""}`;
   const res = await authFetch(url, token);
@@ -426,6 +439,230 @@ export async function uploadItemImage(
   return res.json() as Promise<{ id: number; image_url: string; r2_key: string }>;
 }
 
+export async function deleteMenuItem(
+  storeId: string,
+  itemId: number,
+  token: string
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: string; message?: string };
+    if (err.error === "item_approved_use_change_request") {
+      throw new Error("This item is approved. Use Request delete from the menu for agent review.");
+    }
+    throw new Error(err.message || `Delete item failed: ${res.status}`);
+  }
+}
+
+/** Create an update request for an approved item (agent will review). */
+export async function createUpdateRequest(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body: { requested_payload: Record<string, unknown>; reason?: string | null }
+): Promise<{ id: number }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/change-requests?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Update request failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number }>;
+}
+
+/** Create a delete request for an approved item (agent will review). */
+export async function createDeleteRequest(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body?: { reason?: string | null }
+): Promise<{ id: number }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/delete-requests?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body ?? {}) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Delete request failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number }>;
+}
+
+// --- Variants ---
+export async function addVariant(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body: { variant_name: string; variant_type?: string | null; variant_price: number; is_default?: boolean; display_order?: number; in_stock?: boolean }
+): Promise<{ id: number; variant_id: string }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/variants?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Add variant failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number; variant_id: string }>;
+}
+
+export async function updateVariant(
+  storeId: string,
+  variantId: number,
+  token: string,
+  body: { variant_name?: string; variant_type?: string | null; variant_price?: number; is_default?: boolean; display_order?: number; in_stock?: boolean }
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/variants/${variantId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "PUT", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Update variant failed: ${res.status}`);
+  }
+}
+
+export async function deleteVariant(
+  storeId: string,
+  variantId: number,
+  token: string
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/variants/${variantId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Delete variant failed: ${res.status}`);
+  }
+}
+
+// --- Customization groups + options (add-ons) ---
+export async function addCustomizationGroup(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body: { customization_title: string; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<{ id: number; customization_id: string }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/customization-groups?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Add customization group failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number; customization_id: string }>;
+}
+
+export async function updateCustomizationGroup(
+  storeId: string,
+  groupId: number,
+  token: string,
+  body: { customization_title?: string; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/customization-groups/${groupId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "PUT", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Update customization group failed: ${res.status}`);
+  }
+}
+
+export async function deleteCustomizationGroup(
+  storeId: string,
+  groupId: number,
+  token: string
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/customization-groups/${groupId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Delete customization group failed: ${res.status}`);
+  }
+}
+
+export async function addCustomizationOption(
+  storeId: string,
+  groupId: number,
+  token: string,
+  body: { addon_name: string; addon_price?: number; addon_image_url?: string | null; display_order?: number }
+): Promise<{ id: number; addon_id: string }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/customization-groups/${groupId}/options?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Add add-on failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number; addon_id: string }>;
+}
+
+export async function updateCustomizationOption(
+  storeId: string,
+  optionId: number,
+  token: string,
+  body: { addon_name?: string; addon_price?: number; addon_image_url?: string | null; display_order?: number; in_stock?: boolean }
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/customization-options/${optionId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "PUT", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Update add-on failed: ${res.status}`);
+  }
+}
+
+export async function deleteCustomizationOption(
+  storeId: string,
+  optionId: number,
+  token: string
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/customization-options/${optionId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Delete add-on failed: ${res.status}`);
+  }
+}
+
 export type ComboRow = {
   id: number;
   combo_name: string;
@@ -551,7 +788,10 @@ export async function updateMenuItem(
     { method: "PUT", body: JSON.stringify(body) }
   );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { message?: string }).message || `Update item failed: ${res.status}`);
+    const err = await res.json().catch(() => ({})) as { error?: string; message?: string };
+    if (err.error === "item_approved_use_change_request") {
+      throw new Error("This item is approved. Submit changes from the edit screen to send an update request for agent review.");
+    }
+    throw new Error(err.message || `Update item failed: ${res.status}`);
   }
 }

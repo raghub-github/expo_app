@@ -39,8 +39,10 @@ import {
   useCreateCategory,
   useUpdateCategory,
   useDeleteCategory,
+  menuKeys,
 } from "@/hooks/useMenuQueries";
-import { uploadItemImage, fetchStoreProfile, type MenuItemPayload, type MenuCategory } from "@/services/menuApi";
+import { useQueryClient } from "@tanstack/react-query";
+import { uploadItemImage, fetchStoreProfile, deleteMenuItem, createUpdateRequest, type MenuItemPayload, type MenuCategory } from "@/services/menuApi";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -89,6 +91,24 @@ const ITEM_IMAGE_MAX_WIDTH = 2000;
 const ITEM_IMAGE_MAX_HEIGHT = 2000;
 const ITEM_IMAGE_MAX_FILE_SIZE_MB = 5;
 const ITEM_IMAGE_MAX_FILE_SIZE_BYTES = ITEM_IMAGE_MAX_FILE_SIZE_MB * 1024 * 1024;
+
+function parseOptionalNonNegativeNumber(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const n = Number(trimmed.replace(/,/g, ""));
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function parseServesFromLabel(label: string): number | null {
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/\d+/);
+  if (!match) return null;
+  const n = Number(match[0]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return n;
+}
 
 const ITEM_TAGS_GROUPED: Record<string, string[]> = {
   Speciality: ["Freshly Frosted", "Pre Frosted", "Chef's Special"],
@@ -230,13 +250,15 @@ export default function AddEditItemScreen() {
 
   // ── data loading (backend is source of truth; hooks provide cache) ──
   const { data: categories = [], refetch: refetchCategories } = useMenuCategories(storeId, token);
+  const queryClient = useQueryClient();
   const { data: itemData, isLoading: loading, error: itemError } = useMenuItem(storeId, isEdit ? itemId : null, token);
   const createMutation = useCreateMenuItem(storeId, token);
   const updateMutation = useUpdateMenuItem(storeId, token);
   const createCategoryMutation = useCreateCategory(storeId, token);
   const updateCategoryMutation = useUpdateCategory(storeId, token);
   const deleteCategoryMutation = useDeleteCategory(storeId, token);
-  const saving = createMutation.isPending || updateMutation.isPending;
+  const [saveInProgress, setSaveInProgress] = useState(false);
+  const saving = saveInProgress || createMutation.isPending || updateMutation.isPending;
   const loadError = itemError ? (itemError instanceof Error ? itemError.message : "Failed to load item") : null;
   const saveError = createMutation.error ?? updateMutation.error;
   const error = loadError ?? (saveError instanceof Error ? saveError.message : saveError ? "Save failed" : null);
@@ -522,12 +544,11 @@ export default function AddEditItemScreen() {
         setPendingImage(fileInfo);
         return;
       }
-      // Edit mode: upload immediately
+      // Edit mode: upload immediately (backend replaces previous primary image in R2)
       setUploadingImage(true);
       const uploaded = await uploadItemImage(storeId, itemId, token, fileInfo);
-      setImages((prev) => [
-        ...prev,
-        { id: uploaded.id, image_url: uploaded.image_url, is_primary: prev.length === 0, display_order: prev.length },
+      setImages([
+        { id: uploaded.id, image_url: uploaded.image_url, is_primary: true, display_order: 0 },
       ]);
     } catch (e) {
       Alert.alert("Upload failed", e instanceof Error ? e.message : "Could not upload image.");
@@ -542,73 +563,138 @@ export default function AddEditItemScreen() {
 
   // ── save ──
 
+  const handleSaveConfirm = useCallback(() => {
+    if (!token || !storeId || !itemName.trim()) return;
+    const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
+    const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
+    if (baseParsed == null && sellingParsed == null) {
+      Alert.alert("Invalid price", "Enter a valid non-negative base or selling price.");
+      return;
+    }
+    Alert.alert(
+      isEdit ? "Save changes?" : "Create item?",
+      isEdit ? "Your updates will be saved." : "This menu item will be added to your catalog.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Save", onPress: () => handleSave() },
+      ]
+    );
+  }, [
+    token, storeId, itemName, basePrice, sellingPrice, isEdit,
+    handleSave,
+  ]);
+
   const handleSave = useCallback(async () => {
     if (!token || !storeId || !itemName.trim()) return;
-    const base = parseFloat(basePrice) || 0;
-    const selling = parseFloat(sellingPrice) || base;
+    const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
+    const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
+
+    if (baseParsed == null && sellingParsed == null) {
+      Alert.alert("Invalid price", "Enter a valid non-negative base or selling price.");
+      return;
+    }
+
+    const base = baseParsed ?? sellingParsed ?? 0;
+    const selling = sellingParsed ?? base;
+    const servesNumber = servesLabel ? parseServesFromLabel(servesLabel) : null;
+
+    const categoryIdNumber =
+      categoryId != null
+        ? (() => {
+            const n = Number(categoryId);
+            return !Number.isFinite(n) || n <= 0 ? null : n;
+          })()
+        : null;
 
     const payload: MenuItemPayload = {
       item_name: itemName.trim(),
       item_description: description.trim() || null,
       food_type: foodType,
-      category_id: categoryId,
+      category_id: categoryIdNumber,
       cuisine_type: cuisineType.trim() || null,
       base_price: base,
       selling_price: selling,
       serves_label: servesLabel || null,
-      serves: servesLabel ? parseInt(servesLabel) || null : null,
-      item_size_value: itemSizeValue ? parseFloat(itemSizeValue) : null,
+      serves: servesNumber,
+      item_size_value: parseOptionalNonNegativeNumber(itemSizeValue || ""),
       item_size_unit: itemSizeUnit || null,
       available_for_delivery: availableForDelivery,
-      weight_per_serving: weightPerServing ? parseFloat(weightPerServing) : null,
+      weight_per_serving: parseOptionalNonNegativeNumber(weightPerServing || ""),
       weight_per_serving_unit: weightUnit,
-      calories_kcal: caloriesKcal ? parseFloat(caloriesKcal) : null,
-      protein: proteinVal ? parseFloat(proteinVal) : null,
+      calories_kcal: parseOptionalNonNegativeNumber(caloriesKcal || ""),
+      protein: parseOptionalNonNegativeNumber(proteinVal || ""),
       protein_unit: proteinUnit,
-      carbohydrates: carbsVal ? parseFloat(carbsVal) : null,
+      carbohydrates: parseOptionalNonNegativeNumber(carbsVal || ""),
       carbohydrates_unit: carbsUnit,
-      fat: fatVal ? parseFloat(fatVal) : null,
+      fat: parseOptionalNonNegativeNumber(fatVal || ""),
       fat_unit: fatUnit,
-      fibre: fibreVal ? parseFloat(fibreVal) : null,
+      fibre: parseOptionalNonNegativeNumber(fibreVal || ""),
       fibre_unit: fibreUnit,
       allergens: selectedAllergens.length ? selectedAllergens : null,
       item_tags: selectedTags.length ? selectedTags : null,
     };
 
+    setSaveInProgress(true);
     try {
       if (isEdit && itemId != null) {
-        await updateMutation.mutateAsync({ itemId, body: payload });
-        Alert.alert("Saved", "Item updated.", [{ text: "OK", onPress: () => router.back() }]);
+        const isApproved = itemData?.approval_status === "APPROVED";
+        if (isApproved && storeId && token) {
+          await createUpdateRequest(storeId, itemId, token, { requested_payload: payload });
+          queryClient.invalidateQueries({ queryKey: menuKeys.items(storeId) });
+          queryClient.invalidateQueries({ queryKey: menuKeys.item(storeId, itemId) });
+          Alert.alert(
+            "Update requested",
+            "Your changes have been submitted for agent review. You will see them after approval.",
+            [{ text: "OK", onPress: () => router.back() }]
+          );
+        } else {
+          await updateMutation.mutateAsync({ itemId, body: payload });
+          Alert.alert("Saved", "Item updated.", [{ text: "OK", onPress: () => router.back() }]);
+        }
       } else {
         const created = await createMutation.mutateAsync(payload);
         const newId = created.id;
         if (pendingImage && token && storeId) {
+          let rolledBack = false;
           try {
-            setUploadingImage(true);
             await uploadItemImage(storeId, newId, token, {
               uri: pendingImage.uri,
               type: pendingImage.type ?? "image/jpeg",
               name: pendingImage.name ?? "image.jpg",
             });
           } catch (uploadErr) {
-            Alert.alert("Image upload failed", uploadErr instanceof Error ? uploadErr.message : "Could not upload image. Item was created.");
-          } finally {
-            setUploadingImage(false);
+            try {
+              await deleteMenuItem(storeId, newId, token);
+              rolledBack = true;
+            } catch {
+              rolledBack = false;
+            }
+            Alert.alert(
+              "Image upload failed",
+              uploadErr instanceof Error
+                ? rolledBack
+                  ? `${uploadErr.message}. Item was not saved. Please try again.`
+                  : `${uploadErr.message}. Item was created without image; you can edit or delete it from the catalog.`
+                : rolledBack
+                  ? "Could not upload image. Item was not saved. Please try again."
+                  : "Could not upload image. Item was created without image; you can edit or delete it from the catalog."
+            );
+            if (rolledBack) {
+              return;
+            }
           }
         }
         Alert.alert("Created", "Item added.", [
           {
             text: "OK",
-            onPress: () =>
-              router.replace({
-                pathname: "/menu/add-edit-item",
-                params: { itemId: String(newId) },
-              } as any),
+            onPress: () => router.back(),
           },
         ]);
       }
     } catch {
       // Error surfaced via mutation.error / derived error state
+    } finally {
+      setSaveInProgress(false);
     }
   }, [
     storeId, isEdit, itemId, itemName, description, foodType, categoryId, cuisineType, pendingImage, token,
@@ -616,7 +702,7 @@ export default function AddEditItemScreen() {
     availableForDelivery, weightPerServing, weightUnit, caloriesKcal,
     proteinVal, proteinUnit, carbsVal, carbsUnit, fatVal, fatUnit,
     fibreVal, fibreUnit, selectedAllergens, selectedTags, router,
-    createMutation, updateMutation,
+    createMutation, updateMutation, itemData?.approval_status,
   ]);
 
   // ── category helpers ──
@@ -728,7 +814,35 @@ export default function AddEditItemScreen() {
           </ScrollView>
         )}
 
-        <SectionDivider />
+        {isEdit && itemId != null ? (
+          <>
+            <View style={styles.manageOptionsCard}>
+              <Text style={styles.manageOptionsTitle}>Options</Text>
+              <View style={styles.manageOptionsRow}>
+                <TouchableOpacity
+                  style={styles.manageOptionBtn}
+                  onPress={() => router.push({ pathname: "/menu/item-variants", params: { itemId: String(itemId) } } as any)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="swap-horizontal" size={18} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.manageOptionBtnText}>Variants</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.manageOptionBtn}
+                  onPress={() => router.push({ pathname: "/menu/item-customizations", params: { itemId: String(itemId) } } as any)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="options-outline" size={18} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.manageOptionBtnText}>Customizations & add-ons</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.manageOptionsHint}>For approved items, changes will go for review.</Text>
+            </View>
+            <SectionDivider />
+          </>
+        ) : (
+          <SectionDivider />
+        )}
 
         {/* ── Category (subcategory): sheet with hierarchical list + add/edit/delete ── */}
         <View style={styles.section}>
@@ -1223,7 +1337,7 @@ export default function AddEditItemScreen() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.saveBtn, (!canSave || saving) && styles.saveBtnDisabled]}
-          onPress={handleSave}
+          onPress={handleSaveConfirm}
           disabled={!canSave || saving}
           activeOpacity={0.85}
         >
@@ -1388,7 +1502,8 @@ const styles = StyleSheet.create({
   imageUploadArea: {
     marginHorizontal: H_PADDING,
     marginTop: 16,
-    height: 180,
+    width: SCREEN_WIDTH - H_PADDING * 2,
+    aspectRatio: 1,
     borderRadius: CARD_RADIUS,
     borderWidth: 2,
     borderStyle: "dashed",
@@ -1409,6 +1524,32 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginHorizontal: H_PADDING,
   },
+  manageOptionsCard: {
+    marginTop: 12,
+    marginHorizontal: H_PADDING,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    gap: 10,
+  },
+  manageOptionsTitle: { fontSize: 14, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  manageOptionsRow: { flexDirection: "row", gap: 10 },
+  manageOptionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  manageOptionBtnText: { fontSize: 13, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  manageOptionsHint: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
   categorySheetSearchWrap: {
     flexDirection: "row",
     alignItems: "center",
