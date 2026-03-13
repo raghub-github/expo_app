@@ -760,12 +760,12 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-20 shrink-0 border-b border-gray-200 bg-white shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-4 py-2 gap-2">
+      <header className="sticky top-0 z-20 shrink-0 border-b border-gray-200 bg-white/95 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-4 py-1 gap-1">
           <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
             <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold text-gray-900">Menu Management</h1>
-              <p className="text-gray-500 text-xs mt-0 flex items-center gap-2 flex-wrap">
+              <h1 className="text-sm sm:text-base font-bold text-gray-900">Menu Management</h1>
+              <p className="text-gray-500 text-[11px] mt-0 flex items-center gap-2 flex-wrap">
                 <span>Manage your menu items and categories</span>
                 {planLimits != null && (
                   <span className="text-gray-400">· Plan: {(planLimits as { planName?: string })?.planName ?? "—"}</span>
@@ -773,7 +773,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             <button
               onClick={() => {
                 setCategoryModalMode("add");
@@ -781,7 +781,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 setShowCategoryModal(true);
               }}
               disabled={!canAddCategory}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors bg-white text-orange-600 border border-orange-600 hover:bg-orange-50 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-white text-orange-600 border border-orange-600 hover:bg-orange-50 disabled:opacity-50"
             >
               <Plus size={16} />
               Add Category
@@ -792,7 +792,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
             <button
               onClick={() => setShowAddModal(true)}
               disabled={!canAddItem}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50"
             >
               <Plus size={16} />
               Add Menu Item
@@ -806,7 +806,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 setShowMenuFileSection(true);
                 setTimeout(() => menuFileSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg border border-amber-600 text-amber-700 bg-white hover:bg-amber-50 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg border border-amber-600 text-amber-700 bg-white hover:bg-amber-50 transition-colors"
             >
               <Upload size={16} />
               Menu file
@@ -814,43 +814,51 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 px-3 sm:px-4 pb-2">
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">
-              Total Items
-              {planLimits != null && (
-                <span className="ml-1 text-gray-400">/ {(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"}</span>
-              )}
-            </div>
-            <div className="text-lg font-bold text-gray-900 leading-tight">{menuItems.length}</div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">In Stock</div>
-            <div className="text-lg font-bold text-green-600 leading-tight">{inStock}</div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">Out of Stock</div>
-            <div className="text-lg font-bold text-red-600 leading-tight">
-              {outStock} ({outStockPercent}%)
+        <div className="flex flex-wrap gap-1 px-3 sm:px-4 pb-1">
+          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[120px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-500 text-[10px] font-medium">
+                Total Items
+                {planLimits != null && (
+                  <span className="ml-1 text-gray-400">/ {(planLimits as { maxMenuItems?: number })?.maxMenuItems ?? "—"}</span>
+                )}
+              </span>
+              <span className="text-sm font-bold text-gray-900 leading-tight">{menuItems.length}</span>
             </div>
           </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">
-              Categories
-              {planLimits != null && (
-                <span className="ml-1 text-gray-400">/ {(planLimits as { maxMenuCategories?: number })?.maxMenuCategories ?? "—"}</span>
-              )}
+          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[100px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-500 text-[10px] font-medium">In Stock</span>
+              <span className="text-sm font-bold text-green-600 leading-tight">{inStock}</span>
             </div>
-            <div className="text-lg font-bold text-blue-600 leading-tight">{categories.length}</div>
+          </div>
+          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[120px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-500 text-[10px] font-medium">Out Of Stocks</span>
+              <span className="text-sm font-bold text-red-600 leading-tight">
+                {outStock} ({outStockPercent}%)
+              </span>
+            </div>
+          </div>
+          <div className="bg-gray-50 border border-gray-200 rounded-md px-2 py-1 min-w-[120px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-gray-500 text-[10px] font-medium">
+                Categories
+                {planLimits != null && (
+                  <span className="ml-1 text-gray-400">/ {(planLimits as { maxMenuCategories?: number })?.maxMenuCategories ?? "—"}</span>
+                )}
+              </span>
+              <span className="text-sm font-bold text-blue-600 leading-tight">{categories.length}</span>
+            </div>
           </div>
         </div>
 
         {showMenuFileSection && (
           <div
             ref={menuFileSectionRef}
-            className="mx-3 sm:mx-4 mb-3 rounded-2xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-orange-50/80 shadow-sm overflow-hidden"
+            className="mx-3 sm:mx-4 mb-2 rounded-2xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-orange-50/80 shadow-sm overflow-hidden"
           >
-            <div className="flex items-start justify-between gap-3 p-4 sm:p-5">
+            <div className="flex items-start justify-between gap-3 p-3 sm:p-4">
               <div className="min-w-0 flex-1">
                 <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
                   <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-amber-100 text-amber-700">
@@ -871,59 +879,68 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 <X size={20} strokeWidth={2} />
               </button>
             </div>
-            <div className="px-4 sm:px-5 pb-4 sm:pb-5 pt-0">
+            <div className="px-4 sm:px-5 pb-3 sm:pb-4 pt-0">
               <p className="text-xs text-gray-500">Select CSV or image and upload. API integration pending.</p>
             </div>
           </div>
         )}
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 pb-3">
-          <div className="flex-1 max-w-sm min-w-0 order-2 sm:order-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 px-3 sm:px-4 pb-2">
+          <div className="order-2 sm:order-1">
             <input
               type="text"
               placeholder="Search menu items..."
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100 text-gray-900"
+              className="w-48 sm:w-60 px-2.5 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100 text-gray-900"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
           <div className="order-3 sm:order-2 flex items-center gap-2 flex-wrap">
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-              aria-label="Filter by status"
-            >
-              <option value="ALL">Status: All</option>
-              <option value="PENDING">Status: Pending</option>
-              <option value="APPROVED">Status: Approved</option>
-              <option value="REJECTED">Status: Rejected</option>
-            </select>
-            <select
-              value={stockFilter}
-              onChange={(e) => setStockFilter(e.target.value as any)}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-              aria-label="Filter by stock"
-            >
-              <option value="ALL">Stock: All</option>
-              <option value="IN_STOCK">Stock: In stock</option>
-              <option value="OUT_OF_STOCK">Stock: Out of stock</option>
-            </select>
-            <select
-              value={changeRequestFilter}
-              onChange={(e) => setChangeRequestFilter(e.target.value as any)}
-              className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-              aria-label="Filter by change request"
-            >
-              <option value="ALL">Requests: All</option>
-              <option value="UPDATE">Requests: Edit</option>
-              <option value="DELETE">Requests: Delete</option>
-            </select>
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-medium text-gray-600">
+              <span>Status</span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+                className="px-2 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg bg-white text-gray-900"
+                aria-label="Filter by status"
+              >
+                <option value="ALL">All</option>
+                <option value="PENDING">Pending</option>
+                <option value="APPROVED">Approved</option>
+                <option value="REJECTED">Rejected</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-medium text-gray-600">
+              <span>Stock</span>
+              <select
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value as any)}
+                className="px-2 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg bg-white text-gray-900"
+                aria-label="Filter by stock"
+              >
+                <option value="ALL">All</option>
+                <option value="IN_STOCK">In stock</option>
+                <option value="OUT_OF_STOCK">Out of stock</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs font-medium text-gray-600">
+              <span>Requests</span>
+              <select
+                value={changeRequestFilter}
+                onChange={(e) => setChangeRequestFilter(e.target.value as any)}
+                className="px-2 py-1 text-[11px] sm:text-xs border border-gray-300 rounded-lg bg-white text-gray-900"
+                aria-label="Filter by change request"
+              >
+                <option value="ALL">All</option>
+                <option value="UPDATE">Edit</option>
+                <option value="DELETE">Delete</option>
+              </select>
+            </div>
           </div>
           <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-hidden">
             <button
               onClick={() => setSelectedCategoryId(null)}
-              className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap ${
+              className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap ${
                 selectedCategoryId === null ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200"
               }`}
             >
@@ -949,7 +966,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                     <button
                       key={category.id}
                       onClick={() => setSelectedCategoryId(category.id)}
-                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[140px] truncate ${
+                      className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap max-w-[120px] truncate ${
                         selectedCategoryId === category.id ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                       }`}
                       title={category.category_name}
@@ -975,9 +992,9 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3">
-          <div className="mb-4 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3 border-b border-gray-100">
+        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-slate-50">
+          <div className="mb-3 rounded-lg border border-gray-200 bg-white/95 shadow-sm overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-100">
               <div>
                 <div className="text-sm font-bold text-gray-900">Change requests</div>
                 <div className="text-xs text-gray-500">
@@ -1009,7 +1026,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 </select>
               </div>
             </div>
-            <div className="px-4 py-3">
+            <div className="px-4 py-2.5">
               {!storePublicId ? (
                 <div className="text-xs text-gray-500">Loading store info…</div>
               ) : crLoading ? (
@@ -1084,16 +1101,22 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
           ) : searchedItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <Package size={48} className="text-gray-300 mb-4" />
-              <h3 className="text-xl font-bold text-gray-700">No menu items found</h3>
+              <h3 className="text-xl font-bold text-gray-700">
+                {menuItems.length > 0 ? "No items match current filters" : "No menu items found"}
+              </h3>
               <p className="text-gray-500 mt-2">
-                {searchTerm ? "Try a different search term" : "Add your first menu item to get started"}
+                {menuItems.length > 0
+                  ? "Try clearing or changing filters to see items."
+                  : searchTerm
+                    ? "Try a different search term"
+                    : "Add your first menu item to get started"}
               </p>
-              {categories.length === 0 && (
+              {menuItems.length === 0 && categories.length === 0 && (
                 <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
               {searchedItems.map((item) => {
                 const category = categories.find((c) => c.id === item.category_id);
                 const discount = Number(item.discount_percentage);
@@ -1101,10 +1124,10 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 return (
                   <div
                     key={item.item_id}
-                    className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all overflow-hidden"
+                    className="bg-white/95 rounded-lg border border-gray-200/80 shadow-sm hover:shadow-md transition-all overflow-hidden"
                   >
-                    <div className="flex p-2.5 h-full gap-2.5">
-                      <div className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
+                    <div className="flex p-2 h-full gap-3">
+                      <div className="w-16 h-16 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
                         <R2Image
                           src={item.item_image_url}
                           alt={item.item_name}
@@ -1113,7 +1136,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                         />
                       </div>
                       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                        <div className="flex items-start justify-between gap-1 mb-0.5">
+                        <div className="flex items-start justify-between gap-2 mb-1">
                           <div className="flex-1 min-w-0">
                             <div className="font-bold text-sm text-gray-900 truncate">{item.item_name}</div>
                           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
@@ -1178,7 +1201,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                         <div className="flex items-center gap-1 mb-1">
                           {hasDiscount ? (
                             <>
-                              <span className="text-sm font-bold text-orange-600">₹{item.selling_price}</span>
+                              <span className="text-sm font-semibold text-orange-600">₹{item.selling_price}</span>
                               <span className="text-xs font-medium text-gray-500 line-through">₹{item.base_price}</span>
                               <span className="px-1 py-0.5 rounded bg-green-100 text-green-700 text-[10px] font-bold">
                                 {discount}% OFF
@@ -1189,7 +1212,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                           )}
                         </div>
                         {item.item_description && (
-                          <p className="text-[11px] text-gray-600 line-clamp-2 mb-1.5 flex-grow leading-tight">
+                          <p className="text-[11px] text-gray-600 line-clamp-1 mb-1 flex-grow leading-tight">
                             {item.item_description}
                           </p>
                         )}
@@ -1600,7 +1623,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 error={editError}
                 title="Edit Menu Item"
                 categories={categories}
-                currentItemId={editingId ?? ""}
+                currentItemId={editingId != null ? String(editingId) : ""}
               />
             </div>
           </div>,

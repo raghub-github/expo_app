@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { ChevronDown, User, FolderGit2, Filter, X, Calendar } from "lucide-react";
 import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
