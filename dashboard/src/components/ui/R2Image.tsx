@@ -8,7 +8,32 @@ interface R2ImageProps {
 }
 
 export function R2Image({ src, alt, className = "", fallbackSrc }: R2ImageProps) {
-  const resolved = src && (src.startsWith("http") || src.startsWith("/") || src.startsWith("data:")) ? src : fallbackSrc;
+  let resolvedSrc = src ?? "";
+
+  // Normalize old backend attachment URLs (e.g. http://host:3000/v1/attachments/proxy?key=...)
+  if (resolvedSrc) {
+    try {
+      const url = new URL(resolvedSrc);
+      const path = url.pathname;
+      const search = url.search || "";
+      if (path.startsWith("/v1/attachments/proxy")) {
+        // Use current origin + new dashboard proxy route
+        resolvedSrc = `/api/attachments/proxy${search}`;
+      } else if (path.startsWith("/api/attachments/proxy")) {
+        resolvedSrc = `/api/attachments/proxy${search}`;
+      }
+    } catch {
+      // If it's already a relative path, just keep it as is.
+      if (resolvedSrc.startsWith("/v1/attachments/proxy")) {
+        resolvedSrc = resolvedSrc.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+      }
+    }
+  }
+
+  const resolved =
+    resolvedSrc && (resolvedSrc.startsWith("http") || resolvedSrc.startsWith("/") || resolvedSrc.startsWith("data:"))
+      ? resolvedSrc
+      : fallbackSrc;
   if (!resolved) {
     return <div className={`bg-gray-100 flex items-center justify-center ${className}`} aria-hidden />;
   }

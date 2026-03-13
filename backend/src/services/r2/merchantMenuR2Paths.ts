@@ -32,13 +32,15 @@ function normalizeExt(ext: string): string {
  * Use this before upload so the same key is used for upload and DB.
  */
 export function buildMenuItemImageKey(
-  storeId: number,
-  itemId: number,
+  storeId: number | string,
+  itemId: number | string,
   fileId: string,
   ext: string
 ): string {
   const safeExt = normalizeExt(ext);
-  return `${PREFIX}/${storeId}/items/${itemId}/${IMAGES_FOLDER}/${fileId}.${safeExt}`;
+  const storePart = String(storeId);
+  const itemPart = String(itemId);
+  return `${PREFIX}/${storePart}/items/${itemPart}/${IMAGES_FOLDER}/${fileId}.${safeExt}`;
 }
 
 /**
@@ -53,13 +55,15 @@ export function buildPublicUrl(publicBaseUrl: string, r2Key: string): string {
 /**
  * R2 key prefix for all images of one menu item (for list/delete by prefix if needed).
  */
-export function itemImagesPrefix(storeId: number, itemId: number): string {
-  return `${PREFIX}/${storeId}/items/${itemId}/${IMAGES_FOLDER}/`;
+export function itemImagesPrefix(storeId: number | string, itemId: number | string): string {
+  const storePart = String(storeId);
+  const itemPart = String(itemId);
+  return `${PREFIX}/${storePart}/items/${itemPart}/${IMAGES_FOLDER}/`;
 }
 
 /**
  * R2 key prefix for all menu media of one store (for bulk operations if needed).
  */
-export function storeMenuPrefix(storeId: number): string {
-  return `${PREFIX}/${storeId}/`;
+export function storeMenuPrefix(storeId: number | string): string {
+  return `${PREFIX}/${String(storeId)}/`;
 }

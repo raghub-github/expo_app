@@ -25,6 +25,21 @@ export const CUISINE_TYPES = [
   "Coffee", "Kebab", "Arabian", "Kerala", "Asian", "Seafood", "Pasta", "BBQ", "Rajasthani", "Wraps", "Hyderabadi", "Mexican",
 ];
 
+// Mirror key serving/size options from merchant app (simplified).
+export const SERVES_OPTIONS = [
+  "1 person",
+  "1 - 2 people",
+  "2 - 3 people",
+  "3 - 4 people",
+  "4 - 5 people",
+  "5 - 6 people",
+  "6 - 7 people",
+  "7 - 8 people",
+  "8 - 9 people",
+];
+
+export const SIZE_UNITS = ["slices", "kg", "litre", "ml", "serves", "cms", "piece", "grams", "inches"];
+
 export interface Addon {
   id?: number;
   addon_id: string;
@@ -82,6 +97,9 @@ export interface MenuItem {
   item_description?: string;
   preparation_time_minutes?: number;
   serves?: number;
+  serves_label?: string | null;
+  item_size_value?: number | null;
+  item_size_unit?: string | null;
   allergens?: string[] | string;
   customizations?: Customization[];
   variants?: Variant[];
@@ -90,6 +108,9 @@ export interface MenuItem {
   cuisine_type?: string;
   is_active?: boolean;
   store_id?: number;
+  approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
+  has_pending_change_request?: boolean;
+  pending_change_request_type?: "CREATE" | "UPDATE" | "DELETE" | null;
 }
 
 export interface MenuCategory {

@@ -145,6 +145,31 @@ export async function getR2SignedUrl(key: string, expiresIn: number = 604800): P
 }
 
 /**
+ * Get object from R2 by key (for proxy/serving without signed URL).
+ * Returns buffer and contentType; null if not found.
+ */
+export async function getObjectByKey(key: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const client = getR2Client();
+  const bucket = getBucketName();
+  try {
+    const response = await client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      })
+    );
+    if (!response.Body) return null;
+    const buffer = Buffer.from(await response.Body.transformToByteArray());
+    const contentType = response.ContentType ?? "application/octet-stream";
+    return { buffer, contentType };
+  } catch (err: unknown) {
+    const code = (err as { name?: string })?.name;
+    if (code === "NoSuchKey") return null;
+    throw err;
+  }
+}
+
+/**
  * Extract key from signed URL
  * R2 signed URLs can be in format: https://bucket.endpoint/key?signature
  * or https://endpoint/bucket/key?signature

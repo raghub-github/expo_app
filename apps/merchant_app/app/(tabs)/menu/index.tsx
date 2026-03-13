@@ -17,6 +17,7 @@ import {
   Modal,
   Alert,
   Pressable,
+  Switch,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -32,26 +33,43 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useMenuCategories, useMenuItems, usePatchItemStock, useDeleteCategory } from "@/hooks/useMenuQueries";
 import type { MenuItemRow } from "@/services/menuApi";
 import type { MenuCategory } from "@/services/menuApi";
+import { deleteMenuItem, createDeleteRequest } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
 import { useRouter } from "expo-router";
 
 type ApprovalFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
 type StockFilter = "ALL" | "IN_STOCK" | "OUT_OF_STOCK";
+type ChangeRequestFilter = "ALL" | "DELETE" | "UPDATE";
+
+const FOOD_TYPE_LABELS: Record<string, string> = {
+  VEG: "Veg",
+  NON_VEG: "Non-Veg",
+  EGG: "Egg",
+  VEGAN: "Vegan",
+};
 
 function MenuItemCard({
   item,
   categoryName,
   onToggleStock,
   onEdit,
+  onMoreOptions,
 }: {
   item: MenuItemRow;
   categoryName: string | null;
   onToggleStock: (id: number, inStock: boolean) => void;
   onEdit: (id: number) => void;
+  onMoreOptions: (item: MenuItemRow) => void;
 }) {
   const [toggling, setToggling] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const price = `₹${Number(item.selling_price).toFixed(0)}`;
+  const sellingNum = Number(item.selling_price);
+  const baseNum = Number(item.base_price);
+  const hasDiscount = baseNum > sellingNum && baseNum > 0;
+  const sellingFormatted = `₹${sellingNum.toFixed(0)}`;
+  const baseFormatted = baseNum > 0 ? `₹${baseNum.toFixed(0)}` : null;
+  const prepMins = item.preparation_time_minutes != null ? item.preparation_time_minutes : null;
+  const foodTypeLabel = item.food_type ? (FOOD_TYPE_LABELS[item.food_type] ?? item.food_type) : null;
   const tags: string[] = [];
   if (item.has_variants) tags.push("Variants");
   if (item.has_customizations) tags.push("Customizations");
@@ -84,7 +102,7 @@ function MenuItemCard({
             />
           ) : (
             <View style={styles.itemImagePlaceholder}>
-              <Ionicons name="restaurant-outline" size={28} color={GatiMitraMerchant.primary} />
+              <Ionicons name="restaurant-outline" size={32} color={GatiMitraMerchant.primary} />
             </View>
           )}
           {item.approval_status === "PENDING" && (
@@ -97,15 +115,56 @@ function MenuItemCard({
               <Text style={styles.rejectedBadgeText}>Rejected</Text>
             </View>
           )}
+          {item.has_pending_change_request && (
+            <View style={styles.changeRequestedBadge}>
+              <Text style={styles.changeRequestedBadgeText}>
+                {item.pending_change_request_type === "DELETE" ? "Delete requested" : item.pending_change_request_type === "UPDATE" ? "Edit requested" : "Change requested"}
+              </Text>
+            </View>
+          )}
         </View>
         <View style={styles.itemBody}>
           <Text style={styles.itemName} numberOfLines={2}>
             {item.item_name}
           </Text>
-          <Text style={styles.itemMeta} numberOfLines={1}>
-            {categoryName ?? "Uncategorised"} · {price}
-          </Text>
-          {tags.length > 0 && (
+          {item.item_description?.trim() ? (
+            <Text style={styles.itemDescription} numberOfLines={2}>
+              {item.item_description.trim()}
+            </Text>
+          ) : null}
+          <View style={styles.itemMetaRow}>
+            <Text style={styles.itemMetaText} numberOfLines={1}>
+              {categoryName ?? "Uncategorised"}
+              {foodTypeLabel ? ` · ${foodTypeLabel}` : ""}
+              {prepMins != null && prepMins > 0 ? ` · ${prepMins} min` : ""}
+            </Text>
+          </View>
+          {(item.serves_label != null && item.serves_label.trim() !== "") || (item.serves != null && item.serves > 0) || (item.item_size_value != null && item.item_size_value > 0) || (item.item_size_unit != null && item.item_size_unit.trim() !== "") ? (
+            <View style={styles.itemServeSizeRow}>
+              {item.serves_label != null && item.serves_label.trim() !== "" ? (
+                <Text style={styles.itemServeSizeText}>{item.serves_label.trim()}</Text>
+              ) : item.serves != null && item.serves > 0 ? (
+                <Text style={styles.itemServeSizeText}>{item.serves} {item.serves === 1 ? "person" : "people"}</Text>
+              ) : null}
+              {((item.serves_label != null && item.serves_label.trim() !== "") || (item.serves != null && item.serves > 0)) && (item.item_size_value != null || (item.item_size_unit != null && item.item_size_unit.trim() !== "")) ? (
+                <Text style={styles.itemServeSizeText}> · </Text>
+              ) : null}
+              {item.item_size_value != null && item.item_size_value > 0 && item.item_size_unit != null && item.item_size_unit.trim() !== "" ? (
+                <Text style={styles.itemServeSizeText}>{Number(item.item_size_value) === Math.floor(Number(item.item_size_value)) ? String(Math.floor(Number(item.item_size_value))) : Number(item.item_size_value)} {item.item_size_unit.trim()}</Text>
+              ) : item.item_size_value != null && item.item_size_value > 0 ? (
+                <Text style={styles.itemServeSizeText}>{Number(item.item_size_value) === Math.floor(Number(item.item_size_value)) ? String(Math.floor(Number(item.item_size_value))) : Number(item.item_size_value)}</Text>
+              ) : item.item_size_unit != null && item.item_size_unit.trim() !== "" ? (
+                <Text style={styles.itemServeSizeText}>{item.item_size_unit.trim()}</Text>
+              ) : null}
+            </View>
+          ) : null}
+          <View style={styles.priceRow}>
+            <Text style={styles.sellingPrice}>{sellingFormatted}</Text>
+            {hasDiscount && baseFormatted ? (
+              <Text style={styles.basePriceStrike}>{baseFormatted}</Text>
+            ) : null}
+          </View>
+          {tags.length > 0 ? (
             <View style={styles.tagsRow}>
               {tags.map((t) => (
                 <View key={t} style={styles.tag}>
@@ -113,39 +172,33 @@ function MenuItemCard({
                 </View>
               ))}
             </View>
-          )}
+          ) : null}
         </View>
       </TouchableOpacity>
       <View style={styles.itemFooter}>
         <TouchableOpacity
-          onPress={() => onEdit(item.id)}
-          style={[styles.editBtn, GatiMitraMerchant.cursorPointer]}
+          onPress={() => onMoreOptions(item)}
+          style={styles.moreBtn}
           hitSlop={8}
         >
-          <Ionicons name="pencil" size={18} color={GatiMitraMerchant.primary} />
-          <Text style={styles.editBtnText}>Edit</Text>
+          <Ionicons name="ellipsis-vertical" size={20} color={GatiMitraMerchant.textSecondary} />
         </TouchableOpacity>
-        <TouchableOpacity
-          onPress={handleToggle}
-          disabled={toggling}
-          style={[
-            styles.stockChip,
-            !item.in_stock && styles.stockChipOff,
-            GatiMitraMerchant.cursorPointer,
-          ]}
-          hitSlop={8}
-        >
+        <View style={styles.stockToggleWrap}>
+          <Text style={[styles.stockToggleLabel, !item.in_stock && styles.stockToggleLabelOff]}>
+            {item.in_stock ? "In stock" : "Out of stock"}
+          </Text>
           {toggling ? (
-            <ActivityIndicator size="small" color={item.in_stock ? GatiMitraMerchant.success : GatiMitraMerchant.error} />
+            <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
           ) : (
-            <>
-              <View style={[styles.stockDot, !item.in_stock && styles.stockDotOff]} />
-              <Text style={[styles.stockChipText, !item.in_stock && styles.stockChipTextOff]}>
-                {item.in_stock ? "In stock" : "Out of stock"}
-              </Text>
-            </>
+            <Switch
+              value={item.in_stock}
+              onValueChange={handleToggle}
+              disabled={toggling}
+              trackColor={{ false: GatiMitraMerchant.border, true: GatiMitraMerchant.primary }}
+              thumbColor="#fff"
+            />
           )}
-        </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
@@ -164,14 +217,19 @@ export default function MenuScreen() {
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<number | null>(null);
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("ALL");
   const [stockFilter, setStockFilter] = useState<StockFilter>("ALL");
+  const [changeRequestFilter, setChangeRequestFilter] = useState<ChangeRequestFilter>("ALL");
   const [search, setSearch] = useState("");
   const [searchDebounced, setSearchDebounced] = useState("");
   const [addMenuVisible, setAddMenuVisible] = useState(false);
   const [manageSheetVisible, setManageSheetVisible] = useState(false);
   const [categoryFilterSheetVisible, setCategoryFilterSheetVisible] = useState(false);
   const [subcategoryFilterSheetVisible, setSubcategoryFilterSheetVisible] = useState(false);
+  const [statusFilterSheetVisible, setStatusFilterSheetVisible] = useState(false);
+  const [stockFilterSheetVisible, setStockFilterSheetVisible] = useState(false);
+  const [changeRequestFilterSheetVisible, setChangeRequestFilterSheetVisible] = useState(false);
   const [categorySearch, setCategorySearch] = useState("");
   const [manageSheetExpandedIds, setManageSheetExpandedIds] = useState<Set<number>>(new Set());
+  const [itemAction, setItemAction] = useState<{ type: "delete" | "request-delete"; itemId: number; itemName: string } | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setSearchDebounced(search.trim()), 300);
@@ -225,6 +283,7 @@ export default function MenuScreen() {
     offset: 0,
     approvalStatus: approvalFilter === "ALL" ? undefined : approvalFilter,
     inStock: stockFilter === "ALL" ? undefined : stockFilter === "IN_STOCK",
+    changeRequestType: changeRequestFilter === "ALL" ? undefined : changeRequestFilter,
   };
   const { data: itemsData, isLoading: itemsLoading, error: itemsError, refetch: refetchItems, isRefetching: itemsRefetching } = useMenuItems(storeId, token, itemsFilters);
   const items = itemsData?.items ?? [];
@@ -288,6 +347,93 @@ export default function MenuScreen() {
     [router]
   );
 
+  const handleMoreOptions = useCallback(
+    (item: MenuItemRow) => {
+      const isApproved = item.approval_status === "APPROVED";
+      const deleteAction = isApproved
+        ? {
+            text: "Request delete",
+            style: "destructive" as const,
+            onPress: () => {
+              Alert.alert(
+                "Request delete?",
+                `Submit a delete request for "${item.item_name}"? An agent will review it.`,
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Request delete",
+                    style: "destructive",
+                    onPress: () => {
+                      if (!storeId || !token) return;
+                      setItemAction({ type: "request-delete", itemId: item.id, itemName: item.item_name });
+                      (async () => {
+                        try {
+                          await createDeleteRequest(storeId, item.id, token);
+                          await refetchItems();
+                          setItemAction(null);
+                          Alert.alert("Request sent", "Delete request submitted. An agent will review it.");
+                        } catch (e) {
+                          setItemAction(null);
+                          Alert.alert(
+                            "Request failed",
+                            e instanceof Error ? e.message : "Could not submit delete request."
+                          );
+                        }
+                      })();
+                    },
+                  },
+                ]
+              );
+            },
+          }
+        : {
+            text: "Delete item",
+            style: "destructive" as const,
+            onPress: () => {
+              Alert.alert(
+                "Delete item?",
+                `Remove "${item.item_name}" from your menu? This cannot be undone.`,
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Delete",
+                    style: "destructive",
+                    onPress: () => {
+                      if (!storeId || !token) return;
+                      setItemAction({ type: "delete", itemId: item.id, itemName: item.item_name });
+                      (async () => {
+                        try {
+                          await deleteMenuItem(storeId, item.id, token);
+                          await refetchItems();
+                          setItemAction(null);
+                        } catch (e) {
+                          setItemAction(null);
+                          Alert.alert(
+                            "Delete failed",
+                            e instanceof Error ? e.message : "Could not delete item. Please try again."
+                          );
+                        }
+                      })();
+                    },
+                  },
+                ]
+              );
+            },
+          };
+      Alert.alert(
+        "Item options",
+        item.item_name,
+        [
+          { text: "Edit details & images", onPress: () => handleEditItem(item.id) },
+          deleteAction,
+          { text: "Cancel", style: "cancel" },
+        ],
+        { cancelable: true }
+      );
+    },
+    [handleEditItem, storeId, token, refetchItems]
+  );
+
   const categoryMap = new Map(categories.map((c) => [c.id, c.category_name]));
   const getCategoryDisplayName = useCallback((c: MenuCategory) => {
     const parent = c.parent_category_id ? categories.find((p) => p.id === c.parent_category_id) : null;
@@ -324,6 +470,18 @@ export default function MenuScreen() {
 
   return (
     <View style={styles.container}>
+      {itemAction != null && (
+        <Modal visible transparent animationType="fade" statusBarTranslucent>
+          <View style={styles.actionOverlay}>
+            <View style={styles.actionLoaderCard}>
+              <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+              <Text style={styles.actionLoaderText}>
+                {itemAction.type === "delete" ? "Deleting item…" : "Submitting request…"}
+              </Text>
+            </View>
+          </View>
+        </Modal>
+      )}
     <ScrollView
       style={styles.scrollView}
       contentContainerStyle={[styles.content, { paddingBottom: scrollBottomPadding }]}
@@ -427,31 +585,132 @@ export default function MenuScreen() {
             </View>
           ) : null}
         </View>
-        <View style={styles.filterChipsRow}>
-          <Text style={styles.filterChipLabel}>Status</Text>
-          {(["ALL", "PENDING", "APPROVED", "REJECTED"] as ApprovalFilter[]).map((f) => (
+        <View style={styles.filterRow}>
+          <View style={styles.filterTriggerThird}>
+            <Text style={styles.filterLabel}>Status</Text>
             <TouchableOpacity
-              key={f}
-              style={[styles.filterChip, approvalFilter === f && styles.filterChipActive, GatiMitraMerchant.cursorPointer]}
-              onPress={() => setApprovalFilter(f)}
+              style={styles.filterCategoryTrigger}
+              onPress={() => setStatusFilterSheetVisible(true)}
+              activeOpacity={0.8}
             >
-              <Text style={[styles.filterChipText, approvalFilter === f && styles.filterChipTextActive]}>{f === "ALL" ? "Any" : f.charAt(0) + f.slice(1).toLowerCase()}</Text>
-            </TouchableOpacity>
-          ))}
-          <Text style={[styles.filterChipLabel, { marginLeft: 12 }]}>Stock</Text>
-          {(["ALL", "IN_STOCK", "OUT_OF_STOCK"] as StockFilter[]).map((f) => (
-            <TouchableOpacity
-              key={f}
-              style={[styles.filterChip, stockFilter === f && styles.filterChipActive, GatiMitraMerchant.cursorPointer]}
-              onPress={() => setStockFilter(f)}
-            >
-              <Text style={[styles.filterChipText, stockFilter === f && styles.filterChipTextActive]}>
-                {f === "ALL" ? "All" : f === "IN_STOCK" ? "In stock" : "Out"}
+              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
+                {approvalFilter === "ALL" ? "All" : approvalFilter === "PENDING" ? "Pending" : approvalFilter === "APPROVED" ? "Approved" : "Rejected"}
               </Text>
+              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
             </TouchableOpacity>
-          ))}
+          </View>
+          <View style={styles.filterTriggerThird}>
+            <Text style={styles.filterLabel}>Stock</Text>
+            <TouchableOpacity
+              style={styles.filterCategoryTrigger}
+              onPress={() => setStockFilterSheetVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
+                {stockFilter === "ALL" ? "All" : stockFilter === "IN_STOCK" ? "In stock" : "Out of stock"}
+              </Text>
+              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.filterTriggerThird}>
+            <Text style={styles.filterLabel}>Change request</Text>
+            <TouchableOpacity
+              style={styles.filterCategoryTrigger}
+              onPress={() => setChangeRequestFilterSheetVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
+                {changeRequestFilter === "ALL" ? "All" : changeRequestFilter === "DELETE" ? "Delete requested" : "Edit requested"}
+              </Text>
+              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
+
+      {/* Status filter sheet */}
+      <Modal visible={statusFilterSheetVisible} transparent animationType="slide">
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setStatusFilterSheetVisible(false)} />
+          <View style={[styles.filterSheet, { paddingBottom: insets.bottom + 24 }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.filterSheetTitle}>Filter by status</Text>
+            <ScrollView style={styles.filterSheetList} showsVerticalScrollIndicator={false}>
+              {(["ALL", "PENDING", "APPROVED", "REJECTED"] as ApprovalFilter[]).map((f) => (
+                <TouchableOpacity
+                  key={f}
+                  style={[styles.filterSheetItem, approvalFilter === f && styles.filterSheetItemActive]}
+                  onPress={() => { setApprovalFilter(f); setStatusFilterSheetVisible(false); }}
+                >
+                  <Text style={[styles.filterSheetItemText, approvalFilter === f && styles.filterSheetItemTextActive]}>
+                    {f === "ALL" ? "All" : f === "PENDING" ? "Pending" : f === "APPROVED" ? "Approved" : "Rejected"}
+                  </Text>
+                  {approvalFilter === f && <Ionicons name="checkmark-circle" size={20} color={GatiMitraMerchant.primary} />}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.filterSheetDone} onPress={() => setStatusFilterSheetVisible(false)}>
+              <Text style={styles.filterSheetDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Stock filter sheet */}
+      <Modal visible={stockFilterSheetVisible} transparent animationType="slide">
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setStockFilterSheetVisible(false)} />
+          <View style={[styles.filterSheet, { paddingBottom: insets.bottom + 24 }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.filterSheetTitle}>Filter by stock</Text>
+            <ScrollView style={styles.filterSheetList} showsVerticalScrollIndicator={false}>
+              {(["ALL", "IN_STOCK", "OUT_OF_STOCK"] as StockFilter[]).map((f) => (
+                <TouchableOpacity
+                  key={f}
+                  style={[styles.filterSheetItem, stockFilter === f && styles.filterSheetItemActive]}
+                  onPress={() => { setStockFilter(f); setStockFilterSheetVisible(false); }}
+                >
+                  <Text style={[styles.filterSheetItemText, stockFilter === f && styles.filterSheetItemTextActive]}>
+                    {f === "ALL" ? "All" : f === "IN_STOCK" ? "In stock" : "Out of stock"}
+                  </Text>
+                  {stockFilter === f && <Ionicons name="checkmark-circle" size={20} color={GatiMitraMerchant.primary} />}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.filterSheetDone} onPress={() => setStockFilterSheetVisible(false)}>
+              <Text style={styles.filterSheetDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Change request filter sheet */}
+      <Modal visible={changeRequestFilterSheetVisible} transparent animationType="slide">
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setChangeRequestFilterSheetVisible(false)} />
+          <View style={[styles.filterSheet, { paddingBottom: insets.bottom + 24 }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.filterSheetTitle}>Filter by change request</Text>
+            <ScrollView style={styles.filterSheetList} showsVerticalScrollIndicator={false}>
+              {(["ALL", "DELETE", "UPDATE"] as ChangeRequestFilter[]).map((f) => (
+                <TouchableOpacity
+                  key={f}
+                  style={[styles.filterSheetItem, changeRequestFilter === f && styles.filterSheetItemActive]}
+                  onPress={() => { setChangeRequestFilter(f); setChangeRequestFilterSheetVisible(false); }}
+                >
+                  <Text style={[styles.filterSheetItemText, changeRequestFilter === f && styles.filterSheetItemTextActive]}>
+                    {f === "ALL" ? "All" : f === "DELETE" ? "Delete requested" : "Edit requested"}
+                  </Text>
+                  {changeRequestFilter === f && <Ionicons name="checkmark-circle" size={20} color={GatiMitraMerchant.primary} />}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.filterSheetDone} onPress={() => setChangeRequestFilterSheetVisible(false)}>
+              <Text style={styles.filterSheetDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Subcategory picker sheet */}
       <Modal visible={subcategoryFilterSheetVisible} transparent animationType="slide">
@@ -565,6 +824,7 @@ export default function MenuScreen() {
                 categoryName={item.category_id != null ? categoryMap.get(item.category_id) ?? null : null}
                 onToggleStock={handleToggleStock}
                 onEdit={handleEditItem}
+                onMoreOptions={handleMoreOptions}
               />
             ))}
           </View>
@@ -694,6 +954,7 @@ const styles = StyleSheet.create({
   filterRow: { flexDirection: "row", gap: 10, alignItems: "flex-end" },
   filterTriggerWrap: { flex: 1, minWidth: 0 },
   filterTriggerHalf: { flex: 1, minWidth: 0 },
+  filterTriggerThird: { flex: 1, minWidth: 0 },
   filterLabel: {
     fontSize: 10,
     fontWeight: "700",
@@ -799,6 +1060,17 @@ const styles = StyleSheet.create({
   },
   filterSheetDoneText: { fontSize: 16, fontWeight: "700", color: "#fff" },
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 24 },
+  actionOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 24 },
+  actionLoaderCard: {
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: 16,
+    padding: 28,
+    alignItems: "center",
+    gap: 16,
+    minWidth: 200,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  actionLoaderText: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
   addMenuCard: {
     width: "100%",
     maxWidth: 340,
@@ -911,10 +1183,10 @@ const styles = StyleSheet.create({
   },
   itemTouchable: { flexDirection: "row", padding: 14 },
   itemImageWrap: { position: "relative", marginRight: 14 },
-  itemImage: { width: 72, height: 72, borderRadius: 12 },
+  itemImage: { width: 88, height: 88, borderRadius: 12 },
   itemImagePlaceholder: {
-    width: 72,
-    height: 72,
+    width: 88,
+    height: 88,
     borderRadius: 12,
     backgroundColor: GatiMitraMerchant.surfaceWarm,
     alignItems: "center",
@@ -940,11 +1212,28 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   rejectedBadgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
-  itemBody: { flex: 1, minWidth: 0, justifyContent: "center" },
-  itemName: { fontSize: 16, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
-  itemMeta: { fontSize: 13, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  changeRequestedBadge: {
+    position: "absolute",
+    bottom: 4,
+    left: 4,
+    backgroundColor: "#6366f1",
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+  },
+  changeRequestedBadgeText: { fontSize: 9, fontWeight: "700", color: "#fff" },
+  itemBody: { flex: 1, minWidth: 0, justifyContent: "center", gap: 4 },
+  itemName: { fontSize: 17, fontWeight: "800", color: GatiMitraMerchant.textPrimary, letterSpacing: -0.3, lineHeight: 22 },
+  itemDescription: { fontSize: 13, color: GatiMitraMerchant.textSecondary, lineHeight: 18, marginTop: 2 },
+  itemMetaRow: { marginTop: 2 },
+  itemMetaText: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
+  itemServeSizeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 },
+  itemServeSizeText: { fontSize: 12, color: GatiMitraMerchant.textTertiary },
+  priceRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
+  sellingPrice: { fontSize: 20, fontWeight: "800", color: GatiMitraMerchant.primary, letterSpacing: -0.3 },
+  basePriceStrike: { fontSize: 14, color: GatiMitraMerchant.textSecondary, textDecorationLine: "line-through" },
   tagsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
-  tag: { backgroundColor: GatiMitraMerchant.surfaceWarm, paddingVertical: 2, paddingHorizontal: 8, borderRadius: 6 },
+  tag: { backgroundColor: GatiMitraMerchant.surfaceWarm, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 6 },
   tagText: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   itemFooter: {
     flexDirection: "row",
@@ -956,8 +1245,10 @@ const styles = StyleSheet.create({
     borderTopColor: GatiMitraMerchant.border,
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
   },
-  editBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
-  editBtnText: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.primary },
+  moreBtn: { paddingHorizontal: 8, paddingVertical: 6 },
+  stockToggleWrap: { flexDirection: "row", alignItems: "center", gap: 10 },
+  stockToggleLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.success },
+  stockToggleLabelOff: { color: GatiMitraMerchant.error },
   stockChip: {
     flexDirection: "row",
     alignItems: "center",

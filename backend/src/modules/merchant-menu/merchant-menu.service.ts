@@ -140,7 +140,7 @@ export async function deleteCategory(
   return (result.count ?? 0) > 0 ? { ok: true } : { ok: false, error: "category_not_found" };
 }
 
-/** List items with optional category, search, approval_status, and in_stock filters. */
+/** List items with optional category, search, approval_status, in_stock, and changeRequestType filters. */
 export async function listItems(
   storeIdNum: number,
   opts: {
@@ -150,6 +150,7 @@ export async function listItems(
     offset?: number;
     approvalStatus?: "PENDING" | "APPROVED" | "REJECTED" | null;
     inStock?: boolean | null;
+    changeRequestType?: "DELETE" | "UPDATE" | null;
   }
 ): Promise<{
   items: Array<{
@@ -170,6 +171,13 @@ export async function listItems(
     has_addons: boolean;
     has_variants: boolean;
     preparation_time_minutes: number | null;
+    serves: number | null;
+    serves_label: string | null;
+    item_size_value: number | null;
+    item_size_unit: string | null;
+    approval_status: string | null;
+    has_pending_change_request: boolean;
+    pending_change_request_type: string | null;
   }>;
   total: number;
 }> {
@@ -180,6 +188,7 @@ export async function listItems(
   const categoryId = opts.categoryId;
   const approvalStatus = opts.approvalStatus ?? null;
   const inStock = opts.inStock ?? null;
+  const changeRequestType = opts.changeRequestType ?? null;
 
   const categoryCondition =
     categoryId == null ? sql`true` : sql`category_id = ${categoryId}`;
@@ -188,12 +197,17 @@ export async function listItems(
     approvalStatus == null ? sql`true` : sql`approval_status = ${approvalStatus}::merchant_menu_item_approval_status`;
   const stockCondition =
     inStock == null ? sql`true` : sql`in_stock = ${inStock}`;
+  const changeRequestCondition =
+    changeRequestType == null
+      ? sql`true`
+      : sql`EXISTS (SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' AND r.request_type = ${changeRequestType}::merchant_menu_item_change_request_type)`;
 
   const baseWhere = sql`
     store_id = ${storeIdNum} AND (is_deleted IS NULL OR is_deleted = false)
     AND ${categoryCondition}
     AND ${approvalCondition}
     AND ${stockCondition}
+    AND ${changeRequestCondition}
   `;
   const searchCondition = searchPattern
     ? sql`AND (item_name ILIKE ${searchPattern} OR item_description ILIKE ${searchPattern})`
@@ -208,7 +222,10 @@ export async function listItems(
     SELECT id, item_id, item_name, item_description, item_image_url, category_id, food_type,
            base_price, selling_price, in_stock, is_active, is_deleted, display_order,
            has_customizations, has_addons, has_variants, preparation_time_minutes,
-           approval_status
+           serves, serves_label, item_size_value, item_size_unit,
+           approval_status,
+           (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
+           (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type
     FROM merchant_menu_items
     WHERE ${baseWhere} ${searchCondition}
     ORDER BY category_id NULLS FIRST, display_order ASC, id ASC
@@ -485,13 +502,67 @@ export async function updateItem(
   return updated;
 }
 
-/** Soft delete item. */
+/** Delete logic:
+ * - If item is still PENDING/REJECTED => hard delete full record + images (DB + R2).
+ * - If item is APPROVED => soft delete only (mark is_deleted=true, keep images for history).
+ */
 export async function deleteItem(itemId: number, storeIdNum: number): Promise<boolean> {
   const sql = getSql();
-  const result = await sql`
-    UPDATE merchant_menu_items SET is_deleted = true, updated_at = NOW() WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  const [item] = await sql`
+    SELECT id, approval_status::text AS approval_status
+    FROM merchant_menu_items
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
-  return (result.count ?? 0) > 0;
+  if (!item) return false;
+
+  const approvalStatus = (item as any).approval_status as string | null;
+
+  // Approved item: soft delete only
+  if (approvalStatus === "APPROVED") {
+    const result = await sql`
+      UPDATE merchant_menu_items
+      SET is_deleted = true, updated_at = NOW()
+      WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    `;
+    return (result.count ?? 0) > 0;
+  }
+
+  // Not yet approved (PENDING/REJECTED/etc.): hard delete everything including images from R2.
+  // Fetch image rows first so we can delete R2 objects after DB changes.
+  const images = (await sql`
+    SELECT id, r2_key
+    FROM merchant_menu_item_images
+    WHERE menu_item_id = ${itemId}
+  `) as { id: number; r2_key: string | null }[];
+
+  // Delete DB rows in a transaction.
+  await sql.begin(async (trx) => {
+    await trx`
+      DELETE FROM merchant_menu_item_images
+      WHERE menu_item_id = ${itemId}
+    `;
+    await trx`
+      DELETE FROM merchant_menu_items
+      WHERE id = ${itemId} AND store_id = ${storeIdNum}
+    `;
+  });
+
+  // Best-effort delete of R2 objects; ignore failures so the API still succeeds.
+  if (images.length > 0) {
+    try {
+      const { deleteFileFromR2 } = await import("../../services/r2.service");
+      await Promise.all(
+        images
+          .map((img) => img.r2_key)
+          .filter((key): key is string => !!key)
+          .map((key) => deleteFileFromR2(key).catch(() => undefined))
+      );
+    } catch {
+      // R2 service not available or delete failed; ignore.
+    }
+  }
+
+  return true;
 }
 
 /** Agent/Admin: set approval_status to APPROVED or REJECTED and log. */
@@ -785,6 +856,20 @@ export async function updateCustomizationOption(
   return (result.count ?? 0) > 0;
 }
 
+export async function deleteCustomizationOption(optionId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [o] = await sql`
+    SELECT a.id
+    FROM merchant_menu_item_addons a
+    INNER JOIN merchant_menu_item_customizations c ON c.id = a.customization_id
+    INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE a.id = ${optionId}
+  `;
+  if (!o) return false;
+  const result = await sql`DELETE FROM merchant_menu_item_addons WHERE id = ${optionId}`;
+  return (result.count ?? 0) > 0;
+}
+
 // --- Images: add row (URL set by upload route), delete, set primary
 export async function addItemImageRow(
   menuItemId: number,
@@ -793,15 +878,43 @@ export async function addItemImageRow(
 ): Promise<{ id: number }> {
   await assertItemOwnership(menuItemId, storeIdNum);
   const sql = getSql();
-  if (data.is_primary) {
+  const [existingPrimary] = await sql`
+    SELECT id, r2_key
+    FROM merchant_menu_item_images
+    WHERE menu_item_id = ${menuItemId} AND is_primary = true
+    LIMIT 1
+  `;
+  const makePrimary = data.is_primary || !existingPrimary;
+  if (makePrimary) {
     await sql`UPDATE merchant_menu_item_images SET is_primary = false WHERE menu_item_id = ${menuItemId}`;
+    // Replace semantics: delete previous primary from R2 and remove its row so the new image becomes the only primary
+    if (existingPrimary) {
+      const keyToDelete = (existingPrimary as { r2_key?: string | null }).r2_key;
+      if (keyToDelete && typeof keyToDelete === "string") {
+        try {
+          const { deleteFromR2 } = await import("../../services/r2/r2Service.js");
+          await deleteFromR2(keyToDelete);
+        } catch {
+          // Continue so new image is still added
+        }
+      }
+      await sql`DELETE FROM merchant_menu_item_images WHERE id = ${(existingPrimary as any).id}`;
+    }
   }
   const [row] = await sql`
     INSERT INTO merchant_menu_item_images (menu_item_id, image_url, r2_key, is_primary, format, display_order)
-    VALUES (${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${data.is_primary ?? false}, ${data.format ?? null}, ${data.display_order ?? 0})
+    VALUES (${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary}, ${data.format ?? null}, ${data.display_order ?? 0})
     RETURNING id
   `;
-  return { id: Number((row as any).id) };
+  const imageId = Number((row as any).id);
+  if (makePrimary) {
+    await sql`
+      UPDATE merchant_menu_items
+      SET item_image_url = ${data.image_url}, updated_at = NOW()
+      WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+    `;
+  }
+  return { id: imageId };
 }
 
 export async function deleteItemImage(
@@ -1136,6 +1249,199 @@ export async function getCategoryAvailabilityCounts(storeIdNum: number): Promise
     out[r.category_id] = r.cnt;
   }
   return out;
+}
+
+// --- Change requests (Swiggy/Zomato-style: merchant requests, agent approves)
+export type ChangeRequestType = "CREATE" | "UPDATE" | "DELETE";
+export type ChangeRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+
+export async function getItemApprovalStatus(
+  itemId: number,
+  storeIdNum: number
+): Promise<"PENDING" | "APPROVED" | "REJECTED" | null> {
+  const sql = getSql();
+  const [r] = await sql`
+    SELECT approval_status::text FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
+  `;
+  return r ? (r as any).approval_status : null;
+}
+
+export async function createChangeRequest(
+  storeIdNum: number,
+  menuItemId: number | null,
+  requestType: ChangeRequestType,
+  requestedPayload: Record<string, unknown>,
+  opts: { created_by: string; created_by_role?: string; reason?: string | null }
+): Promise<{ id: number }> {
+  const sql = getSql();
+  let currentSnapshot: Record<string, unknown> | null = null;
+  if (menuItemId != null && (requestType === "UPDATE" || requestType === "DELETE")) {
+    const [row] = await sql`
+      SELECT id, item_id, item_name, item_description, item_image_url, category_id, food_type, spice_level, cuisine_type,
+             base_price, selling_price, preparation_time_minutes, serves, serves_label, short_name, display_order,
+             is_active, approval_status
+      FROM merchant_menu_items WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+    `;
+    if (row) currentSnapshot = row as any;
+  }
+  const [inserted] = await sql`
+    INSERT INTO merchant_menu_item_change_requests
+      (store_id, menu_item_id, request_type, status, requested_payload, current_snapshot, reason, created_by, created_by_role, updated_at)
+    VALUES
+      (${storeIdNum}, ${menuItemId}, ${requestType}::merchant_menu_item_change_request_type, 'PENDING'::merchant_menu_item_change_request_status,
+       ${JSON.stringify(requestedPayload)}::jsonb, ${currentSnapshot ? JSON.stringify(currentSnapshot) : null}::jsonb,
+       ${opts.reason ?? null}, ${opts.created_by}, ${opts.created_by_role ?? "merchant"}, NOW())
+    RETURNING id
+  `;
+  return { id: Number((inserted as any).id) };
+}
+
+export async function listChangeRequestsForItem(
+  menuItemId: number,
+  storeIdNum: number
+): Promise<
+  Array<{
+    id: number;
+    request_type: string;
+    status: string;
+    created_at: Date;
+    reviewed_at: Date | null;
+    reviewed_reason: string | null;
+  }>
+> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, request_type::text, status::text, created_at, updated_at AS reviewed_at, reviewed_reason
+    FROM merchant_menu_item_change_requests
+    WHERE menu_item_id = ${menuItemId} AND store_id = ${storeIdNum}
+    ORDER BY created_at DESC
+    LIMIT 20
+  `;
+  return rows as any;
+}
+
+export async function listChangeRequests(filters: {
+  storeIdNum?: number | null;
+  status?: ChangeRequestStatus | null;
+  request_type?: ChangeRequestType | null;
+  limit: number;
+  offset: number;
+}): Promise<{ requests: any[]; total: number }> {
+  const sql = getSql();
+  const storeCond = filters.storeIdNum != null ? sql`AND store_id = ${filters.storeIdNum}` : sql``;
+  const statusCond = filters.status != null ? sql`AND status = ${filters.status}::merchant_menu_item_change_request_status` : sql``;
+  const typeCond = filters.request_type != null ? sql`AND request_type = ${filters.request_type}::merchant_menu_item_change_request_type` : sql``;
+  const countResult = await sql`
+    SELECT COUNT(*)::int AS c FROM merchant_menu_item_change_requests WHERE 1=1 ${storeCond} ${statusCond} ${typeCond}
+  `;
+  const total = Number((countResult[0] as any)?.c ?? 0);
+  const rows = await sql`
+    SELECT id, store_id, menu_item_id, request_type::text, status::text, requested_payload, current_snapshot,
+           reason, created_by, created_by_role, reviewed_by, reviewed_by_role, reviewed_reason,
+           created_at, updated_at
+    FROM merchant_menu_item_change_requests
+    WHERE 1=1 ${storeCond} ${statusCond} ${typeCond}
+    ORDER BY created_at DESC
+    LIMIT ${filters.limit} OFFSET ${filters.offset}
+  `;
+  return { requests: rows as any[], total };
+}
+
+export async function getChangeRequestById(
+  id: number,
+  storeIdNum?: number | null
+): Promise<{
+  id: number;
+  store_id: number;
+  menu_item_id: number | null;
+  request_type: string;
+  status: string;
+  requested_payload: object;
+  current_snapshot: object | null;
+  reason: string | null;
+  created_by: string;
+  created_by_role: string | null;
+  reviewed_by: string | null;
+  reviewed_reason: string | null;
+  created_at: Date;
+  updated_at: Date;
+} | null> {
+  const sql = getSql();
+  const storeCond = storeIdNum != null ? sql`AND store_id = ${storeIdNum}` : sql``;
+  const [row] = await sql`
+    SELECT id, store_id, menu_item_id, request_type::text, status::text, requested_payload, current_snapshot,
+           reason, created_by, created_by_role, reviewed_by, reviewed_by_role, reviewed_reason, created_at, updated_at
+    FROM merchant_menu_item_change_requests WHERE id = ${id} ${storeCond}
+  `;
+  if (!row) return null;
+  return row as any;
+}
+
+export async function approveChangeRequest(
+  requestId: number,
+  opts: { reviewed_by: string; reviewed_by_role?: string }
+): Promise<{ ok: boolean; error?: string }> {
+  const sql = getSql();
+  const [req] = await sql`
+    SELECT id, store_id, menu_item_id, request_type::text, status::text, requested_payload, current_snapshot
+    FROM merchant_menu_item_change_requests WHERE id = ${requestId}
+  `;
+  if (!req) return { ok: false, error: "request_not_found" };
+  const r = req as any;
+  if (r.status !== "PENDING") return { ok: false, error: "request_not_pending" };
+  const storeIdNum = Number(r.store_id);
+  const menuItemId = r.menu_item_id != null ? Number(r.menu_item_id) : null;
+  const payload = (r.requested_payload ?? {}) as Record<string, unknown>;
+
+  if (r.request_type === "UPDATE" && menuItemId != null) {
+    const updated = await updateItem(menuItemId, storeIdNum, payload as any, {
+      updatedByRole: opts.reviewed_by_role ?? "agent",
+      updatedBySub: opts.reviewed_by,
+    });
+    if (!updated) return { ok: false, error: "item_update_failed" };
+    await setItemApproval(menuItemId, storeIdNum, {
+      approval_status: "APPROVED",
+      approved_by: opts.reviewed_by,
+      approved_by_role: opts.reviewed_by_role ?? "agent",
+    });
+  } else if (r.request_type === "DELETE" && menuItemId != null) {
+    const deleted = await deleteItem(menuItemId, storeIdNum);
+    if (!deleted) return { ok: false, error: "item_delete_failed" };
+  }
+  await sql`
+    UPDATE merchant_menu_item_change_requests
+    SET status = 'APPROVED'::merchant_menu_item_change_request_status,
+        reviewed_by = ${opts.reviewed_by}, reviewed_by_role = ${opts.reviewed_by_role ?? "agent"},
+        updated_at = NOW()
+    WHERE id = ${requestId}
+  `;
+  return { ok: true };
+}
+
+export async function rejectChangeRequest(
+  requestId: number,
+  opts: { reviewed_by: string; reviewed_by_role?: string; reviewed_reason?: string | null }
+): Promise<boolean> {
+  const sql = getSql();
+  const result = await sql`
+    UPDATE merchant_menu_item_change_requests
+    SET status = 'REJECTED'::merchant_menu_item_change_request_status,
+        reviewed_by = ${opts.reviewed_by}, reviewed_by_role = ${opts.reviewed_by_role ?? "agent"},
+        reviewed_reason = ${opts.reviewed_reason ?? null}, updated_at = NOW()
+    WHERE id = ${requestId} AND status = 'PENDING'::merchant_menu_item_change_request_status
+  `;
+  return (result.count ?? 0) > 0;
+}
+
+/** Returns true if item has at least one PENDING change request. */
+export async function hasPendingChangeRequest(menuItemId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [r] = await sql`
+    SELECT 1 FROM merchant_menu_item_change_requests
+    WHERE menu_item_id = ${menuItemId} AND store_id = ${storeIdNum} AND status = 'PENDING'
+    LIMIT 1
+  `;
+  return !!r;
 }
 
 // --- Ranking: increment order_count when order is placed (call from order placement)

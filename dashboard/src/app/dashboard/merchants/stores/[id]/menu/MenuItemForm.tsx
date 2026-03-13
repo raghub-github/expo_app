@@ -14,6 +14,8 @@ import {
   CUISINE_TOP_COUNT,
   CUSTOMIZATION_TYPES,
   CUSTOMIZATION_VARIANT_LIMIT,
+  SERVES_OPTIONS,
+  SIZE_UNITS,
 } from "./menu-types";
 
 export interface ItemFormData {
@@ -37,6 +39,9 @@ export interface ItemFormData {
   is_recommended: boolean;
   preparation_time_minutes: number;
   serves: number;
+  serves_label: string;
+  item_size_value: string;
+  item_size_unit: string;
   is_active: boolean;
   allergens: string;
   category_id: number | null;
@@ -680,14 +685,50 @@ export function MenuItemForm({
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-600">Serves</label>
-                <input
-                  type="number"
-                  min={1}
+                <label className="text-xs font-medium text-gray-600">Serves (label)</label>
+                <select
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  value={formData.serves ?? 1}
-                  onChange={(e) => setFormData({ ...formData, serves: Number(e.target.value) || 1 })}
-                />
+                  value={formData.serves_label || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      serves_label: e.target.value,
+                      serves: e.target.value ? Number((e.target.value.match(/\d+/) || ["1"])[0]) : formData.serves,
+                    })
+                  }
+                >
+                  <option value="">Select serves</option>
+                  {SERVES_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">Item size</label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="number"
+                    min={0}
+                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                    value={formData.item_size_value}
+                    onChange={(e) => setFormData({ ...formData, item_size_value: e.target.value })}
+                    placeholder="e.g. 500"
+                  />
+                  <select
+                    className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                    value={formData.item_size_unit}
+                    onChange={(e) => setFormData({ ...formData, item_size_unit: e.target.value })}
+                  >
+                    <option value="">Unit</option>
+                    {SIZE_UNITS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
             <div className="flex flex-wrap gap-4 pt-1 border-t border-gray-100">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   Plus,
@@ -47,6 +47,9 @@ const defaultItemFormData: ItemFormData = {
   is_recommended: false,
   preparation_time_minutes: 15,
   serves: 1,
+  serves_label: "",
+  item_size_value: "",
+  item_size_unit: "",
   is_active: true,
   allergens: "",
   category_id: null,
@@ -92,8 +95,16 @@ function normalizeItem(
     is_active: (item.is_active as boolean) ?? true,
     preparation_time_minutes: (item.preparation_time_minutes as number) ?? undefined,
     serves: (item.serves as number) ?? undefined,
+    serves_label: (item.serves_label as string) ?? null,
+    item_size_value:
+      item.item_size_value == null ? null : (Number(item.item_size_value) as number),
+    item_size_unit: (item.item_size_unit as string) ?? null,
     customizations: (item.customizations as Customization[]) ?? [],
     variants: (item.variants as Variant[]) ?? [],
+    allergens: (item.allergens as any) ?? undefined,
+    approval_status: (item.approval_status as any) ?? null,
+    has_pending_change_request: Boolean((item as any).has_pending_change_request),
+    pending_change_request_type: ((item as any).pending_change_request_type as any) ?? null,
   };
 }
 
@@ -103,6 +114,15 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
   const [data, setData] = useState<{ categories?: unknown[]; items?: unknown[] } | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED">("ALL");
+  const [stockFilter, setStockFilter] = useState<"ALL" | "IN_STOCK" | "OUT_OF_STOCK">("ALL");
+  const [changeRequestFilter, setChangeRequestFilter] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
+  const [visibilityFilter, setVisibilityFilter] = useState<"LIVE" | "REMOVED" | "ALL">("LIVE");
+  const [crStatus, setCrStatus] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED">("PENDING");
+  const [crType, setCrType] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
+  const [crLoading, setCrLoading] = useState(false);
+  const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
+  const [changeRequests, setChangeRequests] = useState<any[]>([]);
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
   const menuFileSectionRef = useRef<HTMLDivElement>(null);
 
@@ -129,17 +149,54 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
   const [editForm, setEditForm] = useState<ItemFormData>(defaultItemFormData);
   const [imagePreview, setImagePreview] = useState("");
   const [editImagePreview, setEditImagePreview] = useState("");
+  const [addImageFile, setAddImageFile] = useState<File | null>(null);
+  const [editImageFile, setEditImageFile] = useState<File | null>(null);
   const [addError, setAddError] = useState("");
   const [editError, setEditError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
+  const [deleteItemId, setDeleteItemId] = useState<number | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [stockToggleItem, setStockToggleItem] = useState<{ item_id: string; newStatus: boolean } | null>(null);
+  const [stockToggleItem, setStockToggleItem] = useState<{ id: number; newStatus: boolean } | null>(null);
   const [isTogglingStock, setIsTogglingStock] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [categoryLoading, setCategoryLoading] = useState(false);
+  const [reviewItem, setReviewItem] = useState<MenuItem | null>(null);
+  const [showReviewDrawer, setShowReviewDrawer] = useState(false);
+  const [isReviewActionLoading, setIsReviewActionLoading] = useState<"APPROVE" | "REJECT" | null>(null);
   const categoryScrollRef = useRef<HTMLDivElement>(null);
+
+  const trackAudit = useCallback((payload: {
+    actionType: "VIEW" | "CREATE" | "UPDATE" | "DELETE";
+    resourceType: string;
+    resourceId?: string;
+    actionDetails?: Record<string, unknown>;
+    actionStatus?: "SUCCESS" | "FAILED";
+    errorMessage?: string;
+    requestMethod?: string;
+  }) => {
+    try {
+      if (typeof window === "undefined") return;
+      void fetch("/api/audit/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventType: payload.actionType === "VIEW" ? "PAGE_VIEW" : "API_CALL",
+          dashboardType: "MERCHANT",
+          actionType: payload.actionType,
+          resourceType: payload.resourceType,
+          resourceId: payload.resourceId,
+          actionDetails: payload.actionDetails ?? {},
+          requestPath: window.location.pathname,
+          requestMethod: payload.requestMethod ?? payload.actionType,
+          actionStatus: payload.actionStatus ?? "SUCCESS",
+          errorMessage: payload.errorMessage,
+        }),
+      });
+    } catch {
+      // never block UI
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,6 +214,135 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
     };
   }, [storeId]);
 
+  const storePublicId = (data as any)?.store?.store_id as string | null | undefined;
+
+  const refreshMenu = async () => {
+    const d = await fetch(`/api/merchant/stores/${storeId}/menu`).then((r) => (r.ok ? r.json() : null));
+    if (d) setData(d);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!storePublicId) return;
+    setCrLoading(true);
+    const params = new URLSearchParams();
+    params.set("storeId", storePublicId);
+    if (crStatus !== "ALL") params.set("status", crStatus);
+    if (crType !== "ALL") params.set("request_type", crType);
+    params.set("limit", "50");
+    params.set("offset", "0");
+    fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled) return;
+        const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
+        setChangeRequests(list);
+      })
+      .finally(() => {
+        if (!cancelled) setCrLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [storePublicId, crStatus, crType]);
+
+  const handleApproveCr = async (id: number) => {
+    setCrActionLoadingId(id);
+    try {
+      const res = await fetch(`/api/merchant-menu/change-requests/${id}/approve`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) throw new Error(data?.error || "Approve failed");
+      toast("Change request approved.");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_item_change_requests",
+        resourceId: String(id),
+        actionDetails: { action: "approve_change_request" },
+        actionStatus: "SUCCESS",
+        requestMethod: "POST",
+      });
+      // refresh menu + CR list
+      fetch(`/api/merchant/stores/${storeId}/menu`).then((r) => (r.ok ? r.json() : null)).then((d) => d && setData(d));
+      if (storePublicId) {
+        const params = new URLSearchParams();
+        params.set("storeId", storePublicId);
+        if (crStatus !== "ALL") params.set("status", crStatus);
+        if (crType !== "ALL") params.set("request_type", crType);
+        params.set("limit", "50");
+        params.set("offset", "0");
+        fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
+            setChangeRequests(list);
+          });
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Approve failed");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_item_change_requests",
+        resourceId: String(id),
+        actionDetails: { action: "approve_change_request" },
+        actionStatus: "FAILED",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        requestMethod: "POST",
+      });
+    } finally {
+      setCrActionLoadingId(null);
+    }
+  };
+
+  const handleRejectCr = async (id: number) => {
+    setCrActionLoadingId(id);
+    try {
+      const res = await fetch(`/api/merchant-menu/change-requests/${id}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewed_reason: "Rejected by agent" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) throw new Error(data?.error || "Reject failed");
+      toast("Change request rejected.");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_item_change_requests",
+        resourceId: String(id),
+        actionDetails: { action: "reject_change_request" },
+        actionStatus: "SUCCESS",
+        requestMethod: "POST",
+      });
+      // refresh CR list
+      if (storePublicId) {
+        const params = new URLSearchParams();
+        params.set("storeId", storePublicId);
+        if (crStatus !== "ALL") params.set("status", crStatus);
+        if (crType !== "ALL") params.set("request_type", crType);
+        params.set("limit", "50");
+        params.set("offset", "0");
+        fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
+            setChangeRequests(list);
+          });
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Reject failed");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_item_change_requests",
+        resourceId: String(id),
+        actionDetails: { action: "reject_change_request" },
+        actionStatus: "FAILED",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        requestMethod: "POST",
+      });
+    } finally {
+      setCrActionLoadingId(null);
+    }
+  };
+
   const rawCategories = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<string, unknown>[];
   const categories: MenuCategory[] = rawCategories.map((c, i) => {
     const norm = normalizeCategory(c as { id?: number; name?: string; category_name?: string });
@@ -169,14 +355,47 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
     selectedCategoryId === null
       ? menuItems
       : menuItems.filter((item) => item.category_id === selectedCategoryId);
+
+  const filteredByStatus =
+    statusFilter === "ALL"
+      ? filteredByCategory
+      : filteredByCategory.filter((item) => {
+          const st = item.approval_status ?? "PENDING";
+          return st === statusFilter;
+        });
+
+  const filteredByStock =
+    stockFilter === "ALL"
+      ? filteredByStatus
+      : filteredByStatus.filter((item) => {
+          const inStockNow = item.in_stock ?? true;
+          return stockFilter === "IN_STOCK" ? inStockNow : !inStockNow;
+        });
+
+  const filteredByChangeRequest =
+    changeRequestFilter === "ALL"
+      ? filteredByStock
+      : filteredByStock.filter((item) => {
+          if (!item.has_pending_change_request) return false;
+          return item.pending_change_request_type === changeRequestFilter;
+        });
+
+  const filteredByVisibility =
+    visibilityFilter === "ALL"
+      ? filteredByChangeRequest
+      : filteredByChangeRequest.filter((item) => {
+          const deleted = Boolean((item as any).is_deleted);
+          return visibilityFilter === "LIVE" ? !deleted : deleted;
+        });
+
   const searchedItems = searchTerm
-    ? filteredByCategory.filter(
+    ? filteredByVisibility.filter(
         (item) =>
           item.item_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
           (item.item_description &&
             item.item_description.toLowerCase().includes(searchTerm.toLowerCase()))
       )
-    : filteredByCategory;
+    : filteredByVisibility;
 
   const inStock = menuItems.filter((item) => item.in_stock).length;
   const outStock = menuItems.filter((item) => !item.in_stock).length;
@@ -192,7 +411,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
   const imageSlotsLeft: number | null = null;
 
   const handleOpenEditModal = (item: MenuItem) => {
-    setEditingId(item.item_id);
+    setEditingId(item.id);
     const allergensString = Array.isArray(item.allergens)
       ? item.allergens.join(", ")
       : typeof item.allergens === "string"
@@ -218,6 +437,9 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
       is_recommended: item.is_recommended ?? false,
       preparation_time_minutes: item.preparation_time_minutes ?? 15,
       serves: item.serves ?? 1,
+      serves_label: item.serves_label ?? "",
+      item_size_value: item.item_size_value != null ? String(item.item_size_value) : "",
+      item_size_unit: item.item_size_unit ?? "",
       is_active: item.is_active ?? true,
       allergens: allergensString,
       category_id: item.category_id ?? null,
@@ -235,40 +457,208 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
     if (!addForm.base_price || Number(addForm.base_price) <= 0) return setAddError("Valid base price required");
     setIsSaving(true);
     try {
-      toast("Menu item created (API integration pending).");
+      const payload = {
+        item_name: addForm.item_name.trim(),
+        item_description: addForm.item_description?.trim() || null,
+        category_id: addForm.category_id,
+        food_type: addForm.food_type || null,
+        spice_level: addForm.spice_level || null,
+        cuisine_type: addForm.cuisine_type || null,
+        base_price: Number(addForm.base_price),
+        selling_price: addForm.selling_price ? Number(addForm.selling_price) : Number(addForm.base_price),
+        in_stock: Boolean(addForm.in_stock),
+        is_active: Boolean(addForm.is_active),
+        preparation_time_minutes: addForm.preparation_time_minutes ?? null,
+        serves: addForm.serves ?? null,
+        serves_label: addForm.serves_label || null,
+        item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
+        item_size_unit: addForm.item_size_unit || null,
+      };
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r?.success === false) throw new Error(r?.error || "Create failed");
+      const newId = Number(r?.id);
+      trackAudit({
+        actionType: "CREATE",
+        resourceType: "merchant_menu_items",
+        resourceId: Number.isFinite(newId) ? String(newId) : undefined,
+        actionDetails: { action: "create_item", payload: { ...payload, item_description: payload.item_description ? "[text]" : null } },
+        actionStatus: "SUCCESS",
+        requestMethod: "POST",
+      });
+      if (addImageFile && Number.isFinite(newId)) {
+        const fd = new FormData();
+        fd.append("file", addImageFile);
+        const imgRes = await fetch(`/api/merchant/stores/${storeId}/menu/items/${newId}/images`, {
+          method: "POST",
+          body: fd,
+        });
+        const img = await imgRes.json().catch(() => ({}));
+        if (!imgRes.ok || img?.success === false) {
+          // Item created; image upload failed. Keep item.
+          toast(img?.error || "Image upload failed (item created).");
+          trackAudit({
+            actionType: "UPDATE",
+            resourceType: "merchant_menu_item_images",
+            resourceId: Number.isFinite(newId) ? String(newId) : undefined,
+            actionDetails: { action: "upload_item_image" },
+            actionStatus: "FAILED",
+            errorMessage: img?.error || "Image upload failed",
+            requestMethod: "POST",
+          });
+        } else {
+          trackAudit({
+            actionType: "UPDATE",
+            resourceType: "merchant_menu_item_images",
+            resourceId: String(img?.id ?? ""),
+            actionDetails: { action: "upload_item_image", menu_item_id: newId },
+            actionStatus: "SUCCESS",
+            requestMethod: "POST",
+          });
+        }
+      }
+      toast("Menu item created.");
+      await refreshMenu();
       setShowAddModal(false);
       setAddForm(defaultItemFormData);
       setImagePreview("");
+      setAddImageFile(null);
     } catch {
       setAddError("Error saving item.");
+      trackAudit({
+        actionType: "CREATE",
+        resourceType: "merchant_menu_items",
+        actionDetails: { action: "create_item" },
+        actionStatus: "FAILED",
+        errorMessage: "Error saving item.",
+        requestMethod: "POST",
+      });
     }
     setIsSaving(false);
   };
 
   const handleSaveEdit = async () => {
     setEditError("");
-    if (!editingId) return;
+    if (editingId == null) return;
     if (!editForm.item_name.trim()) return setEditError("Name is required");
     if (!editForm.category_id) return setEditError("Category is required");
     setIsSavingEdit(true);
     try {
-      toast("Menu item updated (API integration pending).");
+      const payload = {
+        item_name: editForm.item_name.trim(),
+        item_description: editForm.item_description?.trim() || null,
+        category_id: editForm.category_id,
+        food_type: editForm.food_type || null,
+        spice_level: editForm.spice_level || null,
+        cuisine_type: editForm.cuisine_type || null,
+        base_price: editForm.base_price ? Number(editForm.base_price) : 0,
+        selling_price: editForm.selling_price ? Number(editForm.selling_price) : (editForm.base_price ? Number(editForm.base_price) : 0),
+        in_stock: Boolean(editForm.in_stock),
+        is_active: Boolean(editForm.is_active),
+        preparation_time_minutes: editForm.preparation_time_minutes ?? null,
+        serves: editForm.serves ?? null,
+        serves_label: editForm.serves_label || null,
+        item_size_value: editForm.item_size_value ? Number(editForm.item_size_value) : null,
+        item_size_unit: editForm.item_size_unit || null,
+      };
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${editingId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r?.success === false) throw new Error(r?.error || "Update failed");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(editingId),
+        actionDetails: { action: "update_item", payload: { ...payload, item_description: payload.item_description ? "[text]" : null } },
+        actionStatus: "SUCCESS",
+        requestMethod: "PUT",
+      });
+      if (editImageFile) {
+        const fd = new FormData();
+        fd.append("file", editImageFile);
+        const imgRes = await fetch(`/api/merchant/stores/${storeId}/menu/items/${editingId}/images`, {
+          method: "POST",
+          body: fd,
+        });
+        const img = await imgRes.json().catch(() => ({}));
+        if (!imgRes.ok || img?.success === false) throw new Error(img?.error || "Image upload failed");
+        setEditImagePreview(String(img.image_url ?? editImagePreview));
+        setEditImageFile(null);
+        trackAudit({
+          actionType: "UPDATE",
+          resourceType: "merchant_menu_item_images",
+          resourceId: String(img?.id ?? ""),
+          actionDetails: { action: "upload_item_image", menu_item_id: editingId },
+          actionStatus: "SUCCESS",
+          requestMethod: "POST",
+        });
+      }
+      toast("Menu item updated.");
+      await refreshMenu();
       setShowEditModal(false);
     } catch {
       setEditError("Error updating item.");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: editingId != null ? String(editingId) : undefined,
+        actionDetails: { action: "update_item" },
+        actionStatus: "FAILED",
+        errorMessage: "Error updating item.",
+        requestMethod: "PUT",
+      });
     }
     setIsSavingEdit(false);
   };
 
+  const handleProcessImage = (file: File, isEdit: boolean) => {
+    const preview = URL.createObjectURL(file);
+    if (isEdit) {
+      setEditImageFile(file);
+      setEditImagePreview(preview);
+    } else {
+      setAddImageFile(file);
+      setImagePreview(preview);
+    }
+  };
+
   const handleDeleteItem = async () => {
-    if (!deleteItemId) return;
+    if (deleteItemId == null) return;
     setIsDeleting(true);
     try {
-      toast("Menu item deleted (API integration pending).");
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${deleteItemId}`, { method: "DELETE" });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r?.success === false) throw new Error(r?.error || "Delete failed");
+      toast("Menu item deleted.");
+      trackAudit({
+        actionType: "DELETE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(deleteItemId),
+        actionDetails: { action: "delete_item" },
+        actionStatus: "SUCCESS",
+        requestMethod: "DELETE",
+      });
+      await refreshMenu();
       setShowDeleteModal(false);
       setDeleteItemId(null);
     } catch {
       toast("Error deleting item.");
+      trackAudit({
+        actionType: "DELETE",
+        resourceType: "merchant_menu_items",
+        resourceId: deleteItemId != null ? String(deleteItemId) : undefined,
+        actionDetails: { action: "delete_item" },
+        actionStatus: "FAILED",
+        errorMessage: "Error deleting item.",
+        requestMethod: "DELETE",
+      });
     }
     setIsDeleting(false);
   };
@@ -277,11 +667,36 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
     if (!stockToggleItem) return;
     setIsTogglingStock(true);
     try {
-      toast(`Item marked as ${stockToggleItem.newStatus ? "In Stock" : "Out of Stock"} (API pending).`);
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${stockToggleItem.id}/stock`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ in_stock: stockToggleItem.newStatus }),
+      });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r?.success === false) throw new Error(r?.error || "Stock update failed");
+      toast(`Item marked as ${stockToggleItem.newStatus ? "In Stock" : "Out of Stock"}.`);
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: String(stockToggleItem.id),
+        actionDetails: { action: "toggle_stock", in_stock: stockToggleItem.newStatus },
+        actionStatus: "SUCCESS",
+        requestMethod: "PATCH",
+      });
+      await refreshMenu();
       setShowStockModal(false);
       setStockToggleItem(null);
     } catch {
       toast("Error updating stock.");
+      trackAudit({
+        actionType: "UPDATE",
+        resourceType: "merchant_menu_items",
+        resourceId: stockToggleItem?.id != null ? String(stockToggleItem.id) : undefined,
+        actionDetails: { action: "toggle_stock" },
+        actionStatus: "FAILED",
+        errorMessage: "Error updating stock.",
+        requestMethod: "PATCH",
+      });
     }
     setIsTogglingStock(false);
   };
@@ -299,12 +714,46 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
     }
     setCategoryLoading(true);
     try {
-      toast("Category saved (API integration pending).");
+      const payload = {
+        category_name: name,
+        is_active: Boolean(categoryForm.is_active),
+      };
+      const isEdit = categoryModalMode === "edit" && editingCategoryId != null;
+      const url = isEdit
+        ? `/api/merchant/stores/${storeId}/menu/categories/${editingCategoryId}`
+        : `/api/merchant/stores/${storeId}/menu/categories`;
+      const method = isEdit ? "PUT" : "POST";
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r?.success === false) throw new Error(r?.error || "Save failed");
+      toast(isEdit ? "Category updated." : "Category created.");
+      trackAudit({
+        actionType: isEdit ? "UPDATE" : "CREATE",
+        resourceType: "merchant_menu_categories",
+        resourceId: isEdit ? String(editingCategoryId) : String(r?.id ?? ""),
+        actionDetails: { action: isEdit ? "update_category" : "create_category", payload },
+        actionStatus: "SUCCESS",
+        requestMethod: method,
+      });
+      await refreshMenu();
       setShowCategoryModal(false);
       setCategoryForm({ category_name: "", is_active: true });
       setEditingCategoryId(null);
     } catch {
       setCategoryError("Error saving category");
+      trackAudit({
+        actionType: categoryModalMode === "edit" ? "UPDATE" : "CREATE",
+        resourceType: "merchant_menu_categories",
+        resourceId: editingCategoryId != null ? String(editingCategoryId) : undefined,
+        actionDetails: { action: "save_category" },
+        actionStatus: "FAILED",
+        errorMessage: "Error saving category",
+        requestMethod: categoryModalMode === "edit" ? "PUT" : "POST",
+      });
     }
     setCategoryLoading(false);
   };
@@ -438,6 +887,39 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
+          <div className="order-3 sm:order-2 flex items-center gap-2 flex-wrap">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as any)}
+              className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
+              aria-label="Filter by status"
+            >
+              <option value="ALL">Status: All</option>
+              <option value="PENDING">Status: Pending</option>
+              <option value="APPROVED">Status: Approved</option>
+              <option value="REJECTED">Status: Rejected</option>
+            </select>
+            <select
+              value={stockFilter}
+              onChange={(e) => setStockFilter(e.target.value as any)}
+              className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
+              aria-label="Filter by stock"
+            >
+              <option value="ALL">Stock: All</option>
+              <option value="IN_STOCK">Stock: In stock</option>
+              <option value="OUT_OF_STOCK">Stock: Out of stock</option>
+            </select>
+            <select
+              value={changeRequestFilter}
+              onChange={(e) => setChangeRequestFilter(e.target.value as any)}
+              className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
+              aria-label="Filter by change request"
+            >
+              <option value="ALL">Requests: All</option>
+              <option value="UPDATE">Requests: Edit</option>
+              <option value="DELETE">Requests: Delete</option>
+            </select>
+          </div>
           <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-hidden">
             <button
               onClick={() => setSelectedCategoryId(null)}
@@ -494,6 +976,109 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
 
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3">
+          <div className="mb-4 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-3 border-b border-gray-100">
+              <div>
+                <div className="text-sm font-bold text-gray-900">Change requests</div>
+                <div className="text-xs text-gray-500">
+                  Merchant edit/delete requests for this store (agent review).
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={crStatus}
+                  onChange={(e) => setCrStatus(e.target.value as any)}
+                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
+                  aria-label="Filter change requests by status"
+                >
+                  <option value="ALL">Status: All</option>
+                  <option value="PENDING">Status: Pending</option>
+                  <option value="APPROVED">Status: Approved</option>
+                  <option value="REJECTED">Status: Rejected</option>
+                  <option value="CANCELLED">Status: Cancelled</option>
+                </select>
+                <select
+                  value={crType}
+                  onChange={(e) => setCrType(e.target.value as any)}
+                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
+                  aria-label="Filter change requests by type"
+                >
+                  <option value="ALL">Type: All</option>
+                  <option value="UPDATE">Type: Edit</option>
+                  <option value="DELETE">Type: Delete</option>
+                </select>
+              </div>
+            </div>
+            <div className="px-4 py-3">
+              {!storePublicId ? (
+                <div className="text-xs text-gray-500">Loading store info…</div>
+              ) : crLoading ? (
+                <div className="text-xs text-gray-500">Loading change requests…</div>
+              ) : changeRequests.length === 0 ? (
+                <div className="text-xs text-gray-500">No change requests found.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-gray-500">
+                        <th className="text-left font-semibold py-2 pr-4">Item</th>
+                        <th className="text-left font-semibold py-2 pr-4">Type</th>
+                        <th className="text-left font-semibold py-2 pr-4">Status</th>
+                        <th className="text-left font-semibold py-2 pr-4">Created</th>
+                        <th className="text-right font-semibold py-2">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {changeRequests.map((r) => (
+                        <tr key={r.id} className="border-t border-gray-100">
+                          <td className="py-2 pr-4">
+                            <div className="font-semibold text-gray-900">{r.item_name ?? "—"}</div>
+                            <div className="text-xs text-gray-500">{r.menu_item_public_id ?? ""}</div>
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-xs font-bold">
+                              {r.request_type}
+                            </span>
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-xs font-bold">
+                              {r.status}
+                            </span>
+                          </td>
+                          <td className="py-2 pr-4 text-xs text-gray-600">
+                            {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                          </td>
+                          <td className="py-2 text-right">
+                            {r.status === "PENDING" ? (
+                              <div className="inline-flex items-center gap-2">
+                                <button
+                                  onClick={() => handleRejectCr(Number(r.id))}
+                                  disabled={crActionLoadingId === Number(r.id)}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                >
+                                  {crActionLoadingId === Number(r.id) ? "…" : "Reject"}
+                                </button>
+                                <button
+                                  onClick={() => handleApproveCr(Number(r.id))}
+                                  disabled={crActionLoadingId === Number(r.id)}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                                >
+                                  {crActionLoadingId === Number(r.id) ? "…" : "Approve"}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-500">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
           {loading ? (
             <MenuItemsGridSkeleton />
           ) : searchedItems.length === 0 ? (
@@ -531,16 +1116,52 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                         <div className="flex items-start justify-between gap-1 mb-0.5">
                           <div className="flex-1 min-w-0">
                             <div className="font-bold text-sm text-gray-900 truncate">{item.item_name}</div>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                             <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">
                               {category?.category_name ?? "Uncategorized"}
                             </div>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                (item.approval_status ?? "PENDING") === "APPROVED"
+                                  ? "bg-green-50 text-green-700 border border-green-200"
+                                  : (item.approval_status ?? "PENDING") === "REJECTED"
+                                    ? "bg-red-50 text-red-700 border border-red-200"
+                                    : "bg-amber-50 text-amber-800 border border-amber-200"
+                              }`}
+                              title="Approval status"
+                            >
+                              {(item.approval_status ?? "PENDING") === "APPROVED"
+                                ? "Approved"
+                                : (item.approval_status ?? "PENDING") === "REJECTED"
+                                  ? "Rejected"
+                                  : "Pending"}
+                            </span>
+                            {item.has_pending_change_request && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                  item.pending_change_request_type === "DELETE"
+                                    ? "bg-purple-50 text-purple-700 border-purple-200"
+                                    : item.pending_change_request_type === "UPDATE"
+                                      ? "bg-blue-50 text-blue-700 border-blue-200"
+                                      : "bg-indigo-50 text-indigo-700 border-indigo-200"
+                                }`}
+                                title="Pending change request"
+                              >
+                                {item.pending_change_request_type === "DELETE"
+                                  ? "Delete requested"
+                                  : item.pending_change_request_type === "UPDATE"
+                                    ? "Edit requested"
+                                    : "Change requested"}
+                              </span>
+                            )}
+                          </div>
                           </div>
                           <label className="inline-flex items-center cursor-pointer flex-shrink-0">
                             <input
                               type="checkbox"
                               checked={item.in_stock ?? true}
                               onChange={() => {
-                                setStockToggleItem({ item_id: item.item_id, newStatus: !item.in_stock });
+                                setStockToggleItem({ id: item.id, newStatus: !item.in_stock });
                                 setShowStockModal(true);
                               }}
                               className="sr-only peer"
@@ -599,7 +1220,30 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 mt-auto min-w-0">
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-gray-600">
+                          {(item.serves_label || item.serves) && (
+                            <span>
+                              Serves{" "}
+                              {item.serves_label
+                                ? item.serves_label
+                                : item.serves
+                                  ? `${item.serves} person${item.serves > 1 ? "s" : ""}`
+                                  : ""}
+                            </span>
+                          )}
+                          {item.item_size_value && item.item_size_unit && (
+                            <span>
+                              • Size {item.item_size_value} {item.item_size_unit}
+                            </span>
+                          )}
+                          {item.preparation_time_minutes != null && (
+                            <span>• Prep {item.preparation_time_minutes} min</span>
+                          )}
+                          {item.cuisine_type && (
+                            <span className="truncate max-w-[120px]">• {item.cuisine_type}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1.5 min-w-0">
                           {(item.customizations?.length ?? 0) > 0 || (item.variants?.length ?? 0) > 0 ? (
                             <button
                               onClick={(e) => {
@@ -613,6 +1257,19 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                               Options
                             </button>
                           ) : null}
+                          {(item.approval_status ?? "PENDING") === "PENDING" && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReviewItem(item);
+                                setShowReviewDrawer(true);
+                              }}
+                              className="flex-shrink-0 flex items-center justify-center gap-0.5 px-1.5 py-1 bg-gray-100 text-gray-700 font-semibold rounded-md border border-gray-200 hover:bg-gray-200 transition-all text-[10px] whitespace-nowrap"
+                            >
+                              <span className="truncate">Review</span>
+                            </button>
+                          )}
                           <button
                             onClick={() => handleOpenEditModal(item)}
                             className="min-w-0 flex-1 flex items-center justify-center gap-0.5 px-1 py-1 bg-blue-50 text-blue-600 font-bold rounded-md border border-blue-200 hover:bg-blue-100 transition-all text-[10px]"
@@ -622,7 +1279,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                           </button>
                           <button
                             onClick={() => {
-                              setDeleteItemId(item.item_id);
+                              setDeleteItemId(item.id);
                               setShowDeleteModal(true);
                             }}
                             className="min-w-0 flex-1 flex items-center justify-center gap-0.5 px-1 py-1 bg-red-50 text-red-600 font-bold rounded-md border border-red-200 hover:bg-red-100 transition-all text-[10px]"
@@ -640,6 +1297,242 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
           )}
         </div>
       </div>
+
+      {showReviewDrawer && reviewItem &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9998] flex items-stretch justify-end bg-black/40 backdrop-blur-sm"
+            onClick={() => {
+              setShowReviewDrawer(false);
+              setReviewItem(null);
+            }}
+          >
+            <div
+              className="w-full max-w-md bg-white shadow-xl border-l border-gray-200 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                <h2 className="text-sm font-bold text-gray-900">Review item</h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowReviewDrawer(false);
+                    setReviewItem(null);
+                  }}
+                  className="text-xs text-gray-500 hover:text-gray-800"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="p-4 flex-1 overflow-auto space-y-3 text-sm">
+                <div className="w-full h-40 rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                  <R2Image
+                    src={reviewItem.item_image_url}
+                    alt={reviewItem.item_name}
+                    className="w-full h-full object-cover"
+                    fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                  />
+                </div>
+                <div>
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-0.5">
+                    {(categories.find((c) => c.id === reviewItem.category_id)?.category_name as string) ?? "Uncategorized"}
+                  </div>
+                  <div className="text-base font-bold text-gray-900">{reviewItem.item_name}</div>
+                  {reviewItem.item_description && (
+                    <p className="mt-1 text-sm text-gray-700 whitespace-pre-line">{reviewItem.item_description}</p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 text-[11px] font-semibold">
+                    Status: {(reviewItem.approval_status ?? "PENDING").toLowerCase()}
+                  </span>
+                  {reviewItem.food_type && (
+                    <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[11px] font-semibold">
+                      {reviewItem.food_type}
+                    </span>
+                  )}
+                  {reviewItem.has_customizations && (
+                    <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-[11px] font-semibold">
+                      Customizable
+                    </span>
+                  )}
+                  {reviewItem.has_variants && (
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[11px] font-semibold">
+                      Variants
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-lg font-bold text-orange-600">₹{reviewItem.selling_price}</span>
+                  {reviewItem.base_price && reviewItem.base_price > reviewItem.selling_price && (
+                    <span className="text-xs text-gray-500 line-through">₹{reviewItem.base_price}</span>
+                  )}
+                </div>
+                <div className="text-xs text-gray-600 space-y-0.5">
+                  {(reviewItem.serves_label || reviewItem.serves) && (
+                    <div>
+                      <span className="font-semibold">Serves: </span>
+                      {reviewItem.serves_label
+                        ? reviewItem.serves_label
+                        : reviewItem.serves
+                          ? `${reviewItem.serves} person${reviewItem.serves > 1 ? "s" : ""}`
+                          : "—"}
+                    </div>
+                  )}
+                  {(reviewItem.item_size_value && reviewItem.item_size_unit) && (
+                    <div>
+                      <span className="font-semibold">Item size: </span>
+                      {reviewItem.item_size_value} {reviewItem.item_size_unit}
+                    </div>
+                  )}
+                  {reviewItem.preparation_time_minutes != null && (
+                    <div>
+                      <span className="font-semibold">Prep time: </span>
+                      {reviewItem.preparation_time_minutes} min
+                    </div>
+                  )}
+                  {reviewItem.cuisine_type && (
+                    <div>
+                      <span className="font-semibold">Cuisine: </span>
+                      {reviewItem.cuisine_type}
+                    </div>
+                  )}
+                  {reviewItem.allergens && (
+                    <div>
+                      <span className="font-semibold">Allergens: </span>
+                      {Array.isArray(reviewItem.allergens) ? reviewItem.allergens.join(", ") : reviewItem.allergens}
+                    </div>
+                  )}
+                </div>
+                {(reviewItem.customizations?.length ?? 0) > 0 && (
+                  <div className="pt-2 border-t border-gray-100">
+                    <div className="text-xs font-semibold text-gray-700 mb-1">Customizations</div>
+                    <ul className="text-xs text-gray-600 space-y-0.5">
+                      {reviewItem.customizations?.map((c) => (
+                        <li key={c.id ?? c.customization_id}>
+                          {c.customization_title}{" "}
+                          {c.is_required ? <span className="text-[10px] text-red-600">(required)</span> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {(reviewItem.variants?.length ?? 0) > 0 && (
+                  <div className="pt-2 border-t border-gray-100">
+                    <div className="text-xs font-semibold text-gray-700 mb-1">Variants</div>
+                    <ul className="text-xs text-gray-600 space-y-0.5">
+                      {reviewItem.variants?.map((v) => (
+                        <li key={v.id ?? v.variant_id}>
+                          {v.variant_name} — ₹{v.variant_price}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!reviewItem) return;
+                    setIsReviewActionLoading("REJECT");
+                    try {
+                      const res = await fetch(
+                        `/api/merchant/stores/${storeId}/menu/items/${reviewItem.id}/approval`,
+                        {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ approval_status: "REJECTED" }),
+                        }
+                      );
+                      const r = await res.json().catch(() => ({}));
+                      if (!res.ok || r?.success === false) throw new Error(r?.error || "Reject failed");
+                      toast("Item rejected.");
+                      trackAudit({
+                        actionType: "UPDATE",
+                        resourceType: "merchant_menu_items",
+                        resourceId: String(reviewItem.id),
+                        actionDetails: { action: "reject_item" },
+                        actionStatus: "SUCCESS",
+                        requestMethod: "PATCH",
+                      });
+                      await refreshMenu();
+                      setShowReviewDrawer(false);
+                      setReviewItem(null);
+                    } catch (e) {
+                      toast(e instanceof Error ? e.message : "Reject failed");
+                      trackAudit({
+                        actionType: "UPDATE",
+                        resourceType: "merchant_menu_items",
+                        resourceId: reviewItem ? String(reviewItem.id) : undefined,
+                        actionDetails: { action: "reject_item" },
+                        actionStatus: "FAILED",
+                        errorMessage: e instanceof Error ? e.message : "Reject failed",
+                        requestMethod: "PATCH",
+                      });
+                    } finally {
+                      setIsReviewActionLoading(null);
+                    }
+                  }}
+                  disabled={isReviewActionLoading !== null}
+                  className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-red-200 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 disabled:opacity-50"
+                >
+                  {isReviewActionLoading === "REJECT" ? "Rejecting…" : "Reject"}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!reviewItem) return;
+                    setIsReviewActionLoading("APPROVE");
+                    try {
+                      const res = await fetch(
+                        `/api/merchant/stores/${storeId}/menu/items/${reviewItem.id}/approval`,
+                        {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ approval_status: "APPROVED" }),
+                        }
+                      );
+                      const r = await res.json().catch(() => ({}));
+                      if (!res.ok || r?.success === false) throw new Error(r?.error || "Approve failed");
+                      toast("Item approved.");
+                      trackAudit({
+                        actionType: "UPDATE",
+                        resourceType: "merchant_menu_items",
+                        resourceId: String(reviewItem.id),
+                        actionDetails: { action: "approve_item" },
+                        actionStatus: "SUCCESS",
+                        requestMethod: "PATCH",
+                      });
+                      await refreshMenu();
+                      setShowReviewDrawer(false);
+                      setReviewItem(null);
+                    } catch (e) {
+                      toast(e instanceof Error ? e.message : "Approve failed");
+                      trackAudit({
+                        actionType: "UPDATE",
+                        resourceType: "merchant_menu_items",
+                        resourceId: reviewItem ? String(reviewItem.id) : undefined,
+                        actionDetails: { action: "approve_item" },
+                        actionStatus: "FAILED",
+                        errorMessage: e instanceof Error ? e.message : "Approve failed",
+                        requestMethod: "PATCH",
+                      });
+                    } finally {
+                      setIsReviewActionLoading(null);
+                    }
+                  }}
+                  disabled={isReviewActionLoading !== null}
+                  className="flex-1 inline-flex items-center justify-center px-3 py-2 rounded-md border border-green-200 text-xs font-bold text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50"
+                >
+                  {isReviewActionLoading === "APPROVE" ? "Approving…" : "Approve"}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {showAddModal &&
         typeof document !== "undefined" &&
@@ -659,6 +1552,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 setFormData={setAddForm}
                 imagePreview={imagePreview}
                 setImagePreview={setImagePreview}
+                onProcessImage={handleProcessImage}
                 imageUploadAllowed={imageUploadAllowed}
                 imageLimitReached={imageLimitReached}
                 imageUsed={imageUsed}
@@ -694,6 +1588,7 @@ export function StoreMenuClient({ storeId }: { storeId: string }) {
                 setFormData={setEditForm}
                 imagePreview={editImagePreview}
                 setImagePreview={setEditImagePreview}
+                onProcessImage={handleProcessImage}
                 imageUploadAllowed={imageUploadAllowed}
                 imageLimitReached={imageLimitReached}
                 imageUsed={imageUsed}

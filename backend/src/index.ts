@@ -9,6 +9,7 @@ import { ulid } from "ulid";
 import { loadEnv } from "./config/loadEnv.js";
 import { getEnv } from "./config/env.js";
 import { healthRoutes } from "./routes/health.routes.js";
+import { attachmentsRoutes } from "./routes/attachments.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { riderRoutes } from "./modules/rider/rider.routes.js";
 import { onboardingRoutes } from "./modules/onboarding/onboarding.routes.js";
@@ -104,6 +105,7 @@ await app.register(swaggerUi, {
 });
 
 await app.register(healthRoutes, { prefix: "/v1" });
+await app.register(attachmentsRoutes, { prefix: "/v1" });
 
 // Public Razorpay checkout page (no auth) – used by customer app WebView.
 // Load checkout.js first, then open payment so the Razorpay modal (UPI/cards/wallets) actually appears.
