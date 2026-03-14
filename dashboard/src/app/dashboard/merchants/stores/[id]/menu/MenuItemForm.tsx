@@ -65,6 +65,8 @@ interface ItemFormProps {
   title: string;
   categories: MenuCategory[];
   currentItemId?: string;
+  storeId?: string;
+  onSwitchToAddonLibrary?: () => void;
   imageUploadAllowed?: boolean;
   imageLimitReached?: boolean;
   imageUsed?: number;
@@ -99,6 +101,8 @@ export function MenuItemForm({
   title,
   categories,
   currentItemId,
+  storeId,
+  onSwitchToAddonLibrary,
   imageUploadAllowed = true,
   imageLimitReached = false,
   imageUsed = 0,
@@ -115,10 +119,43 @@ export function MenuItemForm({
   const [newCustomization, setNewCustomization] = useState({ ...defaultNewCustomization });
   const [editingCustomizationIndex, setEditingCustomizationIndex] = useState<number | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const [linkedAddonGroups, setLinkedAddonGroups] = useState<{ id: number; modifier_group_id: number; group?: { title: string; options_count?: number } }[]>([]);
+  const [showLinkAddonPicker, setShowLinkAddonPicker] = useState(false);
+  const [allGroupsForPicker, setAllGroupsForPicker] = useState<{ id: number; title: string; options_count: number; used_in_items_count: number }[]>([]);
 
   useEffect(() => {
     setCustomizations(formData.customizations || []);
   }, [formData.customizations?.length, currentItemId]);
+
+  useEffect(() => {
+    if (!isEdit || !storeId || !currentItemId) return;
+    const itemId = typeof currentItemId === "string" ? parseInt(currentItemId, 10) : currentItemId;
+    if (!Number.isFinite(itemId)) return;
+    fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}/modifier-groups`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.linkedModifierGroups) {
+          setLinkedAddonGroups(
+            j.linkedModifierGroups.map((l: any) => ({
+              id: l.id,
+              modifier_group_id: l.modifier_group_id,
+              group: { title: l.group?.title ?? "", options_count: l.group?.options?.length ?? 0 },
+            }))
+          );
+        }
+      })
+      .catch(() => {});
+  }, [isEdit, storeId, currentItemId]);
+
+  useEffect(() => {
+    if (!showLinkAddonPicker || !storeId) return;
+    fetch(`/api/merchant/stores/${storeId}/menu/modifier-groups`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.modifierGroups) setAllGroupsForPicker(j.modifierGroups);
+      })
+      .catch(() => {});
+  }, [showLinkAddonPicker, storeId]);
 
   useEffect(() => {
     const base = parseFloat(formData.base_price) || 0;
@@ -1051,6 +1088,113 @@ export function MenuItemForm({
                 + Add Variant
               </button>
             </div>
+
+            {isEdit && storeId && currentItemId && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <h3 className="text-xs font-semibold text-gray-700 mb-2">Linked addon groups</h3>
+                <p className="text-xs text-gray-500 mb-2">Reusable addon groups from Addon Library. Link or unlink below.</p>
+                {linkedAddonGroups.length > 0 && (
+                  <ul className="space-y-1.5 mb-2">
+                    {linkedAddonGroups.map((link) => (
+                      <li key={link.id} className="flex items-center justify-between py-1.5 px-2 bg-gray-50 rounded border border-gray-100">
+                        <span className="text-sm font-medium text-gray-900">{link.group?.title ?? "—"}</span>
+                        <div className="flex items-center gap-1">
+                          {link.group?.options_count != null && (
+                            <span className="text-xs text-gray-500">{link.group.options_count} options</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const itemId = typeof currentItemId === "string" ? parseInt(currentItemId, 10) : currentItemId;
+                              if (!Number.isFinite(itemId)) return;
+                              try {
+                                const r = await fetch(
+                                  `/api/merchant/stores/${storeId}/menu/items/${itemId}/modifier-groups/${link.id}`,
+                                  { method: "DELETE" }
+                                );
+                                if (r.ok) setLinkedAddonGroups((prev) => prev.filter((l) => l.id !== link.id));
+                              } catch {}
+                            }}
+                            className="p-1 text-red-600 hover:bg-red-50 rounded"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowLinkAddonPicker(true)}
+                    className="px-3 py-1.5 text-sm font-medium text-orange-600 bg-orange-50 border border-orange-200 rounded hover:bg-orange-100"
+                  >
+                    Add existing group
+                  </button>
+                  {onSwitchToAddonLibrary ? (
+                    <button type="button" onClick={onSwitchToAddonLibrary} className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-200 rounded hover:bg-gray-200">
+                      Create new group (Addon Library)
+                    </button>
+                  ) : (
+                    <span className="text-xs text-gray-500 self-center">Go to Addon Library tab to create a new group.</span>
+                  )}
+                </div>
+                {showLinkAddonPicker && (
+                  <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4" onClick={() => setShowLinkAddonPicker(false)}>
+                    <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[70vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+                      <div className="p-3 border-b font-semibold text-gray-900">Link addon group</div>
+                      <div className="overflow-auto p-3 space-y-1">
+                        {allGroupsForPicker
+                          .filter((g) => !linkedAddonGroups.some((l) => l.modifier_group_id === g.id))
+                          .map((g) => (
+                            <button
+                              key={g.id}
+                              type="button"
+                              onClick={async () => {
+                                const itemId = typeof currentItemId === "string" ? parseInt(currentItemId, 10) : currentItemId;
+                                if (!Number.isFinite(itemId)) return;
+                                try {
+                                  const r = await fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}/modifier-groups`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ modifier_group_id: g.id }),
+                                  });
+                                  if (r.ok) {
+                                    setLinkedAddonGroups((prev) => [...prev, { id: 0, modifier_group_id: g.id, group: { title: g.title, options_count: g.options_count } }]);
+                                    const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}/modifier-groups`);
+                                    const j = await res.json();
+                                    if (j?.linkedModifierGroups)
+                                      setLinkedAddonGroups(
+                                        j.linkedModifierGroups.map((l: any) => ({
+                                          id: l.id,
+                                          modifier_group_id: l.modifier_group_id,
+                                          group: { title: l.group?.title ?? "", options_count: l.group?.options?.length ?? 0 },
+                                        }))
+                                      );
+                                    setShowLinkAddonPicker(false);
+                                  }
+                                } catch {}
+                              }}
+                              className="w-full text-left px-3 py-2 rounded-lg border border-gray-200 hover:bg-orange-50 text-sm"
+                            >
+                              {g.title} · {g.options_count} options
+                            </button>
+                          ))}
+                        {allGroupsForPicker.filter((g) => !linkedAddonGroups.some((l) => l.modifier_group_id === g.id)).length === 0 && (
+                          <p className="text-sm text-gray-500 py-4 text-center">No other groups to link. Create one in Addon Library tab.</p>
+                        )}
+                      </div>
+                      <div className="p-3 border-t">
+                        <button type="button" onClick={() => setShowLinkAddonPicker(false)} className="px-3 py-1.5 rounded border border-gray-300 text-sm font-medium">
+                          Close
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
