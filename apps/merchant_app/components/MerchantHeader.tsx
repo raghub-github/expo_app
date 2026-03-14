@@ -4,8 +4,8 @@
  * Left = Identity, center-right = Live radar, far right = Share store link.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert } from "react-native";
+import { useEffect, useState } from "react";
+import { View, Image, Pressable, Text, StyleSheet, Platform, LayoutAnimation, Modal, ScrollView, Share, Alert, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSegments, usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,11 +13,61 @@ import { GatiMitraMerchant, H_PADDING, HEADER_RIGHT_EDGE, CARD_RADIUS, CARD_PADD
 import { getConfig } from "@/config/env";
 import { OnlineOfflineToggle } from "@/components/OnlineOfflineToggle";
 import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
+import { TimePickerModal } from "@/components/TimePickerModal";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { useActiveTab } from "@/context/ActiveTabContext";
 import { useAuth } from "@/context/AuthContext";
 import { useNotifications } from "@/context/NotificationContext";
+import { getOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
 import type { ChildStore } from "@/context/AuthContext";
+
+const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+type DayKey = (typeof DAY_KEYS)[number];
+
+function formatSlotTime(t: string | null): string {
+  if (!t) return "";
+  const [hStr, mStr] = t.split(":");
+  const h = Number(hStr);
+  const m = Number(mStr ?? "0");
+  if (!Number.isFinite(h)) return t;
+  const isPM = h >= 12;
+  const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  const displayM = m.toString().padStart(2, "0");
+  const suffix = isPM ? "PM" : "AM";
+  return `${displayH}:${displayM} ${suffix}`;
+}
+
+function getTodayHoursLabel(hours: OperatingHours | null): string | null {
+  if (!hours) return null;
+  if (hours.is_24_hours) return "Today: 24 hours";
+  const now = new Date();
+  const dayIndex = now.getDay();
+  const dayKey: DayKey = DAY_KEYS[dayIndex];
+  const closed = Array.isArray(hours.closed_days) && hours.closed_days.includes(dayKey);
+  if (closed) return "Today: Closed";
+  const sourceKey = hours.same_for_all_days ? "monday" : dayKey;
+  const daySlots = hours[sourceKey] as DaySlots | undefined;
+  if (!daySlots?.open) return "Today: Closed";
+  const s1 = daySlots.slot1_start && daySlots.slot1_end
+    ? `${formatSlotTime(daySlots.slot1_start)} – ${formatSlotTime(daySlots.slot1_end)}`
+    : "";
+  const s2 = daySlots.slot2_start && daySlots.slot2_end
+    ? `${formatSlotTime(daySlots.slot2_start)} – ${formatSlotTime(daySlots.slot2_end)}`
+    : "";
+  const parts = [s1, s2].filter(Boolean);
+  if (parts.length === 0) return "Today: Closed";
+  return `Today: ${parts.join(", ")}`;
+}
+
+// Optional native date/time picker for close-store modal.
+let NativeDateTimePicker: React.ComponentType<any> | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  NativeDateTimePicker = require("@react-native-community/datetimepicker").default;
+} catch {
+  NativeDateTimePicker = null;
+}
 
 const LOGO_SIZE = 32;
 const LOGO_TO_GREETING_GAP = 8;
@@ -248,24 +298,159 @@ function MainHeader({
   );
 }
 
-function StoreStatusCard({ onToggleRequest }: { onToggleRequest: () => void }) {
+/** Returns "02h 15m 30s" for "Reopen in - **02h 15m 30s**" (updates every second). */
+function formatNextReopenCountdown(iso: string | Date | null | undefined): string | null {
+  if (iso == null) return null;
+  const isoStr = typeof iso === "string" ? iso.trim() : iso instanceof Date ? iso.toISOString() : String(iso).trim();
+  if (!isoStr || isoStr.length === 0) return null;
+  const normalized = isoStr.replace(" ", "T");
+  const target = new Date(normalized);
+  const now = new Date();
+  const diffMs = target.getTime() - now.getTime();
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (hours > 0) parts.push(`${String(hours).padStart(2, "0")}h`);
+  parts.push(`${String(minutes).padStart(2, "0")}m`);
+  parts.push(`${String(seconds).padStart(2, "0")}s`);
+  return parts.join(" ");
+}
+
+function formatReopenAtLabel(iso: string | null | undefined): string | null {
+  if (iso == null || String(iso).trim() === "") return null;
+  const s = String(iso).trim().replace(" ", "T");
+  const d = new Date(s);
+  if (!Number.isFinite(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Calcutta",
+  }).format(d);
+}
+
+function normalizeIso(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s.length > 0 ? s : null;
+}
+
+function StoreStatusCard({
+  onToggleRequest,
+  offlineSubtitle,
+  autoReopenLabel,
+  scheduleLabel,
+  showAutoOpenTag,
+  todayHoursLabel,
+  reopenAtIso: reopenAtIsoProp,
+  reopenAtFormatted,
+  reopenCountdownLabelPrefix,
+  manualCloseUntil,
+  nextOpenIso,
+  scheduledClosureTo,
+  upcomingScheduledClosureFrom,
+  lastClosedLine,
+}: {
+  onToggleRequest: () => void;
+  offlineSubtitle?: string;
+  autoReopenLabel?: string | null;
+  scheduleLabel?: string | null;
+  showAutoOpenTag?: boolean;
+  todayHoursLabel?: string | null;
+  reopenAtIso?: string | null;
+  reopenAtFormatted?: string | null;
+  /** When temp close: "Opens in" else "Reopen at:" */
+  reopenCountdownLabelPrefix?: string;
+  manualCloseUntil?: string | null;
+  nextOpenIso?: string | null;
+  scheduledClosureTo?: string | null;
+  upcomingScheduledClosureFrom?: string | null;
+  /** "Last: Closed by Name (ID: id) · 11:56:12 am" when temp close */
+  lastClosedLine?: string | null;
+}) {
   const { isOnline } = useStoreStatus();
+  const countdownPrefix = reopenCountdownLabelPrefix ?? "Reopen at:";
+  const reopenAtIso =
+    normalizeIso(reopenAtIsoProp) ??
+    normalizeIso(manualCloseUntil) ??
+    normalizeIso(nextOpenIso) ??
+    normalizeIso(scheduledClosureTo) ??
+    normalizeIso(upcomingScheduledClosureFrom);
+  const [countdownTime, setCountdownTime] = useState<string | null>(() =>
+    reopenAtIso ? formatNextReopenCountdown(reopenAtIso) : null
+  );
+  const reopenLabel = reopenAtFormatted ?? (reopenAtIso ? formatReopenAtLabel(reopenAtIso) : null);
+
   useEffect(() => {
     if (Platform.OS !== "web") {
       const { LayoutAnimation } = require("react-native");
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     }
   }, [isOnline]);
+
+  // Dynamic countdown updating every second (server-synced reopen time).
+  useEffect(() => {
+    if (!reopenAtIso) {
+      setCountdownTime(null);
+      return;
+    }
+    const update = () => setCountdownTime(formatNextReopenCountdown(reopenAtIso));
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [reopenAtIso]);
+
   return (
     <View style={[styles.statusCard, isOnline ? styles.statusCardOnline : styles.statusCardOffline]}>
       <View style={styles.statusCardInner}>
         <View style={styles.statusCardLeft}>
-          <Text style={styles.statusCardTitle}>Store Status</Text>
-          <Text style={styles.statusCardSubtitle}>
-            {isOnline ? "You are receiving orders" : "Store is closed"}
+          <View style={styles.statusCardTitleRow}>
+            <Text style={styles.statusCardTitle}>Store Status</Text>
+            {showAutoOpenTag && (
+              <View style={styles.autoOpenTag}>
+                <Ionicons name="time-outline" size={10} color={GatiMitraMerchant.primary} />
+                <Text style={styles.autoOpenTagText}>Auto open</Text>
+              </View>
+            )}
+          </View>
+          <Text style={styles.statusCardSubtitle} numberOfLines={2}>
+            {isOnline ? "You are receiving orders" : (offlineSubtitle ?? "Closed: Manual close")}
           </Text>
+          {!isOnline && lastClosedLine && (
+            <Text style={styles.statusCardMeta} numberOfLines={1}>
+              {lastClosedLine}
+            </Text>
+          )}
+          {!isOnline && autoReopenLabel && (
+            <Text style={styles.statusCardMeta} numberOfLines={1}>
+              {autoReopenLabel}
+            </Text>
+          )}
+          {scheduleLabel && (
+            <Text style={styles.statusCardMeta} numberOfLines={1}>
+              {scheduleLabel}
+            </Text>
+          )}
+          {todayHoursLabel && (
+            <Text style={styles.statusCardMeta} numberOfLines={1}>
+              {todayHoursLabel}
+            </Text>
+          )}
         </View>
         <View style={styles.statusCardRight}>
+          {!isOnline && (
+            <Text style={styles.statusCardCountdownAboveToggle} numberOfLines={1}>
+              {countdownPrefix}{" "}
+              <Text style={styles.statusCardCountdownBold}>
+                {countdownTime ?? reopenLabel ?? (reopenAtIso ? "Next open" : "When you open")}
+              </Text>
+            </Text>
+          )}
           <OnlineOfflineToggle isOnline={isOnline} onToggle={onToggleRequest} />
         </View>
       </View>
@@ -281,12 +466,34 @@ export function MerchantCustomHeader() {
   const router = useRouter();
   const segments = useSegments();
   const tab = segments[segments.length - 1] ?? "index";
-  const { isOnline, toggle, scheduledClosure, manualCloseUntil } = useStoreStatus();
+  const {
+    isOnline,
+    toggle,
+    closeStore,
+    lastRefreshedAt,
+    scheduledClosure,
+    manualCloseUntil,
+    manualCloseReason,
+    restrictionType,
+    autoOpenFromSchedule,
+    manualActivationLock,
+    upcomingScheduledClosure,
+    statusReason,
+    unavailableReason,
+    reopenAtIso: reopenAtIsoFromContext,
+    nextOpenIso,
+    nextOpenTime,
+    nextCloseTime,
+    manualCloseStartAt,
+    closedBy,
+    closedById,
+  } = useStoreStatus();
   const hasScheduledClosure =
     scheduledClosure != null ||
     (manualCloseUntil != null &&
       manualCloseUntil !== "" &&
-      new Date(manualCloseUntil).getTime() > Date.now());
+      new Date(manualCloseUntil).getTime() > Date.now()) ||
+    upcomingScheduledClosure != null;
   const { setSelectedStore } = useSelectedStore();
 
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -296,15 +503,67 @@ export function MerchantCustomHeader() {
     goingOffline?: boolean;
     storeToSwitch?: ChildStore;
   }>({ visible: false, type: "store-status" });
+  const [closeMode, setCloseMode] = useState<"TEMP" | "TODAY" | "MANUAL">("TEMP");
+  const [closeReason, setCloseReason] = useState<string | null>(null);
+  const [closeReasonOtherText, setCloseReasonOtherText] = useState("");
+  const [closeReasonPickerVisible, setCloseReasonPickerVisible] = useState(false);
+  const [closeModePickerVisible, setCloseModePickerVisible] = useState(false);
+  const [lastCloseReasonLabel, setLastCloseReasonLabel] = useState<string | null>(null);
+  const [closeTempDate, setCloseTempDate] = useState<Date | null>(null);
+  const [closeTempTime, setCloseTempTime] = useState<Date>(() => {
+    const d = new Date();
+    d.setHours(18, 0, 0, 0);
+    return d;
+  });
+  const [showCloseDatePicker, setShowCloseDatePicker] = useState(false);
+  const [showCloseTimePicker, setShowCloseTimePicker] = useState(false);
+  const [todayHoursLabel, setTodayHoursLabel] = useState<string | null>(null);
 
+  const { token } = useAuth();
+  const { selectedStore } = useSelectedStore();
+  const { activeTab } = useActiveTab();
+
+  const isProfileSection = segments.includes("profile") || (typeof pathname === "string" && pathname.includes("profile"));
   const isHomeScreen =
-    pathname === "/" ||
-    pathname === "/(tabs)" ||
-    pathname === "/(tabs)/" ||
-    tab === "index";
+    !isProfileSection &&
+    activeTab === "index" &&
+    (pathname === "/" ||
+      pathname === "/(tabs)" ||
+      pathname === "/(tabs)/" ||
+      tab === "index");
   const topPadding = Math.max(insets.top, SAFE_AREA_TOP_MIN);
 
+  // Refetch when store or auth changes, and when store status is refreshed (e.g. after saving business hours).
+  useEffect(() => {
+    if (!selectedStore?.id || !token) {
+      setTodayHoursLabel(null);
+      return;
+    }
+    let cancelled = false;
+    getOperatingHours(selectedStore.id, token)
+      .then((hours) => {
+        if (cancelled) return;
+        const h = hours ?? null;
+        setTodayHoursLabel(getTodayHoursLabel(h));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTodayHoursLabel(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStore?.id, token, lastRefreshedAt]);
+
   const showStoreStatusWarning = () => {
+    setCloseMode("TEMP");
+    setCloseReason(null);
+    setCloseReasonOtherText("");
+    const now = new Date();
+    setCloseTempDate(now);
+    const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
+    setCloseTempTime(oneHourFromNow);
     setWarningModal({
       visible: true,
       type: "store-status",
@@ -324,18 +583,71 @@ export function MerchantCustomHeader() {
     setWarningModal((prev) => ({ ...prev, visible: false }));
   };
 
+  const getCloseUntilIso = (): string | null => {
+    if (closeMode === "MANUAL") return null;
+    if (closeMode === "TODAY") {
+      const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
+      const parts = formatter.formatToParts(new Date());
+      const y = parts.find((p) => p.type === "year")?.value ?? "";
+      const m = parts.find((p) => p.type === "month")?.value ?? "";
+      const d = parts.find((p) => p.type === "day")?.value ?? "";
+      const endOfTodayIST = new Date(`${y}-${m}-${d}T23:59:59+05:30`);
+      return Number.isNaN(endOfTodayIST.getTime()) ? null : endOfTodayIST.toISOString();
+    }
+    if (closeMode === "TEMP" && closeTempDate && closeTempTime) {
+      const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
+      const parts = formatter.formatToParts(closeTempDate);
+      const y = parts.find((p) => p.type === "year")?.value ?? "";
+      const m = parts.find((p) => p.type === "month")?.value ?? "";
+      const d = parts.find((p) => p.type === "day")?.value ?? "";
+      const h = String(closeTempTime.getHours()).padStart(2, "0");
+      const min = String(closeTempTime.getMinutes()).padStart(2, "0");
+      const reopenIST = new Date(`${y}-${m}-${d}T${h}:${min}:00+05:30`);
+      return Number.isNaN(reopenIST.getTime()) ? null : reopenIST.toISOString();
+    }
+    return null;
+  };
+
   const confirmWarningModal = () => {
     if (warningModal.type === "store-status") {
-      const wasOpening = !warningModal.goingOffline;
+      // When closing, ensure a reason is selected (and "Other" is filled).
+      if (warningModal.goingOffline) {
+        if (!closeReason) {
+          Alert.alert("Select reason", "Please select a reason for closing your store.");
+          return;
+        }
+        if (closeReason === "Other" && !closeReasonOtherText.trim()) {
+          Alert.alert("Add details", "Please enter the reason in the Other reason box.");
+          return;
+        }
+        if (closeMode === "TEMP" && (!closeTempDate || !closeTempTime)) {
+          Alert.alert("Select date & time", "Please select when to reopen for temporary closure.");
+          return;
+        }
+        const trimmedOther = closeReasonOtherText.trim();
+        const label =
+          closeReason === "Other"
+            ? trimmedOther || null
+            : closeReason;
+        setLastCloseReasonLabel(label);
+      }
       const hadClosure = hasScheduledClosure;
       closeWarningModal();
-      toggle()
-        .then(() => {
-          if (wasOpening && hadClosure) {
-            Alert.alert("Store opened", "Scheduled off cleared. Store is now open and accepting orders.");
-          }
-        })
-        .catch(() => {});
+      if (warningModal.goingOffline) {
+        const opts = {
+          manual_close_until: getCloseUntilIso() ?? undefined,
+          manual_close_reason: (closeReason === "Other" ? closeReasonOtherText.trim() : closeReason) ?? undefined,
+        };
+        closeStore(opts).catch(() => {});
+      } else {
+        toggle()
+          .then(() => {
+            if (hadClosure) {
+              Alert.alert("Store opened", "Scheduled off cleared. Store is now open and accepting orders.");
+            }
+          })
+          .catch(() => {});
+      }
     } else if (warningModal.type === "switch-store" && warningModal.storeToSwitch) {
       setSelectedStore(warningModal.storeToSwitch);
       setPickerVisible(false);
@@ -346,16 +658,169 @@ export function MerchantCustomHeader() {
     }
   };
 
-  const warningMessage =
-    warningModal.type === "store-status"
-      ? warningModal.goingOffline
-        ? "Mark store as closed? You will stop receiving new orders."
-        : hasScheduledClosure
-          ? "Store is in scheduled off. Clear scheduled off and open store?"
-          : "Mark store as open? You will start receiving orders."
-      : warningModal.storeToSwitch
-        ? `Switch store? You will be managing ${warningModal.storeToSwitch.store_name}.`
-        : "";
+  const formatIstTime = (iso: string | null | undefined) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return new Intl.DateTimeFormat("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Calcutta",
+    }).format(d);
+  };
+
+  const formatIstDateTimeCompact = (iso: string | null | undefined) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return new Intl.DateTimeFormat("en-IN", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Calcutta",
+    }).format(d);
+  };
+
+  const formatRemainingShort = (targetIso: string | null | undefined): string | null => {
+    if (!targetIso) return null;
+    const target = new Date(targetIso);
+    const now = new Date();
+    const diffMs = target.getTime() - now.getTime();
+    if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
+    const totalMinutes = Math.round(diffMs / 60000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes - days * 24 * 60) / 60);
+    const minutes = totalMinutes - days * 24 * 60 - hours * 60;
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0 && days === 0) parts.push(`${minutes}m`);
+    if (parts.length === 0) return null;
+    return `in ${parts.join(" ")}`;
+  };
+
+  let autoReopenLabel: string | null = null;
+  let scheduleLabel: string | null = null;
+
+  // Temp close = manual close with a future reopen time (manual_close_until).
+  const isTempClose =
+    !isOnline &&
+    manualCloseUntil != null &&
+    manualCloseUntil !== "" &&
+    new Date(manualCloseUntil).getTime() > Date.now();
+  // Map backend status_reason / unavailable_reason to required UI labels.
+  const statusReasonToLabel: Record<string, string> = {
+    manual_lock: "Store locked manually",
+    forced_lock: "Store locked manually",
+    manual_close: "Temporarily closed",
+    schedule_closed: "Outside operating hours",
+    outside_operating_hours: "Outside operating hours",
+    manual_indefinite: "Closed until manually reopened",
+  };
+  // Priority: Manual Lock > Temporary Close > Manual Close > Schedule. Prefer exact API reason (manualCloseReason / close_reason) on card.
+  const closedLabelFromApi = ((): string | null => {
+    if (manualActivationLock) return "Store locked manually";
+    if (isTempClose) return manualCloseReason && String(manualCloseReason).trim() !== "" ? `Temporarily closed – ${String(manualCloseReason).trim()}` : "Temporarily closed";
+    if (statusReason != null && statusReasonToLabel[statusReason]) return statusReasonToLabel[statusReason];
+    if (unavailableReason != null && statusReasonToLabel[unavailableReason]) return statusReasonToLabel[unavailableReason];
+    if (!isOnline && autoOpenFromSchedule && reopenAtIsoFromContext != null) return "Outside operating hours";
+    if (unavailableReason === "manual_indefinite" || (restrictionType === "manual" && !manualCloseUntil)) return "Closed until manually reopened";
+    return null;
+  })();
+  const closedLabelWithPrefix = closedLabelFromApi != null ? closedLabelFromApi : null;
+
+  const rawReason =
+    closedLabelFromApi != null
+      ? closedLabelFromApi.replace(/^Closed:\s*/i, "").trim() || closedLabelFromApi
+      : typeof lastCloseReasonLabel === "string"
+        ? lastCloseReasonLabel.replace(/^Closed:\s*/i, "").trim() || lastCloseReasonLabel
+        : manualCloseReason ?? scheduledClosure?.reason ?? restrictionType ?? (manualActivationLock ? "Store locked manually" : null);
+  const reasonText = rawReason ?? (todayHoursLabel === "Today: Closed" ? "today (schedule)" : "Manual close");
+
+  // Card subtitle: always "Closed: {exact reason}" – prefer API close_reason (manualCloseReason) when available
+  const exactClosedReason =
+    manualCloseReason != null && String(manualCloseReason).trim() !== ""
+      ? String(manualCloseReason).trim()
+      : isTempClose
+        ? "Temporarily closed"
+        : closedLabelFromApi;
+  const closedReasonLine =
+    exactClosedReason != null
+      ? `Closed: ${exactClosedReason}`
+      : closedLabelWithPrefix ??
+        (isTempClose ? "Closed: Temporarily closed" : null) ??
+        (typeof lastCloseReasonLabel === "string" && lastCloseReasonLabel.length > 0
+          ? (lastCloseReasonLabel.startsWith("Closed:") ? lastCloseReasonLabel : `Closed: ${lastCloseReasonLabel}`)
+          : null) ??
+        (scheduledClosure?.reason != null && String(scheduledClosure?.reason ?? "").trim() !== "")
+          ? `Closed: ${String(scheduledClosure?.reason ?? "")}`
+          : restrictionType != null
+            ? `Closed: ${restrictionType}`
+            : manualActivationLock
+              ? "Store locked manually"
+              : todayHoursLabel === "Today: Closed"
+                ? "Closed today (schedule)"
+                : "Closed: Manual close";
+
+  let tempClosedDurationLabel: string | null = null;
+  if (isTempClose && manualCloseStartAt) {
+    const start = new Date(manualCloseStartAt).getTime();
+    const now = Date.now();
+    if (Number.isFinite(start) && now > start) {
+      const min = Math.floor((now - start) / 60000);
+      if (min < 60) tempClosedDurationLabel = `Closed for ${min} min`;
+      else tempClosedDurationLabel = `Closed for ${Math.floor(min / 60)}h ${min % 60}m`;
+    }
+  }
+
+  if (!isOnline) {
+    const autoReopenSource =
+      reopenAtIsoFromContext ??
+      scheduledClosure?.to ??
+      manualCloseUntil ??
+      upcomingScheduledClosure?.from ??
+      null;
+
+    if (isTempClose && manualCloseUntil) {
+      const when = formatIstDateTimeCompact(manualCloseUntil);
+      const remaining = formatRemainingShort(manualCloseUntil);
+      if (when) {
+        autoReopenLabel = `${tempClosedDurationLabel ? `${tempClosedDurationLabel} • ` : ""}Reopening at ${when}${remaining ? ` (${remaining})` : ""}`;
+      }
+    } else if (manualActivationLock) {
+      autoReopenLabel = "Force Keep Store Closed is ON";
+    }
+  }
+
+  if (scheduledClosure && isOnline) {
+    const from = formatIstTime(scheduledClosure.from);
+    const to = formatIstTime(scheduledClosure.to);
+    if (from && to) {
+      scheduleLabel = `Today: ${from} – ${to}`;
+    }
+  }
+
+  // "Last: Closed by Name (ID: uuid) · 11:56:12 am" when temp close
+  let lastClosedLine: string | null = null;
+  if (isTempClose && (closedBy != null || manualCloseStartAt != null)) {
+    const timeStr =
+      manualCloseStartAt != null
+        ? new Intl.DateTimeFormat("en-IN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: true,
+            timeZone: "Asia/Calcutta",
+          }).format(new Date(manualCloseStartAt))
+        : null;
+    const who = closedBy && String(closedBy).trim() !== "" ? closedBy : null;
+    const idPart = closedById && String(closedById).trim() !== "" ? ` (ID: ${closedById.trim()})` : "";
+    const byPart = who ? `Closed by ${who}${idPart}` : "Closed";
+    lastClosedLine = `Last: ${byPart}${timeStr ? ` · ${timeStr}` : ""}`;
+  }
 
   return (
     <View style={[styles.wrapper, { paddingTop: topPadding }]}>
@@ -366,7 +831,57 @@ export function MerchantCustomHeader() {
           setPickerVisible={setPickerVisible}
           onRequestSwitchStore={showSwitchStoreWarning}
         />
-        {isHomeScreen && <StoreStatusCard onToggleRequest={showStoreStatusWarning} />}
+        {isHomeScreen && (
+          <StoreStatusCard
+            onToggleRequest={showStoreStatusWarning}
+            offlineSubtitle={!isOnline ? closedReasonLine : undefined}
+            autoReopenLabel={autoReopenLabel}
+            scheduleLabel={scheduleLabel}
+            showAutoOpenTag={!isTempClose && autoOpenFromSchedule}
+            todayHoursLabel={(() => {
+              if (isTempClose) return null;
+              if (todayHoursLabel === "Today: Closed" && !isOnline) return null;
+              if (todayHoursLabel) return todayHoursLabel;
+              if (!isOnline && nextOpenTime) return `Today: Next open at ${nextOpenTime}`;
+              if (!isOnline && nextCloseTime) return `Today: Next close at ${nextCloseTime}`;
+              return null;
+            })()}
+            reopenAtIso={
+              !isOnline
+                ? isTempClose
+                  ? (manualCloseUntil && String(manualCloseUntil).trim() !== "" ? manualCloseUntil : null)
+                  : manualCloseUntil ??
+                    reopenAtIsoFromContext ??
+                    scheduledClosure?.to ??
+                    nextOpenIso ??
+                    upcomingScheduledClosure?.from ??
+                    null
+                : null
+            }
+            reopenCountdownLabelPrefix={isTempClose ? "Opens in" : undefined}
+            reopenAtFormatted={
+              !isOnline
+                ? isTempClose
+                  ? formatIstDateTimeCompact(manualCloseUntil ?? null)
+                  : formatIstDateTimeCompact(
+                      manualCloseUntil ??
+                        reopenAtIsoFromContext ??
+                        scheduledClosure?.to ??
+                        nextOpenIso ??
+                        upcomingScheduledClosure?.from ??
+                        null
+                    )
+                : null
+            }
+            manualCloseUntil={!isOnline ? manualCloseUntil : null}
+            nextOpenIso={!isOnline ? nextOpenIso : null}
+            scheduledClosureTo={!isOnline && scheduledClosure?.to ? scheduledClosure.to : null}
+            upcomingScheduledClosureFrom={
+              !isOnline && upcomingScheduledClosure?.from ? upcomingScheduledClosure.from : null
+            }
+            lastClosedLine={!isOnline ? lastClosedLine : null}
+          />
+        )}
       </View>
 
       <Modal
@@ -377,14 +892,313 @@ export function MerchantCustomHeader() {
       >
         <Pressable style={styles.warningOverlay} onPress={closeWarningModal}>
           <Pressable style={styles.warningCard} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.warningIconWrap}>
-              <Ionicons name="warning-outline" size={28} color={GatiMitraMerchant.warning} />
-            </View>
-            <Text style={styles.warningTitle}>Confirm</Text>
-            <Text style={styles.warningMessage}>{warningMessage}</Text>
+            {warningModal.type === "store-status" && !warningModal.goingOffline ? (
+              <>
+                <View style={styles.storeOnIconWrap}>
+                  <View style={styles.storeOnIconCircle}>
+                    <Ionicons name="power" size={28} color="#16A34A" />
+                  </View>
+                </View>
+                <Text style={styles.storeOnTitle}>Turn store ON?</Text>
+                <Text style={styles.storeOnBody}>
+                  Your store will be open and customers can place orders. Make sure you&apos;re ready to accept orders.
+                </Text>
+                <View style={styles.storeOnAlert}>
+                  <Ionicons
+                    name="warning-outline"
+                    size={16}
+                    color={GatiMitraMerchant.warning}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text style={styles.storeOnAlertText}>
+                    Orders will start coming immediately. Be prepared to receive and process them.
+                  </Text>
+                </View>
+                <View style={styles.warningActions}>
+                  <Pressable
+                    onPress={closeWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={confirmWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.storeOnConfirmBtn,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.storeOnConfirmText}>Yes, turn ON</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : warningModal.type === "store-status" && warningModal.goingOffline ? (
+              <ScrollView
+                style={styles.storeOffScroll}
+                contentContainerStyle={{ paddingBottom: 8 }}
+                keyboardShouldPersistTaps="handled"
+              >
+                <Text style={styles.storeOffTitle}>How would you like to close your store?</Text>
+
+                <Text style={styles.closeModeLabel}>Closure type</Text>
+                <Pressable
+                  onPress={() => setCloseModePickerVisible(true)}
+                  style={({ pressed }) => [
+                    styles.closeReasonSelect,
+                    styles.closeModeSelect,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.closeReasonValue} numberOfLines={1}>
+                    {closeMode === "TEMP"
+                      ? "Temporary Closed"
+                      : closeMode === "TODAY"
+                      ? "Close for today"
+                      : "Until I manually turn it ON"}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={16}
+                    color={GatiMitraMerchant.textTertiary}
+                  />
+                </Pressable>
+
+                {closeMode === "TEMP" && (
+                  <View style={styles.closeScheduleCard}>
+                    <Text style={styles.closeScheduleLabel}>Reopen on (date and time):</Text>
+                    <View style={styles.closeScheduleRow}>
+                      <View style={styles.closeScheduleField}>
+                        <Text style={styles.closeScheduleFieldLabel}>Date</Text>
+                        <Pressable
+                          onPress={() => {
+                            if (!NativeDateTimePicker) {
+                              Alert.alert("Not available", "Date picker is not available on this device.");
+                              return;
+                            }
+                            setShowCloseDatePicker(true);
+                          }}
+                          style={({ pressed }) => [
+                            styles.closeScheduleFieldBox,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.closeScheduleFieldPlaceholder}>
+                            {closeTempDate
+                              ? closeTempDate.toLocaleDateString("en-IN", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  year: "numeric",
+                                })
+                              : "Select date"}
+                          </Text>
+                          <Ionicons
+                            name="calendar-outline"
+                            size={16}
+                            color={GatiMitraMerchant.textTertiary}
+                          />
+                        </Pressable>
+                      </View>
+                      <View style={styles.closeScheduleField}>
+                        <Text style={styles.closeScheduleFieldLabel}>Time</Text>
+                        <Pressable
+                          onPress={() => setShowCloseTimePicker(true)}
+                          style={({ pressed }) => [
+                            styles.closeScheduleFieldBox,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text style={styles.closeScheduleFieldPlaceholder}>
+                            {closeTempDate
+                              ? closeTempTime.toLocaleTimeString("en-IN", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "Select time"}
+                          </Text>
+                          <Ionicons name="time-outline" size={16} color={GatiMitraMerchant.textTertiary} />
+                        </Pressable>
+                      </View>
+                    </View>
+                    <Text style={styles.closeScheduleHint}>
+                      Store stays closed until this date & time, or until you turn it ON manually.
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.closeReasonSection}>
+                  <Text style={styles.closeReasonLabel}>Reason for closing</Text>
+                  <Pressable
+                    onPress={() => setCloseReasonPickerVisible(true)}
+                    style={({ pressed }) => [
+                      styles.closeReasonSelect,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text
+                      style={
+                        closeReason ? styles.closeReasonValue : styles.closeReasonPlaceholder
+                      }
+                      numberOfLines={1}
+                    >
+                      {closeReason ?? "Select reason"}
+                    </Text>
+                    <Ionicons
+                      name="chevron-down"
+                      size={16}
+                      color={GatiMitraMerchant.textTertiary}
+                    />
+                  </Pressable>
+                  {closeReason === "Other" && (
+                    <View style={styles.closeReasonOtherWrap}>
+                      <Text style={styles.closeReasonOtherLabel}>Other reason</Text>
+                      <TextInput
+                        style={styles.closeReasonOtherInput}
+                        placeholder="e.g. personal emergency, renovation..."
+                        placeholderTextColor={GatiMitraMerchant.textTertiary}
+                        value={closeReasonOtherText}
+                        onChangeText={setCloseReasonOtherText}
+                        multiline
+                      />
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.warningActions}>
+                  <Pressable
+                    onPress={closeWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={confirmWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnConfirm,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnConfirmText}>Confirm</Text>
+                  </Pressable>
+                </View>
+              </ScrollView>
+            ) : (
+              <>
+                <View style={styles.warningIconWrap}>
+                  <Ionicons name="warning-outline" size={28} color={GatiMitraMerchant.warning} />
+                </View>
+                <Text style={styles.warningTitle}>Confirm</Text>
+                <Text style={styles.warningMessage}>
+                  {warningModal.storeToSwitch
+                    ? `Switch store? You will be managing ${warningModal.storeToSwitch.store_name}.`
+                    : ""}
+                </Text>
+                <View style={styles.warningActions}>
+                  <Pressable
+                    onPress={closeWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnCancel,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnCancelText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={confirmWarningModal}
+                    style={({ pressed }) => [
+                      styles.warningBtn,
+                      styles.warningBtnConfirm,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.warningBtnConfirmText}>Confirm</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Close mode picker bottom sheet */}
+      <Modal
+        visible={closeModePickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCloseModePickerVisible(false)}
+      >
+        <Pressable
+          style={styles.warningOverlay}
+          onPress={() => setCloseModePickerVisible(false)}
+        >
+          <Pressable
+            style={[styles.warningCard, { maxHeight: "70%", alignItems: "stretch" }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={[styles.warningTitle, { marginBottom: 4 }]}>Select closure type</Text>
+            <Text style={[styles.warningMessage, { marginBottom: 12 }]}>
+              Choose how long you want to keep the store closed.
+            </Text>
+            <ScrollView
+              style={{ marginBottom: 16 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {[
+                {
+                  key: "TEMP" as const,
+                  title: "Temporary Closed",
+                  subtitle:
+                    "Close until a specific date and time. Reopens automatically then, or you can turn it ON manually.",
+                },
+                {
+                  key: "TODAY" as const,
+                  title: "Close for today",
+                  subtitle: "Reopens automatically at tomorrow's opening time.",
+                },
+                {
+                  key: "MANUAL" as const,
+                  title: "Until I manually turn it ON",
+                  subtitle:
+                    "Store stays OFF even during operating hours until you turn it ON.",
+                },
+              ].map((option) => {
+                const active = closeMode === option.key;
+                return (
+                  <Pressable
+                    key={option.key}
+                    onPress={() => {
+                      setCloseMode(option.key);
+                      setCloseModePickerVisible(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.closeReasonOptionRow,
+                      active && styles.closeReasonOptionRowActive,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text
+                      style={active ? styles.closeReasonOptionTextActive : styles.closeReasonOptionText}
+                    >
+                      {option.title}
+                    </Text>
+                    <Text style={styles.closeOptionSubtitle}>{option.subtitle}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
             <View style={styles.warningActions}>
               <Pressable
-                onPress={closeWarningModal}
+                onPress={() => setCloseModePickerVisible(false)}
                 style={({ pressed }) => [
                   styles.warningBtn,
                   styles.warningBtnCancel,
@@ -394,19 +1208,141 @@ export function MerchantCustomHeader() {
                 <Text style={styles.warningBtnCancelText}>Cancel</Text>
               </Pressable>
               <Pressable
-                onPress={confirmWarningModal}
+                onPress={() => setCloseModePickerVisible(false)}
                 style={({ pressed }) => [
                   styles.warningBtn,
                   styles.warningBtnConfirm,
                   pressed && styles.pressed,
                 ]}
               >
-                <Text style={styles.warningBtnConfirmText}>Confirm</Text>
+                <Text style={styles.warningBtnConfirmText}>Done</Text>
               </Pressable>
             </View>
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Reason picker bottom sheet */}
+      <Modal
+        visible={closeReasonPickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCloseReasonPickerVisible(false)}
+      >
+        <Pressable
+          style={styles.warningOverlay}
+          onPress={() => setCloseReasonPickerVisible(false)}
+        >
+          <Pressable
+            style={[styles.warningCard, { maxHeight: "70%", alignItems: "stretch" }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={[styles.warningTitle, { marginBottom: 4 }]}>Select reason</Text>
+            <Text style={[styles.warningMessage, { marginBottom: 12 }]}>
+              Pick why you&apos;re closing the store. This helps your account manager understand the
+              pattern.
+            </Text>
+            <ScrollView
+              style={{ marginBottom: 16 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {[
+                "Staff shortage",
+                "Inventory restock",
+                "Device issue / electricity",
+                "Run out of Gas",
+                "Payment issue",
+                "Rush of offline orders",
+                "Equipment issue",
+                "Holiday / Off",
+                "Maintenance",
+                "Personal / Emergency",
+                "Kitchen / Prep area issue",
+                "Supplier delay",
+                "Other",
+              ].map((reason) => {
+                const active = closeReason === reason;
+                return (
+                  <Pressable
+                    key={reason}
+                    onPress={() => {
+                      setCloseReason(reason);
+                      setCloseReasonPickerVisible(false);
+                    }}
+                    style={({ pressed }) => [
+                      styles.closeReasonOptionRow,
+                      active && styles.closeReasonOptionRowActive,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text
+                      style={active ? styles.closeReasonOptionTextActive : styles.closeReasonOptionText}
+                      numberOfLines={2}
+                    >
+                      {reason}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <View style={styles.warningActions}>
+              <Pressable
+                onPress={() => setCloseReasonPickerVisible(false)}
+                style={({ pressed }) => [
+                  styles.warningBtn,
+                  styles.warningBtnCancel,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.warningBtnCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setCloseReasonPickerVisible(false)}
+                style={({ pressed }) => [
+                  styles.warningBtn,
+                  styles.warningBtnConfirm,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.warningBtnConfirmText}>Done</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Close-store date & time pickers (TEMP mode) */}
+      {showCloseDatePicker && NativeDateTimePicker && (
+        <NativeDateTimePicker
+          value={closeTempDate ?? new Date()}
+          mode="date"
+          display="default"
+          onChange={(event: { type?: string }, date?: Date) => {
+            if (event?.type === "dismissed") {
+              setShowCloseDatePicker(false);
+              return;
+            }
+            if (date) {
+              setCloseTempDate(date);
+              setShowCloseDatePicker(false);
+            }
+          }}
+          minimumDate={new Date()}
+        />
+      )}
+
+      {showCloseTimePicker && (
+        <TimePickerModal
+          visible={showCloseTimePicker}
+          value={closeTempTime}
+          title="Reopen time"
+          onConfirm={(date) => {
+            setCloseTempTime(date);
+            setShowCloseTimePicker(false);
+          }}
+          onCancel={() => setShowCloseTimePicker(false)}
+        />
+      )}
     </View>
   );
 }
@@ -683,10 +1619,32 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  statusCardTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
   statusCardTitle: {
     fontSize: 15,
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
+  },
+  autoOpenTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: "rgba(22, 163, 74, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(22, 163, 74, 0.3)",
+  },
+  autoOpenTagText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: GatiMitraMerchant.primary,
   },
   statusCardSubtitle: {
     fontSize: 13,
@@ -694,8 +1652,31 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
     marginTop: 2,
   },
+  statusCardMeta: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
+    marginTop: 2,
+  },
+  statusCardCountdown: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 4,
+  },
+  statusCardCountdownBold: {
+    fontWeight: "700",
+    color: "#DC2626",
+  },
+  statusCardCountdownAboveToggle: {
+    fontSize: 12,
+    color: "#DC2626",
+    fontWeight: "700",
+    marginBottom: 6,
+    textAlign: "center",
+  },
   statusCardRight: {
     marginLeft: 12,
+    alignItems: "center",
+    justifyContent: "center",
   },
   warningOverlay: {
     flex: 1,
@@ -764,5 +1745,231 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     color: "#fff",
+  },
+  // Store ON modal specific styles
+  // Store ON modal specific styles
+  storeOnIconWrap: {
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  storeOnIconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#DCFCE7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  storeOnTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  storeOnBody: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    marginBottom: 10,
+    lineHeight: 20,
+  },
+  storeOnAlert: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FBBF24",
+    marginBottom: 16,
+  },
+  storeOnAlertText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#92400E",
+  },
+  storeOnConfirmBtn: {
+    backgroundColor: "#15803D",
+  },
+  storeOnConfirmText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
+  // Store OFF modal (close) options
+  storeOffTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    textAlign: "left",
+    marginBottom: 12,
+  },
+  closeOptionRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  closeOptionRowActive: {
+    borderColor: "#F97316",
+    backgroundColor: "#FFFBEB",
+  },
+  closeOptionRadioOuter: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: "#F97316",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+    marginRight: 10,
+  },
+  closeOptionRadioInner: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: "#F97316",
+  },
+  closeOptionTextWrap: {
+    flex: 1,
+  },
+  closeOptionTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 2,
+  },
+  closeOptionSubtitle: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 18,
+  },
+  closeScheduleCard: {
+    width: "100%",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  closeScheduleLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 4,
+  },
+  closeScheduleRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  closeScheduleField: {
+    flex: 1,
+  },
+  closeScheduleFieldLabel: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 4,
+  },
+  closeScheduleFieldBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: "#FFFFFF",
+  },
+  closeScheduleFieldPlaceholder: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  closeScheduleHint: {
+    marginTop: 6,
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  closeReasonSection: {
+    width: "100%",
+    marginBottom: 16,
+  },
+  closeReasonLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 4,
+  },
+  closeReasonSelect: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  closeReasonPlaceholder: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  closeReasonValue: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  closeReasonOptionRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: "#FFFFFF",
+  },
+  closeReasonOptionRowActive: {
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: "#ECFDF3",
+  },
+  closeReasonOptionText: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  closeReasonOptionTextActive: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.primary,
+  },
+  closeReasonOtherWrap: {
+    marginTop: 8,
+  },
+  closeReasonOtherLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 4,
+  },
+  closeReasonOtherInput: {
+    minHeight: 60,
+    maxHeight: 100,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: GatiMitraMerchant.textPrimary,
   },
 });

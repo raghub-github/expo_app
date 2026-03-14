@@ -21,7 +21,13 @@ export async function fetchStoreReviews(params: {
   if (!res.ok) {
     throw new Error(`Failed to load reviews (${res.status})`);
   }
-  return (await res.json()) as {
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error("Failed to read reviews from server. Please try again.");
+  }
+  return data as {
     success: boolean;
     data: Array<{
       id: number;
@@ -57,7 +63,11 @@ export async function replyToStoreReview(params: {
   if (!res.ok) {
     throw new Error(`Failed to save reply (${res.status})`);
   }
-  return (await res.json()) as { success: boolean };
+  try {
+    return (await res.json()) as { success: boolean };
+  } catch {
+    throw new Error("Reply saved, but server returned an unexpected response.");
+  }
 }
 
 export async function deleteStoreReviewReply(params: {
@@ -78,6 +88,10 @@ export async function deleteStoreReviewReply(params: {
   if (!res.ok) {
     throw new Error(`Failed to delete reply (${res.status})`);
   }
-  return (await res.json()) as { success: boolean };
+  try {
+    return (await res.json()) as { success: boolean };
+  } catch {
+    throw new Error("Reply deleted, but server returned an unexpected response.");
+  }
 }
 

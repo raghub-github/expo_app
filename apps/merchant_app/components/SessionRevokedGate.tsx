@@ -11,8 +11,8 @@ export function SessionRevokedGate() {
   useEffect(() => {
     const unsubscribe = onSessionRevoked(async () => {
       Alert.alert(
-        "Logged out",
-        "You have been logged out by the Owner. Please login again to access the app.",
+        "Session ended",
+        "Your session has ended. Please sign in again to access the app.",
         [
           {
             text: "OK",

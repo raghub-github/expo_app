@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GatiMitraMerchant, TAB_BAR_HEIGHT } from "@/constants/theme";
 import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
+import { ActiveTabProvider } from "@/context/ActiveTabContext";
 
 const LABEL_FONT_SIZE = 12;
 
@@ -32,8 +33,9 @@ export default function TabsLayout() {
   const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset;
 
   return (
-    <Tabs
-      tabBar={(props) => <FloatingTabBar {...props} />}
+    <ActiveTabProvider>
+      <Tabs
+        tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
@@ -93,11 +95,13 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: "Profile",
+          unmountOnBlur: true,
           tabBarIcon: ({ color, focused }) => (
             <TabIcon name={focused ? "person" : "person-outline"} focused={focused} color={color} />
           ),
         }}
       />
     </Tabs>
+    </ActiveTabProvider>
   );
 }

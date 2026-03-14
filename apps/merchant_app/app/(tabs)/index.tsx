@@ -11,6 +11,7 @@ import {
   StyleSheet,
   Pressable,
   Dimensions,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useEffect, useRef } from "react";
@@ -125,16 +126,18 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
   const am = h < 12;
   const h12 = h % 12 || 12;
   const min = Number.isNaN(m) ? "00" : m < 10 ? `0${m}` : String(m);
-  return `${day} ${month} ${year} at ${h12}:${min} ${am ? "AM" : "PM"}`;
+  return `${day} ${month} ${year} till ${h12}:${min} ${am ? "AM" : "PM"}`;
 }
 
 export default function DashboardScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
+  const { isOnline, manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
   const [dismissedRecentIds, setDismissedRecentIds] = useState<Set<string>>(new Set());
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [refreshing, setRefreshing] = useState(false);
 
   const [orderTab, setOrderTab] = useState<OrderFilterTab>("New");
 
@@ -144,14 +147,16 @@ export default function DashboardScreen() {
     }, [refresh])
   );
 
-  // Show the yellow Scheduled Off banner ONLY when closure is actually active
-  // (backend's scheduled_closure) or when manual close / permanent shut are in effect.
-  const hasScheduledClosure =
+  // Show the yellow banner ONLY when store is closed AND closure is manual/scheduled
+  // (temp close, closed for today, schedule off, permanent shut). Never show when store is online;
+  // hide instantly when store goes online. Do not show for auto/schedule-only closure (outside hours).
+  const hasManualOrScheduledClosure =
     scheduledClosure != null ||
     restrictionType === "PERMANENT_SHUT" ||
     (manualCloseUntil != null &&
       manualCloseUntil !== "" &&
       new Date(manualCloseUntil).getTime() > Date.now());
+  const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
   const recentOrders = useMemo(() => {
     let list = DUMMY_ORDERS.filter((o) => !dismissedRecentIds.has(o.id));
@@ -177,14 +182,39 @@ export default function DashboardScreen() {
 
   const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
 
+  const REFRESH_TIMEOUT_MS = 15000;
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    const timeoutId = setTimeout(() => {
+      setRefreshing(false);
+    }, REFRESH_TIMEOUT_MS);
+    try {
+      await refresh();
+    } catch {
+      // Keep spinner stop on error; finally will clear it
+    } finally {
+      clearTimeout(timeoutId);
+      setRefreshing(false);
+    }
+  }, [refresh]);
+
   return (
     <View style={styles.screenWrap}>
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingBottom: scrollBottomPadding }]}
-      showsVerticalScrollIndicator={false}
-    >
-      {hasScheduledClosure && (
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.content, { paddingBottom: scrollBottomPadding }]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[GatiMitraMerchant.primary]}
+            tintColor={GatiMitraMerchant.primary}
+          />
+        }
+      >
+      {showClosedBanner && (
         <Pressable
           style={styles.scheduledOffBanner}
           onPress={() => router.push("/(tabs)/profile/vacation")}

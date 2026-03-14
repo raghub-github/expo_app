@@ -8,6 +8,7 @@ import {
   TextInput,
   Platform,
   KeyboardAvoidingView,
+  RefreshControl,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
@@ -103,6 +104,7 @@ export default function ComplaintsScreen() {
   const [isSavingReply, setIsSavingReply] = useState(false);
   const [confirmMode, setConfirmMode] = useState<"edit" | "delete" | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<Complaint | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const handleOpenReply = (complaint: Complaint) => {
     if (complaint.replyText) {
@@ -211,10 +213,17 @@ export default function ComplaintsScreen() {
         setError(e instanceof Error ? e.message : "Could not load complaints.");
       } finally {
         setLoading(false);
+        setRefreshing(false);
       }
     };
     void load();
   }, [selectedStore?.id, token, refreshNonce]);
+
+  const onRefresh = () => {
+    if (loading) return;
+    setRefreshing(true);
+    setRefreshNonce((n) => n + 1);
+  };
 
   const filtered = useMemo(() => {
     const text = searchQuery.trim().toLowerCase();
@@ -460,13 +469,19 @@ export default function ComplaintsScreen() {
         data={filtered}
         keyExtractor={(item) => String(item.id)}
         ListHeaderComponent={renderHeader}
-        refreshing={loading && hasLoadedOnce}
-        onRefresh={() => setRefreshNonce((n) => n + 1)}
         ListEmptyComponent={() => (
           <View style={styles.centered}>
             <Text style={styles.muted}>No complaints yet.</Text>
           </View>
         )}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[GatiMitraMerchant.primary]}
+            tintColor={GatiMitraMerchant.primary}
+          />
+        }
         renderItem={({ item }) => {
           const ratingColors = getRatingColors(item.overallRating);
           const rounded = Math.round(item.overallRating);

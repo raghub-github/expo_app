@@ -4,12 +4,15 @@
  * Inactive: neutral grey, no background. No floating gap; respects safe area.
  */
 
-import React from "react";
+import React, { useRef } from "react";
 import { View, Text, Pressable, StyleSheet, Platform, LayoutAnimation } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { CommonActions } from "@react-navigation/native";
 import { GatiMitraMerchant, TAB_BAR_HEIGHT } from "@/constants/theme";
+import { useActiveTab } from "@/context/ActiveTabContext";
+import { useProfileNav } from "@/context/ProfileNavContext";
 const BAR_PADDING_H = 14;
 const TOP_RADIUS = 12;
 const ICON_SIZE = 23;
@@ -21,10 +24,15 @@ const PILL_PADDING_V = 6;
 const PILL_PADDING_H = 10;
 const INACTIVE_COLOR = "#6B7280";
 const TOP_DIVIDER = "#E5E7EB";
+const PROFILE_PRESS_DEBOUNCE_MS = 600;
 
 export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { setActiveTab } = useActiveTab();
+  const { setOpenProfileRootOnNextFocus } = useProfileNav();
   const bottomInset = insets.bottom;
+  const lastProfilePressAt = useRef(0);
 
   return (
     <View style={[styles.wrapper, { paddingBottom: bottomInset }]}>
@@ -35,26 +43,30 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
           const label = options.title ?? route.name;
 
           const onPress = () => {
+            // Prevent multiple rapid clicks on Profile when already on Profile tab.
+            if (route.name === "profile" && isActive) {
+              const now = Date.now();
+              if (now - lastProfilePressAt.current < PROFILE_PRESS_DEBOUNCE_MS) return;
+              lastProfilePressAt.current = now;
+            }
+            setActiveTab(route.name);
             if (Platform.OS !== "web") {
               LayoutAnimation.configureNext(
                 LayoutAnimation.create(200, "easeOut", "opacity"),
               );
             }
-
-            // Profile tab: always reset to the Profile index screen (main menu).
-            // This prevents landing on inner pages like "My tickets" when opening
-            // the Profile tab from anywhere in the app.
+            // When opening Profile tab, always show the profile root (grid), not a nested screen like My tickets.
             if (route.name === "profile") {
+              setOpenProfileRootOnNextFocus(true);
+              router.replace("/(tabs)/profile");
+              navigation.dispatch(CommonActions.navigate({ name: "profile" } as never));
+            } else {
               navigation.dispatch(
                 CommonActions.navigate({
-                  name: "profile",
-                  params: { screen: "index" },
+                  name: route.name,
                 } as never)
               );
-              return;
             }
-
-            navigation.navigate(route.name);
           };
 
           const iconColor = isActive ? GatiMitraMerchant.tabActive : INACTIVE_COLOR;

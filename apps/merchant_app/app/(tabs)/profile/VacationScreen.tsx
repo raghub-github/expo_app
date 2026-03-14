@@ -11,10 +11,12 @@ import {
   Platform,
   TextInput,
   KeyboardAvoidingView,
+  RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -32,6 +34,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { cancelScheduledOff, scheduleStoreOff } from "@/services/storeVacationApi";
 import { getScheduledOffHolidays, type StoreHoliday } from "@/services/storeHolidaysApi";
+import { TimePickerModal } from "@/components/TimePickerModal";
 
 // Optional: native module may be missing in some environments (Expo Go / web),
 // so guard the import and render a graceful fallback when unavailable.
@@ -99,7 +102,7 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
   const am = h < 12;
   const h12 = h % 12 || 12;
   const min = Number.isNaN(m) ? "00" : m < 10 ? `0${m}` : String(m);
-  return `${day} ${month} ${year} at ${h12}:${min} ${am ? "AM" : "PM"}`;
+  return `${day} ${month} ${year} till ${h12}:${min} ${am ? "AM" : "PM"}`;
 }
 
 export default function VacationScreen() {
@@ -109,6 +112,7 @@ export default function VacationScreen() {
   const { manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
   const footerBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + (insets.bottom || 0);
 
+  const [activeTab, setActiveTab] = useState<"schedule" | "slots">("schedule");
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [otherReason, setOtherReason] = useState("");
   const [saving, setSaving] = useState(false);
@@ -120,6 +124,7 @@ export default function VacationScreen() {
   const [successMessage, setSuccessMessage] = useState("");
   const successModalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [upcomingHolidays, setUpcomingHolidays] = useState<StoreHoliday[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   const canContinue =
     !!selectedReason &&
@@ -151,23 +156,24 @@ export default function VacationScreen() {
   const hasStore = !!selectedStore?.id;
   const isPermanent = selectedReason === "Permanently shut";
 
+  const reloadStatusAndHolidays = useCallback(async () => {
+    await refresh();
+    if (!selectedStore?.id || !token) {
+      setUpcomingHolidays([]);
+      return;
+    }
+    try {
+      const holidays = await getScheduledOffHolidays(selectedStore.id, token);
+      setUpcomingHolidays(holidays);
+    } catch {
+      setUpcomingHolidays([]);
+    }
+  }, [refresh, selectedStore?.id, token]);
+
   useFocusEffect(
     useCallback(() => {
-      void refresh();
-      const loadHolidays = async () => {
-        if (!selectedStore?.id || !token) {
-          setUpcomingHolidays([]);
-          return;
-        }
-        try {
-          const holidays = await getScheduledOffHolidays(selectedStore.id, token);
-          setUpcomingHolidays(holidays);
-        } catch {
-          setUpcomingHolidays([]);
-        }
-      };
-      void loadHolidays();
-    }, [refresh, selectedStore?.id, token])
+      void reloadStatusAndHolidays();
+    }, [reloadStatusAndHolidays])
   );
 
   const isScheduledOffActive =
@@ -288,14 +294,73 @@ export default function VacationScreen() {
     }
   };
 
+  const onPullToRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await reloadStatusAndHolidays();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerAccent} />
         <Text style={styles.title}>Schedule time off</Text>
         <Text style={styles.subtitle}>Choose a reason and when the store will reopen.</Text>
+        <View style={styles.tabsRow}>
+          <Pressable
+            onPress={() => setActiveTab("schedule")}
+            style={({ pressed }) => [
+              styles.tabChip,
+              pressed && styles.tabChipPressed,
+            ]}
+          >
+            {activeTab === "schedule" ? (
+              <LinearGradient
+                colors={GatiMitraMerchant.primaryGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.tabChipGradient}
+              >
+                <Text style={[styles.tabChipLabel, styles.tabChipLabelActive]}>
+                  Schedule time off
+                </Text>
+              </LinearGradient>
+            ) : (
+              <View style={styles.tabChipInner}>
+                <Text style={styles.tabChipLabel}>Schedule time off</Text>
+              </View>
+            )}
+          </Pressable>
+          <Pressable
+            onPress={() => setActiveTab("slots")}
+            style={({ pressed }) => [
+              styles.tabChip,
+              pressed && styles.tabChipPressed,
+            ]}
+          >
+            {activeTab === "slots" ? (
+              <LinearGradient
+                colors={GatiMitraMerchant.primaryGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.tabChipGradient}
+              >
+                <Text style={[styles.tabChipLabel, styles.tabChipLabelActive]}>
+                  Scheduled slots
+                </Text>
+              </LinearGradient>
+            ) : (
+              <View style={styles.tabChipInner}>
+                <Text style={styles.tabChipLabel}>Scheduled slots</Text>
+              </View>
+            )}
+          </Pressable>
+        </View>
       </View>
-      {isScheduledOffActive && (
+      {activeTab === "slots" && isScheduledOffActive && (
         <View style={styles.currentOffBanner}>
           <View style={styles.currentOffIconWrap}>
             <Ionicons name="calendar" size={20} color={GatiMitraMerchant.primary} />
@@ -354,7 +419,7 @@ export default function VacationScreen() {
           </View>
         </View>
       )}
-      {upcomingHolidays.length > 0 && (
+      {activeTab === "slots" && upcomingHolidays.length > 0 && (
         <View style={styles.currentOffBanner}>
           <View style={styles.currentOffIconWrap}>
             <Ionicons name="calendar-clear" size={20} color={GatiMitraMerchant.warning} />
@@ -374,7 +439,7 @@ export default function VacationScreen() {
           </View>
         </View>
       )}
-      {isScheduledOffUpcoming && upcomingScheduledClosure && (
+      {activeTab === "slots" && isScheduledOffUpcoming && upcomingScheduledClosure && (
         <View style={styles.currentOffBanner}>
           <View style={styles.currentOffIconWrap}>
             <Ionicons name="time" size={20} color={GatiMitraMerchant.warning} />
@@ -475,88 +540,155 @@ export default function VacationScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
-        <View style={styles.body}>
-          <View style={styles.bodyContent}>
-            <View style={styles.stepBadge}>
-              <Ionicons name="list" size={14} color="#FFFFFF" />
-              <Text style={styles.stepBadgeText}>Step 1 of 2</Text>
-            </View>
-            <Text style={styles.sectionLabel}>Reason for time off</Text>
-            <Text style={styles.sectionHint}>Pick why your store will be closed. You’ll set the date and time next.</Text>
-            <View style={styles.reasonCard}>
-              {REASONS.map((label) => {
-                const active = selectedReason === label;
-                return (
-                  <Pressable
-                    key={label}
-                    style={({ pressed }) => [
-                      styles.reasonRow,
-                      pressed && styles.pressed,
-                      active && styles.reasonRowActive,
-                      GatiMitraMerchant.cursorPointer,
-                    ]}
-                    onPress={() => {
-                      setSelectedReason(label);
-                      if (label !== "Other") setOtherReason("");
-                    }}
-                  >
-                    <View style={[styles.reasonRadioOuter, active && styles.reasonRadioOuterActive]}>
-                      {active && <View style={styles.reasonRadioInner} />}
-                    </View>
-                    <Text style={[styles.reasonLabel, active && styles.reasonLabelActive]} numberOfLines={2}>{label}</Text>
-                    {active && (
-                      <View style={styles.reasonCheckWrap}>
-                        <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
-            {selectedReason === "Other" && (
-              <View style={styles.otherReasonWrap}>
-                <Text style={styles.otherReasonLabel}>Describe the reason</Text>
-                <TextInput
-                  style={styles.otherReasonInput}
-                  placeholder="e.g. family function, maintenance..."
-                  placeholderTextColor={GatiMitraMerchant.textTertiary}
-                  value={otherReason}
-                  onChangeText={setOtherReason}
-                  maxLength={200}
+        {activeTab === "schedule" ? (
+          <>
+            <ScrollView
+              style={styles.body}
+              contentContainerStyle={styles.bodyContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onPullToRefresh}
+                  colors={[GatiMitraMerchant.primary]}
+                  tintColor={GatiMitraMerchant.primary}
                 />
+              }
+            >
+              <Text style={styles.sectionLabel}>Reason for time off</Text>
+              <Text style={styles.sectionHint}>
+                Pick why your store will be closed. You’ll set the date and time next.
+              </Text>
+              <View style={styles.reasonCard}>
+                {REASONS.map((label) => {
+                  const active = selectedReason === label;
+                  return (
+                    <Pressable
+                      key={label}
+                      style={({ pressed }) => [
+                        styles.reasonRow,
+                        pressed && styles.pressed,
+                        active && styles.reasonRowActive,
+                        GatiMitraMerchant.cursorPointer,
+                      ]}
+                      onPress={() => {
+                        setSelectedReason(label);
+                        if (label !== "Other") setOtherReason("");
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.reasonRadioOuter,
+                          active && styles.reasonRadioOuterActive,
+                        ]}
+                      >
+                        {active && <View style={styles.reasonRadioInner} />}
+                      </View>
+                      <Text
+                        style={[styles.reasonLabel, active && styles.reasonLabelActive]}
+                        numberOfLines={2}
+                      >
+                        {label}
+                      </Text>
+                      {active && (
+                        <View style={styles.reasonCheckWrap}>
+                          <Ionicons name="checkmark" size={16} color="#FFFFFF" />
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}
               </View>
-            )}
-            {selectedReason && !isPermanent && (
-              <Text style={styles.nextStepHint}>Tap Continue to choose date & time.</Text>
-            )}
-          </View>
-        </View>
+              {selectedReason === "Other" && (
+                <View style={styles.otherReasonWrap}>
+                  <Text style={styles.otherReasonLabel}>Describe the reason</Text>
+                  <TextInput
+                    style={styles.otherReasonInput}
+                    placeholder="e.g. family function, maintenance..."
+                    placeholderTextColor={GatiMitraMerchant.textTertiary}
+                    value={otherReason}
+                    onChangeText={setOtherReason}
+                    maxLength={200}
+                  />
+                </View>
+              )}
+              {selectedReason && !isPermanent && (
+                <Text style={styles.nextStepHint}>Tap Continue to choose date & time.</Text>
+              )}
+            </ScrollView>
 
-        <View style={[styles.footer, { paddingBottom: footerBottomPadding }]}>
-          {!canContinue && selectedReason !== "Other" ? (
-            <Text style={styles.footerHint}>Select a reason above to continue</Text>
-          ) : selectedReason === "Other" && !otherReason.trim() ? (
-            <Text style={styles.footerHint}>Enter the reason above to continue</Text>
-          ) : null}
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryBtn,
-              styles.primaryBtnFull,
-              !canContinue && styles.primaryBtnInactive,
-              !canContinue && styles.primaryBtnDisabled,
-              pressed && canContinue && styles.pressed,
-              GatiMitraMerchant.cursorPointer,
-            ]}
-            disabled={!canContinue}
-            onPress={onMainContinue}
+            <View style={[styles.footer, { paddingBottom: footerBottomPadding }]}>
+              {!canContinue && selectedReason !== "Other" ? (
+                <Text style={styles.footerHint}>Select a reason above to continue</Text>
+              ) : selectedReason === "Other" && !otherReason.trim() ? (
+                <Text style={styles.footerHint}>Enter the reason above to continue</Text>
+              ) : null}
+              <Pressable
+                style={({ pressed }) => [
+                  styles.primaryBtn,
+                  styles.primaryBtnFull,
+                  !canContinue && styles.primaryBtnInactive,
+                  !canContinue && styles.primaryBtnDisabled,
+                  pressed && canContinue && styles.pressed,
+                  GatiMitraMerchant.cursorPointer,
+                ]}
+                disabled={!canContinue}
+                onPress={onMainContinue}
+              >
+                {saving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text
+                    style={[
+                      styles.primaryBtnText,
+                      !canContinue && styles.primaryBtnTextDisabled,
+                    ]}
+                  >
+                    Continue
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          <ScrollView
+            style={styles.body}
+            contentContainerStyle={[styles.bodyContent, { paddingBottom: footerBottomPadding }]}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onPullToRefresh}
+                colors={[GatiMitraMerchant.primary]}
+                tintColor={GatiMitraMerchant.primary}
+              />
+            }
           >
-            {saving ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={[styles.primaryBtnText, !canContinue && styles.primaryBtnTextDisabled]}>Continue</Text>
-            )}
-          </Pressable>
-        </View>
+            <Text style={styles.sectionLabel}>Scheduled slots</Text>
+            <Text style={styles.sectionHint}>
+              View all active and upcoming schedule-off windows for this store.
+            </Text>
+            {!isScheduledOffActive &&
+              upcomingHolidays.length === 0 &&
+              !(isScheduledOffUpcoming && upcomingScheduledClosure) && (
+                <View style={styles.emptySlotsCard}>
+                  <Ionicons
+                    name="calendar-outline"
+                    size={32}
+                    color={GatiMitraMerchant.textTertiary}
+                    style={{ marginBottom: 8 }}
+                  />
+                  <Text style={styles.emptySlotsTitle}>No scheduled time off</Text>
+                  <Text style={styles.emptySlotsSubtitle}>
+                    You don&apos;t have any active or upcoming scheduled closures. Use the
+                    "Schedule time off" tab to create one.
+                  </Text>
+                </View>
+              )}
+            {/* The banners above already show active and upcoming slots in card form */}
+          </ScrollView>
+        )}
       </KeyboardAvoidingView>
 
       {/* Android: native date picker only — no intermediate modal */}
@@ -580,26 +712,21 @@ export default function VacationScreen() {
         />
       )}
 
-      {/* Android: native time picker only — no intermediate modal */}
-      {Platform.OS === "android" && showTimePicker && NativeDateTimePicker && (
-        <NativeDateTimePicker
+      {/* Time picker (Android & iOS): editable time + clock */}
+      {showTimePicker && (
+        <TimePickerModal
+          visible={showTimePicker}
           value={tempTime}
-          mode="time"
-          display="default"
-          onChange={(event, date) => {
-            if ((event as { type?: string })?.type === "dismissed") {
-              setShowTimePicker(false);
-              return;
-            }
-            if (date) {
-              setTempTime(date);
-              const until = new Date(tempDate ?? new Date());
-              until.setHours(date.getHours(), date.getMinutes(), 0, 0);
-              setSelectedUntil(until);
-              setShowTimePicker(false);
-              setSummaryModalVisible(true);
-            }
+          title="Reopen time"
+          onConfirm={(date) => {
+            setTempTime(date);
+            const until = new Date(tempDate ?? new Date());
+            until.setHours(date.getHours(), date.getMinutes(), 0, 0);
+            setSelectedUntil(until);
+            setShowTimePicker(false);
+            setSummaryModalVisible(true);
           }}
+          onCancel={() => setShowTimePicker(false)}
         />
       )}
 
@@ -630,30 +757,6 @@ export default function VacationScreen() {
         </Modal>
       )}
 
-      {Platform.OS === "ios" && showTimePicker && (
-        <Modal visible transparent animationType="slide" onRequestClose={() => setShowTimePicker(false)}>
-          <Pressable style={[styles.modalBackdrop, styles.modalBackdropBottom]} onPress={() => setShowTimePicker(false)}>
-            <Pressable style={styles.pickerSheet} onPress={(e) => e.stopPropagation()}>
-              {NativeDateTimePicker && (
-                <NativeDateTimePicker
-                  value={tempTime}
-                  mode="time"
-                  display="spinner"
-                  onChange={(_, date) => date && setTempTime(date)}
-                />
-              )}
-              <View style={styles.modalActions}>
-                <Pressable style={({ pressed }) => [styles.modalSecondaryBtn, pressed && styles.pressed]} onPress={() => setShowTimePicker(false)}>
-                  <Text style={styles.modalSecondaryText}>Cancel</Text>
-                </Pressable>
-                <Pressable style={({ pressed }) => [styles.modalPrimaryBtn, pressed && styles.pressed]} onPress={onTimeNext}>
-                  <Text style={styles.modalPrimaryText}>Next</Text>
-                </Pressable>
-              </View>
-            </Pressable>
-          </Pressable>
-        </Modal>
-      )}
 
       {/* Final confirmation modal — only one, after date and time are chosen */}
       <Modal visible={summaryModalVisible} transparent animationType="fade" onRequestClose={() => setSummaryModalVisible(false)}>
@@ -733,7 +836,7 @@ const styles = StyleSheet.create({
   header: {
     paddingTop: 16,
     paddingHorizontal: H_PADDING,
-    paddingBottom: 12,
+    paddingBottom: 8,
     backgroundColor: GatiMitraMerchant.background,
     position: "relative",
     overflow: "hidden",
@@ -759,19 +862,62 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 18,
   },
+  tabsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderRadius: 999,
+    padding: 2,
+    marginTop: 10,
+  },
+  tabChip: {
+    flex: 1,
+    borderRadius: 999,
+    paddingVertical: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabChipPressed: {
+    opacity: 0.9,
+  },
+  tabChipInner: {
+    width: "100%",
+    borderRadius: 999,
+    paddingVertical: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabChipGradient: {
+    width: "100%",
+    borderRadius: 999,
+    paddingVertical: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabChipLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  tabChipLabelActive: {
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
   currentOffBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
+    flexShrink: 1,
     gap: 10,
     paddingVertical: 10,
     paddingHorizontal: H_PADDING,
     marginHorizontal: H_PADDING,
-    marginTop: 4,
-    marginBottom: 14,
-    backgroundColor: "rgba(62, 180, 137, 0.1)",
+    marginTop: 10,
+    marginBottom: 10,
+    backgroundColor: GatiMitraMerchant.cardBg,
     borderRadius: CARD_RADIUS,
     borderLeftWidth: 4,
     borderLeftColor: GatiMitraMerchant.primary,
+    ...GatiMitraMerchant.shadowCard,
   },
   currentOffIconWrap: {
     width: 36,
@@ -782,7 +928,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   currentOffText: {
-    flex: 1,
     fontSize: 13,
     fontWeight: "600",
     color: GatiMitraMerchant.navy,
@@ -795,10 +940,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   bodyContent: {
-    flex: 1,
     paddingHorizontal: H_PADDING,
     paddingTop: 14,
-    paddingBottom: 8,
+    paddingBottom: 12,
   },
   stepBadge: {
     flexDirection: "row",
@@ -829,13 +973,14 @@ const styles = StyleSheet.create({
   sectionHint: {
     fontSize: 13,
     color: GatiMitraMerchant.textSecondary,
-    marginBottom: 8,
+    marginBottom: 10,
     lineHeight: 18,
   },
   reasonCard: {
     backgroundColor: GatiMitraMerchant.cardBg,
     borderRadius: CARD_RADIUS,
-    padding: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
     ...GatiMitraMerchant.shadowCard,
     borderWidth: 1,
     borderColor: "rgba(226, 232, 240, 0.8)",

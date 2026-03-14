@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, BUTTON_RADIUS } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
+import { useStoreStatus } from "@/context/StoreStatusContext";
 import { getOperatingHours, updateOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
 
 const DAY_KEYS: Array<{ key: keyof OperatingHours; label: string }> = [
@@ -176,6 +177,7 @@ function toDbTime(raw: string): string | null {
 export default function BusinessHoursScreen() {
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
+  const { refresh: refreshStoreStatus } = useStoreStatus();
   const storeId = selectedStore?.id ?? null;
 
   const [local, setLocal] = useState<LocalState | null>(null);
@@ -220,6 +222,8 @@ export default function BusinessHoursScreen() {
       await updateOperatingHours(storeId, toApiPayload(next), token);
       const fresh = await getOperatingHours(storeId, token);
       setLocal(fromApi(fresh));
+      // So Store Status header and countdown update immediately without app reload.
+      void refreshStoreStatus();
       if (showToast) {
         Alert.alert("Saved", "Business hours updated.");
       }

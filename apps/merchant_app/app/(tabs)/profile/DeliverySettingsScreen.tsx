@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Switch, Modal, Pressable, TextInput, ScrollView, Alert } from "react-native";
+import { View, Text, StyleSheet, Switch, Modal, Pressable, TextInput, ScrollView, Alert, RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
@@ -75,6 +75,7 @@ export default function DeliverySettingsScreen() {
 
   const storeId = selectedStore?.id ?? null;
   const [secondsTick, setSecondsTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     setLastProfileSlug("address");
@@ -138,6 +139,22 @@ export default function DeliverySettingsScreen() {
       setCharges(null);
     }
   }, [hasStore]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      // Always refresh store status from backend.
+      await refresh();
+      if (!hasStore) return;
+      // Reload charges and riders (so self-delivery card and list are in sync).
+      await Promise.all([
+        loadCharges(),
+        settings.self_delivery ? loadRiders() : Promise.resolve(riders),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const formatRemaining = (seconds: number): string => {
     if (seconds <= 0) return "00:00:00:00";
@@ -418,6 +435,9 @@ export default function DeliverySettingsScreen() {
         style={styles.body}
         contentContainerStyle={styles.bodyContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
       >
         <View style={[styles.card, !isOnline && styles.cardOffline]}>
           <View style={styles.row}>
@@ -633,7 +653,7 @@ export default function DeliverySettingsScreen() {
             </View>
           )}
         </View>
-        {settings.self_delivery && charges && (
+        {settings.self_delivery && (
           <View style={styles.pricingCard}>
             <View style={styles.pricingHeaderRow}>
               <View style={styles.left}>
@@ -651,9 +671,11 @@ export default function DeliverySettingsScreen() {
                 ]}
               >
                 <Text style={styles.pricingPillText}>
-                  {charges.delivery_charge_per_km != null
+                  {charges?.delivery_charge_per_km != null
                     ? `₹${charges.delivery_charge_per_km.toFixed(2)}/km`
-                    : "Set per km"}
+                    : chargesLoading
+                      ? "Loading…"
+                      : "Set per km"}
                 </Text>
               </Pressable>
             </View>
@@ -664,17 +686,23 @@ export default function DeliverySettingsScreen() {
             >
               <Text style={styles.pricingMetaInline}>
                 Last updated:{" "}
-                {formatUpdatedAt(charges.delivery_charge_per_km_last_updated_at)}
+                {charges
+                  ? formatUpdatedAt(
+                      charges.delivery_charge_per_km_last_updated_at
+                    )
+                  : "-"}
               </Text>
-              {"   "}
-              <Text style={styles.pricingStatusTextDanger}>
-                {formatRemaining(
-                  Math.max(
-                    0,
-                    charges.delivery_charge_seconds_until_edit - secondsTick
-                  )
-                )}
-              </Text>
+              {charges && (
+                <Text style={styles.pricingStatusTextDanger}>
+                  {"   "}
+                  {formatRemaining(
+                    Math.max(
+                      0,
+                      charges.delivery_charge_seconds_until_edit - secondsTick
+                    )
+                  )}
+                </Text>
+              )}
             </Text>
           </View>
         )}
@@ -683,7 +711,7 @@ export default function DeliverySettingsScreen() {
             <View style={styles.left}>
               <Text style={styles.secondaryTitle}>Auto-open from schedule</Text>
               <Text style={styles.secondarySubtitle}>
-                Store will open and close automatically as per operating hours.
+                Store will open and close automatically according to operating hours.
               </Text>
             </View>
             <Switch
@@ -717,9 +745,9 @@ export default function DeliverySettingsScreen() {
         <View style={styles.secondaryCard}>
           <View style={styles.row}>
             <View style={styles.left}>
-              <Text style={styles.secondaryTitle}>Manual activation lock</Text>
+              <Text style={styles.secondaryTitle}>Force Keep Store Closed</Text>
               <Text style={styles.secondarySubtitle}>
-                Keep store closed until you turn it ON. Prevents automatic opening.
+                Prevents the store from opening automatically even if the schedule allows it.
               </Text>
             </View>
             <Switch

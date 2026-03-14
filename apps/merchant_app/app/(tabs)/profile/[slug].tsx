@@ -21,6 +21,7 @@ import VacationScreen from "./VacationScreen";
 import ContactUsScreen from "./ContactUsScreen";
 import HelpChatScreen from "./HelpChatScreen";
 import MyTicketsScreen from "./MyTicketsScreen";
+import StoreStatusScreen from "./StoreStatusScreen";
 import { useProfileNav } from "@/context/ProfileNavContext";
 
 const SLUG_TITLES: Record<string, string> = {
@@ -51,7 +52,7 @@ const SLUG_TITLES: Record<string, string> = {
 const CONTENT_TOP = 18;
 
 export default function ProfileSlugScreen() {
-  const { slug } = useLocalSearchParams<{ slug: string }>();
+  const { slug, reopen_prompt } = useLocalSearchParams<{ slug: string; reopen_prompt?: string }>();
   const { setLastProfileSlug } = useProfileNav();
 
   useEffect(() => {
@@ -76,6 +77,10 @@ export default function ProfileSlugScreen() {
 
   if (slug === "staff") {
     return <StaffScreen />;
+  }
+
+  if (slug === "status") {
+    return <StoreStatusScreen reopenPromptFromNotification={reopen_prompt === "1"} />;
   }
 
   if (slug === "notifications") {

@@ -1,6 +1,6 @@
 /**
- * Profile / Settings — GatiMitra branding, light background.
- * Outlet card at top, Manage outlet (2x2), Settings (2x2 + row), Orders (row of 3).
+ * Profile / Settings — Quick settings style grid UI.
+ * Outlet card at top, then grid sections: Manage outlet, Settings, Orders, Support.
  */
 
 import { useState, useEffect, useCallback } from "react";
@@ -10,7 +10,9 @@ import {
   ScrollView,
   StyleSheet,
   Pressable,
-  Dimensions,
+  useWindowDimensions,
+  RefreshControl,
+  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -21,7 +23,6 @@ import {
   TAB_BAR_HEIGHT,
   SCROLL_BOTTOM_SAFE,
   CARD_RADIUS,
-  CARD_GAP,
 } from "@/constants/theme";
 import { getActivePlanDisplayName } from "@/lib/activePlan";
 import { fetchSubscription, type SubscriptionPlan } from "@/services/api";
@@ -32,58 +33,59 @@ import { getRushStatus } from "@/services/rushApi";
 import { prefetchOutlet } from "@/services/outletApi";
 
 const CONTENT_TOP = 12;
-const { width } = Dimensions.get("window");
-const GRID_GAP = 6;
-const CARD_SIZE = (width - H_PADDING * 2 - GRID_GAP) / 2;
-const CARD_SIZE_3 = (width - H_PADDING * 2 - GRID_GAP * 2) / 3;
-const GRID_CARD_MIN_HEIGHT = 60;
-const GRID_CARD_MIN_HEIGHT_3 = 56;
+const TILE_GAP = 10;
+const NUM_COLS_SMALL = 3;
+const NUM_COLS_LARGE = 4;
+const BREAKPOINT = 400;
 
 function GridCard({
   icon,
   label,
   onPress,
   badge,
-  size,
+  tileWidth,
   active,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress: () => void;
   badge?: string;
-  size?: number;
+  tileWidth: number;
   active?: boolean;
 }) {
-  const cardSize = size ?? CARD_SIZE;
-  const minH = size != null ? GRID_CARD_MIN_HEIGHT_3 : GRID_CARD_MIN_HEIGHT;
+  const iconColor = active ? GatiMitraMerchant.primary : GatiMitraMerchant.textSecondary;
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
-        styles.gridCard,
-        { width: cardSize, minHeight: minH },
-        active && styles.gridCardActive,
-        pressed && styles.pressed,
+        styles.tile,
+        {
+          width: tileWidth,
+          minHeight: tileWidth * 0.78,
+          transform: [{ scale: pressed ? 0.97 : 1 }],
+        },
+        active ? styles.tileActive : styles.tileInactive,
         GatiMitraMerchant.cursorPointer,
       ]}
     >
-      <View style={styles.gridIconWrap}>
-        <Ionicons name={icon} size={22} color={GatiMitraMerchant.primary} />
+      <View style={[styles.tileIconWrap, active && styles.tileIconWrapActive]}>
+        <Ionicons name={icon} size={24} color={iconColor} />
       </View>
-      <Text style={styles.gridLabel} numberOfLines={2}>{label}</Text>
-      {badge != null && (
-        <View
-          style={[
-            styles.badgeWrap,
-            badge === "ON" ? styles.badgeOn : styles.badgeOff,
-          ]}
+      <View style={[styles.tileLabelWrap, active && styles.tileLabelWrapActive]}>
+        <Text
+          style={[styles.tileLabel, active ? styles.tileLabelActive : styles.tileLabelInactive]}
+          numberOfLines={2}
         >
-          <Text
-            style={badge === "ON" ? styles.badgeTextOn : styles.badgeTextOff}
-          >
-            {badge}
-          </Text>
-        </View>
+          {label}
+        </Text>
+      </View>
+      {badge != null && (
+        <Text
+          style={[styles.tileStatus, active ? styles.tileStatusActive : styles.tileStatusInactive]}
+          numberOfLines={1}
+        >
+          {badge}
+        </Text>
       )}
     </Pressable>
   );
@@ -92,39 +94,25 @@ function GridCard({
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
   const { selectedStore } = useSelectedStore();
   const { signOut, token } = useAuth();
   const { lastProfileSlug, setLastProfileSlug } = useProfileNav();
 
+  const numCols = width >= BREAKPOINT ? NUM_COLS_LARGE : NUM_COLS_SMALL;
+  const tileWidth =
+    (width - H_PADDING * 2 - TILE_GAP * (numCols - 1)) / numCols;
+
   const [subscriptionPlan, setSubscriptionPlan] = useState<SubscriptionPlan | null>(null);
   const subscriptionActive = subscriptionPlan != null;
   const subscriptionInactive = !subscriptionActive;
   const [rushBadge, setRushBadge] = useState<"OFF" | "ON">("OFF");
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Prefetch key profile routes so settings pages open instantly when tapped.
-  useEffect(() => {
-    const paths = [
-      "/(tabs)/profile/edit-store",
-      "/(tabs)/profile/hours",
-      "/(tabs)/profile/business-details",
-      "/(tabs)/profile/staff",
-      "/(tabs)/profile/notifications",
-      "/(tabs)/profile/communications",
-      "/(tabs)/profile/address",
-      "/(tabs)/profile/preparation-time",
-      "/(tabs)/profile/vacation",
-      "/(tabs)/profile/plans",
-      "/(tabs)/profile/status",
-      "/(tabs)/profile/bank",
-      "/(tabs)/profile/contact",
-      "/(tabs)/profile/help",
-      "/(tabs)/profile/tickets",
-    ] as const;
-    for (const p of paths) {
-      router.prefetch(p as any);
-    }
-  }, [router]);
+  // Do not prefetch nested profile routes here: router.prefetch() for paths like
+  // /(tabs)/profile/tickets dispatches a PRELOAD action that is not handled when
+  // the profile tab is unmounted (unmountOnBlur), causing "PRELOAD was not handled" errors.
 
   useEffect(() => {
     let cancelled = false;
@@ -137,10 +125,9 @@ export default function ProfileScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      // When entering the Profile index, clear any previously active inner slug
-      // so that no tile (e.g. "My tickets") appears active by default.
-      setLastProfileSlug(null);
-
+      // Do not clear lastProfileSlug here: when user comes back via back button from
+      // an inner page, we keep the last-clicked tile active. Slug is cleared only
+      // when Profile tab is pressed (in FloatingTabBar).
       let cancelled = false;
       const run = async () => {
         try {
@@ -175,6 +162,37 @@ export default function ProfileScreen() {
       ? `Store ID: ${selectedStore.store_id}`
       : "No store selected";
 
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      let cancelled = false;
+      // Reload subscription
+      fetchSubscription(selectedStore?.id ?? null).then((r) => {
+        if (cancelled) return;
+        setSubscriptionPlan(r.plan);
+      });
+      // Reload rush status + outlet prefetch
+      if (selectedStore?.id && token) {
+        prefetchOutlet(selectedStore.id, token);
+        try {
+          const status = await getRushStatus(selectedStore.id, token);
+          if (!cancelled) {
+            setRushBadge(status.is_active && status.remaining_minutes > 0 ? "ON" : "OFF");
+          }
+        } catch {
+          if (!cancelled) setRushBadge("OFF");
+        }
+      } else if (!cancelled) {
+        setRushBadge("OFF");
+      }
+      return () => {
+        cancelled = true;
+      };
+    } finally {
+      setRefreshing(false);
+    }
+  }, [selectedStore?.id, token]);
+
   return (
     <ScrollView
       style={styles.container}
@@ -183,6 +201,14 @@ export default function ProfileScreen() {
         { paddingTop: CONTENT_TOP, paddingBottom: scrollBottomPadding },
       ]}
       showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          colors={[GatiMitraMerchant.primary]}
+          tintColor={GatiMitraMerchant.primary}
+        />
+      }
     >
       {/* Outlet / Store card at top */}
       <Pressable
@@ -212,76 +238,45 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      {/* Manage outlet — 2x2 */}
+      {/* Manage outlet — quick settings grid */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Manage outlet</Text>
-        <View style={styles.gridRow}>
-          <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} active={isActive("edit-store")} />
-          <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} active={isActive("hours")} />
-        </View>
-        <View style={styles.gridRow}>
-          <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} active={isActive("business-details")} />
-          <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} active={isActive("staff")} />
+        <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} tileWidth={tileWidth} active={isActive("edit-store")} />
+          <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} tileWidth={tileWidth} active={isActive("hours")} />
+          <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} tileWidth={tileWidth} active={isActive("business-details")} />
+          <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} tileWidth={tileWidth} active={isActive("staff")} />
         </View>
       </View>
 
-      {/* Settings — 2x2 + 1 */}
+      {/* Settings — quick settings grid */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Settings</Text>
-        <View style={styles.gridRow}>
-          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("notifications")} active={isActive("notifications")} />
-          <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} active={isActive("communications")} />
-        </View>
-        <View style={styles.gridRow}>
-          <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} active={isActive("address")} />
-          <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} active={isActive("preparation-time")} />
-        </View>
-        <View style={styles.gridRow}>
-          <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} active={isActive("vacation")} />
+        <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          <GridCard icon="settings-outline" label="Preferences" onPress={navigate("notifications")} tileWidth={tileWidth} active={isActive("notifications")} />
+          <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={tileWidth} active={isActive("communications")} />
+          <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={tileWidth} active={isActive("address")} />
+          <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={tileWidth} active={isActive("preparation-time")} />
+          <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={tileWidth} active={isActive("vacation")} />
         </View>
       </View>
 
-      {/* Orders — row of 3 */}
+      {/* Orders — quick settings grid */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Orders</Text>
-        <View style={styles.ordersRow}>
-          <GridCard
-            icon="list-outline"
-            label="Order history"
-            onPress={() => router.push("/(tabs)/orders")}
-            size={CARD_SIZE_3}
-          />
-          <GridCard
-            icon="alert-circle-outline"
-            label="Complaints"
-            onPress={() => router.push("/(tabs)/profile/complaints")}
-            size={CARD_SIZE_3}
-          />
-          <GridCard
-            icon="chatbubble-outline"
-            label="Reviews"
-            onPress={() => router.push("/(tabs)/profile/reviews")}
-            size={CARD_SIZE_3}
-          />
+        <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          <GridCard icon="list-outline" label="Order history" onPress={() => router.push("/(tabs)/orders")} tileWidth={tileWidth} />
+          <GridCard icon="alert-circle-outline" label="Complaints" onPress={() => router.push("/(tabs)/profile/complaints")} tileWidth={tileWidth} />
+          <GridCard icon="chatbubble-outline" label="Reviews" onPress={() => router.push("/(tabs)/profile/reviews")} tileWidth={tileWidth} />
         </View>
       </View>
 
-      {/* Support — help & tickets */}
+      {/* Support — quick settings grid */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Support</Text>
-        <View style={styles.gridRow}>
-          <GridCard
-            icon="help-circle-outline"
-            label="Help & support"
-            onPress={navigate("contact")}
-            active={isActive("contact")}
-          />
-          <GridCard
-            icon="chatbubbles-outline"
-            label="My tickets"
-            onPress={navigate("tickets")}
-            active={isActive("tickets")}
-          />
+        <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          <GridCard icon="help-circle-outline" label="Help & support" onPress={navigate("contact")} tileWidth={tileWidth} active={isActive("contact")} />
+          <GridCard icon="chatbubbles-outline" label="My tickets" onPress={navigate("tickets")} tileWidth={tileWidth} active={isActive("tickets")} />
         </View>
       </View>
 
@@ -393,71 +388,84 @@ const styles = StyleSheet.create({
   },
   warningText: { flex: 1, fontSize: 12, fontWeight: "500", color: "#92400E" },
 
-  section: { marginBottom: 18 },
+  section: { marginBottom: 20 },
   sectionTitle: {
     fontSize: 15,
     fontWeight: "700",
     color: GatiMitraMerchant.textPrimary,
-    marginBottom: 8,
+    marginBottom: 10,
   },
-  gridRow: { flexDirection: "row", gap: GRID_GAP, marginBottom: GRID_GAP },
-  gridCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
+  tileGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  tile: {
+    borderRadius: 16,
     paddingVertical: 8,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     alignItems: "center",
     justifyContent: "center",
+    ...(Platform.OS === "ios"
+      ? { shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 3 }
+      : { elevation: 2 }),
+  },
+  tileActive: {
+    backgroundColor: "#E8F5E9",
+    borderWidth: 1,
+    borderColor: "#C8E6C9",
+  },
+  tileInactive: {
+    backgroundColor: GatiMitraMerchant.cardBg,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    ...GatiMitraMerchant.shadowSm,
   },
-  gridCardActive: {
-    borderColor: GatiMitraMerchant.primary,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-  },
-  gridIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 9,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  tileIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 4,
+    marginBottom: 6,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
   },
-  gridLabel: {
-    fontSize: 11,
+  tileIconWrapActive: {
+    backgroundColor: "#C8E6C9",
+  },
+  tileLabelWrap: {
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    backgroundColor: "rgba(0,0,0,0.03)",
+    alignSelf: "stretch",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 30,
+  },
+  tileLabelWrapActive: {
+    backgroundColor: "rgba(255,255,255,0.7)",
+  },
+  tileLabel: {
+    fontSize: 12,
     fontWeight: "600",
-    color: GatiMitraMerchant.textPrimary,
     textAlign: "center",
   },
-  badgeWrap: {
-    marginTop: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    minWidth: 40,
-    alignItems: "center",
-    justifyContent: "center",
+  tileLabelActive: {
+    color: GatiMitraMerchant.textPrimary,
   },
-  badgeOn: {
-    backgroundColor: GatiMitraMerchant.primary,
-  },
-  badgeOff: {
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  badgeTextOn: { fontSize: 11, fontWeight: "700", color: "#fff" },
-  badgeTextOff: {
-    fontSize: 11,
-    fontWeight: "600",
+  tileLabelInactive: {
     color: GatiMitraMerchant.textSecondary,
   },
-
-  ordersRow: {
-    flexDirection: "row",
-    gap: GRID_GAP,
+  tileStatus: {
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  tileStatusActive: {
+    color: GatiMitraMerchant.primary,
+  },
+  tileStatusInactive: {
+    color: GatiMitraMerchant.textTertiary,
   },
 
   planCard: {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Alert,
   RefreshControl,
   Modal,
+  Animated,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,6 +24,8 @@ import {
   getTicketMessages,
   postTicketMessage,
   createStoreTicket,
+  rateTicket,
+  reopenTicket,
   type TicketMessage,
   type TicketSummary,
 } from "@/services/ticketApi";
@@ -103,6 +106,58 @@ const DEFAULT_QUICK_OPTIONS = [
   "Other",
 ];
 
+const RATING_OPTIONS = [
+  { value: 1, label: "Very poor", emoji: "😡" },
+  { value: 2, label: "Poor", emoji: "🙁" },
+  { value: 3, label: "Neutral", emoji: "😐" },
+  { value: 4, label: "Good", emoji: "🙂" },
+  { value: 5, label: "Excellent", emoji: "😍" },
+] as const;
+
+const SKELETON_BG = "#E2E8F0";
+
+function SkeletonBubble({
+  align,
+  animatedValue,
+}: {
+  align: "left" | "right";
+  animatedValue: Animated.Value;
+}) {
+  const isLeft = align === "left";
+  return (
+    <View
+      style={[
+        styles.skeletonBubbleRow,
+        isLeft ? styles.bubbleRowLeft : styles.bubbleRowRight,
+      ]}
+    >
+      {isLeft && <View style={styles.skeletonAvatar} />}
+      <View style={styles.skeletonBubbleColumn}>
+        {isLeft && (
+          <Animated.View
+            style={[
+              styles.skeletonAgentLabel,
+              { opacity: animatedValue, backgroundColor: SKELETON_BG },
+            ]}
+          />
+        )}
+        <Animated.View
+          style={[
+            styles.skeletonBubble,
+            { opacity: animatedValue, backgroundColor: SKELETON_BG },
+          ]}
+        />
+        <Animated.View
+          style={[
+            styles.skeletonTime,
+            { opacity: animatedValue, backgroundColor: SKELETON_BG },
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
 export default function HelpChatScreen() {
   const router = useRouter();
   const { token } = useAuth();
@@ -122,7 +177,35 @@ export default function HelpChatScreen() {
   const [input, setInput] = useState("");
   const [showQuickOptions, setShowQuickOptions] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [showTicketCreatedModal, setShowTicketCreatedModal] = useState(false);
+  const [ratingValue, setRatingValue] = useState<number | null>(null);
+  const [ratingFeedback, setRatingFeedback] = useState("");
+  const [ratingSubmitting, setRatingSubmitting] = useState(false);
+  const [hasTappedChatAgain, setHasTappedChatAgain] = useState(false);
+  const [showTicketCreatedToast, setShowTicketCreatedToast] = useState(false);
+
+  /** Ticket ID created in this session via Help & Support (create flow). Used to show "Request received" only then, not when opening from My Tickets. */
+  const createdInThisSessionRef = useRef<number | null>(null);
+
+  const skeletonPulse = useState(() => new Animated.Value(0.5))[0];
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(skeletonPulse, {
+          toValue: 0.9,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(skeletonPulse, {
+          toValue: 0.5,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [skeletonPulse]);
 
   const storeId = selectedStore?.id ?? null;
   const initialNumericId = ticketId ? Number(ticketId) : NaN;
@@ -153,9 +236,56 @@ export default function HelpChatScreen() {
     if (!ticket) return styles.statusOpen;
     const s = (ticket.status || "").toUpperCase();
     if (s === "RESOLVED" || s === "CLOSED") return styles.statusResolved;
-    if (s === "IN_PROGRESS" || s === "WAITING_FOR_USER") return styles.statusInProgress;
+    if (s === "WAITING_FOR_USER") return styles.statusWaiting;
+    if (s === "IN_PROGRESS" || s === "REOPENED") {
+      return styles.statusInProgress;
+    }
     return styles.statusOpen;
   }, [ticket?.status]);
+
+  const showRatingPrompt =
+    !!ticket &&
+    (ticket.status?.toUpperCase() === "RESOLVED" ||
+      ticket.status?.toUpperCase() === "CLOSED") &&
+    (ticket.satisfaction_rating == null || Number.isNaN(ticket.satisfaction_rating)) &&
+    !hasTappedChatAgain;
+
+  const ratingSummary = useMemo(() => {
+    if (!ticket || ticket.satisfaction_rating == null || Number.isNaN(ticket.satisfaction_rating)) {
+      return null;
+    }
+    const numeric = Number(ticket.satisfaction_rating);
+    const opt = RATING_OPTIONS.find((o) => o.value === numeric);
+    const label = opt?.label ?? `Rated ${numeric}/5`;
+    const emoji = opt?.emoji ?? "⭐";
+
+    let submittedAt = "";
+    if (ticket.satisfaction_collected_at) {
+      try {
+        const d = new Date(ticket.satisfaction_collected_at);
+        if (!Number.isNaN(d.getTime())) {
+          submittedAt = d.toLocaleString("en-IN", {
+            timeZone: "Asia/Kolkata",
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+        }
+      } catch {
+        submittedAt = "";
+      }
+    }
+
+    return {
+      numeric,
+      label,
+      emoji,
+      feedback: ticket.satisfaction_feedback ?? "",
+      submittedAt,
+    };
+  }, [ticket]);
 
   const load = useCallback(async () => {
     if (!token || !storeId || activeTicketId == null) return;
@@ -185,11 +315,11 @@ export default function HelpChatScreen() {
       setShowQuickOptions(false);
     }
   }, [messages.length]);
-
-  const closeAndGoToMyTickets = useCallback(() => {
-    setShowTicketCreatedModal(false);
-    router.replace("/(tabs)/profile" as any);
-  }, [router]);
+  useEffect(() => {
+    if (!showTicketCreatedToast) return;
+    const timeout = setTimeout(() => setShowTicketCreatedToast(false), 4500);
+    return () => clearTimeout(timeout);
+  }, [showTicketCreatedToast]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -201,6 +331,11 @@ export default function HelpChatScreen() {
     const id = typeof sectionId === "string" ? sectionId.toLowerCase() : "";
     return QUICK_OPTIONS_BY_SECTION[id] ?? DEFAULT_QUICK_OPTIONS;
   }, [sectionId]);
+
+  const firstMerchantMessage = useMemo(
+    () => messages.find((m) => m.sender_type === "MERCHANT"),
+    [messages]
+  );
 
   const sendMessage = async (textToSend: string, attachments?: string[]) => {
     const trimmed = textToSend.trim();
@@ -220,7 +355,25 @@ export default function HelpChatScreen() {
         ticketIdToUse = created.id;
         setActiveTicketId(created.id);
         setTicket(created);
-        setShowTicketCreatedModal(true);
+        setShowTicketCreatedToast(true);
+        createdInThisSessionRef.current = created.id;
+      }
+
+      // If this is an existing ticket that was previously resolved/closed and
+      // the merchant chose "Chat with us again", reopen it on first reply.
+      if (
+        ticket &&
+        ticketIdToUse != null &&
+        (ticket.status?.toUpperCase() === "RESOLVED" ||
+          ticket.status?.toUpperCase() === "CLOSED") &&
+        hasTappedChatAgain
+      ) {
+        try {
+          const reopened = await reopenTicket(storeId, ticket.id, token);
+          setTicket(reopened);
+        } catch {
+          // If reopen fails, still allow the message to be sent; status will remain as-is.
+        }
       }
 
       const temp: TicketMessage = {
@@ -258,6 +411,8 @@ export default function HelpChatScreen() {
       setShowQuickOptions(false);
       return;
     }
+    // For preset cards, send immediately instead of just filling the input.
+    setInput("");
     void sendMessage(label);
   };
 
@@ -287,29 +442,28 @@ export default function HelpChatScreen() {
     }
   }, [sendMessage]);
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-        <Text style={styles.loadingText}>Opening support chat…</Text>
-      </View>
-    );
-  }
-
-  if (activeTicketId != null && (!ticket || !storeId || error)) {
-    return (
-      <View style={styles.centered}>
-        <Ionicons
-          name="chatbubble-ellipses-outline"
-          size={40}
-          color={GatiMitraMerchant.textTertiary}
-        />
-        <Text style={styles.errorText}>{error ?? "Ticket not found."}</Text>
-      </View>
-    );
-  }
-
   const keyboardOffset = Platform.OS === "ios" ? insets.top + 8 : 0;
+
+  const handleSubmitRating = async () => {
+    if (!storeId || !token || !ticket || ratingSubmitting || !ratingValue) return;
+    try {
+      setRatingSubmitting(true);
+      const updated = await rateTicket(storeId, ticket.id, ratingValue, token, ratingFeedback);
+      setTicket(updated);
+    } catch (e) {
+      Alert.alert(
+        "Rating failed",
+        e instanceof Error ? e.message : "Could not submit rating. Please try again."
+      );
+    } finally {
+      setRatingSubmitting(false);
+    }
+  };
+
+  const handleChatWithUs = () => {
+    // Hide the rating section for this session and show chat input only.
+    setHasTappedChatAgain(true);
+  };
 
   return (
     <KeyboardAvoidingView
@@ -337,13 +491,70 @@ export default function HelpChatScreen() {
               Support chat
             </Text>
             <Text style={styles.headerSubtitle} numberOfLines={1}>
-              {ticket?.ticket_id ? `Ticket ${ticket.ticket_id}` : (sectionTitle ?? "New conversation")}
+              {ticket?.ticket_id
+                ? `Ticket ${ticket.ticket_id}`
+                : sectionTitle ?? "New support request"}
             </Text>
           </View>
           <View style={[styles.statusPill, statusStyle]}>
             <Text style={styles.statusText}>{statusLabel}</Text>
           </View>
         </View>
+
+        {loading && (
+          <Animated.View
+            style={[
+              styles.ticketToast,
+              { opacity: skeletonPulse },
+            ]}
+          >
+            <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+            <Text style={styles.ticketToastText}>Opening support chat…</Text>
+          </Animated.View>
+        )}
+
+        {showTicketCreatedToast && !loading && (
+          <View style={styles.ticketToast}>
+            <Ionicons
+              name="checkmark-circle"
+              size={18}
+              color={GatiMitraMerchant.success}
+              style={{ marginRight: 6 }}
+            />
+            <Text style={styles.ticketToastText}>
+              Ticket created successfully. Our support team will review your request shortly.
+            </Text>
+          </View>
+        )}
+
+        {activeTicketId != null &&
+          ticket &&
+          !loading &&
+          createdInThisSessionRef.current === activeTicketId && (
+            <View style={styles.systemInfoCard}>
+              <View style={styles.systemInfoHeader}>
+                <Ionicons
+                  name="information-circle-outline"
+                  size={16}
+                  color={GatiMitraMerchant.primary}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={styles.systemInfoTitle}>Request received</Text>
+              </View>
+              <Text style={styles.systemInfoBody}>
+                Your request has been submitted successfully. The GatiMitra Support Team will review your concern and
+                respond shortly.
+              </Text>
+              {!!firstMerchantMessage?.message_text && (
+                <Text style={styles.systemInfoHighlight}>
+                  Selected issue: {firstMerchantMessage.message_text}
+                </Text>
+              )}
+              <Text style={styles.systemInfoSecondary}>
+                You may continue adding more details in this chat if needed.
+              </Text>
+            </View>
+          )}
 
         <ScrollView
           style={styles.messages}
@@ -360,18 +571,50 @@ export default function HelpChatScreen() {
         >
         {messages.map((m) => {
           const isMerchant = m.sender_type === "MERCHANT";
-          const agentLabel =
-            !isMerchant && (m.sender_name?.trim() || "GatiMitra support");
+          const agentLabel = (() => {
+            if (isMerchant) return "";
+            const raw = (m.sender_name ?? "").trim();
+            if (!raw) return "GM - GatiMitra team";
+            const parts = raw.split(/\s+/);
+            const first = parts[0];
+            const last = parts.length > 1 ? parts[parts.length - 1] : "";
+            const initials =
+              (first ? first.charAt(0) : "") + (last ? last.charAt(0) : "");
+            return `${initials.toUpperCase() || "GM"} - GatiMitra team`;
+          })();
           const timeLabel = (() => {
+            const raw = m.created_at;
+            if (raw == null || (typeof raw === "string" && !raw.trim())) return null;
             try {
-              const d = new Date(m.created_at);
-              if (Number.isNaN(d.getTime())) return "";
-              return d.toLocaleTimeString(undefined, {
+              const d = typeof raw === "string" ? new Date(raw.replace(" ", "T")) : new Date(raw);
+              if (!Number.isFinite(d.getTime())) return null;
+              return d.toLocaleString("en-IN", {
+                timeZone: "Asia/Kolkata",
                 hour: "2-digit",
                 minute: "2-digit",
+                hour12: true,
               });
             } catch {
-              return "";
+              return null;
+            }
+          })();
+          const timeLabelFull = (() => {
+            const raw = m.created_at;
+            if (raw == null || (typeof raw === "string" && !raw.trim())) return null;
+            try {
+              const d = typeof raw === "string" ? new Date(raw.replace(" ", "T")) : new Date(raw);
+              if (!Number.isFinite(d.getTime())) return null;
+              const formatted = d.toLocaleString("en-IN", {
+                timeZone: "Asia/Kolkata",
+                day: "2-digit",
+                month: "short",
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: true,
+              });
+              return isMerchant ? `Reply at ${formatted}` : `Responded at ${formatted}`;
+            } catch {
+              return null;
             }
           })();
           return (
@@ -410,6 +653,17 @@ export default function HelpChatScreen() {
                   >
                     {m.message_text}
                   </Text>
+                  {timeLabel != null && (
+                    <Text
+                      style={[
+                        styles.bubbleTime,
+                        isMerchant ? styles.bubbleTimeMerchant : styles.bubbleTimeAgent,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {timeLabel}
+                    </Text>
+                  )}
                 </View>
                 {!!m.attachments?.length && (
                   <View style={styles.attachmentRow}>
@@ -430,14 +684,15 @@ export default function HelpChatScreen() {
                     </Text>
                   </View>
                 )}
-                {!!timeLabel && (
+                {timeLabelFull != null && (
                   <Text
                     style={[
                       styles.timeText,
                       isMerchant ? styles.timeTextMerchant : styles.timeTextAgent,
                     ]}
+                    numberOfLines={1}
                   >
-                    {timeLabel}
+                    {timeLabelFull}
                   </Text>
                 )}
               </View>
@@ -446,88 +701,242 @@ export default function HelpChatScreen() {
         })}
         </ScrollView>
 
-        <View style={styles.inputBar}>
-          {showQuickOptions && activeTicketId == null && (
-            <View style={styles.quickColumn}>
-              {quickOptions.map((q) => (
-                <Pressable
-                  key={q}
-                  onPress={() => onQuickOptionPress(q)}
-                  style={({ pressed }) => [
-                    styles.quickChip,
-                    pressed && styles.quickChipPressed,
-                  ]}
-                >
-                  <Text style={styles.quickChipText}>{q}</Text>
-                </Pressable>
-              ))}
+        {!!ratingSummary && (
+          <>
+            <View style={styles.ratingSummaryCard}>
+              <View style={styles.ratingExperienceHeaderRow}>
+                <Text style={styles.ratingExperienceTitle}>Support experience</Text>
+              </View>
+              <View style={styles.ratingAutoSummaryRow}>
+                <Text style={styles.ratingAutoEmoji}>{ratingSummary.emoji}</Text>
+                <Text style={styles.ratingAutoLabel}>{ratingSummary.label}</Text>
+                <View style={styles.ratingAutoStarsRow}>
+                  {Array.from({ length: ratingSummary.numeric }).map((_, idx) => (
+                    // eslint-disable-next-line react/no-array-index-key
+                    <Ionicons
+                      key={idx}
+                      name="star"
+                      size={14}
+                      color="#FFC107"
+                      style={styles.ratingAutoStarIcon}
+                    />
+                  ))}
+                </View>
+              </View>
+              <Text style={styles.ratingExperienceNote}>Thank you for rating your support interaction.</Text>
+              {!!ratingSummary.feedback && (
+                <Text style={styles.ratingSummaryFeedback}>{`“${ratingSummary.feedback}”`}</Text>
+              )}
+              {!!ratingSummary.submittedAt && (
+                <Text style={styles.ratingSummaryMeta}>
+                  {`Submitted on: ${ratingSummary.submittedAt}`}
+                </Text>
+              )}
             </View>
-          )}
-          <View style={styles.inputRow}>
-            <Pressable
-              onPress={openAttachmentPicker}
-              style={({ pressed }) => [
-                styles.attachBtn,
-                pressed && styles.attachBtnPressed,
-              ]}
-            >
+
+            <View style={styles.ratingAutoCard}>
+              <View style={styles.ratingAutoHeaderRow}>
+                <Ionicons
+                  name="information-circle"
+                  size={16}
+                  color={GatiMitraMerchant.primary}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={styles.ratingAutoTitle}>From GatiMitra Support Team</Text>
+              </View>
+              {ratingSummary.numeric >= 3 ? (
+                <>
+                  <Text style={styles.ratingAutoBody}>
+                    Thank you for sharing your feedback with us.
+                  </Text>
+                  <Text style={styles.ratingAutoBody}>
+                    We&apos;re glad that the <Text style={styles.ratingAutoBold}>GatiMitra Support Team</Text> was able
+                    to assist you and resolve your concern. Your support and trust motivate us to continue improving our
+                    services.
+                  </Text>
+                  <Text style={styles.ratingAutoSignature}>– GatiMitra Team</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.ratingAutoBody}>
+                    We sincerely apologize that your experience with our support did not meet your expectations. Your
+                    feedback is very important to us, and the <Text style={styles.ratingAutoBold}>GatiMitra Team</Text>{" "}
+                    will review this case to further improve our support services.
+                  </Text>
+                  <Text style={styles.ratingAutoBody}>
+                    If you still need assistance, please feel free to contact us again.
+                  </Text>
+                  <Text style={styles.ratingAutoSignature}>– GatiMitra Team</Text>
+                </>
+              )}
+            </View>
+          </>
+        )}
+
+        {showRatingPrompt && ticket && (
+          <View style={styles.ratingBar}>
+            <View style={styles.ratingClosedPill}>
               <Ionicons
-                name="attach-outline"
-                size={18}
-                color={GatiMitraMerchant.primary}
+                name="checkmark-circle"
+                size={16}
+                color={GatiMitraMerchant.statusCompleted}
+                style={{ marginRight: 6 }}
               />
-            </Pressable>
+              <Text style={styles.ratingClosedText}>
+                {ticket.status?.toUpperCase() === "CLOSED"
+                  ? "This conversation has been closed"
+                  : "This conversation has been resolved"}
+              </Text>
+            </View>
+
+            <Text style={styles.ratingHeading}>Hey there!</Text>
+            <Text style={styles.ratingSubheading}>
+              {`We just ${ticket.status?.toLowerCase() ?? "closed"} ticket ${ticket.ticket_id}.`}
+            </Text>
+            <Text style={styles.ratingSubheading}>
+              We know you&apos;re busy, so we just have one question:
+            </Text>
+            <Text style={[styles.ratingSubheading, { fontWeight: "600", marginBottom: 10 }]}>
+              Are you satisfied with the support you received in this ticket?
+            </Text>
+
+            <View style={styles.ratingEmojisRow}>
+              {RATING_OPTIONS.map((opt) => {
+                const selected = ratingValue === opt.value;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => setRatingValue(opt.value)}
+                    style={({ pressed }) => [
+                      styles.ratingEmojiWrap,
+                      selected && styles.ratingEmojiWrapSelected,
+                      pressed && { opacity: 0.9 },
+                    ]}
+                  >
+                    <Text style={styles.ratingEmoji}>{opt.emoji}</Text>
+                    <Text
+                      style={[
+                        styles.ratingEmojiLabel,
+                        selected && styles.ratingEmojiLabelSelected,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
             <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Type your message…"
+              style={styles.ratingFeedbackInput}
+              placeholder="Share your feedback (optional)…"
               placeholderTextColor={GatiMitraMerchant.textTertiary}
+              value={ratingFeedback}
+              onChangeText={setRatingFeedback}
               multiline
             />
             <Pressable
-              onPress={onSend}
-              disabled={!input.trim() || sending}
+              onPress={handleSubmitRating}
+              disabled={!ratingValue || ratingSubmitting}
               style={({ pressed }) => [
-                styles.sendBtn,
-                (!input.trim() || sending) && styles.sendBtnDisabled,
-                pressed && !sending && input.trim() && styles.sendBtnPressed,
+                styles.ratingSubmitBtn,
+                (!ratingValue || ratingSubmitting) && styles.ratingSubmitBtnDisabled,
+                pressed && ratingValue && !ratingSubmitting && styles.ratingSubmitBtnPressed,
               ]}
             >
-              {sending ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="send" size={18} color="#fff" />
-              )}
-            </Pressable>
-          </View>
-        </View>
-
-        <Modal
-          visible={showTicketCreatedModal}
-          transparent
-          animationType="fade"
-          onRequestClose={closeAndGoToMyTickets}
-        >
-          <Pressable style={styles.modalOverlay} onPress={closeAndGoToMyTickets}>
-            <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-              <View style={styles.modalIconWrap}>
-                <Ionicons name="checkmark-circle" size={48} color={GatiMitraMerchant.statusCompleted} />
-              </View>
-              <Text style={styles.modalTitle}>Ticket created</Text>
-              <Text style={styles.modalMessage}>
-                Your ticket has been created successfully. Please wait, our team will connect soon.
-                Track your ticket in My tickets section.
+              <Text style={styles.ratingSubmitText}>
+                {ratingSubmitting ? "Submitting…" : "Submit feedback"}
               </Text>
-              <Pressable
-                onPress={closeAndGoToMyTickets}
-                style={({ pressed }) => [styles.modalCloseBtn, pressed && styles.modalCloseBtnPressed]}
-              >
-                <Text style={styles.modalCloseBtnText}>Close</Text>
-              </Pressable>
             </Pressable>
-          </Pressable>
-        </Modal>
+
+            {/* While rating is pending, allow reopening instead via Chat with us */}
+              <Pressable
+                onPress={handleChatWithUs}
+                style={({ pressed }) => [
+                  styles.chatWithUsBtn,
+                  pressed && styles.chatWithUsBtnPressed,
+                ]}
+              >
+                <Ionicons
+                  name="chatbubbles-outline"
+                  size={16}
+                  color={GatiMitraMerchant.primary}
+                  style={{ marginRight: 6 }}
+                />
+                <Text style={styles.chatWithUsText}>Chat with us again</Text>
+              </Pressable>
+          </View>
+        )}
+
+        {/* Chat input visible when there is no pending rating form */}
+        {!showRatingPrompt && (
+          <View style={styles.inputBar}>
+            {showQuickOptions && activeTicketId == null && (
+              <View style={styles.quickColumn}>
+                {quickOptions.map((q) => (
+                  <Pressable
+                    key={q}
+                    onPress={() => onQuickOptionPress(q)}
+                    style={({ pressed }) => [
+                      styles.quickChip,
+                      pressed && styles.quickChipPressed,
+                    ]}
+                  >
+                    <View style={styles.quickChipInner}>
+                      <View style={styles.quickChipBullet} />
+                      <Text style={styles.quickChipText}>{q}</Text>
+                      <Ionicons
+                        name="chevron-forward"
+                        size={14}
+                        color={GatiMitraMerchant.textTertiary}
+                        style={styles.quickChipIcon}
+                      />
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            <View style={styles.inputRow}>
+              <Pressable
+                onPress={openAttachmentPicker}
+                style={({ pressed }) => [
+                  styles.attachBtn,
+                  pressed && styles.attachBtnPressed,
+                ]}
+              >
+                <Ionicons
+                  name="attach-outline"
+                  size={18}
+                  color={GatiMitraMerchant.primary}
+                />
+              </Pressable>
+              <TextInput
+                style={styles.input}
+                value={input}
+                onChangeText={setInput}
+                placeholder="Type your message…"
+                placeholderTextColor={GatiMitraMerchant.textTertiary}
+                multiline
+              />
+              <Pressable
+                onPress={onSend}
+                disabled={!input.trim() || sending}
+                style={({ pressed }) => [
+                  styles.sendBtn,
+                  (!input.trim() || sending) && styles.sendBtnDisabled,
+                  pressed && !sending && input.trim() && styles.sendBtnPressed,
+                ]}
+              >
+                {sending ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="send" size={18} color="#fff" />
+                )}
+              </Pressable>
+            </View>
+          </View>
+        )}
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
@@ -596,7 +1005,10 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   statusOpen: {
-    backgroundColor: GatiMitraMerchant.statusPending,
+    backgroundColor: GatiMitraMerchant.info,
+  },
+  statusWaiting: {
+    backgroundColor: GatiMitraMerchant.warning,
   },
   statusInProgress: {
     backgroundColor: GatiMitraMerchant.primary,
@@ -630,11 +1042,11 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   bubbleColumn: {
-    maxWidth: "82%",
+    maxWidth: "90%",
     flexShrink: 1,
   },
   bubble: {
-    maxWidth: "80%",
+    maxWidth: "88%",
     minWidth: 110,
     borderRadius: 18,
     paddingHorizontal: 12,
@@ -647,6 +1059,17 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.cardBg,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
+  },
+  bubbleTime: {
+    marginTop: 4,
+    fontSize: 10,
+    alignSelf: "flex-end",
+  },
+  bubbleTimeMerchant: {
+    color: "rgba(255,255,255,0.85)",
+  },
+  bubbleTimeAgent: {
+    color: GatiMitraMerchant.textSecondary,
   },
   bubbleTextMerchant: {
     fontSize: 14,
@@ -720,21 +1143,39 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   quickChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
     borderRadius: CARD_RADIUS,
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     alignSelf: "flex-start",
+    overflow: "hidden",
   },
   quickChipPressed: {
     backgroundColor: GatiMitraMerchant.cardBg,
+  },
+  quickChipInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  quickChipBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: GatiMitraMerchant.primary,
+    marginRight: 8,
   },
   quickChipText: {
     fontSize: 11,
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,
+    flexShrink: 1,
+  },
+  quickChipIcon: {
+    marginLeft: 8,
   },
   attachmentRow: {
     flexDirection: "row",
@@ -752,9 +1193,9 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
   },
   timeText: {
-    marginTop: 2,
-    fontSize: 10,
-    color: GatiMitraMerchant.textTertiary,
+    marginTop: 4,
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
   },
   timeTextMerchant: {
     alignSelf: "flex-end",
@@ -769,50 +1210,379 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: GatiMitraMerchant.textTertiary,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: H_PADDING,
-  },
-  modalCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 20,
-    width: "100%",
-    maxWidth: 320,
-    alignItems: "center",
-  },
-  modalIconWrap: {
+  skeletonBubbleRow: {
+    flexDirection: "row",
+    flexShrink: 1,
     marginBottom: 12,
   },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
-    marginBottom: 8,
+  skeletonAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    marginRight: 6,
+    backgroundColor: SKELETON_BG,
   },
-  modalMessage: {
-    fontSize: 14,
-    color: GatiMitraMerchant.textSecondary,
-    textAlign: "center",
-    lineHeight: 20,
-    marginBottom: 20,
+  skeletonBubbleColumn: {
+    maxWidth: "90%",
+    flexShrink: 1,
   },
-  modalCloseBtn: {
-    backgroundColor: GatiMitraMerchant.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
+  skeletonAgentLabel: {
+    height: 10,
+    borderRadius: 6,
+    marginBottom: 4,
+    marginLeft: 4,
+    width: 90,
+  },
+  skeletonBubble: {
+    height: 52,
+    borderRadius: 18,
+    marginBottom: 6,
+  },
+  skeletonTime: {
+    height: 8,
+    borderRadius: 4,
+    width: 80,
+    alignSelf: "flex-start",
+  },
+  skeletonStatusPill: {
+    width: 64,
+    height: 20,
     borderRadius: 999,
   },
-  modalCloseBtnPressed: {
+  skeletonHeaderTitle: {
+    height: 16,
+    borderRadius: 6,
+    marginBottom: 6,
+    width: 140,
+  },
+  skeletonHeaderSubtitle: {
+    height: 12,
+    borderRadius: 6,
+    width: 120,
+  },
+  skeletonInputBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: H_PADDING,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.background,
+  },
+  skeletonAttach: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 8,
+  },
+  skeletonInput: {
+    flex: 1,
+    height: 40,
+    borderRadius: CARD_RADIUS,
+    marginRight: 8,
+  },
+  skeletonSend: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  ratingBar: {
+    paddingHorizontal: H_PADDING,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.background,
+  },
+  ratingClosedPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    marginBottom: 8,
+  },
+  ratingClosedText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  ratingSummaryCard: {
+    marginHorizontal: H_PADDING,
+    marginTop: 8,
+    marginBottom: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  ratingSummaryTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 4,
+  },
+  ratingSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  ratingSummaryEmoji: {
+    fontSize: 20,
+    marginRight: 6,
+  },
+  ratingSummaryTextCol: {
+    flex: 1,
+  },
+  ratingSummaryLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  ratingSummarySubLabel: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 2,
+  },
+  ratingSummaryFeedback: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 8,
+  },
+  ratingSummaryMeta: {
+    marginTop: 6,
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  ticketToast: {
+    marginHorizontal: H_PADDING,
+    marginTop: 6,
+    marginBottom: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#DCFCE7",
+    flexDirection: "row",
+    alignItems: "center",
+    ...GatiMitraMerchant.shadowSm,
+  },
+  ticketToastText: {
+    flex: 1,
+    fontSize: 11,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  systemInfoCard: {
+    marginHorizontal: H_PADDING,
+    marginTop: 4,
+    marginBottom: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  systemInfoHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  systemInfoTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  systemInfoBody: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  systemInfoHighlight: {
+    marginTop: 6,
+    fontSize: 12,
+    color: GatiMitraMerchant.textPrimary,
+    fontWeight: "500",
+  },
+  systemInfoSecondary: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
+    marginTop: 6,
+  },
+  ratingExperienceHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 2,
+    marginBottom: 6,
+  },
+  ratingExperienceTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  ratingExperienceNote: {
+    marginTop: 4,
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  ratingAutoCard: {
+    marginTop: 2,
+    marginBottom: 8,
+    marginHorizontal: H_PADDING,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  ratingAutoHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  ratingAutoSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  ratingAutoEmoji: {
+    fontSize: 18,
+    marginRight: 6,
+  },
+  ratingAutoLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+    marginRight: 6,
+  },
+  ratingAutoStarsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  ratingAutoStarIcon: {
+    marginRight: 2,
+  },
+  ratingAutoTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  ratingAutoBody: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  ratingAutoBold: {
+    fontWeight: "600",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  ratingAutoSignature: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 8,
+    fontStyle: "italic",
+  },
+  ratingHeading: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    textAlign: "center",
+    marginBottom: 2,
+  },
+  ratingSubheading: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  ratingEmojisRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  ratingEmojiWrap: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 6,
+    marginHorizontal: 2,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  ratingEmojiWrapSelected: {
+    backgroundColor: "#ecfdf3",
+    borderColor: GatiMitraMerchant.primary,
+  },
+  ratingEmoji: {
+    fontSize: 20,
+    marginBottom: 2,
+  },
+  ratingEmojiLabel: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  ratingEmojiLabelSelected: {
+    fontWeight: "600",
+    color: GatiMitraMerchant.primary,
+  },
+  ratingFeedbackInput: {
+    minHeight: 60,
+    maxHeight: 100,
+    borderRadius: CARD_RADIUS,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: GatiMitraMerchant.textPrimary,
+    marginBottom: 10,
+  },
+  ratingSubmitBtn: {
+    alignSelf: "flex-end",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  ratingSubmitBtnDisabled: {
+    opacity: 0.5,
+  },
+  ratingSubmitBtnPressed: {
+    opacity: 0.85,
+  },
+  ratingSubmitText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
+  chatWithUsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "center",
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+  },
+  chatWithUsBtnPressed: {
     opacity: 0.9,
   },
-  modalCloseBtnText: {
-    fontSize: 15,
+  chatWithUsText: {
+    fontSize: 12,
     fontWeight: "600",
-    color: "#fff",
+    color: GatiMitraMerchant.primary,
   },
 });
 

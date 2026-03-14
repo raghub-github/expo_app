@@ -43,6 +43,10 @@ export default function NotificationSetup() {
       const Notifications = await import("expo-notifications");
       responseSubscriptionRef.current = Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data as Record<string, unknown> | undefined;
+        if (data?.action === "reopen_prompt" && data?.url && typeof data.url === "string") {
+          router.push(`${data.url}${String(data.url).includes("?") ? "&" : "?"}reopen_prompt=1`);
+          return;
+        }
         if (data?.url && typeof data.url === "string") {
           router.push(data.url as any);
         } else if (data?.screen === "notifications") {

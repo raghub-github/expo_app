@@ -156,6 +156,11 @@ export async function getOutlet(
     return data;
   })();
   outletPromise = { storeId, token, promise };
+  promise.catch(() => {
+    if (outletPromise?.storeId === storeId && outletPromise?.token === token) {
+      outletPromise = null;
+    }
+  });
   return promise;
 }
 
@@ -174,7 +179,9 @@ export function prefetchOutlet(storeId: number, token: string): void {
   ) {
     return;
   }
-  void getOutlet(storeId, token);
+  getOutlet(storeId, token).catch(() => {
+    // Ignore 401 invalid_token / session errors so they don't become uncaught promise rejections.
+  });
 }
 
 export async function updateOutlet(

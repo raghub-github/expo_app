@@ -8,6 +8,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
@@ -61,6 +62,7 @@ export default function ReviewsScreen() {
   const [activeReplyReview, setActiveReplyReview] = useState<StoreReview | null>(null);
   const [replyText, setReplyText] = useState("");
   const [isSavingReply, setIsSavingReply] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -84,6 +86,7 @@ export default function ReviewsScreen() {
         setError(e instanceof Error ? e.message : "Could not load reviews.");
       } finally {
         setLoading(false);
+        setRefreshing(false);
       }
     };
     void load();
@@ -171,6 +174,12 @@ export default function ReviewsScreen() {
       setConfirmMode(null);
       setConfirmTarget(null);
     }
+  };
+
+  const onRefresh = () => {
+    if (loading) return;
+    setRefreshing(true);
+    setRefreshNonce((n) => n + 1);
   };
 
   const filtered = useMemo(() => {
@@ -434,13 +443,19 @@ export default function ReviewsScreen() {
         data={filtered}
         keyExtractor={(item) => String(item.id)}
         ListHeaderComponent={renderHeader}
-        refreshing={loading && hasLoadedOnce}
-        onRefresh={() => setRefreshNonce((n) => n + 1)}
         ListEmptyComponent={() => (
           <View style={styles.centered}>
             <Text style={styles.muted}>No reviews yet.</Text>
           </View>
         )}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[GatiMitraMerchant.primary]}
+            tintColor={GatiMitraMerchant.primary}
+          />
+        }
         renderItem={({ item }) => {
           const rounded = Math.round(item.overallRating);
           const isHigh = rounded >= 4;
