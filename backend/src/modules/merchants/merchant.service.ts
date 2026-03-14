@@ -111,23 +111,24 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   return data as MerchantStoreRow;
 }
 
-/** For order creation: fetch parent_id, address, coordinates by numeric store id. Never trust frontend for these. */
+/** For order creation: fetch parent_id, address, coordinates, and accepting status by numeric store id. Never trust frontend for these. */
 export async function getStoreByIdForOrder(
   merchantStoreId: number
-): Promise<{ parentId: number | null; fullAddress: string | null; latitude: number | null; longitude: number | null } | null> {
+): Promise<{ parentId: number | null; fullAddress: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("parent_id, full_address, latitude, longitude")
+    .select("parent_id, full_address, latitude, longitude, is_accepting_orders")
     .eq("id", merchantStoreId)
     .single();
   if (error || !data) return null;
-  const row = data as { parent_id?: number | null; full_address?: string | null; latitude?: number | string | null; longitude?: number | string | null };
+  const row = data as { parent_id?: number | null; full_address?: string | null; latitude?: number | string | null; longitude?: number | string | null; is_accepting_orders?: boolean | null };
   return {
     parentId: row.parent_id != null ? Number(row.parent_id) : null,
     fullAddress: row.full_address ?? null,
     latitude: row.latitude != null ? Number(row.latitude) : null,
     longitude: row.longitude != null ? Number(row.longitude) : null,
+    is_accepting_orders: row.is_accepting_orders === true,
   };
 }
 

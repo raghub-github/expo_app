@@ -26,6 +26,7 @@ import { locationSearchRoutes } from "./modules/location-search/location-search.
 import { distanceRoutes } from "./modules/distance/distance.routes.js";
 import { plansRoutes } from "./modules/plans/plans.routes.js";
 import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
+import { runStoreScheduleTick } from "./modules/merchant-partner/store-schedule-engine.js";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
@@ -216,10 +217,15 @@ await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
 await app.register(distanceRoutes, { prefix: "/v1/distance" });
 
+let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
+
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
   app.log.info({ signal }, "Received shutdown signal, closing server");
-  
+  if (storeScheduleInterval) {
+    clearInterval(storeScheduleInterval);
+    storeScheduleInterval = null;
+  }
   try {
     await app.close();
     app.log.info("Server closed successfully");
@@ -248,6 +254,13 @@ process.on("unhandledRejection", (reason, promise) => {
 try {
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
   app.log.info({ port: env.PORT, env: env.NODE_ENV }, "Server started successfully");
+
+  // Store Auto Schedule Engine: cold start + every 30s
+  const scheduleIntervalMs = 30_000;
+  await runStoreScheduleTick(app.log);
+  storeScheduleInterval = setInterval(() => {
+    runStoreScheduleTick(app.log).catch((err) => app.log.error({ err }, "store_schedule_tick"));
+  }, scheduleIntervalMs);
 } catch (error) {
   app.log.error({ error }, "Failed to start server");
   process.exit(1);

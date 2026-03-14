@@ -598,7 +598,15 @@ export async function orderRoutes(app: FastifyInstance) {
           fullAddress: store.full_address ?? null,
           latitude: store.latitude != null ? Number(store.latitude) : null,
           longitude: store.longitude != null ? Number(store.longitude) : null,
+          is_accepting_orders: store.is_accepting_orders === true,
         };
+      }
+
+      if (storeForOrder && storeForOrder.is_accepting_orders === false) {
+        return reply.status(400).send({
+          error: "store_closed",
+          message: "This store is not accepting orders right now. Please try again later.",
+        });
       }
 
       const pickupLatNum = storeForOrder?.latitude != null ? storeForOrder.latitude! : pLat;
