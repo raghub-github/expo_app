@@ -63,6 +63,18 @@ import {
   getChangeRequestById,
   approveChangeRequest,
   rejectChangeRequest,
+  listModifierGroups,
+  createModifierGroup,
+  updateModifierGroup,
+  deleteModifierGroup,
+  listModifierOptions,
+  addModifierOption,
+  updateModifierOption,
+  deleteModifierOption,
+  listItemModifierGroups,
+  linkModifierGroupToItem,
+  unlinkModifierGroupFromItem,
+  getModifierGroupUsageCount,
 } from "./merchant-menu.service.js";
 
 // Allow parent_category_id as number or string (client may send string); preserve null/undefined
@@ -127,6 +139,7 @@ const itemCreateSchema = z.object({
   base_price: z.number().min(0),
   selling_price: z.number().min(0),
   preparation_time_minutes: z.number().int().min(0).optional().nullable(),
+  packaging_charges: z.number().min(0).optional().nullable(),
   serves: z.number().int().min(1).optional().nullable(),
   short_name: z.string().max(100).optional().nullable(),
   display_order: z.number().int().min(0).optional(),
@@ -143,6 +156,7 @@ const itemUpdateSchema = z.object({
   base_price: z.number().min(0).optional(),
   selling_price: z.number().min(0).optional(),
   preparation_time_minutes: z.number().int().min(0).optional().nullable(),
+  packaging_charges: z.number().min(0).optional().nullable(),
   serves: z.number().int().min(1).optional().nullable(),
   short_name: z.string().max(100).optional().nullable(),
   display_order: z.number().int().min(0).optional(),
@@ -902,13 +916,9 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               data.mimetype || "image/jpeg"
             );
             uploadedKey = uploadResult.key;
-            const env = getEnv();
-            // Prefer proxy URL (never expires, works with private R2 bucket)
-            const imageUrl = env.API_BASE_URL
-              ? `${env.API_BASE_URL.replace(/\/$/, "")}/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`
-              : env.R2_PUBLIC_BASE_URL
-                ? buildPublicUrl(env.R2_PUBLIC_BASE_URL, uploadedKey)
-                : await getR2SignedUrl(uploadedKey);
+            // Store a HOST-AGNOSTIC, non-expiring path that works from any device.
+            // Frontends will prepend their own API base URL and hit /v1/attachments/proxy.
+            const imageUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`;
             const created = await addItemImageRow(itemId, access.storeIdNum, {
               image_url: imageUrl,
               r2_key: uploadedKey,
@@ -1151,6 +1161,234 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (req.auth?.role === "merchant" && req.auth?.sub) {
             const menuItemId = await getMenuItemIdByAddonId(id);
             if (menuItemId != null) await setItemPendingForReReview(menuItemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
+          }
+          return reply.send({ ok: true });
+        }
+      );
+
+      // Reusable modifier groups (Addon Library)
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/:storeId/modifier-groups",
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          const list = await listModifierGroups(access.storeIdNum);
+          return reply.send({ modifierGroups: list });
+        }
+      );
+
+      const modifierGroupCreateSchema = z.object({
+        title: z.string().min(1).max(200),
+        description: z.string().max(500).optional().nullable(),
+        is_required: z.boolean().optional(),
+        min_selection: z.number().int().min(0).optional(),
+        max_selection: z.number().int().min(0).optional(),
+        display_order: z.number().int().min(0).optional(),
+      });
+      const modifierGroupUpdateSchema = modifierGroupCreateSchema.partial();
+
+      protectedApp.post<{ Params: { storeId: string }; Body: z.infer<typeof modifierGroupCreateSchema> }>(
+        "/:storeId/modifier-groups",
+        { schema: { body: modifierGroupCreateSchema } },
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          try {
+            const created = await createModifierGroup(access.storeIdNum, req.body);
+            return reply.code(201).send(created);
+          } catch (e: any) {
+            if (e?.message?.startsWith("LIMIT_")) return reply.code(403).send({ error: e.message });
+            throw e;
+          }
+        }
+      );
+
+      protectedApp.put<{
+        Params: { id: string };
+        Body: z.infer<typeof modifierGroupUpdateSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/modifier-groups/:id",
+        { schema: { body: modifierGroupUpdateSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_group_id" });
+          const ok = await updateModifierGroup(id, access.storeIdNum, req.body);
+          if (!ok) return reply.code(404).send({ error: "modifier_group_not_found" });
+          return reply.send({ ok: true });
+        }
+      );
+
+      protectedApp.delete<{ Params: { id: string }; Querystring: { storeId: string } }>(
+        "/modifier-groups/:id",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_group_id" });
+          const ok = await deleteModifierGroup(id, access.storeIdNum);
+          if (!ok) return reply.code(404).send({ error: "modifier_group_not_found" });
+          return reply.send({ ok: true });
+        }
+      );
+
+      protectedApp.get<{ Params: { groupId: string }; Querystring: { storeId: string } }>(
+        "/modifier-groups/:groupId/options",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const groupId = parseInt(req.params.groupId, 10);
+          if (Number.isNaN(groupId)) return reply.code(400).send({ error: "invalid_group_id" });
+          const list = await listModifierOptions(groupId, access.storeIdNum);
+          return reply.send({ options: list });
+        }
+      );
+
+      const modifierOptionCreateSchema = z.object({
+        name: z.string().min(1).max(200),
+        price_delta: z.number().min(0).optional(),
+        image_url: z.string().max(2000).optional().nullable(),
+        in_stock: z.boolean().optional(),
+        default_quantity: z.number().int().min(0).optional(),
+        display_order: z.number().int().min(0).optional(),
+      });
+      const modifierOptionUpdateSchema = modifierOptionCreateSchema.partial();
+
+      protectedApp.post<{
+        Params: { groupId: string };
+        Body: z.infer<typeof modifierOptionCreateSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/modifier-groups/:groupId/options",
+        { schema: { body: modifierOptionCreateSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const groupId = parseInt(req.params.groupId, 10);
+          if (Number.isNaN(groupId)) return reply.code(400).send({ error: "invalid_group_id" });
+          try {
+            const created = await addModifierOption(groupId, access.storeIdNum, req.body);
+            return reply.code(201).send(created);
+          } catch (e: any) {
+            if (e?.message === "MODIFIER_GROUP_NOT_FOUND") return reply.code(404).send({ error: "modifier_group_not_found" });
+            if (e?.message?.startsWith("LIMIT_")) return reply.code(403).send({ error: e.message });
+            throw e;
+          }
+        }
+      );
+
+      protectedApp.put<{
+        Params: { id: string };
+        Body: z.infer<typeof modifierOptionUpdateSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/modifier-options/:id",
+        { schema: { body: modifierOptionUpdateSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_option_id" });
+          const ok = await updateModifierOption(id, access.storeIdNum, req.body);
+          if (!ok) return reply.code(404).send({ error: "modifier_option_not_found" });
+          return reply.send({ ok: true });
+        }
+      );
+
+      protectedApp.delete<{ Params: { id: string }; Querystring: { storeId: string } }>(
+        "/modifier-options/:id",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_option_id" });
+          const ok = await deleteModifierOption(id, access.storeIdNum);
+          if (!ok) return reply.code(404).send({ error: "modifier_option_not_found" });
+          return reply.send({ ok: true });
+        }
+      );
+
+      protectedApp.get<{ Params: { itemId: string }; Querystring: { storeId: string } }>(
+        "/items/:itemId/modifier-groups",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const itemId = parseInt(req.params.itemId, 10);
+          if (Number.isNaN(itemId)) return reply.code(400).send({ error: "invalid_item_id" });
+          try {
+            const list = await listItemModifierGroups(itemId, access.storeIdNum);
+            return reply.send({ linkedModifierGroups: list });
+          } catch (e: any) {
+            if (e?.message === "ITEM_NOT_FOUND") return reply.code(404).send({ error: "item_not_found" });
+            throw e;
+          }
+        }
+      );
+
+      const itemModifierGroupLinkSchema = z.object({
+        modifier_group_id: z.number().int().positive(),
+        display_order: z.number().int().min(0).optional(),
+      });
+
+      protectedApp.post<{
+        Params: { itemId: string };
+        Body: z.infer<typeof itemModifierGroupLinkSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/items/:itemId/modifier-groups",
+        { schema: { body: itemModifierGroupLinkSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const itemId = parseInt(req.params.itemId, 10);
+          if (Number.isNaN(itemId)) return reply.code(400).send({ error: "invalid_item_id" });
+          try {
+            const created = await linkModifierGroupToItem(itemId, req.body.modifier_group_id, access.storeIdNum, { display_order: req.body.display_order });
+            if (req.auth?.role === "merchant" && req.auth?.sub) {
+              await setItemPendingForReReview(itemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
+            }
+            return reply.code(201).send(created);
+          } catch (e: any) {
+            if (e?.message === "MODIFIER_GROUP_NOT_FOUND") return reply.code(404).send({ error: "modifier_group_not_found" });
+            if (e?.message === "ALREADY_LINKED") return reply.code(409).send({ error: "already_linked" });
+            if (e?.message?.startsWith("LIMIT_")) return reply.code(403).send({ error: e.message });
+            throw e;
+          }
+        }
+      );
+
+      protectedApp.delete<{ Params: { itemId: string; linkId: string }; Querystring: { storeId: string } }>(
+        "/items/:itemId/modifier-groups/:linkId",
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const itemId = parseInt(req.params.itemId, 10);
+          const linkId = parseInt(req.params.linkId, 10);
+          if (Number.isNaN(itemId) || Number.isNaN(linkId)) return reply.code(400).send({ error: "invalid_id" });
+          const ok = await unlinkModifierGroupFromItem(linkId, itemId, access.storeIdNum);
+          if (!ok) return reply.code(404).send({ error: "link_not_found" });
+          if (req.auth?.role === "merchant" && req.auth?.sub) {
+            await setItemPendingForReReview(itemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
           }
           return reply.send({ ok: true });
         }

@@ -1,4 +1,7 @@
 import { StoreMenuClient } from "./StoreMenuClient";
+import { AddonLibraryClient } from "./AddonLibraryClient";
+import { StoreCombosClient } from "./StoreCombosClient";
+import { StoreMenuTabs } from "./StoreMenuTabs";
 
 export default async function StoreMenuPage({
   params,
@@ -6,5 +9,11 @@ export default async function StoreMenuPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <StoreMenuClient storeId={id} />;
+  return (
+    <StoreMenuTabs storeId={id}>
+      <StoreMenuClient storeId={id} />
+      <AddonLibraryClient storeId={id} />
+      <StoreCombosClient storeId={id} />
+    </StoreMenuTabs>
+  );
 }

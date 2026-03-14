@@ -1,5 +1,5 @@
 /**
- * Create new combo — name, description, price. Then redirect to edit to add components.
+ * Create new combo — name and description only. Price is the sum of selected items; add items on the next screen.
  */
 
 import { useState } from "react";
@@ -19,22 +19,16 @@ export default function NewComboScreen() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [price, setPrice] = useState("");
   const [saving, setSaving] = useState(false);
 
   const handleCreate = async () => {
-    if (!token || !storeId || !name.trim() || !price.trim()) return;
-    const p = parseFloat(price);
-    if (Number.isNaN(p) || p < 0) {
-      Alert.alert("Invalid price", "Enter a valid price.");
-      return;
-    }
+    if (!token || !storeId || !name.trim()) return;
     setSaving(true);
     try {
       const created = await createCombo(storeId, token, {
         combo_name: name.trim(),
         description: description.trim() || null,
-        combo_price: p,
+        combo_price: 0,
       });
       router.replace({ pathname: "/menu/combos/[id]", params: { id: String(created.id) } } as any);
     } catch (e) {
@@ -76,18 +70,13 @@ export default function NewComboScreen() {
           onChangeText={setDescription}
           multiline
         />
-        <TextInput
-          style={styles.input}
-          placeholder="Price (₹) *"
-          placeholderTextColor={GatiMitraMerchant.textTertiary}
-          value={price}
-          onChangeText={setPrice}
-          keyboardType="decimal-pad"
-        />
+        <Text style={styles.hint}>
+          Price will be the sum of all items you add. You can add offers later to reduce it.
+        </Text>
         <TouchableOpacity
           onPress={handleCreate}
-          disabled={!name.trim() || !price.trim() || saving}
-          style={[styles.saveBtn, (!name.trim() || !price.trim() || saving) && styles.saveBtnDisabled]}
+          disabled={!name.trim() || saving}
+          style={[styles.saveBtn, (!name.trim() || saving) && styles.saveBtnDisabled]}
         >
           {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.saveBtnText}>Create & add items</Text>}
         </TouchableOpacity>
@@ -121,6 +110,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   textArea: { minHeight: 80, textAlignVertical: "top" },
+  hint: {
+    fontSize: 13,
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 16,
+    lineHeight: 18,
+  },
   saveBtn: {
     backgroundColor: GatiMitraMerchant.primary,
     paddingVertical: 14,

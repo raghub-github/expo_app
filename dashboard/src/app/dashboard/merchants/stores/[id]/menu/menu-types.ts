@@ -111,6 +111,16 @@ export interface MenuItem {
   approval_status?: "PENDING" | "APPROVED" | "REJECTED" | null;
   has_pending_change_request?: boolean;
   pending_change_request_type?: "CREATE" | "UPDATE" | "DELETE" | null;
+  /** From GET item detail: reusable addon groups linked to this item */
+  linked_modifier_groups?: Array<{
+    id: number;
+    title: string;
+    description?: string | null;
+    is_required?: boolean;
+    min_selection?: number;
+    max_selection?: number;
+    options?: Array<{ id: number; name: string; price_delta: string; in_stock?: boolean }>;
+  }>;
 }
 
 export interface MenuCategory {

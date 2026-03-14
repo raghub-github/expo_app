@@ -1,0 +1,87 @@
+/**
+ * Update/delete a customization group. PUT/DELETE /api/merchant/stores/[id]/menu/customization-groups/[groupId]
+ */
+import { NextRequest, NextResponse } from "next/server";
+import { getSql } from "@/lib/db/client";
+import { assertStoreAccess } from "../../assert-store-access";
+
+export const runtime = "nodejs";
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string; groupId: string }> }
+) {
+  try {
+    const { id, groupId } = await params;
+    const storeId = parseInt(id, 10);
+    const gId = parseInt(groupId, 10);
+    if (!Number.isFinite(storeId) || !Number.isFinite(gId)) {
+      return NextResponse.json({ success: false, error: "Invalid id" }, { status: 400 });
+    }
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+
+    const sql = getSql();
+    const [g] = await sql`
+      SELECT c.id, c.customization_title, c.is_required, c.min_selection, c.max_selection, c.display_order
+      FROM merchant_menu_item_customizations c
+      INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeId}
+      WHERE c.id = ${gId}
+      LIMIT 1
+    `;
+    if (!g) return NextResponse.json({ success: false, error: "Customization group not found" }, { status: 404 });
+
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const e = g as any;
+    const customization_title = body.customization_title !== undefined ? String(body.customization_title).trim() : e.customization_title;
+    if (!customization_title) {
+      return NextResponse.json({ success: false, error: "customization_title required" }, { status: 400 });
+    }
+
+    await sql`
+      UPDATE merchant_menu_item_customizations
+      SET customization_title = ${customization_title},
+          is_required = ${body.is_required !== undefined ? body.is_required : e.is_required},
+          min_selection = ${body.min_selection !== undefined ? body.min_selection : e.min_selection},
+          max_selection = ${body.max_selection !== undefined ? body.max_selection : e.max_selection},
+          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
+          updated_at = NOW()
+      WHERE id = ${gId}
+    `;
+    return NextResponse.json({ success: true, ok: true });
+  } catch (e) {
+    console.error("[PUT /api/merchant/stores/[id]/menu/customization-groups/[groupId]]", e);
+    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string; groupId: string }> }
+) {
+  try {
+    const { id, groupId } = await params;
+    const storeId = parseInt(id, 10);
+    const gId = parseInt(groupId, 10);
+    if (!Number.isFinite(storeId) || !Number.isFinite(gId)) {
+      return NextResponse.json({ success: false, error: "Invalid id" }, { status: 400 });
+    }
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+
+    const sql = getSql();
+    const [g] = await sql`
+      SELECT c.id FROM merchant_menu_item_customizations c
+      INNER JOIN merchant_menu_items m ON m.id = c.menu_item_id AND m.store_id = ${storeId}
+      WHERE c.id = ${gId}
+      LIMIT 1
+    `;
+    if (!g) return NextResponse.json({ success: false, error: "Customization group not found" }, { status: 404 });
+
+    await sql`DELETE FROM merchant_menu_item_customizations WHERE id = ${gId}`;
+    return NextResponse.json({ success: true, ok: true });
+  } catch (e) {
+    console.error("[DELETE /api/merchant/stores/[id]/menu/customization-groups/[groupId]]", e);
+    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+  }
+}

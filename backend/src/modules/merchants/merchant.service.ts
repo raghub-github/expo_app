@@ -104,7 +104,7 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, logo_url, banner_url, gallery_images, ads_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id")
+    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, logo_url, banner_url, gallery_images, ads_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km")
     .eq("store_id", storeId)
     .single();
   if (error || !data) return null;

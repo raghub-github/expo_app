@@ -47,22 +47,50 @@ export type MenuItemRow = {
 
 export type ListCategoriesResponse = { categories: MenuCategory[] };
 export type ListItemsResponse = { items: MenuItemRow[]; total: number };
-/** Store profile (e.g. cuisines chosen during onboarding). Used for item cuisine picker. */
+/** Store profile for item form defaults (cuisines, prep time, packaging, delivery). */
+export type StoreProfile = {
+  cuisine_types: string[] | null;
+  avg_preparation_time_minutes: number | null;
+  packaging_charge_amount: number | null;
+  delivery_charge_per_km: number | null;
+  delivery_radius_km: number | null;
+};
+
 export async function fetchStoreProfile(
   storeId: string,
   token: string
-): Promise<{ cuisine_types: string[] | null }> {
+): Promise<StoreProfile> {
   const base = getApiBaseUrl();
   const res = await authFetch(
     `${base}/v1/merchants/${encodeURIComponent(storeId)}/about`,
     token
   );
   if (!res.ok) {
-    if (res.status === 404) return { cuisine_types: null };
+    if (res.status === 404) {
+      return {
+        cuisine_types: null,
+        avg_preparation_time_minutes: null,
+        packaging_charge_amount: null,
+        delivery_charge_per_km: null,
+        delivery_radius_km: null,
+      };
+    }
     throw new Error("Failed to load store profile");
   }
-  const data = (await res.json()) as { cuisine_types?: string[] | null };
-  return { cuisine_types: data.cuisine_types ?? null };
+  const data = (await res.json()) as {
+    cuisine_types?: string[] | null;
+    avg_preparation_time_minutes?: number | null;
+    packaging_charge_amount?: number | null;
+    delivery_charge_per_km?: number | null;
+    delivery_radius_km?: number | null;
+  };
+  return {
+    cuisine_types: data.cuisine_types ?? null,
+    avg_preparation_time_minutes: data.avg_preparation_time_minutes ?? null,
+    packaging_charge_amount: data.packaging_charge_amount ?? null,
+    delivery_charge_per_km: data.delivery_charge_per_km ?? null,
+    delivery_radius_km: data.delivery_radius_km ?? null,
+  };
 }
 
 export async function fetchMenuCategories(
@@ -320,6 +348,17 @@ export type MenuItemDetail = MenuItemRow & {
     }>;
   }>;
   images: Array<{ id: number; image_url: string; is_primary: boolean; display_order: number }>;
+  linked_modifier_groups?: Array<{
+    id: number;
+    modifier_group_id: number;
+    display_order: number;
+    title: string;
+    description: string | null;
+    is_required: boolean;
+    min_selection: number;
+    max_selection: number;
+    options: Array<{ id: number; option_id: string; name: string; price_delta: string; in_stock: boolean; display_order: number }>;
+  }>;
 };
 
 export async function fetchMenuItem(
@@ -350,6 +389,7 @@ export type MenuItemPayload = {
   base_price: number;
   selling_price: number;
   preparation_time_minutes?: number | null;
+  packaging_charges?: number | null;
   serves?: number | null;
   serves_label?: string | null;
   short_name?: string | null;
@@ -773,5 +813,235 @@ export async function updateMenuItem(
       throw new Error("This item is approved. Submit changes from the edit screen to send an update request for agent review.");
     }
     throw new Error(err.message || `Update item failed: ${res.status}`);
+  }
+}
+
+// --- Reusable modifier groups (Addon Library) ---
+export type ModifierGroupRow = {
+  id: number;
+  group_id: string;
+  title: string;
+  description: string | null;
+  is_required: boolean;
+  min_selection: number;
+  max_selection: number;
+  display_order: number;
+  options_count: number;
+  used_in_items_count: number;
+};
+
+export type ModifierOptionRow = {
+  id: number;
+  option_id: string;
+  name: string;
+  price_delta: string;
+  image_url: string | null;
+  in_stock: boolean;
+  default_quantity: number;
+  display_order: number;
+};
+
+export type LinkedModifierGroup = {
+  id: number;
+  modifier_group_id: number;
+  display_order: number;
+  group: {
+    id: number;
+    group_id: string;
+    title: string;
+    description: string | null;
+    is_required: boolean;
+    min_selection: number;
+    max_selection: number;
+    options: Array<{ id: number; option_id: string; name: string; price_delta: string; in_stock: boolean; display_order: number }>;
+  };
+};
+
+export async function fetchModifierGroups(
+  storeId: string,
+  token: string
+): Promise<{ modifierGroups: ModifierGroupRow[] }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/modifier-groups`,
+    token
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { message?: string }).message || `Failed to load addon groups: ${res.status}`);
+  }
+  const data = (await res.json()) as { modifierGroups?: ModifierGroupRow[] };
+  return { modifierGroups: data.modifierGroups ?? [] };
+}
+
+export async function createModifierGroup(
+  storeId: string,
+  token: string,
+  body: { title: string; description?: string | null; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<{ id: number; group_id: string }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/modifier-groups`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: string; message?: string };
+    if (err.error?.startsWith("LIMIT_")) throw new Error(err.error);
+    throw new Error(err.message || `Create addon group failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number; group_id: string }>;
+}
+
+export async function updateModifierGroup(
+  storeId: string,
+  groupId: number,
+  token: string,
+  body: { title?: string; description?: string | null; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/modifier-groups/${groupId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "PUT", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("Addon group not found");
+    throw new Error(`Update failed: ${res.status}`);
+  }
+}
+
+export async function deleteModifierGroup(storeId: string, groupId: number, token: string): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/modifier-groups/${groupId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("Addon group not found");
+    throw new Error(`Delete failed: ${res.status}`);
+  }
+}
+
+export async function fetchModifierOptions(
+  storeId: string,
+  groupId: number,
+  token: string
+): Promise<{ options: ModifierOptionRow[] }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/modifier-groups/${groupId}/options?storeId=${encodeURIComponent(storeId)}`,
+    token
+  );
+  if (!res.ok) throw new Error(`Failed to load options: ${res.status}`);
+  const data = (await res.json()) as { options?: ModifierOptionRow[] };
+  return { options: data.options ?? [] };
+}
+
+export async function addModifierOption(
+  storeId: string,
+  groupId: number,
+  token: string,
+  body: { name: string; price_delta?: number; image_url?: string | null; in_stock?: boolean; default_quantity?: number; display_order?: number }
+): Promise<{ id: number; option_id: string }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/modifier-groups/${groupId}/options?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: string };
+    if (err.error?.startsWith("LIMIT_")) throw new Error(err.error);
+    if (res.status === 404) throw new Error("Addon group not found");
+    throw new Error(`Add option failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number; option_id: string }>;
+}
+
+export async function updateModifierOption(
+  storeId: string,
+  optionId: number,
+  token: string,
+  body: { name?: string; price_delta?: number; image_url?: string | null; in_stock?: boolean; default_quantity?: number; display_order?: number }
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/modifier-options/${optionId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "PUT", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("Option not found");
+    throw new Error(`Update failed: ${res.status}`);
+  }
+}
+
+export async function deleteModifierOption(storeId: string, optionId: number, token: string): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/modifier-options/${optionId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("Option not found");
+    throw new Error(`Delete failed: ${res.status}`);
+  }
+}
+
+export async function fetchItemModifierGroups(
+  storeId: string,
+  itemId: number,
+  token: string
+): Promise<{ linkedModifierGroups: LinkedModifierGroup[] }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/modifier-groups?storeId=${encodeURIComponent(storeId)}`,
+    token
+  );
+  if (!res.ok) throw new Error(`Failed to load linked addons: ${res.status}`);
+  const data = (await res.json()) as { linkedModifierGroups?: LinkedModifierGroup[] };
+  return { linkedModifierGroups: data.linkedModifierGroups ?? [] };
+}
+
+export async function linkModifierGroupToItem(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body: { modifier_group_id: number; display_order?: number }
+): Promise<{ id: number }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/modifier-groups?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as { error?: string };
+    if (res.status === 409) throw new Error("This addon group is already linked to this item.");
+    if (err.error?.startsWith("LIMIT_")) throw new Error(err.error);
+    if (res.status === 404) throw new Error("Addon group or item not found");
+    throw new Error(`Link failed: ${res.status}`);
+  }
+  return res.json() as Promise<{ id: number }>;
+}
+
+export async function unlinkModifierGroupFromItem(
+  storeId: string,
+  itemId: number,
+  linkId: number,
+  token: string
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/modifier-groups/${linkId}?storeId=${encodeURIComponent(storeId)}`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("Link not found");
+    throw new Error(`Unlink failed: ${res.status}`);
   }
 }
