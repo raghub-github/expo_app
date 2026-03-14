@@ -282,7 +282,7 @@ export async function getItem(
     SELECT id, item_id, item_name, item_description, item_image_url, short_name, category_id,
            food_type, spice_level, cuisine_type, base_price, selling_price, in_stock, is_active,
            is_deleted, display_order, has_customizations, has_addons, has_variants,
-           preparation_time_minutes, serves, serves_label, allergens, nutritional_info,
+           preparation_time_minutes, packaging_charges, serves, serves_label, allergens, nutritional_info,
            item_size_value, item_size_unit, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
            protein, protein_unit, carbohydrates, carbohydrates_unit,
@@ -337,6 +337,58 @@ export async function getItem(
     })),
   }));
 
+  let linkedModifierGroups: Array<{
+    id: number;
+    modifier_group_id: number;
+    display_order: number;
+    title: string;
+    description: string | null;
+    is_required: boolean;
+    min_selection: number;
+    max_selection: number;
+    options: Array<{ id: number; option_id: string; name: string; price_delta: string; in_stock: boolean; display_order: number }>;
+  }> = [];
+  try {
+    const linkRows = await sql`
+      SELECT img.id, img.modifier_group_id, img.display_order
+      FROM merchant_item_modifier_groups img
+      WHERE img.menu_item_id = ${itemId}
+      ORDER BY img.display_order ASC, img.id ASC
+    `;
+    for (const link of linkRows as any[]) {
+      const [g] = await sql`
+        SELECT id, group_code, title, description, is_required, min_selection, max_selection
+        FROM merchant_modifier_groups WHERE id = ${link.modifier_group_id}
+      `;
+      if (!g) continue;
+      const opts = await sql`
+        SELECT id, option_id, name, price_delta::text, in_stock, display_order
+        FROM merchant_modifier_options WHERE modifier_group_id = ${link.modifier_group_id}
+        ORDER BY display_order ASC, id ASC
+      `;
+      linkedModifierGroups.push({
+        id: link.id,
+        modifier_group_id: link.modifier_group_id,
+        display_order: link.display_order,
+        title: (g as any).title,
+        description: (g as any).description,
+        is_required: (g as any).is_required ?? false,
+        min_selection: (g as any).min_selection ?? 0,
+        max_selection: (g as any).max_selection ?? 1,
+        options: (opts as any[]).map((o: any) => ({
+          id: o.id,
+          option_id: o.option_id,
+          name: o.name,
+          price_delta: o.price_delta,
+          in_stock: o.in_stock ?? true,
+          display_order: o.display_order ?? 0,
+        })),
+      });
+    }
+  } catch {
+    linkedModifierGroups = [];
+  }
+
   return {
     ...itemRow,
     variants: (variants as any[]).map((v: any) => ({
@@ -356,6 +408,7 @@ export async function getItem(
       is_primary: i.is_primary ?? false,
       display_order: i.display_order ?? 0,
     })),
+    linked_modifier_groups: linkedModifierGroups,
   };
 }
 
@@ -374,6 +427,7 @@ export type ItemBodyFields = {
   base_price: number;
   selling_price: number;
   preparation_time_minutes?: number | null;
+  packaging_charges?: number | null;
   serves?: number | null;
   serves_label?: string | null;
   short_name?: string | null;
@@ -412,7 +466,7 @@ export async function createItem(
   const [row] = await sql`
     INSERT INTO merchant_menu_items (
       store_id, category_id, item_id, item_name, item_description, food_type, spice_level, cuisine_type,
-      base_price, selling_price, preparation_time_minutes, serves, serves_label, short_name, display_order,
+      base_price, selling_price, preparation_time_minutes, packaging_charges, serves, serves_label, short_name, display_order,
       item_size_value, item_size_unit, available_for_delivery,
       weight_per_serving, weight_per_serving_unit, calories_kcal,
       protein, protein_unit, carbohydrates, carbohydrates_unit,
@@ -422,7 +476,7 @@ export async function createItem(
     VALUES (
       ${storeIdNum}, ${body.category_id ?? null}, ${itemId}, ${body.item_name}, ${body.item_description ?? null},
       ${body.food_type ?? null}, ${body.spice_level ?? null}, ${body.cuisine_type ?? null},
-      ${body.base_price}, ${body.selling_price}, ${body.preparation_time_minutes ?? null}, ${body.serves ?? null},
+      ${body.base_price}, ${body.selling_price}, ${body.preparation_time_minutes ?? null}, ${body.packaging_charges ?? null}, ${body.serves ?? null},
       ${body.serves_label ?? null}, ${body.short_name ?? null}, ${body.display_order ?? 0},
       ${body.item_size_value ?? null}, ${body.item_size_unit ?? null}, ${body.available_for_delivery ?? true},
       ${body.weight_per_serving ?? null}, ${body.weight_per_serving_unit ?? null}, ${body.calories_kcal ?? null},
@@ -447,7 +501,7 @@ export async function updateItem(
   const sql = getSql();
   const [existing] = await sql`
     SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
-           base_price, selling_price, preparation_time_minutes, serves, serves_label, short_name,
+           base_price, selling_price, preparation_time_minutes, packaging_charges, serves, serves_label, short_name,
            display_order, is_active, allergens,
            item_size_value, item_size_unit, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
@@ -471,6 +525,7 @@ export async function updateItem(
       base_price = ${body.base_price ?? e.base_price},
       selling_price = ${body.selling_price ?? e.selling_price},
       preparation_time_minutes = ${v("preparation_time_minutes", e.preparation_time_minutes)},
+      packaging_charges = ${v("packaging_charges", e.packaging_charges)},
       serves = ${v("serves", e.serves)},
       serves_label = ${v("serves_label", e.serves_label)},
       short_name = ${v("short_name", e.short_name)},
@@ -1461,4 +1516,326 @@ export async function incrementRankingOrderCount(menuItemIds: number[]): Promise
         updated_at = NOW()
     `;
   }
+}
+
+// --- Reusable modifier groups (store-level addon library)
+const DEFAULT_PLAN = "basic";
+const MAX_GROUPS_DEFAULT = 20;
+const MAX_OPTIONS_DEFAULT = 100;
+const MAX_GROUPS_PER_ITEM_DEFAULT = 10;
+const MAX_OPTIONS_PER_GROUP_DEFAULT = 20;
+
+async function getModifierLimits(_storeIdNum: number): Promise<{
+  max_modifier_groups: number;
+  max_modifier_options: number;
+  max_modifier_groups_per_item: number;
+  max_options_per_group: number;
+}> {
+  const sql = getSql();
+  const [limits] = await sql`
+    SELECT max_modifier_groups, max_modifier_options, max_modifier_groups_per_item, max_options_per_group
+    FROM merchant_modifier_subscription_limits WHERE plan_key = ${DEFAULT_PLAN}
+  `;
+  if (limits) {
+    const L = limits as any;
+    return {
+      max_modifier_groups: Number(L.max_modifier_groups) ?? MAX_GROUPS_DEFAULT,
+      max_modifier_options: Number(L.max_modifier_options) ?? MAX_OPTIONS_DEFAULT,
+      max_modifier_groups_per_item: Number(L.max_modifier_groups_per_item) ?? MAX_GROUPS_PER_ITEM_DEFAULT,
+      max_options_per_group: Number(L.max_options_per_group) ?? MAX_OPTIONS_PER_GROUP_DEFAULT,
+    };
+  }
+  return {
+    max_modifier_groups: MAX_GROUPS_DEFAULT,
+    max_modifier_options: MAX_OPTIONS_DEFAULT,
+    max_modifier_groups_per_item: MAX_GROUPS_PER_ITEM_DEFAULT,
+    max_options_per_group: MAX_OPTIONS_PER_GROUP_DEFAULT,
+  };
+}
+
+export async function listModifierGroups(storeIdNum: number): Promise<
+  Array<{
+    id: number;
+    group_id: string;
+    title: string;
+    description: string | null;
+    is_required: boolean;
+    min_selection: number;
+    max_selection: number;
+    display_order: number;
+    options_count: number;
+    used_in_items_count: number;
+  }>
+> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT g.id, g.group_code, g.title, g.description, g.is_required, g.min_selection, g.max_selection, g.display_order
+    FROM merchant_modifier_groups g
+    WHERE g.store_id = ${storeIdNum}
+    ORDER BY g.display_order ASC, g.id ASC
+  `;
+  const result: Array<any> = [];
+  for (const r of rows as any[]) {
+    const [optCount] = await sql`SELECT COUNT(*)::int AS c FROM merchant_modifier_options WHERE modifier_group_id = ${r.id}`;
+    const [linkCount] = await sql`SELECT COUNT(*)::int AS c FROM merchant_item_modifier_groups WHERE modifier_group_id = ${r.id}`;
+    const code = r.group_code ?? r.group_id;
+    result.push({
+      ...r,
+      group_id: code,
+      options_count: Number(optCount?.c ?? 0),
+      used_in_items_count: Number(linkCount?.c ?? 0),
+    });
+  }
+  return result;
+}
+
+export async function createModifierGroup(
+  storeIdNum: number,
+  body: { title: string; description?: string | null; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<{ id: number; group_id: string }> {
+  const sql = getSql();
+  const limits = await getModifierLimits(storeIdNum);
+  const [countRow] = await sql`SELECT COUNT(*)::int AS c FROM merchant_modifier_groups WHERE store_id = ${storeIdNum}`;
+  const currentGroups = Number((countRow as any)?.c ?? 0);
+  if (currentGroups >= limits.max_modifier_groups) {
+    throw new Error(`LIMIT_MODIFIER_GROUPS: Maximum ${limits.max_modifier_groups} addon groups allowed for your plan.`);
+  }
+  const groupCode = "MG_" + ulid();
+  const [row] = await sql`
+    INSERT INTO merchant_modifier_groups (store_id, group_code, title, description, is_required, min_selection, max_selection, display_order)
+    VALUES (${storeIdNum}, ${groupCode}, ${body.title}, ${body.description ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
+    RETURNING id, group_code
+  `;
+  const r = row as any;
+  return { id: Number(r.id), group_id: r.group_code ?? r.group_id };
+}
+
+export async function updateModifierGroup(
+  groupId: number,
+  storeIdNum: number,
+  body: { title?: string; description?: string | null; is_required?: boolean; min_selection?: number; max_selection?: number; display_order?: number }
+): Promise<boolean> {
+  const sql = getSql();
+  const [g] = await sql`SELECT id, title, description, is_required, min_selection, max_selection, display_order FROM merchant_modifier_groups WHERE id = ${groupId} AND store_id = ${storeIdNum}`;
+  if (!g) return false;
+  const e = g as any;
+  await sql`
+    UPDATE merchant_modifier_groups
+    SET title = ${body.title ?? e.title},
+        description = ${body.description !== undefined ? body.description : e.description},
+        is_required = ${body.is_required !== undefined ? body.is_required : e.is_required},
+        min_selection = ${body.min_selection ?? e.min_selection},
+        max_selection = ${body.max_selection ?? e.max_selection},
+        display_order = ${body.display_order ?? e.display_order},
+        updated_at = NOW()
+    WHERE id = ${groupId}
+  `;
+  return true;
+}
+
+export async function deleteModifierGroup(groupId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [g] = await sql`SELECT id FROM merchant_modifier_groups WHERE id = ${groupId} AND store_id = ${storeIdNum}`;
+  if (!g) return false;
+  await sql`DELETE FROM merchant_modifier_groups WHERE id = ${groupId}`;
+  return true;
+}
+
+export async function listModifierOptions(
+  modifierGroupId: number,
+  storeIdNum: number
+): Promise<
+  Array<{
+    id: number;
+    option_id: string;
+    name: string;
+    price_delta: string;
+    image_url: string | null;
+    in_stock: boolean;
+    default_quantity: number;
+    display_order: number;
+  }>
+> {
+  const sql = getSql();
+  const [g] = await sql`SELECT id FROM merchant_modifier_groups WHERE id = ${modifierGroupId} AND store_id = ${storeIdNum}`;
+  if (!g) return [];
+  const rows = await sql`
+    SELECT id, option_id, name, price_delta::text, image_url, in_stock, default_quantity, display_order
+    FROM merchant_modifier_options
+    WHERE modifier_group_id = ${modifierGroupId}
+    ORDER BY display_order ASC, id ASC
+  `;
+  return rows as any;
+}
+
+export async function addModifierOption(
+  modifierGroupId: number,
+  storeIdNum: number,
+  body: { name: string; price_delta?: number; image_url?: string | null; in_stock?: boolean; default_quantity?: number; display_order?: number }
+): Promise<{ id: number; option_id: string }> {
+  const sql = getSql();
+  const [g] = await sql`SELECT id FROM merchant_modifier_groups WHERE id = ${modifierGroupId} AND store_id = ${storeIdNum}`;
+  if (!g) throw new Error("MODIFIER_GROUP_NOT_FOUND");
+  const limits = await getModifierLimits(storeIdNum);
+  const [countRow] = await sql`SELECT COUNT(*)::int AS c FROM merchant_modifier_options WHERE modifier_group_id = ${modifierGroupId}`;
+  const currentOptions = Number((countRow as any)?.c ?? 0);
+  if (currentOptions >= limits.max_options_per_group) {
+    throw new Error(`LIMIT_OPTIONS_PER_GROUP: Maximum ${limits.max_options_per_group} options per addon group.`);
+  }
+  const totalOptions = await sql`SELECT COUNT(*)::int AS c FROM merchant_modifier_options o INNER JOIN merchant_modifier_groups g ON g.id = o.modifier_group_id WHERE g.store_id = ${storeIdNum}`;
+  if (Number((totalOptions[0] as any)?.c ?? 0) >= limits.max_modifier_options) {
+    throw new Error(`LIMIT_MODIFIER_OPTIONS: Maximum ${limits.max_modifier_options} total addon options for your plan.`);
+  }
+  const optionCode = "MO_" + ulid();
+  const [row] = await sql`
+    INSERT INTO merchant_modifier_options (modifier_group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
+    VALUES (${modifierGroupId}, ${optionCode}, ${body.name}, ${body.price_delta ?? 0}, ${body.image_url ?? null}, ${body.in_stock ?? true}, ${body.default_quantity ?? 0}, ${body.display_order ?? 0})
+    RETURNING id, option_code
+  `;
+  const r = row as any;
+  return { id: Number(r.id), option_id: r.option_code ?? r.option_id };
+}
+
+export async function updateModifierOption(
+  optionId: number,
+  storeIdNum: number,
+  body: { name?: string; price_delta?: number; image_url?: string | null; in_stock?: boolean; default_quantity?: number; display_order?: number }
+): Promise<boolean> {
+  const sql = getSql();
+  const [o] = await sql`
+    SELECT o.id, o.name, o.price_delta, o.image_url, o.in_stock, o.default_quantity, o.display_order
+    FROM merchant_modifier_options o
+    INNER JOIN merchant_modifier_groups g ON g.id = o.modifier_group_id AND g.store_id = ${storeIdNum}
+    WHERE o.id = ${optionId}
+  `;
+  if (!o) return false;
+  const e = o as any;
+  await sql`
+    UPDATE merchant_modifier_options
+    SET name = ${body.name ?? e.name},
+        price_delta = ${body.price_delta ?? e.price_delta},
+        image_url = ${body.image_url !== undefined ? body.image_url : e.image_url},
+        in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+        default_quantity = ${body.default_quantity ?? e.default_quantity},
+        display_order = ${body.display_order ?? e.display_order},
+        updated_at = NOW()
+    WHERE id = ${optionId}
+  `;
+  return true;
+}
+
+export async function deleteModifierOption(optionId: number, storeIdNum: number): Promise<boolean> {
+  const sql = getSql();
+  const [o] = await sql`
+    SELECT o.id FROM merchant_modifier_options o
+    INNER JOIN merchant_modifier_groups g ON g.id = o.modifier_group_id AND g.store_id = ${storeIdNum}
+    WHERE o.id = ${optionId}
+  `;
+  if (!o) return false;
+  await sql`DELETE FROM merchant_modifier_options WHERE id = ${optionId}`;
+  return true;
+}
+
+export async function listItemModifierGroups(
+  menuItemId: number,
+  storeIdNum: number
+): Promise<
+  Array<{
+    id: number;
+    modifier_group_id: number;
+    display_order: number;
+    group: {
+      id: number;
+      group_id: string;
+      title: string;
+      description: string | null;
+      is_required: boolean;
+      min_selection: number;
+      max_selection: number;
+      options: Array<{ id: number; option_id: string; name: string; price_delta: string; in_stock: boolean; display_order: number }>;
+    };
+  }>
+> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  const links = await sql`
+    SELECT id, modifier_group_id, display_order
+    FROM merchant_item_modifier_groups
+    WHERE menu_item_id = ${menuItemId}
+    ORDER BY display_order ASC, id ASC
+  `;
+  const result: Array<any> = [];
+  for (const link of links as any[]) {
+    const [g] = await sql`
+      SELECT id, group_code, title, description, is_required, min_selection, max_selection
+      FROM merchant_modifier_groups
+      WHERE id = ${link.modifier_group_id} AND store_id = ${storeIdNum}
+    `;
+    if (!g) continue;
+    const opts = (await sql`
+      SELECT id, option_code, name, price_delta::text, in_stock, display_order
+      FROM merchant_modifier_options
+      WHERE modifier_group_id = ${link.modifier_group_id}
+      ORDER BY display_order ASC, id ASC
+    `) as any[];
+    const gAny = g as any;
+    result.push({
+      id: link.id,
+      modifier_group_id: link.modifier_group_id,
+      display_order: link.display_order,
+      group: {
+        ...gAny,
+        group_id: gAny.group_code ?? gAny.group_id,
+        options: opts.map((o: any) => ({ ...o, option_id: o.option_code ?? o.option_id })),
+      },
+    });
+  }
+  return result;
+}
+
+export async function linkModifierGroupToItem(
+  menuItemId: number,
+  modifierGroupId: number,
+  storeIdNum: number,
+  body?: { display_order?: number }
+): Promise<{ id: number }> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  const [g] = await sql`SELECT id FROM merchant_modifier_groups WHERE id = ${modifierGroupId} AND store_id = ${storeIdNum}`;
+  if (!g) throw new Error("MODIFIER_GROUP_NOT_FOUND");
+  const limits = await getModifierLimits(storeIdNum);
+  const [countRow] = await sql`SELECT COUNT(*)::int AS c FROM merchant_item_modifier_groups WHERE menu_item_id = ${menuItemId}`;
+  if (Number((countRow as any)?.c ?? 0) >= limits.max_modifier_groups_per_item) {
+    throw new Error(`LIMIT_GROUPS_PER_ITEM: Maximum ${limits.max_modifier_groups_per_item} addon groups per item.`);
+  }
+  const [existing] = await sql`
+    SELECT id FROM merchant_item_modifier_groups WHERE menu_item_id = ${menuItemId} AND modifier_group_id = ${modifierGroupId}
+  `;
+  if (existing) throw new Error("ALREADY_LINKED");
+  const [row] = await sql`
+    INSERT INTO merchant_item_modifier_groups (menu_item_id, modifier_group_id, display_order)
+    VALUES (${menuItemId}, ${modifierGroupId}, ${body?.display_order ?? 0})
+    RETURNING id
+  `;
+  return { id: Number((row as any).id) };
+}
+
+export async function unlinkModifierGroupFromItem(linkId: number, menuItemId: number, storeIdNum: number): Promise<boolean> {
+  await assertItemOwnership(menuItemId, storeIdNum);
+  const sql = getSql();
+  const [r] = await sql`
+    SELECT id FROM merchant_item_modifier_groups
+    WHERE id = ${linkId} AND menu_item_id = ${menuItemId}
+  `;
+  if (!r) return false;
+  await sql`DELETE FROM merchant_item_modifier_groups WHERE id = ${linkId}`;
+  return true;
+}
+
+export async function getModifierGroupUsageCount(groupId: number, storeIdNum: number): Promise<number> {
+  const sql = getSql();
+  const [g] = await sql`SELECT id FROM merchant_modifier_groups WHERE id = ${groupId} AND store_id = ${storeIdNum}`;
+  if (!g) return 0;
+  const [r] = await sql`SELECT COUNT(*)::int AS c FROM merchant_item_modifier_groups WHERE modifier_group_id = ${groupId}`;
+  return Number((r as any)?.c ?? 0);
 }

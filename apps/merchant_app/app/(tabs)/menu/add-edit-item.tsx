@@ -47,8 +47,14 @@ import {
   fetchStoreProfile,
   deleteMenuItem,
   createUpdateRequest,
+  fetchItemModifierGroups,
+  fetchModifierGroups,
+  linkModifierGroupToItem,
+  unlinkModifierGroupFromItem,
   type MenuItemPayload,
   type MenuCategory,
+  type LinkedModifierGroup,
+  type ModifierGroupRow,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
 
@@ -280,6 +286,8 @@ export default function AddEditItemScreen() {
   const [cuisineType, setCuisineType] = useState("");
   const [basePrice, setBasePrice] = useState("");
   const [sellingPrice, setSellingPrice] = useState("");
+  const [prepTimeMinutes, setPrepTimeMinutes] = useState("");
+  const [packagingCharges, setPackagingCharges] = useState("");
   const [servesLabel, setServesLabel] = useState("");
   const [itemSizeValue, setItemSizeValue] = useState("");
   const [itemSizeUnit, setItemSizeUnit] = useState("piece");
@@ -320,6 +328,10 @@ export default function AddEditItemScreen() {
   const [categorySheetExpandedIds, setCategorySheetExpandedIds] = useState<Set<number>>(new Set());
   const [showCategoryFormModal, setShowCategoryFormModal] = useState(false);
   const [categoryFormMode, setCategoryFormMode] = useState<"add" | "add_sub" | "edit">("add");
+  const [linkedModifierGroups, setLinkedModifierGroups] = useState<LinkedModifierGroup[]>([]);
+  const [showLinkAddonPicker, setShowLinkAddonPicker] = useState(false);
+  const [allModifierGroupsForPicker, setAllModifierGroupsForPicker] = useState<ModifierGroupRow[]>([]);
+  const [linkingGroupId, setLinkingGroupId] = useState<number | null>(null);
   const [categoryFormParentId, setCategoryFormParentId] = useState<number | null>(null);
   const [categoryFormEditingId, setCategoryFormEditingId] = useState<number | null>(null);
   const [categoryFormName, setCategoryFormName] = useState("");
@@ -457,14 +469,22 @@ export default function AddEditItemScreen() {
     [deleteCategoryMutation, refetchCategories, categoryId]
   );
 
-  // Fetch store cuisines (saved during onboarding) for optional cuisine picker
+  // Fetch store profile: cuisines + defaults for prep time & packaging (used when adding new item)
   useEffect(() => {
     if (!storeId || !token) return;
     let cancelled = false;
     setStoreCuisinesLoading(true);
     fetchStoreProfile(storeId, token)
       .then((r) => {
-        if (!cancelled && r.cuisine_types?.length) setStoreCuisines(r.cuisine_types);
+        if (cancelled) return;
+        if (r.cuisine_types?.length) setStoreCuisines(r.cuisine_types);
+        // Set default prep time and packaging from store only when not editing (add mode)
+        if (!isEdit) {
+          const storePrep = r.avg_preparation_time_minutes ?? 15;
+          setPrepTimeMinutes(String(storePrep));
+          const storePack = r.packaging_charge_amount ?? 0;
+          setPackagingCharges(storePack > 0 ? String(storePack) : "");
+        }
       })
       .catch(() => {
         if (!cancelled) setStoreCuisines([]);
@@ -473,7 +493,26 @@ export default function AddEditItemScreen() {
         if (!cancelled) setStoreCuisinesLoading(false);
       });
     return () => { cancelled = true; };
-  }, [storeId, token]);
+  }, [storeId, token, isEdit]);
+
+  // Linked addon groups (reusable modifier groups) when editing an item
+  useEffect(() => {
+    if (!storeId || !token || !isEdit || itemId == null || Number.isNaN(itemId)) return;
+    let cancelled = false;
+    fetchItemModifierGroups(storeId, itemId, token)
+      .then((r) => { if (!cancelled) setLinkedModifierGroups(r.linkedModifierGroups ?? []); })
+      .catch(() => { if (!cancelled) setLinkedModifierGroups([]); });
+    return () => { cancelled = true; };
+  }, [storeId, token, isEdit, itemId]);
+
+  useEffect(() => {
+    if (!showLinkAddonPicker || !storeId || !token) return;
+    let cancelled = false;
+    fetchModifierGroups(storeId, token)
+      .then((r) => { if (!cancelled) setAllModifierGroupsForPicker(r.modifierGroups ?? []); })
+      .catch(() => { if (!cancelled) setAllModifierGroupsForPicker([]); });
+    return () => { cancelled = true; };
+  }, [showLinkAddonPicker, storeId, token]);
 
   // Sync fetched item into form state (edit mode)
   useEffect(() => {
@@ -486,6 +525,8 @@ export default function AddEditItemScreen() {
     setCuisineType(itemData.cuisine_type ?? "");
     setBasePrice(itemData.base_price ?? "");
     setSellingPrice(itemData.selling_price ?? "");
+    setPrepTimeMinutes(itemData.preparation_time_minutes != null ? String(itemData.preparation_time_minutes) : "");
+    setPackagingCharges((itemData as { packaging_charges?: number | string | null }).packaging_charges != null ? String((itemData as any).packaging_charges) : "");
     setServesLabel(itemData.serves_label ?? "");
     setItemSizeValue(itemData.item_size_value != null ? String(itemData.item_size_value) : "");
     setItemSizeUnit(itemData.item_size_unit ?? "piece");
@@ -614,6 +655,9 @@ export default function AddEditItemScreen() {
           })()
         : null;
 
+    const prepMins = parseOptionalNonNegativeNumber(prepTimeMinutes);
+    const packagingNum = parseOptionalNonNegativeNumber(packagingCharges);
+
     const payload: MenuItemPayload = {
       item_name: itemName.trim(),
       item_description: description.trim() || null,
@@ -622,6 +666,8 @@ export default function AddEditItemScreen() {
       cuisine_type: cuisineType.trim() || null,
       base_price: base,
       selling_price: selling,
+      preparation_time_minutes: prepMins ?? null,
+      packaging_charges: packagingNum ?? null,
       serves_label: servesLabel || null,
       serves: servesNumber,
       item_size_value: parseOptionalNonNegativeNumber(itemSizeValue || ""),
@@ -706,7 +752,7 @@ export default function AddEditItemScreen() {
     }
   }, [
     storeId, isEdit, itemId, itemName, description, foodType, categoryId, cuisineType, pendingImage, token,
-    basePrice, sellingPrice, servesLabel, itemSizeValue, itemSizeUnit,
+    basePrice, sellingPrice, prepTimeMinutes, packagingCharges, servesLabel, itemSizeValue, itemSizeUnit,
     availableForDelivery, weightPerServing, weightUnit, caloriesKcal,
     proteinVal, proteinUnit, carbsVal, carbsUnit, fatVal, fatUnit,
     fibreVal, fibreUnit, selectedAllergens, selectedTags, router,
@@ -854,11 +900,110 @@ export default function AddEditItemScreen() {
               </View>
               <Text style={styles.manageOptionsHint}>For approved items, changes will go for review.</Text>
             </View>
+
+            <View style={styles.manageOptionsCard}>
+              <Text style={styles.manageOptionsTitle}>Linked Addon Groups</Text>
+              <Text style={styles.manageOptionsHint}>Reusable addon groups from your Addon Library. Link once, use on many items.</Text>
+              {linkedModifierGroups.length > 0 && (
+                <View style={styles.linkedAddonsList}>
+                  {linkedModifierGroups.map((link) => (
+                    <View key={link.id} style={styles.linkedAddonRow}>
+                      <View style={styles.linkedAddonInfo}>
+                        <Text style={styles.linkedAddonTitle} numberOfLines={1}>{link.group.title}</Text>
+                        <Text style={styles.linkedAddonMeta}>{link.group.options?.length ?? 0} option(s)</Text>
+                      </View>
+                      <TouchableOpacity
+                        onPress={async () => {
+                          if (!storeId || !token || itemId == null) return;
+                          try {
+                            await unlinkModifierGroupFromItem(storeId, itemId, link.id, token);
+                            const r = await fetchItemModifierGroups(storeId, itemId, token);
+                            setLinkedModifierGroups(r.linkedModifierGroups ?? []);
+                          } catch (e) {
+                            Alert.alert("Error", e instanceof Error ? e.message : "Could not unlink.");
+                          }
+                        }}
+                        hitSlop={8}
+                      >
+                        <Ionicons name="close-circle" size={22} color={GatiMitraMerchant.textTertiary} />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
+              <View style={styles.manageOptionsRow}>
+                <TouchableOpacity
+                  style={styles.manageOptionBtn}
+                  onPress={() => setShowLinkAddonPicker(true)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="link" size={18} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.manageOptionBtnText}>Add existing</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.manageOptionBtn}
+                  onPress={() => router.push("/menu/addon-library" as any)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.manageOptionBtnText}>Create new</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
             <SectionDivider />
           </>
         ) : (
           <SectionDivider />
         )}
+
+        {/* Link addon group picker modal */}
+        <Modal visible={showLinkAddonPicker} transparent animationType="slide">
+          <View style={modalStyles.overlay}>
+            <TouchableOpacity style={modalStyles.dismiss} onPress={() => setShowLinkAddonPicker(false)} activeOpacity={1} />
+            <View style={[modalStyles.sheet, { maxHeight: "70%" }]}>
+              <View style={modalStyles.header}>
+                <Text style={modalStyles.title}>Add existing addon group</Text>
+                <TouchableOpacity onPress={() => setShowLinkAddonPicker(false)} hitSlop={12}>
+                  <Ionicons name="close" size={24} color={GatiMitraMerchant.textPrimary} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={modalStyles.body} showsVerticalScrollIndicator={false}>
+                {allModifierGroupsForPicker
+                  .filter((g) => !linkedModifierGroups.some((l) => l.modifier_group_id === g.id))
+                  .map((g) => (
+                    <TouchableOpacity
+                      key={g.id}
+                      style={[modalStyles.optionRow, linkingGroupId === g.id && { opacity: 0.6 }]}
+                      onPress={async () => {
+                        if (!storeId || !token || itemId == null) return;
+                        setLinkingGroupId(g.id);
+                        try {
+                          await linkModifierGroupToItem(storeId, itemId, token, { modifier_group_id: g.id });
+                          const r = await fetchItemModifierGroups(storeId, itemId, token);
+                          setLinkedModifierGroups(r.linkedModifierGroups ?? []);
+                          setShowLinkAddonPicker(false);
+                        } catch (e) {
+                          Alert.alert("Error", e instanceof Error ? e.message : "Could not link.");
+                        } finally {
+                          setLinkingGroupId(null);
+                        }
+                      }}
+                      disabled={linkingGroupId != null}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.modalOptionText} numberOfLines={1}>{g.title}</Text>
+                        <Text style={styles.modalOptionMeta}>{g.options_count} options · Used in {g.used_in_items_count} items</Text>
+                      </View>
+                      <Ionicons name="add-circle-outline" size={22} color={GatiMitraMerchant.primary} />
+                    </TouchableOpacity>
+                  ))}
+                {allModifierGroupsForPicker.filter((g) => !linkedModifierGroups.some((l) => l.modifier_group_id === g.id)).length === 0 && (
+                  <Text style={styles.modalEmpty}>No other addon groups to link. Create one in Addon Library.</Text>
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
 
         {/* ── Category (subcategory): sheet with hierarchical list + add/edit/delete ── */}
         <View style={styles.section}>
@@ -1219,6 +1364,36 @@ export default function AddEditItemScreen() {
           </View>
         </View>
 
+        {/* ── Prep time & packaging (default from store, editable per item) ── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionHeading}>Prep time & packaging</Text>
+          <Text style={styles.sectionSubheading}>
+            Defaults are from your store settings. Change here only if this item is different.
+          </Text>
+          <View style={styles.fieldWrap}>
+            <Text style={styles.fieldLabel}>Prep time (minutes)</Text>
+            <TextInput
+              style={styles.textInput}
+              value={prepTimeMinutes}
+              onChangeText={setPrepTimeMinutes}
+              placeholder="e.g. 15"
+              placeholderTextColor={GatiMitraMerchant.textTertiary}
+              keyboardType="number-pad"
+            />
+          </View>
+          <View style={styles.fieldWrap}>
+            <Text style={styles.fieldLabel}>Packaging charges (₹)</Text>
+            <TextInput
+              style={styles.textInput}
+              value={packagingCharges}
+              onChangeText={setPackagingCharges}
+              placeholder="e.g. 0"
+              placeholderTextColor={GatiMitraMerchant.textTertiary}
+              keyboardType="decimal-pad"
+            />
+          </View>
+        </View>
+
         <SectionDivider />
 
         {/* ── Available on ── */}
@@ -1566,6 +1741,20 @@ const styles = StyleSheet.create({
   },
   manageOptionBtnText: { fontSize: 13, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
   manageOptionsHint: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
+  linkedAddonsList: { marginBottom: 12, gap: 0 },
+  linkedAddonRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  linkedAddonInfo: { flex: 1, minWidth: 0 },
+  linkedAddonTitle: { fontSize: 14, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  linkedAddonMeta: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
+  modalOptionText: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
+  modalOptionMeta: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  modalEmpty: { fontSize: 13, color: GatiMitraMerchant.textTertiary, paddingVertical: 20, textAlign: "center" },
   categorySheetSearchWrap: {
     flexDirection: "row",
     alignItems: "center",

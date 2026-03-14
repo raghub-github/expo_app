@@ -21,6 +21,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import {
   GatiMitraMerchant,
   H_PADDING,
@@ -31,15 +32,23 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useMenuCategories, useMenuItems, usePatchItemStock, useDeleteCategory } from "@/hooks/useMenuQueries";
-import type { MenuItemRow } from "@/services/menuApi";
-import type { MenuCategory } from "@/services/menuApi";
-import { deleteMenuItem, createDeleteRequest } from "@/services/menuApi";
+import type { MenuItemRow, MenuCategory, MenuItemDetail } from "@/services/menuApi";
+import type { ComboRow, ComboDetail } from "@/services/menuApi";
+import {
+  deleteMenuItem,
+  createDeleteRequest,
+  deleteCombo,
+  fetchCombos,
+  fetchCombo,
+  fetchMenuItem,
+} from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
 import { useRouter } from "expo-router";
 
 type ApprovalFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
 type StockFilter = "ALL" | "IN_STOCK" | "OUT_OF_STOCK";
 type ChangeRequestFilter = "ALL" | "DELETE" | "UPDATE";
+type ItemKindFilter = "ALL" | "ITEMS" | "COMBOS";
 
 const FOOD_TYPE_LABELS: Record<string, string> = {
   VEG: "Veg",
@@ -54,15 +63,20 @@ function MenuItemCard({
   onToggleStock,
   onEdit,
   onMoreOptions,
+  storeId,
+  token,
 }: {
   item: MenuItemRow;
   categoryName: string | null;
   onToggleStock: (id: number, inStock: boolean) => void;
   onEdit: (id: number) => void;
   onMoreOptions: (item: MenuItemRow) => void;
+  storeId: string | null;
+  token: string | null;
 }) {
   const [toggling, setToggling] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
   const sellingNum = Number(item.selling_price);
   const baseNum = Number(item.base_price);
   const hasDiscount = baseNum > sellingNum && baseNum > 0;
@@ -80,10 +94,41 @@ function MenuItemCard({
 
   const handleToggle = () => {
     if (toggling) return;
-    setToggling(true);
-    onToggleStock(item.id, !item.in_stock);
-    setToggling(false);
+
+    const nextInStock = !item.in_stock;
+    const title = nextInStock ? "Mark item as in stock?" : "Mark item as out of stock?";
+    const message = nextInStock
+      ? `Customers will be able to order "${item.item_name}".`
+      : `Customers will not be able to order "${item.item_name}".`;
+
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Yes, proceed",
+        style: "default",
+        onPress: () => {
+          setToggling(true);
+          onToggleStock(item.id, nextInStock);
+          setToggling(false);
+        },
+      },
+    ]);
   };
+
+  const {
+    data: detail,
+    isLoading: detailLoading,
+  } = useQuery<MenuItemDetail | null>({
+    queryKey: ["menu", "item-card", storeId, item.id],
+    queryFn: () => fetchMenuItem(storeId!, item.id, token!),
+    enabled: Boolean(showOptions && storeId && token),
+  });
+
+  const variantsCount = detail?.variants?.length ?? 0;
+  const groupsCount = detail?.customizations?.length ?? 0;
+  const addonsCount =
+    detail?.customizations?.reduce((acc, g) => acc + (g.options?.length ?? 0), 0) ?? 0;
+  const hasAnyOptions = variantsCount + groupsCount + addonsCount > 0;
 
   return (
     <View style={styles.itemCard}>
@@ -124,9 +169,36 @@ function MenuItemCard({
           )}
         </View>
         <View style={styles.itemBody}>
-          <Text style={styles.itemName} numberOfLines={2}>
-            {item.item_name}
-          </Text>
+          <View style={styles.itemHeaderRow}>
+            <Text style={styles.itemName} numberOfLines={2}>
+              {item.item_name}
+            </Text>
+            <View style={styles.itemHeaderActions}>
+              <TouchableOpacity
+                onPress={() => onMoreOptions(item)}
+                style={styles.moreBtn}
+                hitSlop={8}
+              >
+                <Ionicons
+                  name="ellipsis-vertical"
+                  size={18}
+                  color={GatiMitraMerchant.textSecondary}
+                />
+              </TouchableOpacity>
+              <View style={styles.stockToggleWrap}>
+                <Switch
+                  value={item.in_stock}
+                  onValueChange={handleToggle}
+                  disabled={toggling}
+                  trackColor={{
+                    false: GatiMitraMerchant.border,
+                    true: GatiMitraMerchant.primary,
+                  }}
+                  thumbColor="#fff"
+                />
+              </View>
+            </View>
+          </View>
           {item.item_description?.trim() ? (
             <Text style={styles.itemDescription} numberOfLines={2}>
               {item.item_description.trim()}
@@ -164,6 +236,72 @@ function MenuItemCard({
               <Text style={styles.basePriceStrike}>{baseFormatted}</Text>
             ) : null}
           </View>
+          {hasAnyOptions && (
+            <TouchableOpacity
+              onPress={() => setShowOptions((v) => !v)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.optionsSummaryText} numberOfLines={1}>
+                {variantsCount
+                  ? `${variantsCount} variant${variantsCount > 1 ? "s" : ""}`
+                  : ""}
+                {groupsCount
+                  ? `${variantsCount ? " · " : ""}${groupsCount} customization group${
+                      groupsCount > 1 ? "s" : ""
+                    }`
+                  : ""}
+                {addonsCount
+                  ? `${variantsCount || groupsCount ? " · " : ""}${addonsCount} add-on${
+                      addonsCount > 1 ? "s" : ""
+                    }`
+                  : ""}
+                {showOptions ? " · Hide" : " · See details"}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {showOptions && (
+            <View style={styles.optionsDetails}>
+              {detailLoading ? (
+                <ActivityIndicator
+                  size="small"
+                  color={GatiMitraMerchant.primary}
+                />
+              ) : detail ? (
+                <>
+                  {detail.variants?.length ? (
+                    <View style={styles.optionsRow}>
+                      <Text style={styles.optionsLabel}>Variants:</Text>
+                      <Text style={styles.optionsValue} numberOfLines={2}>
+                        {detail.variants.map((v) => v.variant_name).join(", ")}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {detail.customizations?.length ? (
+                    <View style={styles.optionsRow}>
+                      <Text style={styles.optionsLabel}>Customizations:</Text>
+                      <View style={styles.optionsValueColumn}>
+                        {detail.customizations.slice(0, 3).map((g) => (
+                          <Text
+                            key={g.id}
+                            style={styles.optionsValue}
+                            numberOfLines={1}
+                          >
+                            {g.customization_title} · {g.options.length} option
+                            {g.options.length > 1 ? "s" : ""}
+                          </Text>
+                        ))}
+                        {detail.customizations.length > 3 && (
+                          <Text style={styles.optionsMoreText}>
+                            +{detail.customizations.length - 3} more groups
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+            </View>
+          )}
           {tags.length > 0 ? (
             <View style={styles.tagsRow}>
               {tags.map((t) => (
@@ -175,31 +313,155 @@ function MenuItemCard({
           ) : null}
         </View>
       </TouchableOpacity>
-      <View style={styles.itemFooter}>
-        <TouchableOpacity
-          onPress={() => onMoreOptions(item)}
-          style={styles.moreBtn}
-          hitSlop={8}
-        >
-          <Ionicons name="ellipsis-vertical" size={20} color={GatiMitraMerchant.textSecondary} />
-        </TouchableOpacity>
-        <View style={styles.stockToggleWrap}>
-          <Text style={[styles.stockToggleLabel, !item.in_stock && styles.stockToggleLabelOff]}>
-            {item.in_stock ? "In stock" : "Out of stock"}
-          </Text>
-          {toggling ? (
-            <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
-          ) : (
-            <Switch
-              value={item.in_stock}
-              onValueChange={handleToggle}
-              disabled={toggling}
-              trackColor={{ false: GatiMitraMerchant.border, true: GatiMitraMerchant.primary }}
-              thumbColor="#fff"
-            />
-          )}
+    </View>
+  );
+}
+
+function ComboCard({
+  combo,
+  detail,
+  itemById,
+  onPress,
+  isDisabled,
+  onMoreOptions,
+}: {
+  combo: ComboRow;
+  detail: ComboDetail | null;
+  itemById: Map<number, MenuItemRow>;
+  onPress: () => void;
+  isDisabled: boolean;
+  onMoreOptions: () => void;
+}) {
+  const [imageError, setImageError] = useState(false);
+
+  const components = detail?.components ?? [];
+  const componentItems = components.map((comp) => {
+    const item = itemById.get(comp.menu_item_id);
+    const price = item ? Number(item.selling_price) || 0 : 0;
+    return { comp, item, price };
+  });
+
+  componentItems.sort((a, b) => b.price - a.price);
+  const topComponents = componentItems.slice(0, 3);
+
+  const imageUris = topComponents
+    .map((ci) =>
+      ci.item?.item_image_url
+        ? resolveImageUrl(ci.item.item_image_url) ?? ci.item.item_image_url
+        : null
+    )
+    .filter((u): u is string => Boolean(u) && !imageError);
+
+  const lines = components.map((comp) => {
+    const item = itemById.get(comp.menu_item_id);
+    const name = item?.item_name ?? `Item #${comp.menu_item_id}`;
+    const qty = comp.quantity ?? 1;
+    return `${name} × ${qty}`;
+  });
+
+  const maxLinesToShow = 3;
+  const shownLines = lines.slice(0, maxLinesToShow);
+  const remainingCount = lines.length - shownLines.length;
+
+  const comboPrice = `₹${Number(combo.combo_price).toFixed(0)}`;
+
+  return (
+    <View style={[styles.itemCard, isDisabled && styles.comboCardDisabled]}>
+      <TouchableOpacity
+        style={styles.itemTouchable}
+        onPress={onPress}
+        activeOpacity={0.85}
+      >
+        <View style={styles.itemImageWrap}>
+          <View style={styles.comboImageStack}>
+            {imageUris.length === 0 ? (
+              <View style={styles.itemImagePlaceholder}>
+                <Ionicons
+                  name="layers-outline"
+                  size={32}
+                  color={GatiMitraMerchant.primary}
+                />
+              </View>
+            ) : imageUris.length === 1 ? (
+              <Image
+                source={{ uri: imageUris[0] }}
+                style={styles.comboImageSingle}
+                resizeMode="cover"
+                onError={() => setImageError(true)}
+              />
+            ) : (
+              <View style={styles.comboImageGrid}>
+                {imageUris.slice(0, 3).map((uri, idx) => (
+                  <Image
+                    key={`${uri}-${idx}`}
+                    source={{ uri }}
+                    style={styles.comboImageGridCell}
+                    resizeMode="cover"
+                    onError={() => setImageError(true)}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+          <View style={styles.comboBadge}>
+            <Text style={styles.comboBadgeText}>Combo</Text>
+          </View>
         </View>
-      </View>
+        <View style={styles.itemBody}>
+          <View style={styles.itemHeaderRow}>
+            <Text style={styles.itemName} numberOfLines={2}>
+              {combo.combo_name}
+            </Text>
+            <View style={styles.itemHeaderActions}>
+              <TouchableOpacity
+                onPress={onMoreOptions}
+                style={styles.moreBtn}
+                hitSlop={8}
+              >
+                <Ionicons
+                  name="ellipsis-vertical"
+                  size={18}
+                  color={GatiMitraMerchant.textSecondary}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+          {combo.description?.trim() ? (
+            <Text style={styles.itemDescription} numberOfLines={2}>
+              {combo.description.trim()}
+            </Text>
+          ) : null}
+          {shownLines.length > 0 ? (
+            <View style={styles.comboItemsList}>
+              {shownLines.map((line) => (
+                <Text key={line} style={styles.comboItemLine} numberOfLines={1}>
+                  {line}
+                </Text>
+              ))}
+              {remainingCount > 0 && (
+                <Text style={styles.comboItemMore} numberOfLines={1}>
+                  +{remainingCount} more
+                </Text>
+              )}
+            </View>
+          ) : null}
+          <View style={styles.priceRow}>
+            <Text
+              style={[
+                styles.sellingPrice,
+                isDisabled && styles.comboPriceDisabled,
+              ]}
+            >
+              {comboPrice}
+            </Text>
+            {isDisabled && (
+              <Text style={styles.comboUnavailableText}>
+                Not available · an item is out of stock
+              </Text>
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -218,6 +480,8 @@ export default function MenuScreen() {
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("ALL");
   const [stockFilter, setStockFilter] = useState<StockFilter>("ALL");
   const [changeRequestFilter, setChangeRequestFilter] = useState<ChangeRequestFilter>("ALL");
+  const [kindFilter, setKindFilter] = useState<ItemKindFilter>("ALL");
+  const [filtersVisible, setFiltersVisible] = useState(false);
   const [search, setSearch] = useState("");
   const [searchDebounced, setSearchDebounced] = useState("");
   const [addMenuVisible, setAddMenuVisible] = useState(false);
@@ -289,6 +553,61 @@ export default function MenuScreen() {
   const items = itemsData?.items ?? [];
   const total = itemsData?.total ?? 0;
 
+  const itemById = useMemo(() => {
+    const map = new Map<number, MenuItemRow>();
+    for (const it of items) map.set(it.id, it);
+    return map;
+  }, [items]);
+
+  const [combos, setCombos] = useState<ComboRow[]>([]);
+  const [comboDetails, setComboDetails] = useState<Map<number, ComboDetail>>(new Map());
+  const [combosLoading, setCombosLoading] = useState(false);
+
+  useEffect(() => {
+    if (!storeId || !token) return;
+    const canShowCombosUnderFilters = effectiveCategoryId == null && !searchDebounced;
+    if (!canShowCombosUnderFilters) {
+      setCombos([]);
+      setComboDetails(new Map());
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        setCombosLoading(true);
+        const res = await fetchCombos(storeId, token);
+        if (cancelled) return;
+        const rows = res.combos ?? [];
+        setCombos(rows);
+
+        const detailEntries = await Promise.all(
+          rows.map(async (c) => {
+            try {
+              const d = await fetchCombo(storeId, c.id, token);
+              return d ? [c.id, d] as const : null;
+            } catch {
+              return null;
+            }
+          })
+        );
+        if (cancelled) return;
+        const map = new Map<number, ComboDetail>();
+        for (const entry of detailEntries) {
+          if (!entry) continue;
+          map.set(entry[0], entry[1]);
+        }
+        setComboDetails(map);
+      } finally {
+        if (!cancelled) setCombosLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, token, effectiveCategoryId, searchDebounced]);
+
   const patchStock = usePatchItemStock(storeId, token);
   const deleteCat = useDeleteCategory(storeId, token);
   const refreshing = categoriesRefetching || itemsRefetching;
@@ -340,9 +659,9 @@ export default function MenuScreen() {
     [patchStock]
   );
 
-  const handleEditItem = useCallback(
+  const handleOpenItemDetails = useCallback(
     (itemId: number) => {
-      router.push({ pathname: "/menu/add-edit-item", params: { itemId: String(itemId) } } as any);
+      router.push({ pathname: "/menu/item-details/[id]", params: { id: String(itemId) } } as any);
     },
     [router]
   );
@@ -424,14 +743,75 @@ export default function MenuScreen() {
         "Item options",
         item.item_name,
         [
-          { text: "Edit details & images", onPress: () => handleEditItem(item.id) },
+          {
+            text: "Edit details & images",
+            onPress: () =>
+              router.push({
+                pathname: "/menu/add-edit-item",
+                params: { itemId: String(item.id) },
+              } as any),
+          },
           deleteAction,
           { text: "Cancel", style: "cancel" },
         ],
         { cancelable: true }
       );
     },
-    [handleEditItem, storeId, token, refetchItems]
+    [storeId, token, refetchItems, router]
+  );
+
+  const handleComboOptions = useCallback(
+    (combo: ComboRow) => {
+      Alert.alert(
+        "Combo options",
+        combo.combo_name,
+        [
+          {
+            text: "Edit combo",
+            onPress: () =>
+              router.push({
+                pathname: "/menu/combos/[id]",
+                params: { id: String(combo.id) },
+              } as any),
+          },
+          {
+            text: "Delete combo",
+            style: "destructive",
+            onPress: () => {
+              if (!storeId || !token) return;
+              Alert.alert(
+                "Delete combo?",
+                `Remove "${combo.combo_name}" from your catalog? This cannot be undone.`,
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Delete",
+                    style: "destructive",
+                    onPress: async () => {
+                      try {
+                        await deleteCombo(storeId, combo.id, token);
+                        const res = await fetchCombos(storeId, token);
+                        setCombos(res.combos ?? []);
+                      } catch (e) {
+                        Alert.alert(
+                          "Delete failed",
+                          e instanceof Error
+                            ? e.message
+                            : "Could not delete combo. Please try again."
+                        );
+                      }
+                    },
+                  },
+                ]
+              );
+            },
+          },
+          { text: "Cancel", style: "cancel" },
+        ],
+        { cancelable: true }
+      );
+    },
+    [router, storeId, token]
   );
 
   const categoryMap = new Map(categories.map((c) => [c.id, c.category_name]));
@@ -457,6 +837,19 @@ export default function MenuScreen() {
   const canFetch = Boolean(token && storeId);
   const error = itemsError ? (itemsError instanceof Error ? itemsError.message : "Failed to load items") : null;
   const loading = itemsLoading;
+
+  const canShowCombosUnderFilters = effectiveCategoryId == null && !searchDebounced;
+  const showItems = kindFilter !== "COMBOS";
+  const showCombos = kindFilter !== "ITEMS" && canShowCombosUnderFilters;
+  const validCombos = useMemo(
+    () =>
+      combos.filter((c) => {
+        const detail = comboDetails.get(c.id);
+        return detail?.components && detail.components.length >= 2;
+      }),
+    [combos, comboDetails]
+  );
+  const totalDisplayed = (showItems ? total : 0) + (showCombos ? validCombos.length : 0);
 
   if (!canFetch) {
     return (
@@ -490,8 +883,16 @@ export default function MenuScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={GatiMitraMerchant.primary} />
       }
     >
-      {/* Top bar: search + add — single row, modern */}
+      {/* Top bar: add + search + filter icon — compact row */}
       <View style={styles.topBar}>
+        <TouchableOpacity
+          style={[styles.addBtn, GatiMitraMerchant.cursorPointer]}
+          onPress={() => setAddMenuVisible(true)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="add" size={20} color="#fff" />
+          <Text style={styles.addBtnText}>Add</Text>
+        </TouchableOpacity>
         <View style={styles.searchWrap}>
           <Ionicons name="search-outline" size={18} color={GatiMitraMerchant.textTertiary} />
           <TextInput
@@ -508,12 +909,16 @@ export default function MenuScreen() {
           )}
         </View>
         <TouchableOpacity
-          style={[styles.addBtn, GatiMitraMerchant.cursorPointer]}
-          onPress={() => setAddMenuVisible(true)}
+          style={styles.filterIconBtn}
+          onPress={() => setFiltersVisible((v) => !v)}
           activeOpacity={0.85}
+          hitSlop={8}
         >
-          <Ionicons name="add" size={20} color="#fff" />
-          <Text style={styles.addBtnText}>Add</Text>
+          <Ionicons
+            name="options-outline"
+            size={20}
+            color={filtersVisible ? GatiMitraMerchant.primary : GatiMitraMerchant.textSecondary}
+          />
         </TouchableOpacity>
       </View>
 
@@ -538,6 +943,10 @@ export default function MenuScreen() {
               <Ionicons name="restaurant-outline" size={22} color={GatiMitraMerchant.primary} />
               <Text style={styles.addMenuOptionText}>Menu item</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={styles.addMenuOption} onPress={() => { setAddMenuVisible(false); router.push("/menu/addon-library" as any); }} activeOpacity={0.7}>
+              <Ionicons name="pricetag-outline" size={22} color={GatiMitraMerchant.primary} />
+              <Text style={styles.addMenuOptionText}>Addon group</Text>
+            </TouchableOpacity>
             <View style={styles.addMenuDivider} />
             <Text style={styles.addMenuSubtitle}>View or manage existing</Text>
             <TouchableOpacity style={styles.addMenuOption} onPress={() => { setAddMenuVisible(false); router.push("/menu/categories" as any); }} activeOpacity={0.7}>
@@ -548,6 +957,10 @@ export default function MenuScreen() {
               <Ionicons name="layers-outline" size={22} color={GatiMitraMerchant.textSecondary} />
               <Text style={styles.addMenuOptionText}>Combos</Text>
             </TouchableOpacity>
+            <TouchableOpacity style={styles.addMenuOption} onPress={() => { setAddMenuVisible(false); router.push("/menu/addon-library" as any); }} activeOpacity={0.7}>
+              <Ionicons name="pricetag-outline" size={22} color={GatiMitraMerchant.textSecondary} />
+              <Text style={styles.addMenuOptionText}>Addon Library</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.addMenuCancel} onPress={() => setAddMenuVisible(false)}>
               <Text style={styles.addMenuCancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -555,78 +968,103 @@ export default function MenuScreen() {
         </Pressable>
       </Modal>
 
-      {/* Filters: Category + Subcategory (same line when applicable), then Status + Stock — compact */}
-      <View style={styles.filterSection}>
-        <View style={styles.filterRow}>
-          <View style={[styles.filterTriggerWrap, subcategoriesOfSelected.length > 0 ? styles.filterTriggerHalf : undefined]}>
-            <Text style={styles.filterLabel}>Category</Text>
-            <TouchableOpacity
-              style={styles.filterCategoryTrigger}
-              onPress={() => setCategoryFilterSheetVisible(true)}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="folder-open-outline" size={16} color={GatiMitraMerchant.primary} />
-              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>{selectedCategoryLabel}</Text>
-              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
-            </TouchableOpacity>
-          </View>
-          {subcategoriesOfSelected.length > 0 ? (
-            <View style={styles.filterTriggerHalf}>
-              <Text style={styles.filterLabel}>Subcategory</Text>
+      {/* Filters: revealed by filter icon — compact layout */}
+      {filtersVisible && (
+        <View style={styles.filterSection}>
+          <View style={styles.filterRow}>
+            <View style={[styles.filterTriggerWrap, subcategoriesOfSelected.length > 0 ? styles.filterTriggerHalf : undefined]}>
+              <Text style={styles.filterLabel}>Category</Text>
               <TouchableOpacity
                 style={styles.filterCategoryTrigger}
-                onPress={() => setSubcategoryFilterSheetVisible(true)}
+                onPress={() => setCategoryFilterSheetVisible(true)}
                 activeOpacity={0.8}
               >
-                <Ionicons name="git-branch-outline" size={16} color={GatiMitraMerchant.primary} />
-                <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>{selectedSubcategoryLabel}</Text>
-                <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
+                <Ionicons name="folder-open-outline" size={14} color={GatiMitraMerchant.primary} />
+                <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>{selectedCategoryLabel}</Text>
+                <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
               </TouchableOpacity>
             </View>
-          ) : null}
+            {subcategoriesOfSelected.length > 0 ? (
+              <View style={styles.filterTriggerHalf}>
+                <Text style={styles.filterLabel}>Subcategory</Text>
+                <TouchableOpacity
+                  style={styles.filterCategoryTrigger}
+                  onPress={() => setSubcategoryFilterSheetVisible(true)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="git-branch-outline" size={14} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>{selectedSubcategoryLabel}</Text>
+                  <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
+          <View style={styles.filterRow}>
+            <View style={styles.filterTriggerThird}>
+              <Text style={styles.filterLabel}>Status</Text>
+              <TouchableOpacity
+                style={styles.filterCategoryTrigger}
+                onPress={() => setStatusFilterSheetVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
+                  {approvalFilter === "ALL" ? "All" : approvalFilter === "PENDING" ? "Pending" : approvalFilter === "APPROVED" ? "Approved" : "Rejected"}
+                </Text>
+                <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.filterTriggerThird}>
+              <Text style={styles.filterLabel}>Stock</Text>
+              <TouchableOpacity
+                style={styles.filterCategoryTrigger}
+                onPress={() => setStockFilterSheetVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
+                  {stockFilter === "ALL" ? "All" : stockFilter === "IN_STOCK" ? "In stock" : "Out of stock"}
+                </Text>
+                <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.filterTriggerThird}>
+              <Text style={styles.filterLabel}>Change</Text>
+              <TouchableOpacity
+                style={styles.filterCategoryTrigger}
+                onPress={() => setChangeRequestFilterSheetVisible(true)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
+                  {changeRequestFilter === "ALL" ? "All" : changeRequestFilter === "DELETE" ? "Delete requested" : "Edit requested"}
+                </Text>
+                <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+          <View style={styles.filterChipsRow}>
+            <Text style={styles.filterChipLabel}>Show</Text>
+            {(["ALL", "ITEMS", "COMBOS"] as ItemKindFilter[]).map((k) => (
+              <TouchableOpacity
+                key={k}
+                style={[
+                  styles.filterChip,
+                  kindFilter === k && styles.filterChipActive,
+                ]}
+                onPress={() => setKindFilter(k)}
+                activeOpacity={0.8}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    kindFilter === k && styles.filterChipTextActive,
+                  ]}
+                >
+                  {k === "ALL" ? "Items & combos" : k === "ITEMS" ? "Items only" : "Combos only"}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
-        <View style={styles.filterRow}>
-          <View style={styles.filterTriggerThird}>
-            <Text style={styles.filterLabel}>Status</Text>
-            <TouchableOpacity
-              style={styles.filterCategoryTrigger}
-              onPress={() => setStatusFilterSheetVisible(true)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
-                {approvalFilter === "ALL" ? "All" : approvalFilter === "PENDING" ? "Pending" : approvalFilter === "APPROVED" ? "Approved" : "Rejected"}
-              </Text>
-              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
-            </TouchableOpacity>
-          </View>
-          <View style={styles.filterTriggerThird}>
-            <Text style={styles.filterLabel}>Stock</Text>
-            <TouchableOpacity
-              style={styles.filterCategoryTrigger}
-              onPress={() => setStockFilterSheetVisible(true)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
-                {stockFilter === "ALL" ? "All" : stockFilter === "IN_STOCK" ? "In stock" : "Out of stock"}
-              </Text>
-              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
-            </TouchableOpacity>
-          </View>
-          <View style={styles.filterTriggerThird}>
-            <Text style={styles.filterLabel}>Change request</Text>
-            <TouchableOpacity
-              style={styles.filterCategoryTrigger}
-              onPress={() => setChangeRequestFilterSheetVisible(true)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.filterCategoryTriggerText} numberOfLines={1}>
-                {changeRequestFilter === "ALL" ? "All" : changeRequestFilter === "DELETE" ? "Delete requested" : "Edit requested"}
-              </Text>
-              <Ionicons name="chevron-down" size={16} color={GatiMitraMerchant.textSecondary} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
+      )}
 
       {/* Status filter sheet */}
       <Modal visible={statusFilterSheetVisible} transparent animationType="slide">
@@ -804,37 +1242,68 @@ export default function MenuScreen() {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>
-          {effectiveCategoryId != null ? categoryMap.get(effectiveCategoryId) ?? "Items" : "All items"} · {total}
+          {effectiveCategoryId != null
+            ? categoryMap.get(effectiveCategoryId) ?? "Items"
+            : "All items & combos"} · {totalDisplayed}
         </Text>
-        {loading && items.length === 0 ? (
+        {loading && !items.length && (!showCombos || combosLoading) ? (
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
           </View>
-        ) : !loading && items.length === 0 ? (
+        ) : !loading && !items.length && (!showCombos || combos.length === 0) ? (
           <View style={styles.emptyCard}>
             <Ionicons name="restaurant-outline" size={36} color={GatiMitraMerchant.textTertiary} />
             <Text style={styles.emptyText}>No items match. Add an item or change filters.</Text>
           </View>
         ) : (
           <View style={styles.itemGrid}>
-            {items.map((item) => (
-              <MenuItemCard
-                key={item.id}
-                item={item}
-                categoryName={item.category_id != null ? categoryMap.get(item.category_id) ?? null : null}
-                onToggleStock={handleToggleStock}
-                onEdit={handleEditItem}
-                onMoreOptions={handleMoreOptions}
-              />
-            ))}
+            {showItems &&
+              items.map((item) => (
+                <MenuItemCard
+                  key={item.id}
+                  item={item}
+                  categoryName={item.category_id != null ? categoryMap.get(item.category_id) ?? null : null}
+                  onToggleStock={handleToggleStock}
+                  onEdit={handleOpenItemDetails}
+                  onMoreOptions={handleMoreOptions}
+                  storeId={storeId}
+                  token={token}
+                />
+              ))}
+            {showCombos &&
+              validCombos.map((combo) => {
+                const detail = comboDetails.get(combo.id) ?? null;
+                const hasUnavailableItem =
+                  detail?.components?.some((c) => {
+                    const item = itemById.get(c.menu_item_id);
+                    return item && !item.in_stock;
+                  }) ?? false;
+
+                return (
+                  <ComboCard
+                    key={`combo-${combo.id}`}
+                    combo={combo}
+                    detail={detail}
+                    itemById={itemById}
+                    isDisabled={hasUnavailableItem}
+                    onMoreOptions={() => handleComboOptions(combo)}
+                    onPress={() =>
+                      router.push({
+                        pathname: "/menu/combos/[id]",
+                        params: { id: String(combo.id) },
+                      } as any)
+                    }
+                  />
+                );
+              })}
           </View>
         )}
       </View>
     </ScrollView>
 
-      {/* FAB: fixed position above tab bar — outside ScrollView so it does not scroll */}
+      {/* FAB: fixed position just above tab bar — moved slightly lower so it does not cover item toggles */}
       <TouchableOpacity
-        style={[styles.fab, { bottom: TAB_BAR_HEIGHT + 6 }]}
+        style={[styles.fab, { bottom: TAB_BAR_HEIGHT - 6 }]}
         onPress={() => setManageSheetVisible(true)}
         activeOpacity={0.9}
       >
@@ -917,8 +1386,8 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginBottom: 12,
+    gap: 8,
+    marginBottom: 8,
   },
   searchWrap: {
     flex: 1,
@@ -926,11 +1395,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
     borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     borderWidth: 1,
     borderColor: "transparent",
-    gap: 8,
+    gap: 6,
   },
   searchInput: {
     flex: 1,
@@ -942,15 +1411,28 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: 4,
     backgroundColor: GatiMitraMerchant.primary,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     borderRadius: 12,
     ...GatiMitraMerchant.shadowSm,
   },
   addBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
-  filterSection: { marginBottom: 16 },
+  filterIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: GatiMitraMerchant.cardBg,
+  },
+  filterSection: {
+    marginBottom: 10,
+    paddingHorizontal: 4,
+  },
   filterRow: { flexDirection: "row", gap: 10, alignItems: "flex-end" },
   filterTriggerWrap: { flex: 1, minWidth: 0 },
   filterTriggerHalf: { flex: 1, minWidth: 0 },
@@ -966,14 +1448,14 @@ const styles = StyleSheet.create({
   filterCategoryTrigger: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     backgroundColor: GatiMitraMerchant.cardBg,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    minHeight: 42,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    minHeight: 34,
   },
   filterCategoryTriggerText: {
     flex: 1,
@@ -1042,7 +1524,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 14,
+    paddingVertical: 10,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraMerchant.border,
@@ -1182,7 +1664,7 @@ const styles = StyleSheet.create({
     ...GatiMitraMerchant.shadowSm,
   },
   itemTouchable: { flexDirection: "row", padding: 14 },
-  itemImageWrap: { position: "relative", marginRight: 14 },
+  itemImageWrap: { position: "relative", marginRight: 10 },
   itemImage: { width: 88, height: 88, borderRadius: 12 },
   itemImagePlaceholder: {
     width: 88,
@@ -1192,6 +1674,35 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  comboImageStack: {
+    width: 88,
+    height: 88,
+    borderRadius: 12,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+    overflow: "hidden",
+    position: "relative",
+  },
+  comboImageSingle: { width: "100%", height: "100%" },
+  comboImageGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    width: "100%",
+    height: "100%",
+  },
+  comboImageGridCell: {
+    width: "50%",
+    height: "50%",
+  },
+  comboBadge: {
+    position: "absolute",
+    bottom: 4,
+    right: 4,
+    backgroundColor: "#0ea5e9",
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+  },
+  comboBadgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
   pendingBadge: {
     position: "absolute",
     top: 4,
@@ -1222,45 +1733,84 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   changeRequestedBadgeText: { fontSize: 9, fontWeight: "700", color: "#fff" },
-  itemBody: { flex: 1, minWidth: 0, justifyContent: "center", gap: 4 },
-  itemName: { fontSize: 17, fontWeight: "800", color: GatiMitraMerchant.textPrimary, letterSpacing: -0.3, lineHeight: 22 },
-  itemDescription: { fontSize: 13, color: GatiMitraMerchant.textSecondary, lineHeight: 18, marginTop: 2 },
-  itemMetaRow: { marginTop: 2 },
-  itemMetaText: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
-  itemServeSizeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 },
-  itemServeSizeText: { fontSize: 12, color: GatiMitraMerchant.textTertiary },
-  priceRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
-  sellingPrice: { fontSize: 20, fontWeight: "800", color: GatiMitraMerchant.primary, letterSpacing: -0.3 },
-  basePriceStrike: { fontSize: 14, color: GatiMitraMerchant.textSecondary, textDecorationLine: "line-through" },
-  tagsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
-  tag: { backgroundColor: GatiMitraMerchant.surfaceWarm, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 6 },
-  tagText: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
-  itemFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: GatiMitraMerchant.border,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-  },
-  moreBtn: { paddingHorizontal: 8, paddingVertical: 6 },
-  stockToggleWrap: { flexDirection: "row", alignItems: "center", gap: 10 },
-  stockToggleLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.success },
-  stockToggleLabelOff: { color: GatiMitraMerchant.error },
-  stockChip: {
+  itemBody: { flex: 1, minWidth: 0, justifyContent: "center", gap: 2 },
+  itemHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 14,
-    backgroundColor: "#d1fae5",
   },
-  stockChipOff: { backgroundColor: "#fee2e2" },
-  stockDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: GatiMitraMerchant.success },
-  stockDotOff: { backgroundColor: GatiMitraMerchant.error },
-  stockChipText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.success },
-  stockChipTextOff: { color: GatiMitraMerchant.error },
+  itemHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  itemName: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: "800",
+    color: GatiMitraMerchant.textPrimary,
+    letterSpacing: -0.3,
+    lineHeight: 20,
+  },
+  itemDescription: { fontSize: 13, color: GatiMitraMerchant.textSecondary, lineHeight: 18, marginTop: 0 },
+  itemMetaRow: { marginTop: 0 },
+  itemMetaText: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
+  itemServeSizeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 },
+  itemServeSizeText: { fontSize: 12, color: GatiMitraMerchant.textTertiary },
+  comboItemsList: { marginTop: 4, gap: 2 },
+  comboItemLine: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
+  comboItemMore: { fontSize: 12, color: GatiMitraMerchant.textTertiary, fontStyle: "italic" },
+  priceRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
+  sellingPrice: { fontSize: 20, fontWeight: "800", color: GatiMitraMerchant.primary, letterSpacing: -0.3 },
+  basePriceStrike: { fontSize: 14, color: GatiMitraMerchant.textSecondary, textDecorationLine: "line-through" },
+  comboPriceDisabled: { color: GatiMitraMerchant.textSecondary },
+  comboUnavailableText: {
+    fontSize: 11,
+    color: GatiMitraMerchant.error,
+    fontWeight: "600",
+  },
+  optionsSummaryText: {
+    marginTop: 4,
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  optionsDetails: {
+    marginTop: 4,
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    gap: 4,
+  },
+  optionsRow: {
+    flexDirection: "row",
+    gap: 4,
+    alignItems: "flex-start",
+  },
+  optionsLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  optionsValueColumn: {
+    flex: 1,
+    gap: 2,
+  },
+  optionsValue: {
+    flex: 1,
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  optionsMoreText: {
+    fontSize: 11,
+    color: GatiMitraMerchant.textTertiary,
+    fontStyle: "italic",
+  },
+  tagsRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
+  tag: { backgroundColor: GatiMitraMerchant.surfaceWarm, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 6 },
+  tagText: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  comboCardDisabled: {
+    opacity: 0.75,
+  },
+  moreBtn: { paddingHorizontal: 4, paddingVertical: 4 },
+  stockToggleWrap: {},
 });
