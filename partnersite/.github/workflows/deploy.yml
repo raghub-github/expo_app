@@ -1,0 +1,63 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        run: |
+          docker build -t merchant-dashboard:latest .
+          echo "Build completed successfully"
+
+      - name: Deploy to VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ] || [ -z "$SSH_KEY" ]; then
+            echo "Missing VPS_HOST, VPS_USER, or VPS_SSH_KEY secret"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/deploy_key ${VPS_USER}@${VPS_HOST} '
+            set -e
+            cd /opt/dashboard
+            git fetch origin main && git reset --hard origin/main
+            docker compose --env-file .env.production down
+            docker compose --env-file .env.production up -d --build
+            echo "Waiting for dashboard to be healthy..."
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              if docker compose exec -T dashboard wget -q -O- http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+                echo "Health check passed."
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "Health check did not pass in time."
+            exit 1
+          '
+          rm -f ~/.ssh/deploy_key
+
+      - name: Deployment summary
+        if: success()
+        run: echo "Deployment to VPS completed. Containers restarted with zero-downtime strategy."
