@@ -10,7 +10,7 @@ import { canRefundOrder } from "@/lib/permissions/actions";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { createOrderRefund, listOrderRefunds, type RefundTypeDb } from "@/lib/db/operations/order-refunds";
-import { updateOrdersCoreCancellation } from "@/lib/db/operations/orders-core";
+import { updateOrdersCoreCancellation, insertOrderCancellationReason } from "@/lib/db/operations/orders-core";
 
 export const runtime = "nodejs";
 
@@ -135,23 +135,37 @@ export async function POST(
     const mxDebitReason = body?.mxDebitReason as string | undefined;
     const refundMetadata = (body?.refundMetadata ?? {}) as Record<string, unknown>;
 
-    if (!refundType || !refundReason || typeof refundAmount !== "number" || !Number.isFinite(refundAmount)) {
+    if (!refundType || !refundReason?.trim()) {
       return NextResponse.json(
         {
           success: false,
-          error: "Missing or invalid: refundType, refundReason, or refundAmount",
+          error: "Missing or invalid: refundType or refundReason",
         },
         { status: 400 }
       );
     }
 
-    // "cancel_without_refund" does not create a refund row; still update orders_core with cancellation data
+    // "cancel_without_refund" does not create a refund row; only update orders_core with cancellation (refundAmount not required)
     if (refundType === "cancel_without_refund") {
       const systemUser = await getSystemUserByEmail(user.email ?? "");
+      const cancelledBy = systemUser?.primary_role ?? "admin";
+      const cancelledById = systemUser?.id ?? null;
+      const reasonCode = (refundReason ?? "admin_cancel").trim().slice(0, 200) || "admin_cancel";
+      const reasonText = (refundDescription ?? refundReason ?? "").trim().slice(0, 2000) || null;
+      const cancellationReasonId =
+        await insertOrderCancellationReason({
+          orderId,
+          cancelledBy,
+          cancelledById,
+          reasonCode,
+          reasonText,
+          refundStatus: "no_refund",
+          metadata: { attribute: body?.attribute, rejection: body?.rejection, fault: body?.fault },
+        }) ?? null;
       await updateOrdersCoreCancellation(orderId, {
-        cancelledBy: systemUser?.primary_role ?? "admin",
-        cancelledById: systemUser?.id ?? null,
-        cancellationReasonId: null,
+        cancelledBy,
+        cancelledById,
+        cancellationReasonId,
         cancelledByType: "admin",
       });
       return NextResponse.json({
@@ -161,6 +175,15 @@ export async function POST(
       });
     }
 
+    if (typeof refundAmount !== "number" || !Number.isFinite(refundAmount)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Missing or invalid: refundAmount (required for refund types).",
+        },
+        { status: 400 }
+      );
+    }
     if (refundAmount <= 0) {
       return NextResponse.json(
         { success: false, error: "refundAmount must be greater than 0" },
@@ -196,12 +219,30 @@ export async function POST(
       },
     });
 
-    // When refund type is refund_with_cancellation, update orders_core with cancellation data
+    // When refund type is refund_with_cancellation, create cancellation reason and update orders_core
     if (refundType === "refund_with_cancellation") {
+      const reasonCode = (refundReason ?? "refund_with_cancellation").trim().slice(0, 200) || "refund_with_cancellation";
+      const reasonText = (refundDescription ?? refundReason ?? "").trim().slice(0, 2000) || null;
+      const cancellationReasonId =
+        await insertOrderCancellationReason({
+          orderId,
+          cancelledBy: refundInitiatedBy,
+          cancelledById: refundInitiatedById,
+          reasonCode,
+          reasonText,
+          refundStatus: "completed",
+          refundAmount,
+          metadata: {
+            attribute: body?.attribute,
+            rejection: body?.rejection,
+            fault: body?.fault,
+            merchantDebit: body?.merchantDebit,
+          },
+        }) ?? null;
       await updateOrdersCoreCancellation(orderId, {
         cancelledBy: refundInitiatedBy,
         cancelledById: refundInitiatedById,
-        cancellationReasonId: null,
+        cancellationReasonId,
         cancelledByType: "admin",
       });
     }

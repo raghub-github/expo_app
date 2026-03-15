@@ -219,7 +219,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
             <span>Mx Details</span>
           </span>
         </span>
-        <span className="text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-full">
+        <span className="text-[11px] font-medium text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
           App Not Installed
         </span>
       </div>
@@ -339,9 +339,9 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
             <a
               href="#"
               target="_blank"
-              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1.5 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer"
+              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
             >
-              <i className="bi bi-link-45deg text-[11px]" />
+              <i className="bi bi-link-45deg text-[10px]" />
               link
             </a>
           </div>
@@ -366,7 +366,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                   <button
                     type="button"
                     onClick={() => setShowPhoneModal(true)}
-                    className="inline-flex items-center gap-0.5 text-[11px] text-gati-primary cursor-pointer"
+                    className="inline-flex items-center gap-0.5 text-[11px] text-gati-primary cursor-pointer whitespace-nowrap"
                   >
                     <span>(Other contacts)</span>
                     <span className="text-[10px] text-slate-500">▾</span>
@@ -390,7 +390,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                 className="inline-flex items-center gap-1.5 text-[12px] text-gati-text-primary cursor-pointer"
               >
                 <span
-                  className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
                     todaySummary.isOpen
                       ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                       : "bg-red-50 text-red-700 border-red-100"
@@ -411,7 +411,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
         <div className="mt-1 flex justify-end">
           <button
             type="button"
-            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer"
+            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 cursor-pointer whitespace-nowrap py-0.5"
             onClick={() => setShowDetailsModal(true)}
           >
             Explore More
@@ -475,7 +475,7 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                     <span className="w-24 text-[11px] font-medium text-slate-500">{label}</span>
                     <div className="flex-1 flex items-center justify-between gap-2">
                       <span
-                        className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold border whitespace-nowrap ${
                           isOpen
                             ? "bg-emerald-50 text-emerald-700 border-emerald-100"
                             : "bg-red-50 text-red-700 border-red-100"
@@ -627,9 +627,9 @@ export default function MerchantDetails({ merchant, initialProfile, onCopy }: Me
                   <button
                     type="button"
                     onClick={handleViewOnMap}
-                    className="inline-flex items-center gap-0.5 text-emerald-600 hover:text-emerald-700 text-[11px] cursor-pointer"
+                    className="inline-flex items-center gap-0.5 text-emerald-600 hover:text-emerald-700 text-[10px] cursor-pointer whitespace-nowrap"
                   >
-                    <i className="bi bi-geo-alt" />
+                    <i className="bi bi-geo-alt text-[10px]" />
                     View on Map
                   </button>
                 )}

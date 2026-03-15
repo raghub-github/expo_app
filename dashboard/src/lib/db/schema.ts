@@ -236,7 +236,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "failed",
 ]);
 
-// DB enum name order_status_type (used by orders_core in migrations)
+// DB enum name order_status_type (used by orders_core); includes all timeline stages + legacy
 export const orderStatusTypeEnum = pgEnum("order_status_type", [
   "assigned",
   "accepted",
@@ -246,6 +246,18 @@ export const orderStatusTypeEnum = pgEnum("order_status_type", [
   "delivered",
   "cancelled",
   "failed",
+  "rejected",
+  "created",
+  "bill_ready",
+  "payment_initiated_at",
+  "payment_done",
+  "pymt_assign_rx",
+  "dispatch_ready",
+  "dispatched",
+  "rto_initiated",
+  "rto_in_transit",
+  "rto_delivered",
+  "rto_lost",
 ]);
 
 export const orderActionEnum = pgEnum("order_action", [
@@ -1708,6 +1720,32 @@ export const orderRemarkEdits = pgTable(
 );
 
 // ============================================================================
+// Order cancellation reasons (orders_core.cancellation_reason_id references this)
+export const orderCancellationReasons = pgTable(
+  "order_cancellation_reasons",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" }).notNull(),
+    cancelledBy: text("cancelled_by").notNull(),
+    cancelledById: integer("cancelled_by_id"),
+    reasonCode: text("reason_code").notNull(),
+    reasonText: text("reason_text"),
+    refundStatus: text("refund_status").default("pending"),
+    refundAmount: numeric("refund_amount", { precision: 10, scale: 2 }),
+    penaltyApplied: boolean("penalty_applied").default(false),
+    penaltyAmount: numeric("penalty_amount", { precision: 10, scale: 2 }),
+    metadata: jsonb("metadata").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_cancellation_reasons_order_id_idx").on(table.orderId),
+    cancelledByIdx: index("order_cancellation_reasons_cancelled_by_idx").on(table.cancelledBy),
+    reasonCodeIdx: index("order_cancellation_reasons_reason_code_idx").on(table.reasonCode),
+  })
+);
+
 // HYBRID ORDER TABLES (orders_core + service-specific + provider mapping)
 // ============================================================================
 
@@ -1791,6 +1829,12 @@ export const ordersCore = pgTable(
       .defaultNow(),
     estimatedPickupTime: timestamp("estimated_pickup_time", { withTimezone: true }),
     estimatedDeliveryTime: timestamp("estimated_delivery_time", { withTimezone: true }),
+    /** First ETA (expected delivery) set when order accepted / first estimated; for sidebar "First ETA". */
+    firstEtaAt: timestamp("first_eta_at", { withTimezone: true }),
+    /** When ETA was first breached (now > expected delivery); used for ETA breached tag. */
+    etaBreachedAt: timestamp("eta_breached_at", { withTimezone: true }),
+    /** order_timelines.id of the stage current when ETA was first breached (red dot on timeline). */
+    etaBreachedTimelineId: bigint("eta_breached_timeline_id", { mode: "number" }),
     actualPickupTime: timestamp("actual_pickup_time", { withTimezone: true }),
     actualDeliveryTime: timestamp("actual_delivery_time", { withTimezone: true }),
     placedAt: timestamp("placed_at", { withTimezone: true }),
@@ -1845,6 +1889,36 @@ export const orderManualStatusHistory = pgTable(
   (table) => ({
     orderIdIdx: index("order_manual_status_history_order_id_idx").on(table.orderId),
     createdAtIdx: index("order_manual_status_history_created_at_idx").on(table.createdAt),
+  })
+);
+
+/** Immutable order timeline: one row per status change. Never update or delete. */
+export const orderTimelines = pgTable(
+  "order_timelines",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: bigint("order_id", { mode: "number" })
+      .notNull()
+      .references(() => ordersCore.id, { onDelete: "cascade" }),
+    status: text("status").notNull(),
+    previousStatus: text("previous_status"),
+    actorType: text("actor_type").notNull(),
+    actorId: bigint("actor_id", { mode: "number" }),
+    actorName: text("actor_name"),
+    statusMessage: text("status_message"),
+    metadata: jsonb("metadata").default({}),
+    occurredAt: timestamp("occurred_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expectedByAt: timestamp("expected_by_at", { withTimezone: true }),
+  },
+  (table) => ({
+    orderIdIdx: index("order_timelines_order_id_idx").on(table.orderId),
+    occurredAtIdx: index("order_timelines_occurred_at_idx").on(table.occurredAt),
+    orderOccurredIdx: index("order_timelines_order_occurred_idx").on(
+      table.orderId,
+      table.occurredAt
+    ),
   })
 );
 
@@ -3292,6 +3366,7 @@ export const ordersCoreRelations = relations(ordersCore, ({ one, many }) => ({
   deliveryImages: many(orderDeliveryImages),
   routeSnapshots: many(orderRouteSnapshots),
   manualStatusHistory: many(orderManualStatusHistory),
+  timelines: many(orderTimelines),
 }));
 
 export const orderManualStatusHistoryRelations = relations(
@@ -3303,6 +3378,13 @@ export const orderManualStatusHistoryRelations = relations(
     }),
   })
 );
+
+export const orderTimelinesRelations = relations(orderTimelines, ({ one }) => ({
+  order: one(ordersCore, {
+    fields: [orderTimelines.orderId],
+    references: [ordersCore.id],
+  }),
+}));
 
 export const ordersFoodRelations = relations(ordersFood, ({ one }) => ({
   order: one(ordersCore, {

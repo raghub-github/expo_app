@@ -150,7 +150,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
@@ -828,13 +828,15 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         <div className="flex flex-1 min-h-0 lg:pr-64 overflow-hidden">
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
-            {/* Desktop (lg+): When order open, split layout. Mobile: full-screen overlay on card click */}
-            {rightPanelOpen && selectedOrder ? (
+            {/* Desktop (lg+): When panel open, split layout. Card shows placeholder until an order is selected. */}
+            {rightPanelOpen ? (
               <>
                 {/* Order details: single card, actions top-right, reject half width, space used evenly */}
                 <div className="hidden lg:flex flex-1 min-w-0 border-r border-gray-200 bg-gray-50/80 flex-col overflow-hidden order-1 p-3">
                 <div className="flex-1 overflow-y-auto min-h-0 hide-scrollbar overflow-x-hidden">
                   <div className="bg-white rounded-xl border border-gray-200/80 shadow-md overflow-hidden flex flex-col h-full min-h-[320px]">
+                    {selectedOrder ? (
+                    <>
                     {/* Single header row: Order id + OTP + status + time | Compact timeline | Close */}
                     <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-200/60">
                       <div className="flex items-center gap-2.5 min-w-0 shrink-0">
@@ -1132,9 +1134,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     </div>
                   </div>
                 </div>
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
+                        Select an order from the list to view details
+                      </div>
+                    )}
+              </div>
+              </div>
               </div>
 
-                {/* Mobile: Order details panel beside sidebar - card-based layout */}
+                {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
+                {selectedOrder && (
                 <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">
                   <OrderDetailMobile
                     storeId={storeId}
@@ -1159,6 +1169,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
                   />
                 </div>
+                )}
 
                 {/* Right: Cards column - desktop only when order open (hidden on mobile) */}
                 <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4 order-2">

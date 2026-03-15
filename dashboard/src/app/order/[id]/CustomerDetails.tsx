@@ -76,7 +76,7 @@ export default function CustomerDetails({
             </span>
           </span>
           {order.riskFlag && (
-            <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 border border-amber-100">
+            <span className="inline-flex items-center rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 border border-amber-100 whitespace-nowrap">
               Risk: {order.riskFlag}
             </span>
           )}
@@ -85,9 +85,9 @@ export default function CustomerDetails({
           href={cxDasUrl}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1.5 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer"
+          className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
         >
-          <i className="bi bi-link-45deg text-[11px]" />
+          <i className="bi bi-link-45deg text-[10px]" />
           Cx-Das
         </a>
       </div>
@@ -193,7 +193,7 @@ export default function CustomerDetails({
               <span className="sr-only">Copy</span>
             </button>
             {order.locationMismatch && (
-              <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700 border border-red-100">
+              <span className="inline-flex items-center rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700 border border-red-100 whitespace-nowrap">
                 Address mismatch &gt; 800m
               </span>
             )}
@@ -218,9 +218,9 @@ export default function CustomerDetails({
               <button
                 type="button"
                 onClick={handleViewOnMap}
-                className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1.5 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer"
+                className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
               >
-                <i className="bi bi-geo-alt text-[11px]" />
+                <i className="bi bi-geo-alt text-[10px]" />
                 View on Map
               </button>
             )}
@@ -236,9 +236,9 @@ export default function CustomerDetails({
             <a
               href="#"
               target="_blank"
-              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1.5 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer"
+              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
             >
-              <i className="bi bi-link-45deg text-[11px]" />
+              <i className="bi bi-link-45deg text-[10px]" />
               link
             </a>
           </div>
@@ -253,9 +253,9 @@ export default function CustomerDetails({
             <a
               href="#"
               target="_blank"
-              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1.5 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer"
+              className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
             >
-              <i className="bi bi-link-45deg text-[11px]" />
+              <i className="bi bi-link-45deg text-[10px]" />
               link
             </a>
           </div>
@@ -267,7 +267,7 @@ export default function CustomerDetails({
             User Type:
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-gati-text-primary">
-            <span className="inline-flex items-center bg-gradient-to-br from-gati-primary to-gati-primary-light text-white px-2 py-0.5 rounded-full text-[10px] font-semibold tracking-wide">
+            <span className="inline-flex items-center bg-gradient-to-br from-gati-primary to-gati-primary-light text-white px-1.5 py-0.5 rounded-full text-[10px] font-semibold tracking-wide whitespace-nowrap">
               {order.userType || order.accountStatus || "Customer"}
             </span>
           </div>

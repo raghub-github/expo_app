@@ -4,8 +4,8 @@
  */
 
 import { getDb } from "../client";
-import { ordersCore, orderManualStatusHistory, ordersFood, customers, riders } from "../schema";
-import { eq, and, or, ilike, sql, desc, asc, inArray } from "drizzle-orm";
+import { ordersCore, orderManualStatusHistory, orderTimelines, ordersFood, customers, riders, orderCancellationReasons } from "../schema";
+import { eq, and, or, ilike, sql, desc, asc, inArray, lte } from "drizzle-orm";
 
 export type OrderStatusFilter =
   | "PAYMENT DONE"
@@ -90,6 +90,16 @@ export interface OrdersCoreRow {
   latestRemark: string | null;
   /** Email of last user who manually updated order status (Dispatch Ready / Dispatched / Delivered). */
   manualStatusUpdatedByEmail: string | null;
+  /** ETA in seconds from order creation (for timeline "X mins left / elapsed past ETA"). */
+  etaSeconds?: number | null;
+  /** Expected delivery timestamp (preferred over createdAt + etaSeconds for ETA). */
+  estimatedDeliveryTime?: Date | null;
+  /** First ETA set when order accepted / first estimated (sidebar "First ETA"). */
+  firstEtaAt?: Date | null;
+  /** When ETA was first breached (for ETA breached tag; mins elapsed computed at display time). */
+  etaBreachedAt?: Date | null;
+  /** order_timelines.id of the stage current when ETA was first breached (red dot on timeline). */
+  etaBreachedTimelineId?: number | null;
 }
 
 const STATUS_FILTER_TO_DB = {
@@ -293,6 +303,11 @@ export async function listOrdersCore(
         distanceKm: ordersCore.distanceKm,
         isBulkOrder: ordersCore.isBulkOrder,
         manualStatusUpdatedByEmail: ordersCore.manualStatusUpdatedByEmail,
+        etaSeconds: ordersCore.etaSeconds,
+        estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
+        firstEtaAt: ordersCore.firstEtaAt,
+        etaBreachedAt: ordersCore.etaBreachedAt,
+        etaBreachedTimelineId: ordersCore.etaBreachedTimelineId,
       })
       .from(ordersCore)
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -417,6 +432,11 @@ export async function listOrdersCore(
         distanceKm: ordersCore.distanceKm,
         isBulkOrder: ordersCore.isBulkOrder,
         manualStatusUpdatedByEmail: ordersCore.manualStatusUpdatedByEmail,
+        etaSeconds: ordersCore.etaSeconds,
+        estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
+        firstEtaAt: ordersCore.firstEtaAt,
+        etaBreachedAt: ordersCore.etaBreachedAt,
+        etaBreachedTimelineId: ordersCore.etaBreachedTimelineId,
       })
       .from(ordersCore)
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -528,6 +548,11 @@ export async function listOrdersCore(
       distanceKm: ordersCore.distanceKm,
       isBulkOrder: ordersCore.isBulkOrder,
       manualStatusUpdatedByEmail: ordersCore.manualStatusUpdatedByEmail,
+      etaSeconds: ordersCore.etaSeconds,
+      estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
+      firstEtaAt: ordersCore.firstEtaAt,
+      etaBreachedAt: ordersCore.etaBreachedAt,
+      etaBreachedTimelineId: ordersCore.etaBreachedTimelineId,
     })
     .from(ordersCore)
     .leftJoin(customers, eq(ordersCore.customerId, customers.id))
@@ -552,6 +577,24 @@ export async function listOrdersCore(
   };
 }
 
+/** All allowed order timeline status values (for status column in order_timelines). */
+export const ORDER_TIMELINE_STATUSES = [
+  "Created",
+  "Bill Ready",
+  "Payment Initiated At",
+  "Payment Done",
+  "Pymt Assign RX",
+  "Accepted",
+  "Dispatch Ready",
+  "Dispatched",
+  "Delivered",
+  "Cancelled",
+  "RTO Initiated",
+  "RTO In Transit",
+  "RTO Delivered",
+  "RTO Lost",
+] as const;
+
 /** Allowed status values for manual "Update order status" (dispatch flow). */
 export const UPDATEABLE_ORDER_STATUSES = [
   "picked_up",   // Dispatch Ready
@@ -567,8 +610,254 @@ const STATUS_TO_LABEL: Record<UpdateableOrderStatus, string> = {
 };
 
 /**
+ * Insert a single order timeline entry (immutable event log). Call whenever status changes from any source.
+ */
+/** Default ETA minutes from "now" when setting ETA on status update (e.g. Dispatch Ready). */
+const DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE = 45;
+
+export async function insertOrderTimelineEntry(params: {
+  orderId: number;
+  status: string;
+  previousStatus?: string | null;
+  actorType: string;
+  actorId?: number | null;
+  actorName?: string | null;
+  statusMessage?: string | null;
+  metadata?: Record<string, unknown>;
+  /** ETA (expected delivery) at this status; used for timeline "X mins left / elapsed". */
+  expectedByAt?: Date | null;
+}): Promise<void> {
+  const db = getDb();
+  const now = new Date();
+  const expectedBy = params.expectedByAt ?? null;
+  await db.insert(orderTimelines).values({
+    orderId: params.orderId,
+    status: params.status,
+    previousStatus: params.previousStatus ?? null,
+    actorType: params.actorType,
+    actorId: params.actorId ?? null,
+    actorName: params.actorName ?? null,
+    statusMessage: params.statusMessage ?? null,
+    metadata: params.metadata ?? {},
+    expectedByAt: expectedBy,
+  });
+  const statusNorm = params.status.toLowerCase().trim().replace(/\s+/g, " ");
+  const isPaymentDone = statusNorm === "payment done";
+  const isAccepted = statusNorm === "accepted";
+  if (isPaymentDone || isAccepted) {
+    const [existing] = await db
+      .select({ estimatedDeliveryTime: ordersCore.estimatedDeliveryTime })
+      .from(ordersCore)
+      .where(eq(ordersCore.id, params.orderId))
+      .limit(1);
+    if (existing?.estimatedDeliveryTime == null) {
+      const etaToSet = expectedBy ?? new Date(now.getTime() + DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE * 60 * 1000);
+      await db
+        .update(ordersCore)
+        .set({
+          estimatedDeliveryTime: etaToSet,
+          firstEtaAt: etaToSet,
+          updatedAt: now,
+        })
+        .where(eq(ordersCore.id, params.orderId));
+    }
+  }
+}
+
+export interface OrderTimelineEntry {
+  id: number;
+  orderId: number;
+  status: string;
+  previousStatus: string | null;
+  actorType: string;
+  actorId: number | null;
+  actorName: string | null;
+  statusMessage: string | null;
+  occurredAt: Date;
+  expectedByAt: Date | null;
+}
+
+/**
+ * Get order created_at for a given order (e.g. to show synthetic "Created" timeline when no entries exist).
+ */
+export async function getOrderCreatedAt(
+  orderId: number
+): Promise<Date | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ createdAt: ordersCore.createdAt })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderId))
+    .limit(1);
+  return row?.createdAt ?? null;
+}
+
+/**
+ * ETA engine: set estimated_delivery_time and first_eta_at from Payment Done (same as other company), else Accepted.
+ * - Only runs if order has no estimatedDeliveryTime and status is one of: accepted, dispatch ready, dispatched, reached_store, picked_up, in_transit.
+ * - Never sets ETA for cancelled/rejected orders.
+ * - Prefer "Payment Done" timeline entry (expectedByAt if present, else occurredAt + DEFAULT_ETA_MINUTES); fallback to "Accepted".
+ * Called on order detail load (GET /api/orders/core).
+ */
+export async function ensureOrderEtaWhenAccepted(
+  orderId: number
+): Promise<{ estimatedDeliveryTime: Date } | null> {
+  const db = getDb();
+  const [order] = await db
+    .select({
+      estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
+      currentStatus: ordersCore.currentStatus,
+      status: ordersCore.status,
+    })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderId))
+    .limit(1);
+  if (!order || order.estimatedDeliveryTime != null) return null;
+  const statusLower = (order.currentStatus ?? order.status ?? "").toString().toLowerCase();
+  if (statusLower === "cancelled" || statusLower === "rejected") return null;
+  if (statusLower !== "accepted" && statusLower !== "dispatch ready" && statusLower !== "dispatched" && statusLower !== "reached_store" && statusLower !== "picked_up" && statusLower !== "in_transit") return null;
+
+  const etaFromEntry = (entry: { occurredAt: Date | string; expectedByAt: Date | string | null }) => {
+    const occurredAt = new Date(entry.occurredAt);
+    return entry.expectedByAt != null
+      ? new Date(entry.expectedByAt)
+      : new Date(occurredAt.getTime() + DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE * 60 * 1000);
+  };
+
+  const [paymentDoneEntry] = await db
+    .select({ occurredAt: orderTimelines.occurredAt, expectedByAt: orderTimelines.expectedByAt })
+    .from(orderTimelines)
+    .where(and(eq(orderTimelines.orderId, orderId), ilike(orderTimelines.status, "payment done")))
+    .orderBy(desc(orderTimelines.occurredAt))
+    .limit(1);
+  if (paymentDoneEntry?.occurredAt) {
+    const etaToSet = etaFromEntry(paymentDoneEntry);
+    if (!isNaN(etaToSet.getTime())) {
+      await db
+        .update(ordersCore)
+        .set({
+          estimatedDeliveryTime: etaToSet,
+          firstEtaAt: etaToSet,
+          updatedAt: new Date(),
+        })
+        .where(eq(ordersCore.id, orderId));
+      return { estimatedDeliveryTime: etaToSet };
+    }
+  }
+
+  const [acceptedEntry] = await db
+    .select({ occurredAt: orderTimelines.occurredAt, expectedByAt: orderTimelines.expectedByAt })
+    .from(orderTimelines)
+    .where(and(eq(orderTimelines.orderId, orderId), ilike(orderTimelines.status, "accepted")))
+    .orderBy(desc(orderTimelines.occurredAt))
+    .limit(1);
+  if (!acceptedEntry?.occurredAt) return null;
+  const etaToSet = etaFromEntry(acceptedEntry);
+  if (isNaN(etaToSet.getTime())) return null;
+  await db
+    .update(ordersCore)
+    .set({
+      estimatedDeliveryTime: etaToSet,
+      firstEtaAt: etaToSet,
+      updatedAt: new Date(),
+    })
+    .where(eq(ordersCore.id, orderId));
+  return { estimatedDeliveryTime: etaToSet };
+}
+
+/**
+ * If order is in progress and ETA is breached (now > expected delivery), record it once:
+ * set eta_breached_at and eta_breached_timeline_id to the timeline entry that was current
+ * when ETA was crossed (latest entry with occurred_at <= ETA time). Mins elapsed is
+ * computed at display time. Returns the updated values if an update was performed; null otherwise.
+ */
+export async function recordEtaBreachIfNeeded(
+  orderId: number
+): Promise<{ etaBreachedAt: Date; etaBreachedTimelineId: number | null } | null> {
+  const db = getDb();
+  const now = new Date();
+  const [row] = await db
+    .select({
+      etaBreachedAt: ordersCore.etaBreachedAt,
+      estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
+      createdAt: ordersCore.createdAt,
+      etaSeconds: ordersCore.etaSeconds,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+    })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderId))
+    .limit(1);
+  if (!row || row.etaBreachedAt != null) return null;
+  const statusLower = (row.currentStatus ?? row.status ?? "").toString().toLowerCase();
+  if (statusLower === "delivered" || statusLower === "cancelled" || statusLower === "rejected")
+    return null;
+  const etaAt =
+    row.estimatedDeliveryTime != null
+      ? new Date(row.estimatedDeliveryTime)
+      : row.createdAt != null && row.etaSeconds != null && Number.isFinite(row.etaSeconds)
+        ? new Date(new Date(row.createdAt).getTime() + Number(row.etaSeconds) * 1000)
+        : null;
+  if (!etaAt || isNaN(etaAt.getTime()) || now.getTime() <= etaAt.getTime()) return null;
+  // Stage that was current when ETA was crossed: latest timeline entry with occurred_at <= ETA time
+  const [entryAtEta] = await db
+    .select({ id: orderTimelines.id })
+    .from(orderTimelines)
+    .where(and(eq(orderTimelines.orderId, orderId), lte(orderTimelines.occurredAt, etaAt)))
+    .orderBy(desc(orderTimelines.occurredAt))
+    .limit(1);
+  // If no entry occurred at or before ETA (edge case), use the earliest entry
+  let timelineId: number | null = entryAtEta?.id ?? null;
+  if (timelineId == null) {
+    const [firstEntry] = await db
+      .select({ id: orderTimelines.id })
+      .from(orderTimelines)
+      .where(eq(orderTimelines.orderId, orderId))
+      .orderBy(asc(orderTimelines.occurredAt))
+      .limit(1);
+    timelineId = firstEntry?.id ?? null;
+  }
+  await db
+    .update(ordersCore)
+    .set({
+      etaBreachedAt: now,
+      etaBreachedTimelineId: timelineId,
+      updatedAt: now,
+    })
+    .where(eq(ordersCore.id, orderId));
+  return { etaBreachedAt: now, etaBreachedTimelineId: timelineId };
+}
+
+/**
+ * Fetch order timeline entries in chronological order (oldest first). Used for order page timeline UI.
+ */
+export async function getOrderTimelineEntries(
+  orderId: number
+): Promise<OrderTimelineEntry[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: orderTimelines.id,
+      orderId: orderTimelines.orderId,
+      status: orderTimelines.status,
+      previousStatus: orderTimelines.previousStatus,
+      actorType: orderTimelines.actorType,
+      actorId: orderTimelines.actorId,
+      actorName: orderTimelines.actorName,
+      statusMessage: orderTimelines.statusMessage,
+      occurredAt: orderTimelines.occurredAt,
+      expectedByAt: orderTimelines.expectedByAt,
+    })
+    .from(orderTimelines)
+    .where(eq(orderTimelines.orderId, orderId))
+    .orderBy(asc(orderTimelines.occurredAt));
+  return rows;
+}
+
+/**
  * Update order status and current_status for manual status updates from the dashboard.
- * Records the updater email on the order and appends a row to order_manual_status_history.
+ * Records the updater email on the order, appends to order_manual_status_history, and appends to order_timelines.
+ * If the order has no ETA yet, sets estimated_delivery_time to now + DEFAULT_ETA_MINUTES so the timeline ETA tag updates.
  */
 export async function updateOrderStatus(
   orderId: number,
@@ -576,14 +865,40 @@ export async function updateOrderStatus(
   updatedByEmail: string
 ): Promise<{ updated: boolean }> {
   const db = getDb();
+  const [existing] = await db
+    .select({
+      currentStatus: ordersCore.currentStatus,
+      estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
+      firstEtaAt: ordersCore.firstEtaAt,
+    })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderId))
+    .limit(1);
+  const previousLabel = existing?.currentStatus ?? null;
+
   const label = STATUS_TO_LABEL[status];
+  const now = new Date();
+  const existingEta = existing?.estimatedDeliveryTime
+    ? new Date(existing.estimatedDeliveryTime)
+    : null;
+  const etaToSet =
+    existingEta != null && !isNaN(existingEta.getTime())
+      ? existingEta
+      : new Date(now.getTime() + DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE * 60 * 1000);
+
   const [result] = await db
     .update(ordersCore)
     .set({
       status,
       currentStatus: label,
       manualStatusUpdatedByEmail: updatedByEmail,
-      updatedAt: new Date(),
+      updatedAt: now,
+      ...(existingEta == null || isNaN(existingEta.getTime())
+        ? {
+            estimatedDeliveryTime: etaToSet,
+            ...(existing?.firstEtaAt == null ? { firstEtaAt: etaToSet } : {}),
+          }
+        : {}),
     })
     .where(eq(ordersCore.id, orderId))
     .returning({ id: ordersCore.id });
@@ -592,6 +907,14 @@ export async function updateOrderStatus(
     orderId,
     toStatus: status,
     updatedByEmail,
+  });
+  await insertOrderTimelineEntry({
+    orderId,
+    status: label,
+    previousStatus: previousLabel,
+    actorType: "agent",
+    actorName: updatedByEmail,
+    expectedByAt: etaToSet,
   });
   return { updated: true };
 }
@@ -636,6 +959,41 @@ export async function getFoodDeliveryInstructions(
   return row?.deliveryInstructions ?? null;
 }
 
+export interface InsertOrderCancellationReasonInput {
+  orderId: number;
+  cancelledBy: string;
+  cancelledById: number | null;
+  reasonCode: string;
+  reasonText?: string | null;
+  refundStatus?: string;
+  refundAmount?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Insert a row into order_cancellation_reasons and return its id.
+ * Use this id as cancellation_reason_id when updating orders_core.
+ */
+export async function insertOrderCancellationReason(
+  input: InsertOrderCancellationReasonInput
+): Promise<number | null> {
+  const db = getDb();
+  const [row] = await db
+    .insert(orderCancellationReasons)
+    .values({
+      orderId: input.orderId,
+      cancelledBy: input.cancelledBy,
+      cancelledById: input.cancelledById,
+      reasonCode: input.reasonCode,
+      reasonText: input.reasonText ?? null,
+      refundStatus: input.refundStatus ?? "pending",
+      refundAmount: input.refundAmount ?? null,
+      metadata: (input.metadata ?? {}) as Record<string, unknown>,
+    })
+    .returning({ id: orderCancellationReasons.id });
+  return row?.id ?? null;
+}
+
 export interface UpdateOrdersCoreCancellationInput {
   cancelledBy: string;
   cancelledById: number | null;
@@ -646,12 +1004,20 @@ export interface UpdateOrdersCoreCancellationInput {
 /**
  * Set cancellation fields on orders_core when an order is cancelled (e.g. via refund flow).
  * Sets status to 'cancelled', cancelled_at, cancelled_by, cancelled_by_id, and optionally cancellation_reason_id.
+ * Appends a Cancelled entry to order_timelines.
  */
 export async function updateOrdersCoreCancellation(
   orderId: number,
   input: UpdateOrdersCoreCancellationInput
 ): Promise<{ updated: boolean }> {
   const db = getDb();
+  const [existing] = await db
+    .select({ currentStatus: ordersCore.currentStatus })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderId))
+    .limit(1);
+  const previousStatus = existing?.currentStatus ?? "Delivered";
+
   const [result] = await db
     .update(ordersCore)
     .set({
@@ -665,5 +1031,13 @@ export async function updateOrdersCoreCancellation(
     })
     .where(eq(ordersCore.id, orderId))
     .returning({ id: ordersCore.id });
-  return { updated: !!result };
+  if (!result) return { updated: false };
+  await insertOrderTimelineEntry({
+    orderId,
+    status: "Cancelled",
+    previousStatus,
+    actorType: input.cancelledByType ?? "admin",
+    actorName: input.cancelledBy,
+  });
+  return { updated: true };
 }
