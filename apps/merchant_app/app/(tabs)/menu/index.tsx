@@ -41,6 +41,8 @@ import {
   fetchCombos,
   fetchCombo,
   fetchMenuItem,
+  fetchModifierGroups,
+  type ModifierGroupRow,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
 import { useRouter } from "expo-router";
@@ -48,7 +50,7 @@ import { useRouter } from "expo-router";
 type ApprovalFilter = "ALL" | "PENDING" | "APPROVED" | "REJECTED";
 type StockFilter = "ALL" | "IN_STOCK" | "OUT_OF_STOCK";
 type ChangeRequestFilter = "ALL" | "DELETE" | "UPDATE";
-type ItemKindFilter = "ALL" | "ITEMS" | "COMBOS";
+type ItemKindFilter = "ALL" | "ITEMS" | "COMBOS" | "ADDONS";
 
 const FOOD_TYPE_LABELS: Record<string, string> = {
   VEG: "Veg",
@@ -562,6 +564,8 @@ export default function MenuScreen() {
   const [combos, setCombos] = useState<ComboRow[]>([]);
   const [comboDetails, setComboDetails] = useState<Map<number, ComboDetail>>(new Map());
   const [combosLoading, setCombosLoading] = useState(false);
+  const [addonGroups, setAddonGroups] = useState<ModifierGroupRow[]>([]);
+  const [addonGroupsLoading, setAddonGroupsLoading] = useState(false);
 
   useEffect(() => {
     if (!storeId || !token) return;
@@ -607,6 +611,26 @@ export default function MenuScreen() {
       cancelled = true;
     };
   }, [storeId, token, effectiveCategoryId, searchDebounced]);
+
+  useEffect(() => {
+    if (!storeId || !token || kindFilter !== "ADDONS") {
+      if (kindFilter !== "ADDONS") setAddonGroups([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        setAddonGroupsLoading(true);
+        const res = await fetchModifierGroups(storeId, token);
+        if (!cancelled) setAddonGroups(res.modifierGroups ?? []);
+      } catch {
+        if (!cancelled) setAddonGroups([]);
+      } finally {
+        if (!cancelled) setAddonGroupsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [storeId, token, kindFilter]);
 
   const patchStock = usePatchItemStock(storeId, token);
   const deleteCat = useDeleteCategory(storeId, token);
@@ -839,8 +863,9 @@ export default function MenuScreen() {
   const loading = itemsLoading;
 
   const canShowCombosUnderFilters = effectiveCategoryId == null && !searchDebounced;
-  const showItems = kindFilter !== "COMBOS";
-  const showCombos = kindFilter !== "ITEMS" && canShowCombosUnderFilters;
+  const showItems = kindFilter !== "COMBOS" && kindFilter !== "ADDONS";
+  const showCombos = kindFilter !== "ITEMS" && kindFilter !== "ADDONS" && canShowCombosUnderFilters;
+  const showAddons = kindFilter === "ADDONS";
   const validCombos = useMemo(
     () =>
       combos.filter((c) => {
@@ -849,7 +874,10 @@ export default function MenuScreen() {
       }),
     [combos, comboDetails]
   );
-  const totalDisplayed = (showItems ? total : 0) + (showCombos ? validCombos.length : 0);
+  const totalDisplayed =
+    (showItems ? total : 0) +
+    (showCombos ? validCombos.length : 0) +
+    (showAddons ? addonGroups.length : 0);
 
   if (!canFetch) {
     return (
@@ -1042,7 +1070,7 @@ export default function MenuScreen() {
           </View>
           <View style={styles.filterChipsRow}>
             <Text style={styles.filterChipLabel}>Show</Text>
-            {(["ALL", "ITEMS", "COMBOS"] as ItemKindFilter[]).map((k) => (
+            {(["ALL", "ITEMS", "COMBOS", "ADDONS"] as ItemKindFilter[]).map((k) => (
               <TouchableOpacity
                 key={k}
                 style={[
@@ -1058,7 +1086,7 @@ export default function MenuScreen() {
                     kindFilter === k && styles.filterChipTextActive,
                   ]}
                 >
-                  {k === "ALL" ? "Items & combos" : k === "ITEMS" ? "Items only" : "Combos only"}
+                  {k === "ALL" ? "Items & combos" : k === "ITEMS" ? "Items only" : k === "COMBOS" ? "Combos only" : "Addons"}
                 </Text>
               </TouchableOpacity>
             ))}
@@ -1242,21 +1270,59 @@ export default function MenuScreen() {
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>
-          {effectiveCategoryId != null
-            ? categoryMap.get(effectiveCategoryId) ?? "Items"
-            : "All items & combos"} · {totalDisplayed}
+          {kindFilter === "ADDONS"
+            ? `Addon Library · ${addonGroups.length}`
+            : effectiveCategoryId != null
+              ? (categoryMap.get(effectiveCategoryId) ?? "Items") + ` · ${totalDisplayed}`
+              : `All items & combos · ${totalDisplayed}`}
         </Text>
-        {loading && !items.length && (!showCombos || combosLoading) ? (
+        {kindFilter === "ADDONS" && addonGroupsLoading && addonGroups.length === 0 ? (
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
           </View>
-        ) : !loading && !items.length && (!showCombos || combos.length === 0) ? (
+        ) : kindFilter === "ADDONS" && !addonGroupsLoading && addonGroups.length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Ionicons name="pricetag-outline" size={36} color={GatiMitraMerchant.textTertiary} />
+            <Text style={styles.emptyText}>No addon groups yet. Create one from Add menu or open Addon Library.</Text>
+            <TouchableOpacity style={styles.emptyCardCta} onPress={() => router.push("/menu/addon-library" as any)} activeOpacity={0.7}>
+              <Ionicons name="pricetag-outline" size={20} color={GatiMitraMerchant.primary} />
+              <Text style={styles.emptyCardCtaText}>Open Addon Library</Text>
+            </TouchableOpacity>
+          </View>
+        ) : loading && !items.length && (!showCombos || combosLoading) && kindFilter !== "ADDONS" ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+          </View>
+        ) : !loading && !items.length && (!showCombos || combos.length === 0) && kindFilter !== "ADDONS" ? (
           <View style={styles.emptyCard}>
             <Ionicons name="restaurant-outline" size={36} color={GatiMitraMerchant.textTertiary} />
             <Text style={styles.emptyText}>No items match. Add an item or change filters.</Text>
           </View>
         ) : (
           <View style={styles.itemGrid}>
+            {showAddons &&
+              addonGroups.map((g) => (
+                <TouchableOpacity
+                  key={`addon-${g.id}`}
+                  style={styles.addonGroupCard}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/menu/addon-library/[id]",
+                      params: { id: String(g.id) },
+                    } as any)
+                  }
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.addonGroupCardHeader}>
+                    <Ionicons name="pricetag-outline" size={22} color={GatiMitraMerchant.primary} />
+                    <Text style={styles.addonGroupCardTitle} numberOfLines={2}>{g.title}</Text>
+                  </View>
+                  <Text style={styles.addonGroupCardMeta}>
+                    {g.options_count ?? 0} options · Used in {g.used_in_items_count ?? 0} items
+                    {g.is_required ? " · Required" : ""}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             {showItems &&
               items.map((item) => (
                 <MenuItemCard
@@ -1366,6 +1432,11 @@ export default function MenuScreen() {
               <TouchableOpacity style={styles.sheetAddRow} onPress={() => { setManageSheetVisible(false); router.push("/menu/combos" as any); }}>
                 <Ionicons name="layers-outline" size={20} color={GatiMitraMerchant.primary} />
                 <Text style={styles.sheetAddRowText}>View & manage combos</Text>
+              </TouchableOpacity>
+              <Text style={[styles.sheetSectionLabel, { marginTop: 20 }]}>Addon Library</Text>
+              <TouchableOpacity style={styles.sheetAddRow} onPress={() => { setManageSheetVisible(false); router.push("/menu/addon-library" as any); }}>
+                <Ionicons name="pricetag-outline" size={20} color={GatiMitraMerchant.primary} />
+                <Text style={styles.sheetAddRowText}>View & manage addon groups</Text>
               </TouchableOpacity>
             </ScrollView>
             <TouchableOpacity style={styles.sheetCloseBtn} onPress={() => setManageSheetVisible(false)}>
@@ -1654,6 +1725,17 @@ const styles = StyleSheet.create({
     borderColor: GatiMitraMerchant.border,
   },
   emptyText: { fontSize: 14, color: GatiMitraMerchant.textSecondary, textAlign: "center" },
+  emptyCardCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: GatiMitraMerchant.primary + "18",
+    borderRadius: 12,
+  },
+  emptyCardCtaText: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.primary },
   itemGrid: { gap: 12 },
   itemCard: {
     backgroundColor: GatiMitraMerchant.cardBg,
@@ -1810,6 +1892,30 @@ const styles = StyleSheet.create({
   tagText: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   comboCardDisabled: {
     opacity: 0.75,
+  },
+  addonGroupCard: {
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderRadius: CARD_RADIUS,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  addonGroupCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 6,
+  },
+  addonGroupCardTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+  },
+  addonGroupCardMeta: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
   },
   moreBtn: { paddingHorizontal: 4, paddingVertical: 4 },
   stockToggleWrap: {},
