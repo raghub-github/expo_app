@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
+import { R2Image } from "@/components/R2Image";
 
 interface DocumentData {
   pan_number: string;
@@ -31,6 +32,17 @@ interface DocumentData {
   fssai_expiry_date: string;
   drug_license_expiry_date: string;
   pharmacist_expiry_date: string;
+  trade_license_number: string;
+  trade_license_document: File | null;
+  trade_license_document_url?: string;
+  trade_license_expiry_date: string;
+  shop_establishment_number: string;
+  shop_establishment_document: File | null;
+  shop_establishment_document_url?: string;
+  shop_establishment_expiry_date: string;
+  udyam_number: string;
+  udyam_document: File | null;
+  udyam_document_url?: string;
   other_document_type: string;
   other_document_number: string;
   other_document_name: string;
@@ -205,6 +217,19 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     return false;
   });
   const [documentSaving, setDocumentSaving] = useState(false);
+
+  const isNewFileSelected = (fieldName: keyof DocumentData) => {
+    const v = documents[fieldName];
+    return typeof File !== 'undefined' && v instanceof File;
+  };
+  // Treat "uploading" as: we are in a document save AND a new File is present for this field.
+  const isUploadingField = (fieldName: keyof DocumentData) => documentSaving && isNewFileSelected(fieldName);
+  const isUploadingBankFile = (bankKey: 'bank_proof_file' | 'upi_qr_file') => {
+    const bank = documents.bank;
+    if (!bank) return false;
+    const v = (bank as any)[bankKey];
+    return documentSaving && typeof File !== 'undefined' && v instanceof File;
+  };
   const documentFormatValidators = {
     pan: (v: string) => /^[A-Z]{5}[0-9]{4}[A-Z]$/.test((v || '').replace(/\s/g, '')) ? '' : 'Invalid PAN. Format: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F)',
     aadhar: (v: string) => /^\d{12}$/.test((v || '').replace(/\s/g, '')) ? '' : 'Invalid Aadhaar. Must be exactly 12 digits',
@@ -214,8 +239,45 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       if (!s) return '';
       return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(s) ? '' : 'Invalid GSTIN. Format: 2 digit state + 10 char PAN + 2 digit entity + Z + 1 char (15 chars total)';
     },
+    tradeLicense: (v: string) => {
+      const s = (v || '').replace(/\s+/g, ' ').trim().toUpperCase();
+      if (!s) return '';
+      return /^[A-Z0-9][A-Z0-9/\-.\s]{2,48}[A-Z0-9]$/.test(s) ? '' : 'Invalid Trade License. Use 4–50 chars (letters/numbers, / - . allowed)';
+    },
+    shopEstablishment: (v: string) => {
+      const s = (v || '').replace(/\s+/g, ' ').trim().toUpperCase();
+      if (!s) return '';
+      return /^[A-Z0-9][A-Z0-9/\-.\s]{2,48}[A-Z0-9]$/.test(s) ? '' : 'Invalid Shop & Establishment number. Use 4–50 chars (letters/numbers, / - . allowed)';
+    },
+    udyam: (v: string) => {
+      const s = (v || '').replace(/\s/g, '').toUpperCase();
+      if (!s) return '';
+      return /^UDYAM-[A-Z]{2}-\d{2}-\d{7}$/.test(s) ? '' : 'Invalid Udyam. Format: UDYAM-XX-00-0000000';
+    },
+    otherDocNumber: (v: string) => {
+      const s = (v || '').trim();
+      if (!s) return '';
+      return s.length >= 4 && s.length <= 30 ? '' : 'Invalid number. Use 4–30 characters.';
+    },
     ifsc: (v: string) => /^[A-Z]{4}0[A-Z0-9]{6}$/.test((v || '').replace(/\s/g, '').toUpperCase()) ? '' : 'Invalid IFSC. Format: 4 letters, 0, 6 alphanumeric (e.g. SBIN0001234)',
     accountNumber: (v: string) => /^\d{9,18}$/.test((v || '').replace(/\s/g, '')) ? '' : 'Invalid account number. Must be 9–18 digits',
+  };
+
+  // HTML <input type="date"> only accepts YYYY-MM-DD.
+  // Supabase may return ISO timestamps or formatted dates (e.g. DD-MM-YYYY).
+  const toInputDate = (raw: unknown): string => {
+    if (typeof raw !== 'string') return '';
+    const v = raw.trim();
+    if (!v) return '';
+    // ISO or already-correct (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ)
+    if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+    // Common display format DD-MM-YYYY
+    const m = v.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+    // Fallback: try Date.parse
+    const t = Date.parse(v);
+    if (!Number.isNaN(t)) return new Date(t).toISOString().slice(0, 10);
+    return '';
   };
 
   const [documents, setDocuments] = useState<DocumentData>({
@@ -238,6 +300,14 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     fssai_expiry_date: '',
     drug_license_expiry_date: '',
     pharmacist_expiry_date: '',
+    trade_license_number: '',
+    trade_license_document: null,
+    trade_license_expiry_date: '',
+    shop_establishment_number: '',
+    shop_establishment_document: null,
+    shop_establishment_expiry_date: '',
+    udyam_number: '',
+    udyam_document: null,
     other_document_type: '',
     other_document_number: '',
     other_document_name: '',
@@ -265,7 +335,36 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   const fssaiPreviewUrl = useImagePreview(documents.fssai_image, documents.fssai_image_url);
   const gstPreviewUrl = useImagePreview(documents.gst_image, documents.gst_image_url);
 
-  const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupData);
+const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupData);
+  const getMediaSrcAndKey = (value: string | null | undefined): { src: string | null; fileKey: string | null } => {
+    if (!value) return { src: null, fileKey: null };
+    const trimmed = value.trim();
+    if (!trimmed) return { src: null, fileKey: null };
+
+    // Proxy URL: /api/attachments/proxy?key=docs/...
+    if (trimmed.startsWith("/api/attachments/proxy")) {
+      try {
+        const url = new URL(trimmed, "http://dummy");
+        const key = url.searchParams.get("key");
+        return { src: trimmed, fileKey: key };
+      } catch {
+        return { src: trimmed, fileKey: null };
+      }
+    }
+
+    // Local previews (before upload): use directly, do NOT treat as keys.
+    if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
+      return { src: trimmed, fileKey: null };
+    }
+
+    // Full HTTP(S) URL – legacy; backend can derive key from ?url=
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      return { src: trimmed, fileKey: null };
+    }
+
+    // Raw R2 key like "docs/merchants/..."
+    return { src: trimmed, fileKey: trimmed };
+  };
   const [allCuisines, setAllCuisines] = useState<string[]>([]);
   const [cuisineSearch, setCuisineSearch] = useState('');
   const [presetToggles, setPresetToggles] = useState({
@@ -287,6 +386,11 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         pan_number: initialDocuments.pan_number,
         pan_holder_name: initialDocuments.pan_holder_name,
         aadhar_number: initialDocuments.aadhar_number,
+        trade_license_number: (initialDocuments as any).trade_license_number,
+        shop_establishment_number: (initialDocuments as any).shop_establishment_number,
+        udyam_number: (initialDocuments as any).udyam_number,
+        trade_license_expiry_date: (initialDocuments as any).trade_license_expiry_date,
+        shop_establishment_expiry_date: (initialDocuments as any).shop_establishment_expiry_date,
         pan_image_url: (initialDocuments as any).pan_image_url,
         aadhar_front_url: (initialDocuments as any).aadhar_front_url,
         aadhar_back_url: (initialDocuments as any).aadhar_back_url,
@@ -295,6 +399,9 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         drug_license_image_url: (initialDocuments as any).drug_license_image_url,
         pharmacist_certificate_url: (initialDocuments as any).pharmacist_certificate_url,
         pharmacy_council_registration_url: (initialDocuments as any).pharmacy_council_registration_url,
+        trade_license_document_url: (initialDocuments as any).trade_license_document_url,
+        shop_establishment_document_url: (initialDocuments as any).shop_establishment_document_url,
+        udyam_document_url: (initialDocuments as any).udyam_document_url,
         other_document_file_url: (initialDocuments as any).other_document_file_url,
       });
       
@@ -311,14 +418,19 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
           if (typeof initialDocuments.gst_number === 'string') next.gst_number = initialDocuments.gst_number;
           if (typeof initialDocuments.drug_license_number === 'string') next.drug_license_number = initialDocuments.drug_license_number;
           if (typeof initialDocuments.pharmacist_registration_number === 'string') next.pharmacist_registration_number = initialDocuments.pharmacist_registration_number;
-          if (typeof initialDocuments.expiry_date === 'string') next.expiry_date = initialDocuments.expiry_date;
-          if (typeof initialDocuments.fssai_expiry_date === 'string') next.fssai_expiry_date = initialDocuments.fssai_expiry_date ?? '';
-          if (typeof initialDocuments.drug_license_expiry_date === 'string') next.drug_license_expiry_date = initialDocuments.drug_license_expiry_date ?? '';
-          if (typeof initialDocuments.pharmacist_expiry_date === 'string') next.pharmacist_expiry_date = initialDocuments.pharmacist_expiry_date ?? '';
+          if (typeof initialDocuments.trade_license_number === 'string') next.trade_license_number = initialDocuments.trade_license_number ?? '';
+          if (typeof initialDocuments.shop_establishment_number === 'string') next.shop_establishment_number = initialDocuments.shop_establishment_number ?? '';
+          if (typeof initialDocuments.udyam_number === 'string') next.udyam_number = initialDocuments.udyam_number ?? '';
+          if (typeof initialDocuments.expiry_date === 'string') next.expiry_date = toInputDate(initialDocuments.expiry_date);
+          if (typeof initialDocuments.fssai_expiry_date === 'string') next.fssai_expiry_date = toInputDate(initialDocuments.fssai_expiry_date);
+          if (typeof initialDocuments.drug_license_expiry_date === 'string') next.drug_license_expiry_date = toInputDate(initialDocuments.drug_license_expiry_date);
+          if (typeof initialDocuments.pharmacist_expiry_date === 'string') next.pharmacist_expiry_date = toInputDate(initialDocuments.pharmacist_expiry_date);
+          if (typeof initialDocuments.trade_license_expiry_date === 'string') next.trade_license_expiry_date = toInputDate(initialDocuments.trade_license_expiry_date);
+          if (typeof initialDocuments.shop_establishment_expiry_date === 'string') next.shop_establishment_expiry_date = toInputDate(initialDocuments.shop_establishment_expiry_date);
           if (typeof initialDocuments.other_document_type === 'string') next.other_document_type = initialDocuments.other_document_type ?? '';
           if (typeof initialDocuments.other_document_number === 'string') next.other_document_number = initialDocuments.other_document_number ?? '';
           if (typeof initialDocuments.other_document_name === 'string') next.other_document_name = initialDocuments.other_document_name ?? '';
-          if (typeof initialDocuments.other_document_expiry_date === 'string') next.other_document_expiry_date = initialDocuments.other_document_expiry_date ?? '';
+          if (typeof initialDocuments.other_document_expiry_date === 'string') next.other_document_expiry_date = toInputDate(initialDocuments.other_document_expiry_date);
           const docUrlToFileKey: [string, string][] = [
             ['pan_image_url', 'pan_image'],
             ['aadhar_front_url', 'aadhar_front'],
@@ -328,6 +440,9 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
             ['drug_license_image_url', 'drug_license_image'],
             ['pharmacist_certificate_url', 'pharmacist_certificate'],
             ['pharmacy_council_registration_url', 'pharmacy_council_registration'],
+            ['trade_license_document_url', 'trade_license_document'],
+            ['shop_establishment_document_url', 'shop_establishment_document'],
+            ['udyam_document_url', 'udyam_document'],
             ['other_document_file_url', 'other_document_file'],
           ];
           for (const [urlKey, fileKey] of docUrlToFileKey) {
@@ -505,6 +620,9 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     drugLicense: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
     pharmacistCert: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
     pharmacyCouncil: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
+    tradeLicense: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
+    shopEstablishment: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
+    udyam: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
     otherDoc: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
     bankProof: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
     upiQr: useRef<HTMLInputElement>(null) as React.RefObject<HTMLInputElement | null>,
@@ -542,14 +660,24 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   const handleDocumentInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setDocuments(prev => {
-      return name === 'pan_number'
-        ? { ...prev, [name]: value.toUpperCase().slice(0, 10) }
-        : { ...prev, [name]: value };
+      if (name === 'pan_number') return { ...prev, [name]: value.toUpperCase().slice(0, 10) };
+      if (name === 'gst_number') return { ...prev, [name]: value.toUpperCase().slice(0, 15) };
+      if (name === 'trade_license_number' || name === 'shop_establishment_number') return { ...prev, [name]: value.toUpperCase().slice(0, 50) };
+      if (name === 'udyam_number') return { ...prev, [name]: value.toUpperCase().replace(/\s/g, '').slice(0, 19) };
+      return { ...prev, [name]: value };
     });
     if (name === 'pan_number') setDocFormatErrors(prev => ({ ...prev, pan_number: documentFormatValidators.pan(value.toUpperCase()) }));
     if (name === 'aadhar_number') setDocFormatErrors(prev => ({ ...prev, aadhar_number: documentFormatValidators.aadhar(value.replace(/\s/g, '')) }));
     if (name === 'fssai_number') setDocFormatErrors(prev => ({ ...prev, fssai_number: documentFormatValidators.fssai(value) }));
-    if (name === 'gst_number') setDocFormatErrors(prev => ({ ...prev, gst_number: documentFormatValidators.gst(value) }));
+    if (name === 'gst_number') {
+      setDocFormatErrors(prev => ({ ...prev, gst_number: documentFormatValidators.gst(value) }));
+      // AM-like dynamic: if merchant starts entering GST, open GST section automatically.
+      if (String(value || '').trim().length > 0) setShowGstSection(true);
+    }
+    if (name === 'trade_license_number') setDocFormatErrors(prev => ({ ...prev, trade_license_number: documentFormatValidators.tradeLicense(value) }));
+    if (name === 'shop_establishment_number') setDocFormatErrors(prev => ({ ...prev, shop_establishment_number: documentFormatValidators.shopEstablishment(value) }));
+    if (name === 'udyam_number') setDocFormatErrors(prev => ({ ...prev, udyam_number: documentFormatValidators.udyam(value) }));
+    if (name === 'other_document_number') setDocFormatErrors(prev => ({ ...prev, other_document_number: documentFormatValidators.otherDocNumber(value) }));
   };
 
   const validateDocFormats = (): { valid: boolean; firstError: string } => {
@@ -558,6 +686,10 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     if (documents.aadhar_number) err.aadhar_number = documentFormatValidators.aadhar(documents.aadhar_number);
     if (documents.fssai_number) err.fssai_number = documentFormatValidators.fssai(documents.fssai_number);
     if (documents.gst_number) err.gst_number = documentFormatValidators.gst(documents.gst_number);
+    if (documents.trade_license_number) err.trade_license_number = documentFormatValidators.tradeLicense(documents.trade_license_number);
+    if (documents.shop_establishment_number) err.shop_establishment_number = documentFormatValidators.shopEstablishment(documents.shop_establishment_number);
+    if (documents.udyam_number) err.udyam_number = documentFormatValidators.udyam(documents.udyam_number);
+    if (documents.other_document_number) err.other_document_number = documentFormatValidators.otherDocNumber(documents.other_document_number);
     const bank = documents.bank;
     if (bank?.ifsc_code) err.ifsc_code = documentFormatValidators.ifsc(bank.ifsc_code);
     if (bank?.account_number) err.account_number = documentFormatValidators.accountNumber(bank.account_number);
@@ -577,7 +709,22 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         return;
       }
       setDocuments(prev => ({ ...prev, [fieldName]: file }));
+      // AM-like dynamic: if merchant uploads GST certificate, switch toggle to YES automatically.
+      if (fieldName === 'gst_image') {
+        setShowGstSection(true);
+      }
     }
+  };
+
+  const renderValidTick = (show: boolean) => {
+    if (!show) return null;
+    return (
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-white text-[11px]">
+          ✓
+        </span>
+      </span>
+    );
   };
 
   const validateDocumentSection = () => {
@@ -604,6 +751,39 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         return !!(fssaiOk && fssaiFormatOk);
       }
       if (documents.gst_number && documentFormatValidators.gst(documents.gst_number)) return false;
+      // Optional-but-recommended licences: if any field is started, require the full set.
+      const tradeStarted = !!documents.trade_license_number || hasDocFileOrUrl('trade_license_document') || !!documents.trade_license_expiry_date;
+      if (tradeStarted) {
+        const tradeOk =
+          !!documents.trade_license_number &&
+          !documentFormatValidators.tradeLicense(documents.trade_license_number) &&
+          hasDocFileOrUrl('trade_license_document') &&
+          !!documents.trade_license_expiry_date;
+        if (!tradeOk) return false;
+      }
+      const shopStarted = !!documents.shop_establishment_number || hasDocFileOrUrl('shop_establishment_document') || !!documents.shop_establishment_expiry_date;
+      if (shopStarted) {
+        const shopOk =
+          !!documents.shop_establishment_number &&
+          !documentFormatValidators.shopEstablishment(documents.shop_establishment_number) &&
+          hasDocFileOrUrl('shop_establishment_document');
+        // Expiry date is optional here (some certificates don't have expiry); if provided, must be valid date string (handled by input).
+        if (!shopOk) return false;
+      }
+      const udyamStarted = !!documents.udyam_number || hasDocFileOrUrl('udyam_document');
+      if (udyamStarted) {
+        const udyamOk =
+          !!documents.udyam_number &&
+          !documentFormatValidators.udyam(documents.udyam_number) &&
+          hasDocFileOrUrl('udyam_document');
+        if (!udyamOk) return false;
+      }
+      return true;
+    } else if (activeSection === 'other') {
+      // "Other docs" tab mirrors optional recommended validations too.
+      if (documents.trade_license_number && documentFormatValidators.tradeLicense(documents.trade_license_number)) return false;
+      if (documents.shop_establishment_number && documentFormatValidators.shopEstablishment(documents.shop_establishment_number)) return false;
+      if (documents.udyam_number && documentFormatValidators.udyam(documents.udyam_number)) return false;
       return true;
     } else if (activeSection === 'bank') {
       const bank = (documents.bank || {}) as {
@@ -734,7 +914,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     setStoreSetup(newForm);
   };
 
-  const MAX_GALLERY_IMAGES = 3;
+  const MAX_GALLERY_IMAGES = 5;
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>, field: 'logo' | 'banner') => {
     const file = e.target.files?.[0] || null;
@@ -1273,7 +1453,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   );
 
   const renderPanSection = () => (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
         <div className="flex items-start gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
@@ -1295,7 +1475,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
           <input
             type="text"
             name="pan_holder_name"
-            value={documents.pan_holder_name}
+            value={documents.pan_holder_name || ''}
             onChange={handleDocumentInputChange}
             placeholder="Full name as on PAN card"
             className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
@@ -1306,20 +1486,35 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
           <label className="block text-xs font-medium text-slate-700 mb-1">
             PAN Number <span className="text-rose-500">*</span>
           </label>
-          <input
-            type="text"
-            name="pan_number"
-            value={documents.pan_number}
-            onChange={handleDocumentInputChange}
-            placeholder="ABCDE1234F"
-            className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-medium tracking-wider uppercase"
-            required
-            maxLength={10}
-            pattern="[A-Z]{5}[0-9]{4}[A-Z]{1}"
-            title="Format: ABCDE1234F"
-            style={{ textTransform: 'uppercase' }}
-            autoComplete="off"
-          />
+          <div className="relative">
+            {/** AM-like: green border + tick when valid */}
+            {(() => {
+              const isPanValid = !!documents.pan_number && !docFormatErrors.pan_number;
+              return (
+                <>
+            <input
+              type="text"
+              name="pan_number"
+              value={documents.pan_number || ''}
+              onChange={handleDocumentInputChange}
+              placeholder="ABCDE1234F"
+              className={`w-full px-3 py-2 pr-10 text-sm border rounded-lg bg-white font-medium tracking-wider uppercase focus:outline-none focus:ring-2 ${
+                isPanValid
+                  ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
+                  : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
+              }`}
+              required
+              maxLength={10}
+              pattern="[A-Z]{5}[0-9]{4}[A-Z]{1}"
+              title="Format: ABCDE1234F"
+              style={{ textTransform: 'uppercase' }}
+              autoComplete="off"
+            />
+            {renderValidTick(isPanValid)}
+                </>
+              );
+            })()}
+          </div>
           {docFormatErrors.pan_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.pan_number}</p>}
           <p className="text-xs text-slate-500 mt-1.5">10 characters, auto uppercase (e.g. ABCDE1234F)</p>
         </div>
@@ -1343,7 +1538,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
               <svg className="w-10 h-10 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-              <p className="text-sm font-medium text-slate-600">Upload PAN Card Image</p>
+            <p className="text-sm font-medium text-slate-600">
+              {isUploadingField('pan_image') ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                </span>
+              ) : (
+                'Upload PAN Card Image'
+              )}
+            </p>
               <p className="text-xs text-slate-500 mt-1">JPG, PNG or PDF · Max 5MB</p>
             </button>
           ) : (
@@ -1450,7 +1653,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
           <input
             type="text"
             name="aadhar_holder_name"
-            value={documents.aadhar_holder_name}
+            value={documents.aadhar_holder_name || ''}
             onChange={handleDocumentInputChange}
             placeholder="Full name as on Aadhaar card"
             className="w-full px-4 py-3 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
@@ -1461,17 +1664,31 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             Aadhaar Number <span className="text-slate-500 text-xs font-normal">(if providing)</span>
           </label>
-          <input
-            type="text"
-            name="aadhar_number"
-            value={documents.aadhar_number}
-            onChange={handleDocumentInputChange}
-            placeholder="1234 5678 9012"
-            className="w-full px-4 py-3 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-            maxLength={12}
-            pattern="[0-9]{12}"
-            title="12-digit Aadhar number"
-          />
+          <div className="relative">
+            {(() => {
+              const isAadhaarValid = !!documents.aadhar_number && !docFormatErrors.aadhar_number;
+              return (
+                <>
+            <input
+              type="text"
+              name="aadhar_number"
+              value={documents.aadhar_number || ''}
+              onChange={handleDocumentInputChange}
+              placeholder="1234 5678 9012"
+              className={`w-full px-4 py-3 pr-12 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
+                isAadhaarValid
+                  ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
+                  : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
+              }`}
+              maxLength={12}
+              pattern="[0-9]{12}"
+              title="12-digit Aadhar number"
+            />
+            {renderValidTick(isAadhaarValid)}
+                </>
+              );
+            })()}
+          </div>
           {docFormatErrors.aadhar_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.aadhar_number}</p>}
           <p className="text-xs text-slate-500 mt-1.5">12 digits, no spaces</p>
         </div>
@@ -1485,7 +1702,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
             {!hasDocFileOrUrl('aadhar_front') ? (
               <button type="button" onClick={() => triggerFileInputWithReplaceCheck('aadhar_front', fileInputRefs.aadharFront)} className="w-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 p-6 text-center hover:border-indigo-400 hover:bg-indigo-50/50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
                 <svg className="w-10 h-10 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                <p className="text-sm font-medium text-slate-600">Upload Front</p>
+                <p className="text-sm font-medium text-slate-600">
+                  {isUploadingField('aadhar_front') ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                    </span>
+                  ) : (
+                    'Upload Front'
+                  )}
+                </p>
                 <p className="text-xs text-slate-500 mt-0.5">Photo & details</p>
               </button>
             ) : (
@@ -1525,7 +1750,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
             {!hasDocFileOrUrl('aadhar_back') ? (
               <button type="button" onClick={() => triggerFileInputWithReplaceCheck('aadhar_back', fileInputRefs.aadharBack)} className="w-full rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 p-6 text-center hover:border-indigo-400 hover:bg-indigo-50/50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
                 <svg className="w-10 h-10 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                <p className="text-sm font-medium text-slate-600">Upload Back</p>
+                <p className="text-sm font-medium text-slate-600">
+                  {isUploadingField('aadhar_back') ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                    </span>
+                  ) : (
+                    'Upload Back'
+                  )}
+                </p>
                 <p className="text-xs text-slate-500 mt-0.5">Address side</p>
               </button>
             ) : (
@@ -1576,7 +1809,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     <div className="space-y-3">
       {/* Show banner only for Food/Pharma businesses (mandatory docs), hide for optional */}
       {(isFoodBusiness() || isPharmaBusiness()) && (
-        <div className={`rounded-lg border p-3 ${
+          <div className={`rounded-lg border p-2.5 ${
           isFoodBusiness() ? 'bg-rose-50/80 border-rose-100' : 'bg-violet-50/80 border-violet-100'
         }`}>
           <div className="flex items-start gap-3">
@@ -1608,200 +1841,324 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       {/* Pharma-specific Documents */}
       {isPharmaBusiness() && (
         <>
-          {/* Drug License */}
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium text-gray-700 mb-1">
-              Drug License Number <span className="text-red-500">*</span>
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <input
-                  type="text"
-                  name="drug_license_number"
-                  value={documents.drug_license_number}
-                  onChange={handleDocumentInputChange}
-                  placeholder="Enter Drug License Number"
-                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                  required
-                />
-                <p className="text-xs text-gray-500 mt-2">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {/* Left: numbers + dates */}
+            <div className="space-y-2">
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-medium text-gray-700">
+                  Drug License Number <span className="text-red-500">*</span>
+                </h4>
+                <div className="relative">
+                  {(() => {
+                    const isDrugLicValid = !!String(documents.drug_license_number || "").trim();
+                    return (
+                      <>
+                        <input
+                          type="text"
+                          name="drug_license_number"
+                          value={documents.drug_license_number || ""}
+                          onChange={handleDocumentInputChange}
+                          placeholder="Enter Drug License Number"
+                          className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
+                            isDrugLicValid
+                              ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
+                              : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
+                          }`}
+                          required
+                        />
+                        {renderValidTick(isDrugLicValid)}
+                      </>
+                    );
+                  })()}
+                </div>
+                <p className="text-xs text-gray-500">
                   Retail (Form 20/21) or Wholesale (Form 20B/21B) License
                 </p>
               </div>
-              <div className="flex items-start gap-3">
+
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-medium text-gray-700">
+                  Drug License Expiry Date <span className="text-red-500">*</span>
+                </h4>
+                <input
+                  type="date"
+                  name="drug_license_expiry_date"
+                  value={documents.drug_license_expiry_date || ""}
+                  onChange={handleDocumentInputChange}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                  required
+                />
+                <p className="text-xs text-gray-500">Drug license expiry date</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-medium text-gray-700">
+                  Pharmacist Registration Number <span className="text-red-500">*</span>
+                </h4>
+                <div className="relative">
+                  {(() => {
+                    const isPharmRegValid = !!String(documents.pharmacist_registration_number || "").trim();
+                    return (
+                      <>
+                        <input
+                          type="text"
+                          name="pharmacist_registration_number"
+                          value={documents.pharmacist_registration_number || ""}
+                          onChange={handleDocumentInputChange}
+                          placeholder="Enter Pharmacist Registration Number"
+                          className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
+                            isPharmRegValid
+                              ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
+                              : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
+                          }`}
+                          required
+                        />
+                        {renderValidTick(isPharmRegValid)}
+                      </>
+                    );
+                  })()}
+                </div>
+                <p className="text-xs text-gray-500">State Pharmacy Council Registration Number</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <h4 className="text-sm font-medium text-gray-700">
+                  Pharmacist Certificate Expiry Date <span className="text-red-500">*</span>
+                </h4>
+                <input
+                  type="date"
+                  name="pharmacist_expiry_date"
+                  value={documents.pharmacist_expiry_date || ""}
+                  onChange={handleDocumentInputChange}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                  required
+                />
+                <p className="text-xs text-gray-500">Pharmacist certificate expiry date</p>
+              </div>
+            </div>
+
+            {/* Right: all uploads stacked */}
+            <div className="space-y-2">
+              {/* Drug licence upload */}
+              <div className="space-y-1.5">
+                <span className="block text-sm font-medium text-gray-700">
+                  Drug Licence Upload <span className="text-red-500">*</span>
+                </span>
                 <input
                   type="file"
                   ref={fileInputRefs.drugLicense}
-                  onChange={(e) => handleFileChange(e, 'drug_license_image')}
+                  onChange={(e) => handleFileChange(e, "drug_license_image")}
                   accept=".jpg,.jpeg,.png,.pdf"
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={() => triggerFileInputWithReplaceCheck('drug_license_image', fileInputRefs.drugLicense)}
-                  className="px-3 py-2 text-sm border-2 border-dashed rounded-xl border-violet-300 text-violet-600 hover:border-violet-500 hover:text-violet-700 hover:bg-violet-50"
-                >
-                  {hasDocFileOrUrl('drug_license_image') ? 'Change File' : 'Upload Drug License'}
-                </button>
-                {hasDocFileOrUrl('drug_license_image') && (
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between px-2 py-1 rounded-xl border border-emerald-200 bg-emerald-50/80">
-                      <span className="text-xs text-gray-600 truncate max-w-[120px]">
-                        {documents.drug_license_image ? documents.drug_license_image.name : (documents.drug_license_image_url ? <a href={documents.drug_license_image_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Uploaded · View</a> : 'Uploaded')}
-                      </span>
+                {hasDocFileOrUrl("drug_license_image") ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
+                          ✓
+                        </div>
+                        <div className="min-w-0">
+                          {isUploadingField('drug_license_image') ? (
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin text-emerald-900" />
+                              <p className="text-sm font-semibold text-emerald-900">Uploading new file...</p>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
+                              {documents.drug_license_image_url && (
+                                <a
+                                  href={documents.drug_license_image_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-emerald-900 underline underline-offset-2"
+                                >
+                                  View certificate
+                                </a>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => removeFile('drug_license_image')}
-                        className="text-red-500 hover:text-red-700 text-xs"
-                        title="Remove"
+                        onClick={() => removeFile("drug_license_image")}
+                        className="rounded-full p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50"
+                        aria-label="Remove file"
                       >
-                        ✕
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
                       </button>
                     </div>
                   </div>
-                )}
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() =>
+                    triggerFileInputWithReplaceCheck("drug_license_image", fileInputRefs.drugLicense)
+                  }
+                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  {isUploadingField('drug_license_image')
+                    ? (
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                      </span>
+                    )
+                    : hasDocFileOrUrl("drug_license_image")
+                      ? "Upload new file"
+                      : "Upload Drug Licence"}
+                </button>
               </div>
-            </div>
-          </div>
 
-          {/* Drug License Expiry Date */}
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium text-gray-700 mb-1">
-              Drug License Expiry Date <span className="text-red-500">*</span>
-            </h4>
-            <div className="w-full md:w-1/2">
-              <input
-                type="date"
-                name="drug_license_expiry_date"
-                value={documents.drug_license_expiry_date}
-                onChange={handleDocumentInputChange}
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                required
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Drug license expiry date
-              </p>
-            </div>
-          </div>
-
-          {/* Pharmacist Registration Number */}
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium text-gray-700 mb-1">
-              Pharmacist Registration Number <span className="text-red-500">*</span>
-            </h4>
-            <div className="w-full md:w-1/2">
-              <input
-                type="text"
-                name="pharmacist_registration_number"
-                value={documents.pharmacist_registration_number}
-                onChange={handleDocumentInputChange}
-                placeholder="Enter Pharmacist Registration Number"
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                required
-              />
-              <p className="text-xs text-gray-500 mt-2">
-                State Pharmacy Council Registration Number
-              </p>
-            </div>
-          </div>
-
-          {/* Pharmacist Certificate */}
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium text-gray-700 mb-1">
-              Pharmacist Certificate <span className="text-red-500">*</span>
-            </h4>
-            <div className="flex items-start gap-3">
-              <input
-                type="file"
-                ref={fileInputRefs.pharmacistCert}
-                onChange={(e) => handleFileChange(e, 'pharmacist_certificate')}
-                accept=".jpg,.jpeg,.png,.pdf"
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => triggerFileInputWithReplaceCheck('pharmacist_certificate', fileInputRefs.pharmacistCert)}
-                className="px-3 py-2 text-sm border-2 border-dashed rounded-xl border-violet-300 text-violet-600 hover:border-violet-500 hover:text-violet-700 hover:bg-violet-50"
-              >
-                {hasDocFileOrUrl('pharmacist_certificate') ? 'Change File' : 'Upload Pharmacist Certificate'}
-              </button>
-              {hasDocFileOrUrl('pharmacist_certificate') && (
-                <div className="flex-1">
-                  <div className="flex items-center justify-between px-2 py-1 rounded-xl border border-emerald-200 bg-emerald-50/80">
-                    <span className="text-xs text-gray-600 truncate max-w-[120px]">
-                      {documents.pharmacist_certificate ? documents.pharmacist_certificate.name : (documents.pharmacist_certificate_url ? <a href={documents.pharmacist_certificate_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Uploaded · View</a> : 'Uploaded')}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFile('pharmacist_certificate')}
-                      className="text-red-500 hover:text-red-700 text-xs"
-                      title="Remove"
-                    >
-                      ✕
-                    </button>
+              {/* Pharmacist certificate upload */}
+              <div className="space-y-1.5">
+                <span className="block text-sm font-medium text-gray-700">
+                  Pharmacist Certificate <span className="text-red-500">*</span>
+                </span>
+                <input
+                  type="file"
+                  ref={fileInputRefs.pharmacistCert}
+                  onChange={(e) => handleFileChange(e, "pharmacist_certificate")}
+                  accept=".jpg,.jpeg,.png,.pdf"
+                  className="hidden"
+                />
+                {hasDocFileOrUrl("pharmacist_certificate") ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
+                          ✓
+                        </div>
+                        <div className="min-w-0">
+                          {isUploadingField('pharmacist_certificate') ? (
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin text-emerald-900" />
+                              <p className="text-sm font-semibold text-emerald-900">Uploading new file...</p>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
+                              {documents.pharmacist_certificate_url && (
+                                <a
+                                  href={documents.pharmacist_certificate_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-emerald-900 underline underline-offset-2"
+                                >
+                                  View certificate
+                                </a>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded-full p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800 text-xs"
+                        onClick={() => removeFile("pharmacist_certificate")}
+                        aria-label="Remove pharmacist certificate"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          </div>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() =>
+                    triggerFileInputWithReplaceCheck("pharmacist_certificate", fileInputRefs.pharmacistCert)
+                  }
+                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  {isUploadingField('pharmacist_certificate')
+                    ? (
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                      </span>
+                    )
+                    : hasDocFileOrUrl("pharmacist_certificate")
+                      ? "Upload new file"
+                      : "Upload Pharmacist Certificate"}
+                </button>
+              </div>
 
-          {/* Pharmacist Expiry Date */}
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium text-gray-700 mb-1">
-              Pharmacist Certificate Expiry Date <span className="text-red-500">*</span>
-            </h4>
-            <div className="w-full md:w-1/2">
-              <input
-                type="date"
-                name="pharmacist_expiry_date"
-                value={documents.pharmacist_expiry_date}
-                onChange={handleDocumentInputChange}
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                required
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Pharmacist certificate expiry date
-              </p>
-            </div>
-          </div>
-
-          {/* Pharmacy Council Registration */}
-          <div className="space-y-2">
-            <h4 className="text-sm font-medium text-gray-700 mb-1">
-              State Pharmacy Council Registration <span className="text-red-500">*</span>
-            </h4>
-            <div className="flex items-start gap-3">
-              <input
-                type="file"
-                ref={fileInputRefs.pharmacyCouncil}
-                onChange={(e) => handleFileChange(e, 'pharmacy_council_registration')}
-                accept=".jpg,.jpeg,.png,.pdf"
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => triggerFileInputWithReplaceCheck('pharmacy_council_registration', fileInputRefs.pharmacyCouncil)}
-                className="px-3 py-2 text-sm border-2 border-dashed rounded-xl border-violet-300 text-violet-600 hover:border-violet-500 hover:text-violet-700 hover:bg-violet-50"
-              >
-                {hasDocFileOrUrl('pharmacy_council_registration') ? 'Change File' : 'Upload Council Registration'}
-              </button>
-              {hasDocFileOrUrl('pharmacy_council_registration') && (
-                <div className="flex-1">
-                  <div className="flex items-center justify-between px-2 py-1 rounded-xl border border-emerald-200 bg-emerald-50/80">
-                    <span className="text-xs text-gray-600 truncate max-w-[120px]">
-                      {documents.pharmacy_council_registration ? documents.pharmacy_council_registration.name : (documents.pharmacy_council_registration_url ? <a href={documents.pharmacy_council_registration_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Uploaded · View</a> : 'Uploaded')}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFile('pharmacy_council_registration')}
-                      className="text-red-500 hover:text-red-700 text-xs"
-                      title="Remove"
-                    >
-                      ✕
-                    </button>
+              {/* Council registration upload */}
+              <div className="space-y-1.5">
+                <span className="block text-sm font-medium text-gray-700">
+                  State Pharmacy Council Registration <span className="text-red-500">*</span>
+                </span>
+                <input
+                  type="file"
+                  ref={fileInputRefs.pharmacyCouncil}
+                  onChange={(e) => handleFileChange(e, "pharmacy_council_registration")}
+                  accept=".jpg,.jpeg,.png,.pdf"
+                  className="hidden"
+                />
+                {hasDocFileOrUrl("pharmacy_council_registration") ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
+                          ✓
+                        </div>
+                        <div className="min-w-0">
+                          {isUploadingField('pharmacy_council_registration') ? (
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin text-emerald-900" />
+                              <p className="text-sm font-semibold text-emerald-900">Uploading new file...</p>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
+                              {documents.pharmacy_council_registration_url && (
+                                <a
+                                  href={documents.pharmacy_council_registration_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-emerald-900 underline underline-offset-2"
+                                >
+                                  View certificate
+                                </a>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded-full p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800 text-xs"
+                        onClick={() => removeFile("pharmacy_council_registration")}
+                        aria-label="Remove council registration"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() =>
+                    triggerFileInputWithReplaceCheck(
+                      "pharmacy_council_registration",
+                      fileInputRefs.pharmacyCouncil
+                    )
+                  }
+                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  {isUploadingField('pharmacy_council_registration')
+                    ? (
+                      <span className="inline-flex items-center justify-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                      </span>
+                    )
+                    : hasDocFileOrUrl("pharmacy_council_registration")
+                      ? "Upload new file"
+                      : "Upload Council Registration"}
+                </button>
+              </div>
             </div>
           </div>
         </>
@@ -1818,7 +2175,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
               <input
                 type="text"
                 name="fssai_number"
-                value={documents.fssai_number}
+                value={documents.fssai_number || ''}
                 onChange={handleDocumentInputChange}
                 placeholder="FSSAI License Number"
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
@@ -1842,7 +2199,13 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
                 onClick={() => triggerFileInputWithReplaceCheck('fssai_image', fileInputRefs.fssai)}
                 className="px-3 py-2 text-sm border-2 border-dashed rounded-xl border-rose-300 text-rose-600 hover:border-rose-500 hover:text-rose-700 hover:bg-rose-50"
               >
-                {hasDocFileOrUrl('fssai_image') ? 'Change File' : 'Upload Certificate'}
+                {isUploadingField('fssai_image') ? (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                  </span>
+                ) : (
+                  hasDocFileOrUrl('fssai_image') ? 'Change File' : 'Upload Certificate'
+                )}
               </button>
               {hasDocFileOrUrl('fssai_image') && (
                 <div className="flex-1 space-y-2">
@@ -1895,7 +2258,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
               <input
                 type="date"
                 name="fssai_expiry_date"
-                value={documents.fssai_expiry_date}
+                value={documents.fssai_expiry_date || ''}
                 onChange={handleDocumentInputChange}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
                 required
@@ -1947,18 +2310,32 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         {showGstSection && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-purple-200/50">
           <div>
-            <input
-              type="text"
-              name="gst_number"
-              value={documents.gst_number}
-              onChange={handleDocumentInputChange}
-              placeholder="GST Number (15 characters)"
-              className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-            />
+            <div className="relative">
+              {(() => {
+                const isGstValid = !!String(documents.gst_number || '').trim() && !docFormatErrors.gst_number;
+                return (
+                  <>
+                    <input
+                      type="text"
+                      name="gst_number"
+                      value={documents.gst_number || ''}
+                      onChange={handleDocumentInputChange}
+                      placeholder="GSTIN (15 characters)"
+                      className={`w-full px-3 py-2 pr-10 text-sm border rounded-xl bg-white focus:outline-none focus:ring-2 ${
+                        isGstValid
+                          ? "border-emerald-500 focus:border-emerald-600 focus:ring-emerald-200"
+                          : "border-slate-300 focus:border-indigo-500 focus:ring-indigo-500"
+                      }`}
+                    />
+                    {renderValidTick(isGstValid)}
+                  </>
+                );
+              })()}
+            </div>
             {docFormatErrors.gst_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.gst_number}</p>}
             <p className="text-xs text-gray-500 mt-2">Optional for non-GST businesses</p>
           </div>
-          <div className="flex items-start gap-3">
+          <div className="space-y-2">
             <input
               type="file"
               ref={fileInputRefs.gst}
@@ -1966,55 +2343,79 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
               accept=".jpg,.jpeg,.png,.pdf"
               className="hidden"
             />
+            {hasDocFileOrUrl('gst_image') ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
+                      ✓
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
+                      {documents.gst_image_url && (
+                        <a
+                          href={documents.gst_image_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-emerald-900 underline underline-offset-2"
+                        >
+                          View certificate
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
+                      className="rounded-lg border border-emerald-500 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
+                    >
+                      Change
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-full p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800 text-xs"
+                      onClick={() => removeFile('gst_image')}
+                      aria-label="Remove GST certificate"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <button
               type="button"
               onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
-              className="px-3 py-2 text-sm border-2 border-dashed rounded-xl border-slate-300 text-slate-600 hover:border-indigo-500 hover:text-indigo-600 hover:bg-indigo-50"
+              className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
             >
-              {hasDocFileOrUrl('gst_image') ? 'Change File' : 'Upload Certificate'}
+              {isUploadingField('gst_image') ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                </span>
+              ) : (
+                hasDocFileOrUrl('gst_image') ? 'Upload new file' : 'Upload GST certificate'
+              )}
             </button>
-            {hasDocFileOrUrl('gst_image') && (
-              <div className="flex-1 space-y-2">
-                <div className="flex items-center justify-between px-2 py-1 rounded-xl border border-emerald-200 bg-emerald-50/80">
-                  <span className="text-xs text-gray-600 truncate max-w-[140px]">
-                    {documents.gst_image
-                      ? documents.gst_image.name
-                      : documents.gst_image_url ? (
-                          <a
-                            href={documents.gst_image_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-indigo-600 hover:underline"
-                          >
-                            Uploaded · View
-                          </a>
-                        ) : (
-                          'Uploaded'
-                        )}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => removeFile('gst_image')}
-                    className="text-red-500 hover:text-red-700 text-xs"
-                    title="Remove"
-                  >
-                    ✕
-                  </button>
-                </div>
-                {gstPreviewUrl && (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                    <img
-                      src={gstPreviewUrl}
-                      alt="GST certificate preview"
-                      className="h-28 w-full object-contain bg-white"
-                    />
-                  </div>
-                )}
+
+            {gstPreviewUrl && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                <img
+                  src={gstPreviewUrl}
+                  alt="GST certificate preview"
+                  className="h-28 w-full object-contain bg-white"
+                />
               </div>
             )}
           </div>
         </div>
         )}
+      </div>
+
+      {/* Other documents (optional) — shown on this page like AM */}
+      <div className="pt-1">
+        {renderOtherDocumentsSection()}
       </div>
 
       <div className="rounded-xl bg-indigo-50/80 border border-indigo-100 p-4">
@@ -2127,7 +2528,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
               </div>
               <input type="file" ref={fileInputRefs.bankProof} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('bank_proof_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
               {!hasBankProofFileOrUrl() ? (
-                <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">Upload passbook / cancelled cheque / statement</button>
+                <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+                  {isUploadingBankFile('bank_proof_file') ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                    </span>
+                  ) : (
+                    'Upload passbook / cancelled cheque / statement'
+                  )}
+                </button>
               ) : (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
                   <span className="text-sm text-slate-800 truncate">
@@ -2152,7 +2561,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
               <p className="text-xs text-slate-500 mb-1.5">Upload screenshot where UPI ID is clearly visible on the QR</p>
               <input type="file" ref={fileInputRefs.upiQr} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('upi_qr_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
               {!hasUpiQrFileOrUrl() ? (
-                <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">Upload QR screenshot (UPI ID visible)</button>
+                <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+                  {isUploadingBankFile('upi_qr_file') ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                    </span>
+                  ) : (
+                    'Upload QR screenshot (UPI ID visible)'
+                  )}
+                </button>
               ) : (
                 <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
                   <span className="text-sm text-slate-800 truncate">
@@ -2173,7 +2590,192 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
 
   const renderOtherDocumentsSection = () => (
     <div className="space-y-2 sm:space-y-2.5">
-      <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other Documents (Optional)</h4>
+      <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other licences (optional but recommended)</h4>
+      {/* Trade licence */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start">
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Trade Licence Number</label>
+          <div className="relative">
+            <input
+              type="text"
+              name="trade_license_number"
+              value={documents.trade_license_number || ''}
+              onChange={handleDocumentInputChange}
+              placeholder="e.g. TL/2026/0001234/W2"
+              className={`w-full pr-9 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-lg focus:ring-1 bg-white uppercase ${
+                documents.trade_license_number && !docFormatErrors.trade_license_number
+                  ? 'border border-emerald-500 focus:ring-emerald-200 focus:border-emerald-500'
+                  : 'border border-slate-300 focus:ring-indigo-500 focus:border-indigo-500'
+              }`}
+              maxLength={50}
+              autoComplete="off"
+              style={{ textTransform: 'uppercase' }}
+            />
+            {renderValidTick(!!documents.trade_license_number && !docFormatErrors.trade_license_number)}
+          </div>
+          {docFormatErrors.trade_license_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.trade_license_number}</p>}
+        </div>
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Trade Licence Document</label>
+          <input type="file" ref={fileInputRefs.tradeLicense} onChange={(e) => handleFileChange(e, 'trade_license_document')} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
+          {!hasDocFileOrUrl('trade_license_document') ? (
+            <button type="button" onClick={() => triggerFileInputWithReplaceCheck('trade_license_document', fileInputRefs.tradeLicense)} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-xs sm:text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+              {isUploadingField('trade_license_document') ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                </span>
+              ) : (
+                'Upload trade licence'
+              )}
+            </button>
+          ) : (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
+              <a href={(documents as any).trade_license_document_url} target="_blank" rel="noopener noreferrer" className="text-xs sm:text-sm text-indigo-700 hover:underline truncate">
+                {documents.trade_license_document ? documents.trade_license_document.name : 'View file'}
+              </a>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {isUploadingField('trade_license_document') ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-slate-600" />
+                ) : (
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">proxy</span>
+                )}
+                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('trade_license_document', fileInputRefs.tradeLicense)} className="text-xs text-indigo-600 hover:underline">Change</button>
+                <button type="button" onClick={() => removeFile('trade_license_document')} className="text-slate-500 hover:text-rose-600">×</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Trade Licence Expiry Date</label>
+          <input type="date" name="trade_license_expiry_date" value={documents.trade_license_expiry_date || ''} onChange={handleDocumentInputChange} className="w-full px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 bg-white" />
+        </div>
+        <div />
+      </div>
+
+      {/* Shop & establishment */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start pt-1">
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Shop &amp; Establishment Number</label>
+          <div className="relative">
+            <input
+              type="text"
+              name="shop_establishment_number"
+              value={documents.shop_establishment_number || ''}
+              onChange={handleDocumentInputChange}
+              placeholder="e.g. BREGHJKLL"
+              className={`w-full pr-9 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-lg focus:ring-1 bg-white uppercase ${
+                documents.shop_establishment_number && !docFormatErrors.shop_establishment_number
+                  ? 'border border-emerald-500 focus:ring-emerald-200 focus:border-emerald-500'
+                  : 'border border-slate-300 focus:ring-indigo-500 focus:border-indigo-500'
+              }`}
+              maxLength={50}
+              autoComplete="off"
+              style={{ textTransform: 'uppercase' }}
+            />
+            {renderValidTick(!!documents.shop_establishment_number && !docFormatErrors.shop_establishment_number)}
+          </div>
+          {docFormatErrors.shop_establishment_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.shop_establishment_number}</p>}
+        </div>
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Shop &amp; Establishment Document</label>
+          <input type="file" ref={fileInputRefs.shopEstablishment} onChange={(e) => handleFileChange(e, 'shop_establishment_document')} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
+          {!hasDocFileOrUrl('shop_establishment_document') ? (
+            <button type="button" onClick={() => triggerFileInputWithReplaceCheck('shop_establishment_document', fileInputRefs.shopEstablishment)} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-xs sm:text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+              {isUploadingField('shop_establishment_document') ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                </span>
+              ) : (
+                'Upload shop & establishment'
+              )}
+            </button>
+          ) : (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
+              <a href={(documents as any).shop_establishment_document_url} target="_blank" rel="noopener noreferrer" className="text-xs sm:text-sm text-indigo-700 hover:underline truncate">
+                {documents.shop_establishment_document ? documents.shop_establishment_document.name : 'View file'}
+              </a>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {isUploadingField('shop_establishment_document') ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-slate-600" />
+                ) : (
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">proxy</span>
+                )}
+                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('shop_establishment_document', fileInputRefs.shopEstablishment)} className="text-xs text-indigo-600 hover:underline">Change</button>
+                <button type="button" onClick={() => removeFile('shop_establishment_document')} className="text-slate-500 hover:text-rose-600">×</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Shop &amp; Establishment Expiry Date (optional)</label>
+          <input type="date" name="shop_establishment_expiry_date" value={documents.shop_establishment_expiry_date || ''} onChange={handleDocumentInputChange} className="w-full px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 bg-white" />
+        </div>
+        <div />
+      </div>
+
+      {/* Udyam */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start pt-1">
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Udyam Registration Number</label>
+          <div className="relative">
+            <input
+              type="text"
+              name="udyam_number"
+              value={documents.udyam_number || ''}
+              onChange={handleDocumentInputChange}
+              placeholder="e.g. UDYAM-MH-19-0054448"
+              className={`w-full pr-9 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-lg focus:ring-1 bg-white uppercase ${
+                documents.udyam_number && !docFormatErrors.udyam_number
+                  ? 'border border-emerald-500 focus:ring-emerald-200 focus:border-emerald-500'
+                  : 'border border-slate-300 focus:ring-indigo-500 focus:border-indigo-500'
+              }`}
+              maxLength={19}
+              autoComplete="off"
+              style={{ textTransform: 'uppercase' }}
+            />
+            {renderValidTick(!!documents.udyam_number && !docFormatErrors.udyam_number)}
+          </div>
+          {docFormatErrors.udyam_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.udyam_number}</p>}
+        </div>
+        <div>
+          <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Udyam Certificate</label>
+          <input type="file" ref={fileInputRefs.udyam} onChange={(e) => handleFileChange(e, 'udyam_document')} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
+          {!hasDocFileOrUrl('udyam_document') ? (
+            <button type="button" onClick={() => triggerFileInputWithReplaceCheck('udyam_document', fileInputRefs.udyam)} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-xs sm:text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+              {isUploadingField('udyam_document') ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                </span>
+              ) : (
+                'Upload udyam certificate'
+              )}
+            </button>
+          ) : (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
+              <a href={(documents as any).udyam_document_url} target="_blank" rel="noopener noreferrer" className="text-xs sm:text-sm text-indigo-700 hover:underline truncate">
+                {documents.udyam_document ? documents.udyam_document.name : 'View file'}
+              </a>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {isUploadingField('udyam_document') ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-slate-600" />
+                ) : (
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">proxy</span>
+                )}
+                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('udyam_document', fileInputRefs.udyam)} className="text-xs text-indigo-600 hover:underline">Change</button>
+                <button type="button" onClick={() => removeFile('udyam_document')} className="text-slate-500 hover:text-rose-600">×</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="pt-1">
+        <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other Document (Optional)</h4>
+      </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
         <div>
           <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Document Type</label>
@@ -2181,7 +2783,26 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         </div>
         <div>
           <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Document Number</label>
-          <input type="text" name="other_document_number" value={documents.other_document_number || ''} onChange={handleDocumentInputChange} placeholder="Document number" className="w-full px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm border border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 bg-white" maxLength={30} autoComplete="off" />
+          <div className="relative">
+            <input
+              type="text"
+              name="other_document_number"
+              value={documents.other_document_number || ''}
+              onChange={handleDocumentInputChange}
+              placeholder="Document number"
+              className={`w-full pr-9 px-2.5 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-lg focus:ring-1 bg-white ${
+                documents.other_document_number && !docFormatErrors.other_document_number
+                  ? 'border border-emerald-500 focus:ring-emerald-200 focus:border-emerald-500'
+                  : 'border border-slate-300 focus:ring-indigo-500 focus:border-indigo-500'
+              }`}
+              maxLength={30}
+              autoComplete="off"
+            />
+            {renderValidTick(!!documents.other_document_number && !docFormatErrors.other_document_number)}
+          </div>
+          {docFormatErrors.other_document_number && (
+            <p className="text-xs text-rose-600 mt-1">{docFormatErrors.other_document_number}</p>
+          )}
         </div>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
@@ -2200,7 +2821,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
         {!hasDocFileOrUrl('other_document_file') ? (
           <button type="button" onClick={() => triggerFileInputWithReplaceCheck('other_document_file', fileInputRefs.otherDoc)} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 p-3 sm:p-4 text-center hover:border-indigo-400 hover:bg-indigo-50/50 transition-colors focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:ring-offset-1">
             <svg className="w-6 h-6 sm:w-7 sm:h-7 text-slate-400 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
-            <p className="text-xs sm:text-sm font-medium text-slate-600">Upload Document File</p>
+            <p className="text-xs sm:text-sm font-medium text-slate-600">
+              {isUploadingField('other_document_file') ? (
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                </span>
+              ) : (
+                'Upload Document File'
+              )}
+            </p>
             <p className="text-[10px] sm:text-xs text-slate-500 mt-0.5">JPG, PNG or PDF · Max 5MB</p>
           </button>
         ) : (
@@ -2227,7 +2856,6 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   );
 
   const renderDocumentStepContent = () => {
-    if (activeSection === 'other' && !showOtherDocs) return renderBankSection();
     switch (activeSection) {
       case 'pan':
         return renderPanSection();
@@ -2236,11 +2864,8 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       case 'optional':
         return renderOptionalSection();
       case 'bank':
-        return renderBankSection();
-      case 'other':
-        return renderOtherDocumentsSection();
       default:
-        return renderPanSection();
+        return renderBankSection();
     }
   };
 
@@ -2251,7 +2876,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       <div className="w-full min-h-full max-w-full bg-slate-50/50 overflow-x-hidden">
         <div className="mx-auto flex w-full max-w-6xl flex-col lg:flex-row gap-3 sm:gap-4 p-3 sm:p-4">
           {/* Left: title + business type + tabs */}
-          <aside className="w-full lg:w-52 xl:w-60 shrink-0 flex flex-col gap-2 sm:gap-3 min-w-0">
+          <aside className="w-full lg:w-52 xl:w-60 shrink-0 flex flex-col gap-2 sm:gap-3 min-w-0 lg:sticky lg:top-4 lg:self-start">
             <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
               <h2 className="text-base sm:text-lg font-semibold text-slate-800">Store Documents</h2>
               <p className="mt-0.5 text-xs text-slate-600">Upload required documents for verification.</p>
@@ -2274,16 +2899,26 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
               <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
-              {(showOtherDocs ? ['pan', 'aadhar', 'optional', 'bank', 'other'] : ['pan', 'aadhar', 'optional', 'bank']).map((section) => (
+              {(['pan', 'aadhar', 'optional', 'bank'] as const).map((section) => (
                 <button
                   key={section}
                   type="button"
-                  onClick={() => setActiveSection(section as 'pan' | 'aadhar' | 'optional' | 'bank' | 'other')}
+                  onClick={() => setActiveSection(section)}
                   className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${
                     activeSection === section ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
-                  {section === 'pan' ? 'PAN' : section === 'aadhar' ? 'Aadhar' : section === 'optional' ? 'GST' : section === 'bank' ? 'Bank' : 'Other Docs'}
+                  {section === 'pan'
+                    ? 'PAN'
+                    : section === 'aadhar'
+                    ? 'Aadhaar'
+                    : section === 'optional'
+                    ? isPharmaBusiness()
+                      ? 'Drug Lic. / GST'
+                      : isFoodBusiness()
+                      ? 'GST / FSSAI'
+                      : 'GST / OTHERS'
+                    : 'Bank'}
                 </button>
               ))}
             </div>
@@ -2308,7 +2943,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
                 <button
                   type="button"
                   onClick={handleDocumentSaveAndContinue}
-                  disabled={!validateDocumentSection() || actionLoading || documentSaving}
+                  disabled={actionLoading || documentSaving}
                   className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs sm:text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                 >
                   {actionLoading || documentSaving ? (
@@ -2318,7 +2953,13 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   )}
-                  {actionLoading || documentSaving ? 'Saving...' : activeSection === 'aadhar' && !documents.aadhar_holder_name?.trim() && !documents.aadhar_number?.trim() ? 'Skip Aadhaar & Continue' : (activeSection === 'other' || (activeSection === 'bank' && !showOtherDocs) ? 'Complete Documents' : 'Save & Continue')}
+                  {actionLoading || documentSaving
+                    ? 'Saving...'
+                    : activeSection === 'aadhar' &&
+                      !documents.aadhar_holder_name?.trim() &&
+                      !documents.aadhar_number?.trim()
+                    ? 'Skip Aadhaar & Continue'
+                    : 'Save & Continue'}
                 </button>
               </div>
             </div>
@@ -2433,34 +3074,6 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
                     <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    Store Logo
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={e => handleImageChange(e, 'logo')}
-                    className="w-full px-2 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm border border-slate-300 rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white file:mr-2 file:py-1 file:px-2 file:text-xs file:rounded file:border-0 file:bg-indigo-50 file:text-indigo-700"
-                  />
-                  {storeSetup.logo_preview && (
-                    <div className="mt-1.5 flex items-center gap-3">
-                      <img src={storeSetup.logo_preview} alt="Logo" className="h-14 sm:h-20 w-auto rounded shadow border" />
-                      <button
-                        type="button"
-                        onClick={handleRemoveLogo}
-                        className="text-xs px-2 py-1 rounded-md border border-rose-200 text-rose-700 hover:bg-rose-50"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  )}
-                  <p className="text-xs text-gray-500 mt-1">JPG, PNG</p>
-                </div>
-
-                <div className="border border-slate-200 rounded-lg p-3 sm:p-4 bg-white shadow-sm">
-                  <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
-                    <svg className="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
                     Store Banner
                   </label>
                   <input
@@ -2469,18 +3082,27 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
                     onChange={e => handleImageChange(e, 'banner')}
                     className="w-full px-2 py-1.5 sm:px-3 sm:py-2 text-xs sm:text-sm border border-slate-300 rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white file:mr-2 file:py-1 file:px-2 file:text-xs file:rounded file:border-0 file:bg-indigo-50 file:text-indigo-700"
                   />
-                  {storeSetup.banner_preview && (
-                    <div className="mt-1.5 space-y-2">
-                      <img src={storeSetup.banner_preview} alt="Banner" className="h-14 sm:h-20 w-full object-cover rounded shadow border" />
-                      <button
-                        type="button"
-                        onClick={handleRemoveBanner}
-                        className="text-xs px-2 py-1 rounded-md border border-rose-200 text-rose-700 hover:bg-rose-50"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  )}
+                  {(() => {
+                    const media = getMediaSrcAndKey(storeSetup.banner_preview);
+                    if (!media.src) return null;
+                    return (
+                      <div className="mt-1.5 space-y-2">
+                        <R2Image
+                          src={media.src}
+                          fileKey={media.fileKey ?? undefined}
+                          alt="Banner"
+                          className="h-14 sm:h-20 w-full object-cover rounded shadow border"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleRemoveBanner}
+                          className="text-xs px-2 py-1 rounded-md border border-rose-200 text-rose-700 hover:bg-rose-50"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    );
+                  })()}
                   <p className="text-xs text-gray-500 mt-1">JPG, PNG</p>
                 </div>
 
@@ -2500,23 +3122,28 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
                   />
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
                     {storeSetup.gallery_previews &&
-                      storeSetup.gallery_previews.map((src, idx) => (
-                        <div key={idx} className="relative group">
-                          <img
-                            src={src}
-                            alt={`Gallery ${idx + 1}`}
-                            className="h-12 w-12 sm:h-14 sm:w-14 object-cover rounded border"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveGalleryImage(idx)}
-                            className="absolute -top-1 -right-1 rounded-full bg-rose-600 text-white text-[10px] w-4 h-4 flex items-center justify-center shadow hover:bg-rose-700"
-                            title="Remove"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
+                      storeSetup.gallery_previews.map((src, idx) => {
+                        const media = getMediaSrcAndKey(src);
+                        if (!media.src) return null;
+                        return (
+                          <div key={idx} className="relative group">
+                            <R2Image
+                              src={media.src}
+                              fileKey={media.fileKey ?? undefined}
+                              alt={`Gallery ${idx + 1}`}
+                              className="h-12 w-12 sm:h-14 sm:w-14 object-cover rounded border"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveGalleryImage(idx)}
+                              className="absolute -top-1 -right-1 rounded-full bg-rose-600 text-white text-[10px] w-4 h-4 flex items-center justify-center shadow hover:bg-rose-700"
+                              title="Remove"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        );
+                      })}
                   </div>
                   <p className="text-xs text-gray-500 mt-1">Multiple images (JPG, PNG) · Max {MAX_GALLERY_IMAGES}</p>
                 </div>

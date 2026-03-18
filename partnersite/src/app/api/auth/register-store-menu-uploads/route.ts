@@ -42,6 +42,12 @@ function getExt(name: string, mime: string, attachmentType: string): string {
   return "jpg";
 }
 
+function sanitizeFileName(name: string): string {
+  return (name || "")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 180) || "file";
+}
+
 function toProxyUrl(key: string): string {
   return toStoredDocumentUrl(key) ?? `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
 }
@@ -282,20 +288,40 @@ export async function POST(req: NextRequest) {
     }
 
     const uploadedKeys: string[] = [];
+    // Track if any DB insert failed so we don't silently
+    // report success when nothing was actually saved.
+    let lastInsertError: unknown = null;
     try {
-      const inserted: { id: number; file_url: string; file_name: string | null; file_size: number | null }[] = [];
+      const inserted: {
+        id: number;
+        file_url: string;
+        file_name: string | null;
+        file_size: number | null;
+      }[] = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
+        // 3. Validate file before upload
+        if (!file || typeof file.size !== "number" || file.size <= 0) {
+          console.error("[register-store-menu-uploads] Skipping invalid file index", i);
+          continue;
+        }
         const ext = getExt(file.name || "", file.type || "", attachmentType);
-        const uniqueName = `${crypto.randomUUID()}.${ext}`;
-        const r2Key = getMenuUploadR2Key(
-          validation.parentMerchantId!,
-          store.store_id,
-          attachmentType,
-          uniqueName
+        const baseName = (file.name || "").split(".").slice(0, -1).join(".") || file.name || "file";
+        const safeBase = sanitizeFileName(baseName);
+        const uniqueName = `${Date.now()}_${safeBase}.${ext}`;
+
+        // IMPORTANT: Mirror AM dashboard R2 layout for menus.
+        // Dashboard uses numeric parent_id (e.g. 63) rather than parent merchant code (GMMP1008):
+        //   merchants/{parent_id}/stores/{store_code}/menu/{timestamp_or_uuid}.{ext}
+        // To keep keys identical across AM and Partner Site, we pass store.parent_id here.
+        const parentKey = String(
+          (store as any).parent_id ?? validation.merchantParentId ?? validation.parentMerchantId!
         );
+        const r2Key = getMenuUploadR2Key(parentKey, store.store_id, attachmentType, uniqueName);
+        console.log("[register-store-menu-uploads] Uploading file to R2 with key:", r2Key);
         await uploadToR2(file, r2Key);
+        console.log("[register-store-menu-uploads] Upload successful:", r2Key);
         uploadedKeys.push(r2Key);
 
         const fileUrl = toProxyUrl(r2Key);
@@ -318,28 +344,60 @@ export async function POST(req: NextRequest) {
             public_url: fileUrl,
             mime_type: file.type || null,
             file_size_bytes: file.size,
+            version_no: 1,
             is_active: true,
+            verification_status: "PENDING",
+            uploaded_by: user.id,
           })
           .select("id, r2_key, original_file_name, file_size_bytes")
           .single();
 
+        // 2. Make DB insert non-blocking & do NOT roll back file
         if (insertErr) {
-          throw new Error(insertErr.message || "DB insert failed");
+          lastInsertError = insertErr;
+          console.error(
+            "[register-store-menu-uploads] DB insert failed, keeping file in R2. key:",
+            r2Key,
+            "error:",
+            insertErr
+          );
+        } else if (row) {
+          const insertedRow = row as {
+            id: number;
+            original_file_name: string | null;
+            file_size_bytes: number | null;
+          };
+
+          inserted.push({
+            id: insertedRow.id,
+            file_url: fileUrl,
+            file_name: insertedRow.original_file_name,
+            file_size: insertedRow.file_size_bytes,
+          });
+          console.log(
+            "[register-store-menu-uploads] DB insert success for key:",
+            r2Key,
+            "id:",
+            insertedRow.id
+          );
         }
-
-        const insertedRow = row as {
-          id: number;
-          original_file_name: string | null;
-          file_size_bytes: number | null;
-        };
-
-        inserted.push({
-          id: insertedRow.id,
-          file_url: fileUrl,
-          file_name: insertedRow.original_file_name,
-          file_size: insertedRow.file_size_bytes,
-        });
       }
+
+      // If we uploaded at least one file to R2 but failed to
+      // insert *any* DB rows, surface this as an error so the
+      // client doesn't think the upload fully succeeded.
+      if (uploadedKeys.length > 0 && inserted.length === 0 && lastInsertError) {
+        const message =
+          (lastInsertError as { message?: string })?.message ||
+          "Upload succeeded but failed to save in database (merchant_store_media_files).";
+        throw new Error(message);
+      }
+
+      console.log("[register-store-menu-uploads] FINAL UPLOAD STATUS:", {
+        uploaded: uploadedKeys.length,
+        inserted: inserted.length,
+        firstFile: inserted[0]?.file_url ?? null,
+      });
 
       return NextResponse.json({
         success: true,
@@ -347,13 +405,8 @@ export async function POST(req: NextRequest) {
         files: inserted,
       });
     } catch (err) {
-      for (const key of uploadedKeys) {
-        try {
-          await deleteFromR2(key);
-        } catch (e2) {
-          console.warn("[register-store-menu-uploads] Rollback R2 delete failed:", key, e2);
-        }
-      }
+      console.error("[register-store-menu-uploads] Error during upload/insert:", err);
+      // 1. Stop aggressive rollback on partial success: we keep already-uploaded files in R2
       throw err;
     }
   } catch (e: unknown) {

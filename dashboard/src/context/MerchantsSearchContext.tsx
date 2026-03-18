@@ -45,6 +45,9 @@ export interface MerchantsSearchContextValue extends MerchantsSearchState {
   triggerMerchantSearch: (value: string, filter: "child" | "parent") => void;
   /** Clear triggered search after fetch has used it (when URL is in sync). */
   clearTriggeredSearch: () => void;
+  /** True while Assign AM page is fetching parent/store search results; header Search button shows spinner when true. */
+  assignAmSearchLoading: boolean;
+  setAssignAmSearchLoading: (loading: boolean) => void;
 }
 
 const MerchantsSearchContext = createContext<MerchantsSearchContextValue | null>(null);
@@ -62,6 +65,7 @@ export function MerchantsSearchProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<MerchantsSearchState>(defaultState);
   const [lastSearchTrigger, setLastSearchTrigger] = useState<MerchantsSearchTrigger>(0);
   const [triggeredSearch, setTriggeredSearch] = useState<TriggeredSearch>(null);
+  const [assignAmSearchLoading, setAssignAmSearchLoading] = useState(false);
   const setMerchantsSearchState = useCallback((next: MerchantsSearchState) => {
     setState((prev) => (stateShallowEqual(prev, next) ? prev : next));
   }, []);
@@ -79,6 +83,8 @@ export function MerchantsSearchProvider({ children }: { children: ReactNode }) {
       triggeredSearch,
       triggerMerchantSearch,
       clearTriggeredSearch,
+      assignAmSearchLoading,
+      setAssignAmSearchLoading,
     }),
     [
       state.isLoading,
@@ -90,6 +96,8 @@ export function MerchantsSearchProvider({ children }: { children: ReactNode }) {
       triggeredSearch,
       triggerMerchantSearch,
       clearTriggeredSearch,
+      assignAmSearchLoading,
+      setAssignAmSearchLoading,
     ]
   );
   return (

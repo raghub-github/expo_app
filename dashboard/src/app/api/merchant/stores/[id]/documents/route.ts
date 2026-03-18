@@ -18,6 +18,10 @@ const DOC_NUMBER_KEYS = [
   "aadhaar_document_number",
   "fssai_document_number",
   "drug_license_document_number",
+  "trade_license_document_number",
+  "shop_establishment_document_number",
+  "udyam_document_number",
+  "other_document_number",
 ] as const;
 
 const DOC_URL_KEYS = [
@@ -26,6 +30,26 @@ const DOC_URL_KEYS = [
   "aadhaar_document_url",
   "fssai_document_url",
   "drug_license_document_url",
+] as const;
+
+const DOC_NAME_KEYS = [
+  "pan_document_name",
+  "gst_document_name",
+  "aadhaar_document_name",
+  "fssai_document_name",
+  "drug_license_document_name",
+  // Holder name fields - keep separate from document_name so we don't overwrite file labels
+  "pan_holder_name",
+  "aadhaar_holder_name",
+  // Other document helper fields coming from onboarding
+  "other_document_type",
+] as const;
+
+const DOC_DATE_KEYS = [
+  "fssai_expiry_date",
+  "trade_license_expiry_date",
+  "shop_establishment_expiry_date",
+  "other_expiry_date",
 ] as const;
 
 export async function PATCH(
@@ -77,16 +101,41 @@ export async function PATCH(
 
     const body = await request.json().catch(() => ({}));
     const updates: Record<string, string | null> = {};
+
+    // Normalise all document numbers: trim + UPPERCASE so DB is consistent
     for (const key of DOC_NUMBER_KEYS) {
       if (body[key] !== undefined) {
         const v = body[key];
-        updates[key] = v == null || v === "" ? null : String(v).trim();
+        if (v == null || v === "") {
+          updates[key] = null;
+        } else {
+          const trimmed = String(v).trim();
+          updates[key] = trimmed.toUpperCase();
+        }
       }
     }
     for (const key of DOC_URL_KEYS) {
       if (body[key] !== undefined) {
         const v = body[key];
         updates[key] = v == null || v === "" ? null : String(v).trim();
+      }
+    }
+    for (const key of DOC_NAME_KEYS) {
+      if (body[key] !== undefined) {
+        const v = body[key];
+        updates[key] = v == null || v === "" ? null : String(v).trim();
+      }
+    }
+    for (const key of DOC_DATE_KEYS) {
+      if (body[key] !== undefined) {
+        const v = body[key];
+        if (v == null || v === "") {
+          updates[key] = null;
+        } else {
+          const s = String(v).trim();
+          // Expecting YYYY-MM-DD from UI; keep only date portion in case a full ISO is sent
+          updates[key] = s.length >= 10 ? s.slice(0, 10) : s;
+        }
       }
     }
     if (Object.keys(updates).length === 0) {
@@ -96,13 +145,27 @@ export async function PATCH(
       });
     }
 
-    const sql = getSql() as { unsafe: (q: string, v?: unknown[]) => Promise<unknown[]> };
+    const sql = getSql() as {
+      unsafe: (q: string, v?: unknown[]) => Promise<unknown[]>;
+    };
     const keys = Object.keys(updates);
-    const setClause = keys.map((k, i) => `${k} = $${i + 1}`).join(", ");
-    const values = [...Object.values(updates), storeId];
+
+    // Upsert so that documents row is created if it doesn't exist yet
+    const columns = ["store_id", ...keys];
+    const insertPlaceholders = columns.map((_, i) => `$${i + 1}`).join(", ");
+    const insertValues = [storeId, ...Object.values(updates)];
+
+    const updateSetClause = keys
+      .map((k) => `${k} = EXCLUDED.${k}`)
+      .join(", ");
+
     await sql.unsafe(
-      `UPDATE merchant_store_documents SET ${setClause} WHERE store_id = $${keys.length + 1}`,
-      values
+      `INSERT INTO merchant_store_documents (${columns.join(
+        ", "
+      )}) VALUES (${insertPlaceholders})
+       ON CONFLICT (store_id) DO UPDATE
+       SET ${updateSetClause}`,
+      insertValues
     );
 
     return NextResponse.json({

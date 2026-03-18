@@ -15,8 +15,6 @@ import { getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigat
 import { queryKeys } from "@/lib/queryKeys";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
-import { getSectionSkeletonForHref } from "@/components/skeletons/SectionSkeletons";
-
 /** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
 function DashboardBootstrapSkeleton() {
   return (
@@ -152,6 +150,14 @@ export default function DashboardLayoutClient({
   }, [isOnMerchantDashboard, queryClient]);
 
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
+  const isAddChildPage = useMemo(
+    () => /^\/dashboard\/area-managers\/stores\/add-child(\/|$)/.test(cleanPathname),
+    [cleanPathname]
+  );
+  const isAreaManagersSection = useMemo(
+    () => /^\/dashboard\/area-managers(\/|$)/.test(cleanPathname),
+    [cleanPathname]
+  );
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
   const isInSpecificDashboard: boolean = Boolean(currentDashboard && cleanPathname !== "/dashboard");
@@ -247,7 +253,28 @@ export default function DashboardLayoutClient({
     setIsRightSidebarOpen(nextRightOpen);
   };
 
-  if (!bootstrapReady) return <DashboardBootstrapSkeleton />;
+  if (!bootstrapReady) {
+    if (isAddChildPage || isAreaManagersSection) {
+      return (
+        <AuthProvider>
+          <div className="flex h-screen overflow-hidden items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
+            <p className="text-sm text-slate-500">Loading…</p>
+          </div>
+        </AuthProvider>
+      );
+    }
+    return <DashboardBootstrapSkeleton />;
+  }
+
+  if (isAddChildPage) {
+    return (
+      <AuthProvider>
+        <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100">
+          {children}
+        </div>
+      </AuthProvider>
+    );
+  }
 
   return (
     <AuthProvider>
@@ -266,11 +293,6 @@ export default function DashboardLayoutClient({
       </TicketFilterSidebarProvider>
     </AuthProvider>
   );
-}
-
-/** Main area skeleton — target path ke hisaab se section-specific skeleton. */
-function MainAreaSkeleton({ targetHref }: { targetHref: string }) {
-  return <>{getSectionSkeletonForHref(targetHref)}</>;
 }
 
 function DashboardLayoutContent({
@@ -293,8 +315,6 @@ function DashboardLayoutContent({
   isInSpecificDashboard: boolean;
 }) {
   const pathname = usePathname();
-  const [navigationPending, setNavigationPending] = useState(false);
-  const [pendingTargetHref, setPendingTargetHref] = useState<string | null>(null);
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(
@@ -303,11 +323,6 @@ function DashboardLayoutContent({
   );
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
-  useEffect(() => {
-    setNavigationPending(false);
-    setPendingTargetHref(null);
-  }, [cleanPathname]);
-
   return (
     <LeftSidebarMobileProvider>
       <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
@@ -315,10 +330,6 @@ function DashboardLayoutContent({
           isOpen={isLeftSidebarOpen}
           onToggle={handleLeftSidebarToggle}
           isInSpecificDashboard={isInSpecificDashboard}
-          onNavigationStart={(targetHref) => {
-          setPendingTargetHref(targetHref);
-          setNavigationPending(true);
-        }}
         />
         <RightSidebarProvider
           value={{
@@ -351,11 +362,7 @@ function DashboardLayoutContent({
               style={{ backgroundColor: "#FFFFFF" }}
             >
               <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0">
-                {navigationPending && pendingTargetHref ? (
-                  <MainAreaSkeleton targetHref={pendingTargetHref} />
-                ) : (
-                  children
-                )}
+                {children}
               </div>
             </main>
             <RightSidebar

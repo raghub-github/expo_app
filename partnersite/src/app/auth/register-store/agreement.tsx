@@ -279,7 +279,7 @@ interface AgreementContractPageProps {
   /** Optional URL for platform/company logo to embed in the PDF (e.g. from public folder or CDN). */
   logoUrl?: string | null;
   onBack: () => void;
-  onContinue: (contractText: string) => void;
+  onContinue: (args: { contractText: string; agreedToRead: boolean }) => void;
   actionLoading?: boolean;
 }
 
@@ -298,15 +298,25 @@ export default function AgreementContractPage({
   const [contractText, setContractText] = useState("");
   const [structured, setStructured] = useState<StructuredContract | null>(null);
 
+  const resolvedOwnerName =
+    (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+    : (typeof step1?.store_name === "string" && step1.store_name.trim()) ? step1.store_name.trim()
+    : "—";
+
+  const resolvedContactPerson =
+    (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+    : (typeof (step1 as any)?.store_contact_person === "string" && (step1 as any).store_contact_person.trim()) ? (step1 as any).store_contact_person.trim()
+    : resolvedOwnerName;
+
   const contractData: ContractData = {
     storeName: step1?.store_name || "—",
     parentName: parentInfo?.name ?? step1?.parent_merchant_id ?? "—",
-    ownerName: step1?.owner_full_name || "—",
+    ownerName: resolvedOwnerName,
     email: step1?.store_email || "—",
     phone: step1?.store_phones?.[0] || "—",
     address: step2?.full_address || "—",
     effectiveDate: new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
-    contactPerson: step1?.owner_full_name || "—",
+    contactPerson: resolvedContactPerson,
     bank: documents?.bank
       ? {
         account_holder_name: documents.bank.account_holder_name || "",
@@ -783,7 +793,7 @@ export default function AgreementContractPage({
             </button>
             <button
               type="button"
-              onClick={() => onContinue(contractText)}
+              onClick={() => onContinue({ contractText, agreedToRead })}
               disabled={!canContinue || actionLoading}
               className="px-4 py-2 sm:px-6 sm:py-2.5 bg-indigo-600 text-white font-semibold text-xs sm:text-sm rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 sm:gap-2 shadow-md shadow-indigo-200 transition"
             >

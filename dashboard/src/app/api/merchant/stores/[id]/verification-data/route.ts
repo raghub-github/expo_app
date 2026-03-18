@@ -112,9 +112,16 @@ export async function GET(
         SELECT store_id,
                pan_document_number, pan_document_url, pan_is_verified, pan_verified_at, pan_verified_by, pan_rejection_reason,
                gst_document_number, gst_document_url, gst_is_verified, gst_verified_at, gst_verified_by, gst_rejection_reason,
-               aadhaar_document_number, aadhaar_document_url, aadhaar_is_verified, aadhaar_verified_at, aadhaar_verified_by, aadhaar_rejection_reason,
+               aadhaar_document_number, aadhaar_document_url, aadhaar_document_metadata, aadhaar_is_verified, aadhaar_verified_at, aadhaar_verified_by, aadhaar_rejection_reason,
                fssai_document_number, fssai_document_url, fssai_expiry_date, fssai_is_verified, fssai_verified_at, fssai_verified_by, fssai_rejection_reason,
-               drug_license_document_number, drug_license_document_url, drug_license_is_verified, drug_license_verified_at, drug_license_verified_by, drug_license_rejection_reason
+               drug_license_document_number, drug_license_document_url, drug_license_is_verified, drug_license_verified_at, drug_license_verified_by, drug_license_rejection_reason,
+               pharmacist_certificate_document_number, pharmacist_certificate_document_url, pharmacist_certificate_expiry_date,
+               pharmacy_council_registration_document_url,
+               -- Other licences (optional but recommended)
+               trade_license_document_number, trade_license_document_url, trade_license_expiry_date, trade_license_is_verified, trade_license_verified_at, trade_license_verified_by, trade_license_rejection_reason,
+               shop_establishment_document_number, shop_establishment_document_url, shop_establishment_expiry_date, shop_establishment_is_verified, shop_establishment_verified_at, shop_establishment_verified_by, shop_establishment_rejection_reason,
+               udyam_document_number, udyam_document_url, udyam_is_verified, udyam_verified_at, udyam_verified_by, udyam_rejection_reason,
+               other_document_number, other_document_url, other_document_type, other_expiry_date, other_is_verified, other_verified_at, other_verified_by, other_rejection_reason
         FROM merchant_store_documents
         WHERE store_id = ${storeId}
         LIMIT 1

@@ -72,7 +72,8 @@ export function R2Image({
   fileKey: fileKeyProp,
   alt = '',
   className,
-  fallbackSrc = '/placeholder.png',
+  // Inline 1x1 transparent PNG to avoid 404s when fallback is used
+  fallbackSrc = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2SP0YAAAAASUVORK5CYII=',
   fit = 'cover',
   ...rest
 }: R2ImageProps) {

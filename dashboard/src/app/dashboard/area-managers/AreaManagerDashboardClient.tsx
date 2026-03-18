@@ -13,11 +13,13 @@ import {
   Activity,
   Building2,
   Building,
+  Search,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 interface MerchantMetrics {
   managerType: "MERCHANT";
+  isSuperAdmin?: boolean;
   stores: { total: number; verified: number; pending: number; rejected: number; active: number };
   parents: { total: number };
   children: { total: number };
@@ -25,6 +27,7 @@ interface MerchantMetrics {
 
 interface RiderMetrics {
   managerType: "RIDER";
+  isSuperAdmin?: boolean;
   riders: { total: number; active: number; inactive: number; blocked: number };
   availability: { online: number; busy: number; offline: number };
   riderShortageAlerts: Array<{
@@ -41,12 +44,202 @@ interface RiderMetrics {
 
 type MetricsData = MerchantMetrics | RiderMetrics;
 
+interface AreaManagerListItem {
+  id: number;
+  userId: number;
+  managerType: string;
+  areaCode: string | null;
+  localityCode: string | null;
+  city: string | null;
+  status: string;
+  fullName: string | null;
+  email: string | null;
+}
+
+function SuperAdminAreaManagerList() {
+  const [type, setType] = useState<"MERCHANT" | "RIDER">("MERCHANT");
+  const [search, setSearch] = useState("");
+  const [list, setList] = useState<AreaManagerListItem[]>([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [counts, setCounts] = useState<{ merchant: number; rider: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/area-manager/list/counts", { credentials: "include" });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled && json?.data) {
+          setCounts(json.data);
+        }
+      } catch {
+        if (!cancelled) setCounts(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setListLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/area-manager/list?type=${type}`, {
+          credentials: "include",
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled && json?.data?.items) {
+          setList(json.data.items);
+        }
+      } catch {
+        if (!cancelled) setList([]);
+      } finally {
+        if (!cancelled) setListLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [type]);
+
+  const searchLower = search.trim().toLowerCase();
+  const filteredList = searchLower
+    ? list.filter(
+        (am) =>
+          (am.fullName ?? "").toLowerCase().includes(searchLower) ||
+          (am.email ?? "").toLowerCase().includes(searchLower) ||
+          (am.city ?? "").toLowerCase().includes(searchLower) ||
+          (am.areaCode ?? "").toLowerCase().includes(searchLower) ||
+          (am.localityCode ?? "").toLowerCase().includes(searchLower)
+      )
+    : list;
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-medium text-gray-700">Area managers</span>
+          <div className="inline-flex rounded-lg border border-gray-200 p-0.5 bg-gray-100">
+            <button
+              type="button"
+              onClick={() => setType("MERCHANT")}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${
+                type === "MERCHANT"
+                  ? "bg-blue-500 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900"
+              }`}
+            >
+              Merchant
+            </button>
+            <button
+              type="button"
+              onClick={() => setType("RIDER")}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${
+                type === "RIDER"
+                  ? "bg-blue-500 text-white shadow-sm"
+                  : "text-gray-600 hover:text-gray-900"
+              }`}
+            >
+              Rider
+            </button>
+          </div>
+          {counts != null && (
+            <span className="text-sm text-gray-500">
+              {type === "MERCHANT" ? "Merchant" : "Rider"}:{" "}
+              <span className="font-medium text-gray-700">
+                {type === "MERCHANT" ? counts.merchant : counts.rider}
+              </span>
+            </span>
+          )}
+        </div>
+        <div className="relative w-full sm:w-56">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+          <input
+            type="search"
+            placeholder="Search by name, email, city..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+          />
+        </div>
+      </div>
+      {listLoading ? (
+        <div className="flex justify-center py-8">
+          <LoadingSpinner />
+        </div>
+      ) : list.length === 0 ? (
+        <p className="text-sm text-gray-500 py-4">No area managers found.</p>
+      ) : filteredList.length === 0 ? (
+        <p className="text-sm text-gray-500 py-4">No matches for &quot;{search.trim()}&quot;.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead>
+              <tr>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Name
+                </th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Email
+                </th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  City
+                </th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Area / Locality
+                </th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Status
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200 bg-white">
+              {filteredList.map((am) => (
+                <tr key={am.id}>
+                  <td className="px-3 py-2 text-sm text-gray-900 whitespace-nowrap">
+                    {am.fullName ?? "—"}
+                  </td>
+                  <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
+                    {am.email ?? "—"}
+                  </td>
+                  <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
+                    {am.city ?? "—"}
+                  </td>
+                  <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
+                    {[am.areaCode, am.localityCode].filter(Boolean).join(" / ") || "—"}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span
+                      className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${
+                        am.status === "ACTIVE"
+                          ? "bg-green-100 text-green-800"
+                          : "bg-gray-100 text-gray-800"
+                      }`}
+                    >
+                      {am.status}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatCard({
   title,
   value,
   icon: Icon,
   href,
   subtitle,
+  compact = false,
   bgColor = "bg-white",
   iconBgColor = "bg-gray-100",
   iconColor = "text-gray-600",
@@ -57,23 +250,34 @@ function StatCard({
   icon: React.ComponentType<{ className?: string }>;
   href?: string;
   subtitle?: string;
+  compact?: boolean;
   bgColor?: string;
   iconBgColor?: string;
   iconColor?: string;
   textColor?: string;
 }) {
   const content = (
-    <div className={`rounded-lg border border-gray-200 ${bgColor} p-6 h-full flex flex-col`}>
-      <div className="flex items-center justify-between">
-        <div className="flex-1">
-          <p className="text-sm font-medium text-gray-600 mb-1">{title}</p>
-          <p className={`text-3xl font-semibold ${textColor}`}>{value}</p>
+    <div
+      className={`rounded-lg border border-gray-200 ${bgColor} h-full flex flex-col ${
+        compact ? "p-3" : "p-6"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <p className={`font-medium text-gray-600 mb-0.5 ${compact ? "text-xs" : "text-sm"}`}>
+            {title}
+          </p>
+          <p className={`font-semibold ${textColor} ${compact ? "text-xl" : "text-3xl"}`}>
+            {value}
+          </p>
           {subtitle != null && (
-            <p className="mt-1 text-xs text-gray-500">{subtitle}</p>
+            <p className={`mt-0.5 text-gray-500 ${compact ? "text-[10px]" : "text-xs"}`}>
+              {subtitle}
+            </p>
           )}
         </div>
-        <div className={`rounded-md ${iconBgColor} p-2`}>
-          <Icon className={`h-5 w-5 ${iconColor}`} />
+        <div className={`rounded-md ${iconBgColor} flex-shrink-0 ${compact ? "p-1.5" : "p-2"}`}>
+          <Icon className={`${iconColor} ${compact ? "h-4 w-4" : "h-5 w-5"}`} />
         </div>
       </div>
     </div>
@@ -144,73 +348,95 @@ export function AreaManagerDashboardClient() {
   }
 
   if (data.managerType === "MERCHANT") {
+    const merchantData = data as MerchantMetrics;
+    const isSuperAdmin = !!merchantData.isSuperAdmin;
+
+    const cardsGrid = (
+      <div
+        className={
+          isSuperAdmin
+            ? "grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+            : "grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3"
+        }
+      >
+        <StatCard
+          title="Parent Stores"
+          value={data.parents.total}
+          icon={Building2}
+          href="/dashboard/area-managers/stores?filter=parent"
+          compact={isSuperAdmin}
+          bgColor="bg-white"
+          iconBgColor="bg-gray-100"
+          iconColor="text-gray-600"
+          textColor="text-gray-900"
+        />
+        <StatCard
+          title="Child Stores"
+          value={data.children.total}
+          icon={Building}
+          href="/dashboard/area-managers/stores?filter=child"
+          compact={isSuperAdmin}
+          bgColor="bg-white"
+          iconBgColor="bg-gray-100"
+          iconColor="text-gray-600"
+          textColor="text-gray-900"
+        />
+        <StatCard
+          title="Verified Stores"
+          value={data.stores.verified}
+          icon={UserCheck}
+          href="/dashboard/area-managers/stores?status=VERIFIED"
+          compact={isSuperAdmin}
+          bgColor="bg-white"
+          iconBgColor="bg-gray-100"
+          iconColor="text-gray-600"
+          textColor="text-gray-900"
+        />
+        <StatCard
+          title="Rejected Stores"
+          value={data.stores.rejected}
+          icon={UserX}
+          href="/dashboard/area-managers/stores?status=REJECTED"
+          compact={isSuperAdmin}
+          bgColor="bg-white"
+          iconBgColor="bg-gray-100"
+          iconColor="text-gray-600"
+          textColor="text-gray-900"
+        />
+        <StatCard
+          title="Pending Stores"
+          value={data.stores.pending}
+          icon={Clock}
+          href="/dashboard/area-managers/stores?status=PENDING"
+          compact={isSuperAdmin}
+          bgColor="bg-white"
+          iconBgColor="bg-gray-100"
+          iconColor="text-gray-600"
+          textColor="text-gray-900"
+        />
+        <StatCard
+          title="Active Stores"
+          value={data.stores.active}
+          icon={Activity}
+          href="/dashboard/area-managers/stores"
+          compact={isSuperAdmin}
+          bgColor="bg-white"
+          iconBgColor="bg-gray-100"
+          iconColor="text-gray-600"
+          textColor="text-gray-900"
+        />
+      </div>
+    );
+
     return (
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 className="text-2xl font-bold text-gray-900">Store Overview</h2>
         </div>
-        <div className="grid gap-6 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-          <StatCard
-            title="Parent Stores"
-            value={data.parents.total}
-            icon={Building2}
-            href="/dashboard/area-managers/stores?filter=parent"
-            bgColor="bg-white"
-            iconBgColor="bg-gray-100"
-            iconColor="text-gray-600"
-            textColor="text-gray-900"
-          />
-          <StatCard
-            title="Child Stores"
-            value={data.children.total}
-            icon={Building}
-            href="/dashboard/area-managers/stores?filter=all"
-            bgColor="bg-white"
-            iconBgColor="bg-gray-100"
-            iconColor="text-gray-600"
-            textColor="text-gray-900"
-          />
-          <StatCard
-            title="Verified Stores"
-            value={data.stores.verified}
-            icon={UserCheck}
-            href="/dashboard/area-managers/stores?status=VERIFIED"
-            bgColor="bg-white"
-            iconBgColor="bg-gray-100"
-            iconColor="text-gray-600"
-            textColor="text-gray-900"
-          />
-          <StatCard
-            title="Rejected Stores"
-            value={data.stores.rejected}
-            icon={UserX}
-            href="/dashboard/area-managers/stores?status=REJECTED"
-            bgColor="bg-white"
-            iconBgColor="bg-gray-100"
-            iconColor="text-gray-600"
-            textColor="text-gray-900"
-          />
-          <StatCard
-            title="Pending Stores"
-            value={data.stores.pending}
-            icon={Clock}
-            href="/dashboard/area-managers/stores?status=PENDING"
-            bgColor="bg-white"
-            iconBgColor="bg-gray-100"
-            iconColor="text-gray-600"
-            textColor="text-gray-900"
-          />
-          <StatCard
-            title="Active Stores"
-            value={data.stores.active}
-            icon={Activity}
-            href="/dashboard/area-managers/stores"
-            bgColor="bg-white"
-            iconBgColor="bg-gray-100"
-            iconColor="text-gray-600"
-            textColor="text-gray-900"
-          />
-        </div>
+        {cardsGrid}
+        {isSuperAdmin && (
+          <SuperAdminAreaManagerList />
+        )}
       </div>
     );
   }

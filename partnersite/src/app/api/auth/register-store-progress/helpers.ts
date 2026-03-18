@@ -88,6 +88,9 @@ export type ProgressFlags = {
   step_4_completed: boolean;
   step_5_completed: boolean;
   step_6_completed: boolean;
+  step_7_completed: boolean;
+  step_8_completed: boolean;
+  step_9_completed: boolean;
 };
 
 export const STEP_KEYS: Array<keyof ProgressFlags> = [
@@ -97,6 +100,9 @@ export const STEP_KEYS: Array<keyof ProgressFlags> = [
   "step_4_completed",
   "step_5_completed",
   "step_6_completed",
+  "step_7_completed",
+  "step_8_completed",
+  "step_9_completed",
 ];
 
 /** Shape of form_data we read for step_store.storePublicId; form_data is otherwise unknown. */
@@ -135,6 +141,9 @@ export function buildReconciledFlags(params: {
     step_4_completed: !!existingFlags?.step_4_completed,
     step_5_completed: !!existingFlags?.step_5_completed,
     step_6_completed: !!existingFlags?.step_6_completed,
+    step_7_completed: !!(existingFlags as any)?.step_7_completed,
+    step_8_completed: !!(existingFlags as any)?.step_8_completed,
+    step_9_completed: !!(existingFlags as any)?.step_9_completed,
   };
 
   // Auto-heal older rows: if current_step already moved ahead, prior steps are considered completed.
@@ -153,7 +162,7 @@ export function buildReconciledFlags(params: {
   if ((formData as any).step3) nextFlags.step_3_completed = true;
   if ((formData as any).step4) nextFlags.step_4_completed = true;
   if ((formData as any).step5) nextFlags.step_5_completed = true;
-  if ((formData as any).final) nextFlags.step_6_completed = true;
+  if ((formData as any).final) nextFlags.step_9_completed = true;
 
   if (markStepComplete) {
     nextFlags[`step_${normalizedCurrentStep}_completed` as keyof ProgressFlags] =
@@ -225,11 +234,11 @@ export async function insertStoreAfterStep1(
 
   // Schema alignment: merchant_stores has status store_status ('ACTIVE'|'INACTIVE'), not 'DRAFT'.
   // Use INACTIVE for new draft stores; approval_status can be 'DRAFT'.
-  // Omit owner_full_name if your table does not have that column (add it back if your migration has it).
   const payload: any = {
     store_id: generatedStoreId,
     parent_id: parentId,
     store_name: step1.store_name,
+    owner_full_name: step1.owner_full_name && String(step1.owner_full_name).trim() ? String(step1.owner_full_name).trim() : null,
     store_display_name: step1.store_display_name || null,
     store_description: step1.store_description || null,
     store_type: toEnumStoreType(step1.store_type) || "RESTAURANT",
