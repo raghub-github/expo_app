@@ -210,10 +210,10 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
           {menuUploadMode === 'IMAGE' && (menuImageFiles.length > 0 || menuUploadedImageUrls.length > 0) && (
             <>
               <h3 className="text-sm font-semibold text-slate-700 mb-2 sm:mb-3">Your images</h3>
-              <ul className="list-none p-0 m-0 flex flex-col gap-2 sm:gap-3 max-h-[min(50vh,400px)] overflow-y-auto pr-1">
+              <ul className="list-none p-0 m-0 flex gap-3 sm:gap-4 overflow-x-auto overflow-y-hidden pr-1">
                 {menuImageFiles.map((file, idx) => (
-                  <li key={`pending-${idx}`} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-2.5 sm:p-3 shrink-0">
-                    <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                  <li key={`pending-${idx}`} className="flex flex-col items-stretch gap-2 rounded-lg border border-slate-200 bg-white p-2.5 sm:p-3 shrink-0 w-40 sm:w-44">
+                    <div className="w-full aspect-[4/5] rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center">
                       {imagePreviewUrls[idx] ? (
                         <img src={imagePreviewUrls[idx]!} alt="" className="w-full h-full object-cover" />
                       ) : (
@@ -221,17 +221,17 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-slate-800 truncate">{file.name}</p>
-                      <p className="text-xs text-slate-500">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+                      <p className="text-xs sm:text-sm font-medium text-slate-800 truncate">{file.name}</p>
+                      <p className="text-[11px] sm:text-xs text-slate-500">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
                     </div>
-                    <button type="button" onClick={() => onRemovePendingImage(idx)} className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 min-h-[36px] px-2 touch-manipulation">
+                    <button type="button" onClick={() => onRemovePendingImage(idx)} className="self-end text-[11px] sm:text-xs text-rose-600 hover:text-rose-700 font-medium min-h-[28px] px-1.5 touch-manipulation">
                       Remove
                     </button>
                   </li>
                 ))}
                 {menuUploadedImageUrls.map((url, idx) => (
-                  <li key={`uploaded-${menuUploadIds[idx] ?? idx}`} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-2.5 sm:p-3 shrink-0">
-                    <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-slate-100 overflow-hidden shrink-0 flex items-center justify-center">
+                  <li key={`uploaded-${menuUploadIds[idx] ?? idx}`} className="flex flex-col items-stretch gap-2 rounded-lg border border-slate-200 bg-white p-2.5 sm:p-3 shrink-0 w-40 sm:w-44">
+                    <div className="w-full aspect-[4/5] rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center">
                       {url ? (
                         <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
@@ -239,13 +239,13 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-slate-800 truncate">{menuUploadedImageNames[idx] || `Image ${idx + 1}`}</p>
-                      {url && <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline">View</a>}
+                      <p className="text-xs sm:text-sm font-medium text-slate-800 truncate">{menuUploadedImageNames[idx] || `Image ${idx + 1}`}</p>
+                      {url && <a href={url} target="_blank" rel="noopener noreferrer" className="text-[11px] sm:text-xs text-indigo-600 hover:underline">View</a>}
                     </div>
                     <button
                       type="button"
                       onClick={() => setConfirmModal({ title: 'Remove uploaded image?', message: 'This will be deleted from the server.', variant: 'warning', onConfirm: () => onRemoveUploadedImage(idx), onCancel: () => setConfirmModal(null) })}
-                      className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 min-h-[36px] px-2 touch-manipulation"
+                      className="self-end text-[11px] sm:text-xs text-rose-600 hover:text-rose-700 font-medium min-h-[28px] px-1.5 touch-manipulation"
                     >
                       Remove
                     </button>

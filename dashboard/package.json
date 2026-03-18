@@ -12,6 +12,7 @@
     "lint": "eslint",
     "test:db": "tsx scripts/test-db-connection.ts",
     "migrate": "tsx scripts/run-migration.ts",
+    "migrate:owner": "tsx scripts/run-owner-full-name-migration.ts",
     "verify-migration": "tsx scripts/verify-migration.ts"
   },
   "dependencies": {

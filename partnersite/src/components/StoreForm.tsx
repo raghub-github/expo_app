@@ -55,8 +55,6 @@ interface StoreHours {
 }
 
 interface StoreConfig {
-  logo: File | null;
-  logo_preview: string;
   banner: File | null;
   banner_preview: string;
   gallery_images: File[];
@@ -93,8 +91,6 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<StoreFormState>({ ...initialForm });
   const [storeConfig, setStoreConfig] = useState<StoreConfig>({
-    logo: null,
-    logo_preview: '',
     banner: null,
     banner_preview: '',
     gallery_images: [],
@@ -143,7 +139,6 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
   const [isSearching, setIsSearching] = useState(false);
   
   const searchRef = useRef<HTMLDivElement>(null);
-  const logoRef = useRef<HTMLInputElement>(null);
   const bannerRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const panInputRef = useRef<HTMLInputElement>(null);
@@ -333,7 +328,7 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
       case 3:
         return validateDocuments();
       case 4:
-        return !!(storeConfig.logo && storeConfig.banner && storeConfig.cuisine_types.length > 0);
+        return !!(storeConfig.banner && storeConfig.cuisine_types.length > 0);
       default:
         return true;
     }
@@ -413,7 +408,6 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
       formDataToSubmit.append('store_hours', JSON.stringify(storeConfig.store_hours));
 
       // Add files
-      if (storeConfig.logo) formDataToSubmit.append('logo', storeConfig.logo);
       if (storeConfig.banner) formDataToSubmit.append('banner', storeConfig.banner);
       storeConfig.gallery_images.forEach((file, index) => {
         formDataToSubmit.append(`gallery_${index}`, file);
@@ -879,21 +873,6 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
         <div className="space-y-6">
           <h2 className="text-lg font-bold text-slate-800 mb-4">Store Configuration</h2>
           
-          {/* Logo Upload */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-slate-700 mb-2">Store Logo *</label>
-            <input 
-              type="file" 
-              accept="image/*" 
-              ref={logoRef} 
-              onChange={e => handleConfigImageChange(e, 'logo')} 
-              className="block" 
-            />
-            {storeConfig.logo_preview && (
-              <img src={storeConfig.logo_preview} alt="Logo Preview" className="h-16 mt-2 rounded" />
-            )}
-          </div>
-          
           {/* Banner Upload */}
           <div className="mb-4">
             <label className="block text-sm font-medium text-slate-700 mb-2">Store Banner *</label>
@@ -1107,13 +1086,14 @@ export default function StoreForm({ parentId, onSuccess }: { parentId: number; o
                 ))}
               </ul>
             </div>
-            <div className="mt-2 flex gap-4">
-              {storeConfig.logo_preview && <img src={storeConfig.logo_preview} alt="Logo Preview" className="h-12 rounded" />}
-              {storeConfig.banner_preview && <img src={storeConfig.banner_preview} alt="Banner Preview" className="h-12 rounded" />}
-              {storeConfig.gallery_previews.map((src, idx) => (
-                <img key={idx} src={src} alt={`Gallery ${idx + 1}`} className="h-10 rounded" />
-              ))}
-            </div>
+              <div className="mt-2 flex gap-4">
+                {storeConfig.banner_preview && (
+                  <img src={storeConfig.banner_preview} alt="Banner Preview" className="h-12 rounded" />
+                )}
+                {storeConfig.gallery_previews.map((src, idx) => (
+                  <img key={idx} src={src} alt={`Gallery ${idx + 1}`} className="h-10 rounded" />
+                ))}
+              </div>
           </div>
           
           <div className="flex items-center gap-3 mt-8">

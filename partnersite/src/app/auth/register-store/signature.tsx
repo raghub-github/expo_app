@@ -16,6 +16,7 @@ interface SignatureStepPageProps {
   defaultAgreementText: string;
   contractTextForPdf: string;
   logoUrl?: string | null;
+  agreementReadConfirmed?: boolean;
   onBack: () => void;
   onSuccess: (storeId: string) => void;
   actionLoading?: boolean;
@@ -32,11 +33,17 @@ export default function SignatureStepPage({
   defaultAgreementText,
   contractTextForPdf,
   logoUrl: logoUrlProp,
+  agreementReadConfirmed,
   onBack,
   onSuccess,
   actionLoading = false,
 }: SignatureStepPageProps) {
-  const [signerName, setSignerName] = useState(step1?.owner_full_name || "");
+  const initialSignerName =
+    (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+    : (typeof (step1 as any)?.legal_business_name === "string" && (step1 as any).legal_business_name.trim()) ? (step1 as any).legal_business_name.trim()
+    : (typeof (step1 as any)?.store_display_name === "string" && (step1 as any).store_display_name.trim()) ? (step1 as any).store_display_name.trim()
+    : "";
+  const [signerName, setSignerName] = useState(initialSignerName);
   const [signerEmail, setSignerEmail] = useState(step1?.store_email || "");
   const [signerPhone, setSignerPhone] = useState(step1?.store_phones?.[0] || "");
   const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
@@ -46,17 +53,67 @@ export default function SignatureStepPage({
   const [error, setError] = useState("");
   const [pdfDownloaded, setPdfDownloaded] = useState(false);
 
+  // Always sync signer name from the latest store owner name coming from DB (merchant_stores.owner_full_name)
+  useEffect(() => {
+    const updateFromLocalStep1 = () => {
+      const dbOwner =
+        typeof step1?.owner_full_name === "string" ? step1.owner_full_name.trim() : "";
+      if (dbOwner && dbOwner !== signerName) {
+        setSignerName(dbOwner);
+      }
+    };
+
+    updateFromLocalStep1();
+
+    // If store_public_id is available, fetch fresh owner_full_name from merchant_stores via API
+    const storePublicId: string | null =
+      (step1 && typeof (step1 as any).store_public_id === "string" && (step1 as any).store_public_id) ||
+      (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("store_id") : null);
+
+    if (!storePublicId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/store-status-by-id?store_id=${encodeURIComponent(storePublicId)}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const apiOwner: string | undefined = json?.store?.owner_full_name || json?.storeData?.owner_full_name || json?.storeData?.ownerName;
+        if (!cancelled && typeof apiOwner === "string" && apiOwner.trim() && apiOwner.trim() !== signerName) {
+          setSignerName(apiOwner.trim());
+        }
+      } catch {
+        // ignore fetch errors; fallback to local step1 data
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step1, signerName]);
+
+  const resolvedOwnerNameForText =
+    (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+    : (typeof (step1 as any)?.legal_business_name === "string" && (step1 as any).legal_business_name.trim()) ? (step1 as any).legal_business_name.trim()
+    : (typeof (step1 as any)?.store_display_name === "string" && (step1 as any).store_display_name.trim()) ? (step1 as any).store_display_name.trim()
+    : "—";
+
+  const resolvedContactPersonForText =
+    (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+    : (typeof (step1 as any)?.store_contact_person === "string" && (step1 as any).store_contact_person.trim()) ? (step1 as any).store_contact_person.trim()
+    : resolvedOwnerNameForText;
+
   const contractTextResolved = useMemo(() => {
     if (contractTextForPdf && contractTextForPdf.trim()) return contractTextForPdf;
     const data = {
       storeName: step1?.store_name || "—",
       parentName: parentInfo?.name ?? step1?.parent_merchant_id ?? "—",
-      ownerName: step1?.owner_full_name || "—",
+      ownerName: resolvedOwnerNameForText,
       email: step1?.store_email || "—",
       phone: step1?.store_phones?.[0] || "—",
       address: step2?.full_address || "—",
       effectiveDate: new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
-      contactPerson: step1?.owner_full_name || "—",
+      contactPerson: resolvedContactPersonForText,
       bank: documents?.bank
         ? {
             account_holder_name: documents.bank.account_holder_name || "",
@@ -70,7 +127,7 @@ export default function SignatureStepPage({
         : undefined,
     };
     return buildContractText(data, defaultAgreementText);
-  }, [contractTextForPdf, step1, step2, documents, parentInfo, defaultAgreementText]);
+  }, [contractTextForPdf, step1, step2, documents, parentInfo, defaultAgreementText, resolvedOwnerNameForText, resolvedContactPersonForText]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -218,12 +275,18 @@ export default function SignatureStepPage({
     () => ({
       storeName: step1?.store_name || "—",
       parentName: parentInfo?.name ?? step1?.parent_merchant_id ?? "—",
-      ownerName: step1?.owner_full_name || "—",
+      ownerName:
+        (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+        : (typeof step1?.store_name === "string" && step1.store_name.trim()) ? step1.store_name.trim()
+        : "—",
       email: step1?.store_email || "—",
       phone: step1?.store_phones?.[0] || "—",
       address: step2?.full_address || "—",
       effectiveDate: new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
-      contactPerson: step1?.owner_full_name || "—",
+      contactPerson:
+        (typeof step1?.owner_full_name === "string" && step1.owner_full_name.trim()) ? step1.owner_full_name.trim()
+        : (typeof (step1 as any)?.store_contact_person === "string" && (step1 as any).store_contact_person.trim()) ? (step1 as any).store_contact_person.trim()
+        : ((typeof step1?.store_name === "string" && step1.store_name.trim()) ? step1.store_name.trim() : "—"),
       bank: documents?.bank
         ? {
             account_holder_name: documents.bank.account_holder_name || "",
@@ -587,7 +650,7 @@ export default function SignatureStepPage({
       const res = await fetch("/api/register-store", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+          body: JSON.stringify({
           step1: {
             ...step1,
             __storePublicId: step1?.store_public_id || (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("store_id") : null),
@@ -615,6 +678,7 @@ export default function SignatureStepPage({
             signerEmail: signerEmail || null,
             signerPhone: signerPhone || null,
             signatureDataUrl,
+            agreedToRead: !!agreementReadConfirmed,
             agreedToContract,
             agreedToTerms,
             commissionFirstMonthPct: 0,

@@ -4,6 +4,8 @@ import path from "path";
 const nextConfig: NextConfig = {
   // Use dashboard as the workspace root for file tracing (avoids multiple-lockfile warning in monorepo)
   outputFileTracingRoot: path.join(process.cwd()),
+  // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
+  devIndicators: false,
   // Image optimization: allow quality 75 (default) and 95 for crisp logos/hero images
   images: {
     qualities: [75, 95],

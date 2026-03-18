@@ -41,32 +41,42 @@ export async function loginWithEmail(
 }
 
 /**
- * Request OTP via email
- * Note: To receive OTP codes instead of magic links, configure Supabase Dashboard:
- * Authentication > Email Templates > Magic Link template should be set to send OTP codes
+ * Request OTP via email (same as partnersite).
+ * Configure Supabase Dashboard: Authentication > Email Templates > Magic Link to send OTP codes.
  */
 export async function requestEmailOTP(email: string): Promise<AuthResponse> {
   try {
-    // Request OTP via email
-    // IMPORTANT: To receive OTP codes instead of magic links, you must configure
-    // Supabase Dashboard: Authentication > Email Templates > Magic Link template
-    // The template should display the OTP code, not a magic link
     const { data, error } = await supabase.auth.signInWithOtp({
-      email,
-      // Do not set emailRedirectTo - this helps ensure OTP codes are sent
-      // instead of magic links (though dashboard configuration is still required)
+      email: email.trim().toLowerCase(),
+      options: { shouldCreateUser: true },
     });
 
     if (error) {
-      return { success: false, error: error.message };
+      const msg = error.message || "Unknown error";
+      if (
+        /rate limit|rate_limit|too many|exceeded/i.test(msg) ||
+        (error as { code?: string; status?: number }).code === "429" ||
+        (error as { code?: string; status?: number }).status === 429
+      ) {
+        return { success: false, error: "EMAIL_RATE_LIMIT_EXCEEDED" };
+      }
+      if (/confirmation email|magic link|sending/i.test(msg)) {
+        return {
+          success: false,
+          error:
+            "Could not send verification email. Check SMTP in Supabase (Authentication > Email) or try again later.",
+        };
+      }
+      return { success: false, error: msg };
     }
 
     return { success: true, data };
   } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    if (/rate limit|rate_limit|too many|exceeded/i.test(msg)) {
+      return { success: false, error: "EMAIL_RATE_LIMIT_EXCEEDED" };
+    }
+    return { success: false, error: msg };
   }
 }
 

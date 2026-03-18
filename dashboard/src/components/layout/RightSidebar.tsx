@@ -3,7 +3,7 @@
 import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Users } from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
@@ -256,14 +256,19 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                 // Special handling for customer dashboard - highlight "All Customers" when on /dashboard/customers
                 const isCustomerDashboardHome = cleanPathname === "/dashboard/customers";
                 const allRoutesForActive = [...currentSubRoutes];
-                const activeHref = allRoutesForActive
-                  .filter((r) => {
-                    const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
-                    const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
-                    const customerHomeAlias = isCustomerDashboardHome && r.href === "/dashboard/customers/all";
-                    return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
-                  })
-                  .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
+                // When on Assign AM page, don't highlight the main Merchants tabs; the dedicated
+                // "Assign AM to Stores" link below should be the only active item.
+                const activeHref =
+                  cleanPathname === "/dashboard/merchants/assign-am"
+                    ? null
+                    : allRoutesForActive
+                        .filter((r) => {
+                          const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
+                          const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
+                          const customerHomeAlias = isCustomerDashboardHome && r.href === "/dashboard/customers/all";
+                          return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
+                        })
+                        .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
                 const linkEl = (route: DashboardSubRoute) => {
                   const isActive = activeHref === route.href;
                   const Icon = route.icon;
@@ -304,9 +309,23 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                     </Link>
                   );
                 };
+                const isAssignAmActive = cleanPathname === "/dashboard/merchants/assign-am";
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
+                    {isOpen && isMerchantsDashboard && portal === "admin" && (
+                      <Link
+                        href="/dashboard/merchants/assign-am"
+                        className={`mt-1 flex cursor-pointer items-center space-x-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-all duration-200 ${
+                          isAssignAmActive
+                            ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
+                            : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+                        }`}
+                      >
+                        <Users className="h-4 w-4 flex-shrink-0" />
+                        <span className="flex-1 truncate">Assign AM to Stores</span>
+                      </Link>
+                    )}
                     {/* Store Information Card: merchant portal — from URL store, or from search result on list page; skeleton when search loading */}
                     {isOpen && portal === "merchant" && (
                       <div className="mt-3 min-w-0">

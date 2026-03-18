@@ -210,21 +210,21 @@ export function getMerchantStoreMediaPath(
  * - store_code: merchant_stores.store_id (e.g. GMMC1017)
  * - attachment_type: 'images' | 'pdf' | 'csv'
  */
-export const R2_MENU_UPLOADS_PREFIX = "menu-uploads";
-
 export function getMenuUploadR2Key(
   parentMerchantId: string,
   storePublicId: string,
   attachmentType: "images" | "pdf" | "csv",
   uniqueFileName: string
 ): string {
+  // Align Partner Site menu uploads exactly with AM dashboard child onboarding:
+  // All menu files (images, PDF, CSV/XLS) live under:
+  //   merchants/{parentMerchantId}/stores/{storePublicId}/menu/{fileName}
+  //
+  // NOTE: We deliberately do NOT prefix with "docs/" here, because the dashboard
+  // menu upload route also uses keys starting with "merchants/...".
   const parent = (parentMerchantId && String(parentMerchantId).trim()) || "unknown";
   const store = (storePublicId && String(storePublicId).trim()) || "unknown";
-  const subPath: "MENU_IMAGES" | "MENU_PDF" | "MENU_CSV" =
-    attachmentType === "images" ? "MENU_IMAGES" :
-    attachmentType === "pdf" ? "MENU_PDF" :
-    "MENU_CSV";
-  const base = getOnboardingR2Path(parent, store, subPath);
+  const base = `merchants/${parent}/stores/${store}/menu`;
   const fileName = (uniqueFileName && String(uniqueFileName).trim()) || "";
   return fileName ? `${base}/${fileName}` : base;
 }

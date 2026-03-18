@@ -129,7 +129,8 @@ export async function POST(req: NextRequest) {
         const r2Key = `${menuPath}/${safeName}`;
         await uploadToR2(file, r2Key);
         const publicUrl = toStoredDocumentUrl(r2Key);
-        await db.from("merchant_store_media_files").insert({
+
+        const { error: insertError } = await db.from("merchant_store_media_files").insert({
           store_id: store.id,
           media_scope: "MENU_REFERENCE",
           source_entity: "ONBOARDING_MENU_IMAGE",
@@ -138,10 +139,21 @@ export async function POST(req: NextRequest) {
           r2_key: r2Key,
           public_url: publicUrl ?? `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`,
           mime_type: file.type || "image/*",
+          file_size_bytes: file.size,
+          version_no: 1,
           is_active: true,
           verification_status: "PENDING",
           uploaded_by: user.id,
         });
+
+        if (insertError) {
+          console.error("[merchant/menu-upload] image insert failed:", insertError);
+          return NextResponse.json(
+            { error: insertError.message || "Failed to save menu image in database" },
+            { status: 500 }
+          );
+        }
+
         uploadedKeys.push(r2Key);
       }
 
@@ -213,7 +225,7 @@ export async function POST(req: NextRequest) {
     const publicUrl = toStoredDocumentUrl(r2Key);
     const mimeType = isPdf ? "application/pdf" : "text/csv";
 
-    await db.from("merchant_store_media_files").insert({
+    const { error: insertError } = await db.from("merchant_store_media_files").insert({
       store_id: store.id,
       media_scope: "MENU_REFERENCE",
       source_entity: sourceEntity,
@@ -222,10 +234,20 @@ export async function POST(req: NextRequest) {
       r2_key: r2Key,
       public_url: publicUrl ?? `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`,
       mime_type: mimeType,
+      file_size_bytes: file.size,
+      version_no: 1,
       is_active: true,
       verification_status: "PENDING",
       uploaded_by: user.id,
     });
+
+    if (insertError) {
+      console.error("[merchant/menu-upload] CSV/PDF insert failed:", insertError);
+      return NextResponse.json(
+        { error: insertError.message || "Failed to save menu file in database" },
+        { status: 500 }
+      );
+    }
 
     await db.from("merchant_store_activity_log").insert({
       store_id: store.id,

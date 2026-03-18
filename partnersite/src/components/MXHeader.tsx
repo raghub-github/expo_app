@@ -12,7 +12,7 @@ interface MXHeaderProps {
 }
 
 export const MXHeader: React.FC<MXHeaderProps> = ({
-  restaurantName = 'Your Restaurant',
+  restaurantName = 'Your Store',
   restaurantId = 'GMM0001',
   unreadCount = 0,
 }) => {
@@ -44,7 +44,7 @@ export const MXHeader: React.FC<MXHeaderProps> = ({
             <p className="text-xs text-slate-400 font-medium">Merchant Portal</p>
           </div>
 
-          {/* Center Section - Restaurant Info */}
+          {/* Center Section - Store Info */}
           <div className="hidden md:flex items-center gap-4 px-6 py-3 bg-slate-700/30 rounded-xl border border-slate-600/50">
             <div>
               <p className="text-sm font-semibold text-white">{restaurantName}</p>

@@ -84,67 +84,139 @@ export async function POST(
     }
 
     const formData = await request.formData();
-    const file = formData.get("file") as File | null;
-    if (!file || !(file instanceof File)) {
+    const directFile = formData.get("file");
+    const multiFiles = formData.getAll("files");
+    const files: File[] = [];
+
+    if (directFile instanceof File) {
+      files.push(directFile);
+    }
+    for (const f of multiFiles) {
+      if (f instanceof File) {
+        files.push(f);
+      }
+    }
+
+    const sourceEntityRaw = (formData.get("source_entity") as string) || "";
+    const sourceEntity =
+      sourceEntityRaw === "ONBOARDING_MENU_IMAGE" ||
+      sourceEntityRaw === "ONBOARDING_MENU_PDF" ||
+      sourceEntityRaw === "ONBOARDING_MENU_SHEET"
+        ? sourceEntityRaw
+        : "ONBOARDING_MENU_IMAGE";
+    if (files.length === 0) {
       return NextResponse.json(
         { success: false, error: "No file provided" },
         { status: 400 }
       );
     }
 
-    if (file.size > MAX_MENU_FILE_BYTES) {
-      return NextResponse.json(
-        { success: false, error: "File too large (max 15 MB)" },
-        { status: 400 }
-      );
+    // For images we allow up to 5 files in one go.
+    const effectiveFiles =
+      sourceEntity === "ONBOARDING_MENU_IMAGE" ? files.slice(0, 5) : files.slice(0, 1);
+
+    for (const f of effectiveFiles) {
+      if (f.size > MAX_MENU_FILE_BYTES) {
+        return NextResponse.json(
+          { success: false, error: "File too large (max 15 MB)" },
+          { status: 400 }
+        );
+      }
     }
 
     const parentId = store.parent_id ?? store.id;
     const storeIdStr = String(store.store_id || storeId);
-    const timestamp = Date.now();
-    const safeName = sanitizeFileName(file.name);
-    const ext = file.name.split(".").pop()?.toLowerCase() || "bin";
-    const r2Key = `merchants/${parentId}/stores/${storeIdStr}/menu/${timestamp}_${safeName}`;
+    // We intentionally store only the proxy path (no hostname) so URLs
+    // work across localhost, staging, and production without rewriting.
 
-    await uploadWithKey(file, r2Key);
+    const createdFiles: {
+      id: number;
+      store_id: number;
+      media_scope: string;
+      original_file_name: string;
+      r2_key: string;
+      public_url: string;
+      mime_type: string | null;
+      file_size_bytes: number;
+      verification_status: string;
+      created_at: string;
+    }[] = [];
 
-    const baseUrl = getBaseUrl(request);
-    const publicUrl = `${baseUrl}/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
-
-    let insertedId: number | null = null;
     try {
       const sql = getSql();
-      // Always replace: soft-delete existing MENU_REFERENCE for this store to avoid duplicates
-      await sql`
-        UPDATE merchant_store_media_files
-        SET deleted_at = now(), is_active = false, updated_at = now()
+      // Hard-delete any existing MENU_REFERENCE media (and their R2 objects) so new upload fully replaces old.
+      const existing = await sql`
+        SELECT id, r2_key
+        FROM merchant_store_media_files
         WHERE store_id = ${storeId}
           AND media_scope = 'MENU_REFERENCE'
-          AND (deleted_at IS NULL)
       `;
-      const inserted = await sql`
-        INSERT INTO merchant_store_media_files (
-          store_id, media_scope, original_file_name, r2_key, public_url,
-          mime_type, file_size_bytes, version_no, is_active, verification_status
-        )
-        VALUES (
-          ${storeId},
-          'MENU_REFERENCE',
-          ${file.name},
-          ${r2Key},
-          ${publicUrl},
-          ${file.type || null},
-          ${file.size},
-          1,
-          true,
-          'PENDING'
-        )
-        RETURNING id, store_id, media_scope, original_file_name, r2_key, public_url,
-                  mime_type, file_size_bytes, verification_status, created_at
+      const rows = Array.isArray(existing) ? existing : existing ? [existing] : [];
+      for (const row of rows as { id: number; r2_key: string | null }[]) {
+        if (!row.r2_key) continue;
+        try {
+          await deleteDocument(row.r2_key);
+        } catch (e) {
+          console.warn(
+            "[POST /api/merchant/stores/[id]/media/upload] R2 delete failed for key:",
+            row.r2_key,
+            e
+          );
+        }
+      }
+      await sql`
+        DELETE FROM merchant_store_media_files
+        WHERE store_id = ${storeId}
+          AND media_scope = 'MENU_REFERENCE'
       `;
-      const row = Array.isArray(inserted) ? inserted[0] : inserted;
-      if (row) {
-        insertedId = Number(row.id);
+      for (const f of effectiveFiles) {
+        const timestamp = Date.now();
+        const safeName = sanitizeFileName(f.name);
+        const ext = f.name.split(".").pop()?.toLowerCase() || "bin";
+        const r2Key = `merchants/${parentId}/stores/${storeIdStr}/menu/${timestamp}_${safeName}`;
+
+        await uploadWithKey(f, r2Key);
+
+        const publicUrl = `/api/attachments/proxy?key=${encodeURIComponent(
+          r2Key
+        )}`;
+
+        const inserted = await sql`
+          INSERT INTO merchant_store_media_files (
+            store_id, media_scope, source_entity, original_file_name, r2_key, public_url,
+            mime_type, file_size_bytes, version_no, is_active, verification_status
+          )
+          VALUES (
+            ${storeId},
+            'MENU_REFERENCE',
+            ${sourceEntity},
+            ${f.name},
+            ${r2Key},
+            ${publicUrl},
+            ${f.type || null},
+            ${f.size},
+            1,
+            true,
+            'PENDING'
+          )
+          RETURNING id, store_id, media_scope, source_entity, original_file_name, r2_key, public_url,
+                    mime_type, file_size_bytes, verification_status, created_at
+        `;
+        const row = Array.isArray(inserted) ? inserted[0] : inserted;
+        if (row) {
+          createdFiles.push({
+            id: Number(row.id),
+            store_id: storeId,
+            media_scope: "MENU_REFERENCE",
+            original_file_name: String(row.original_file_name ?? f.name),
+            r2_key: String(row.r2_key ?? r2Key),
+            public_url: String(row.public_url ?? publicUrl),
+            mime_type: ((row.mime_type as string | null) ?? f.type) || null,
+            file_size_bytes: Number(row.file_size_bytes ?? f.size),
+            verification_status: String(row.verification_status ?? "PENDING"),
+            created_at: (row.created_at as string) ?? new Date().toISOString(),
+          });
+        }
       }
     } catch (e) {
       console.error("[POST /api/merchant/stores/[id]/media/upload] insert failed:", e);
@@ -154,23 +226,11 @@ export async function POST(
       );
     }
 
-    const created = insertedId != null ? {
-      id: insertedId,
-      store_id: storeId,
-      media_scope: "MENU_REFERENCE",
-      original_file_name: file.name,
-      r2_key: r2Key,
-      public_url: publicUrl,
-      mime_type: file.type || null,
-      file_size_bytes: file.size,
-      verification_status: "PENDING",
-      created_at: new Date().toISOString(),
-    } : null;
-
     return NextResponse.json({
       success: true,
-      file: created,
-      message: "File uploaded and saved.",
+      files: createdFiles,
+      file: createdFiles[0] ?? null,
+      message: "File(s) uploaded and saved.",
     });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/media/upload]", e);
