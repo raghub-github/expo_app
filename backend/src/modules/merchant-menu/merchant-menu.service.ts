@@ -219,10 +219,11 @@ export async function listItems(
   `;
 
   const itemsResult = await sql`
-    SELECT id, item_id, item_name, item_description, item_image_url, category_id, food_type,
-           base_price, selling_price, in_stock, is_active, is_deleted, display_order,
-           has_customizations, has_addons, has_variants, preparation_time_minutes,
-           serves, serves_label, item_size_value, item_size_unit,
+    SELECT id, item_id, item_name, item_description, item_image_url, category_id, food_type, spice_level,
+           base_price, selling_price, discount_percentage, tax_percentage,
+           in_stock, is_active, is_deleted, display_order,
+           has_customizations, has_addons, has_variants, is_popular, is_recommended,
+           preparation_time_minutes, serves, serves_label, item_size_value, item_size_unit,
            approval_status,
            (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
            (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type
@@ -253,6 +254,8 @@ export async function getItem(
   cuisine_type: string | null;
   base_price: string;
   selling_price: string;
+  discount_percentage: number | null;
+  tax_percentage: number | null;
   in_stock: boolean;
   is_active: boolean;
   is_deleted: boolean | null;
@@ -260,6 +263,8 @@ export async function getItem(
   has_customizations: boolean;
   has_addons: boolean;
   has_variants: boolean;
+  is_popular: boolean | null;
+  is_recommended: boolean | null;
   preparation_time_minutes: number | null;
   serves: number | null;
   allergens: string[] | null;
@@ -280,8 +285,10 @@ export async function getItem(
   const sql = getSql();
   const [item] = await sql`
     SELECT id, item_id, item_name, item_description, item_image_url, short_name, category_id,
-           food_type, spice_level, cuisine_type, base_price, selling_price, in_stock, is_active,
-           is_deleted, display_order, has_customizations, has_addons, has_variants,
+           food_type, spice_level, cuisine_type, base_price, selling_price,
+           discount_percentage, tax_percentage,
+           in_stock, is_active, is_deleted, display_order, has_customizations, has_addons, has_variants,
+           is_popular, is_recommended,
            preparation_time_minutes, packaging_charges, serves, serves_label, allergens, nutritional_info,
            item_size_value, item_size_unit, available_for_delivery,
            weight_per_serving, weight_per_serving_unit, calories_kcal,
@@ -592,11 +599,12 @@ export async function deleteItem(itemId: number, storeIdNum: number): Promise<bo
 
   // Delete DB rows in a transaction.
   await sql.begin(async (trx) => {
-    await trx`
+    const trxSql = trx as unknown as typeof sql;
+    await trxSql`
       DELETE FROM merchant_menu_item_images
       WHERE menu_item_id = ${itemId}
     `;
-    await trx`
+    await trxSql`
       DELETE FROM merchant_menu_items
       WHERE id = ${itemId} AND store_id = ${storeIdNum}
     `;
@@ -605,12 +613,12 @@ export async function deleteItem(itemId: number, storeIdNum: number): Promise<bo
   // Best-effort delete of R2 objects; ignore failures so the API still succeeds.
   if (images.length > 0) {
     try {
-      const { deleteFileFromR2 } = await import("../../services/r2.service");
+      const { deleteFromR2 } = await import("../../services/r2/r2Service.js");
       await Promise.all(
         images
           .map((img) => img.r2_key)
           .filter((key): key is string => !!key)
-          .map((key) => deleteFileFromR2(key).catch(() => undefined))
+          .map((key) => deleteFromR2(key).catch(() => undefined))
       );
     } catch {
       // R2 service not available or delete failed; ignore.
@@ -1300,7 +1308,7 @@ export async function getCategoryAvailabilityCounts(storeIdNum: number): Promise
     GROUP BY ca.category_id
   `;
   const out: Record<number, number> = {};
-  for (const r of rows as Array<{ category_id: number; cnt: number }>) {
+  for (const r of rows as unknown as Array<{ category_id: number; cnt: number }>) {
     out[r.category_id] = r.cnt;
   }
   return out;

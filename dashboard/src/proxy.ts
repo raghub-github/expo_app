@@ -12,11 +12,12 @@ import {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  // Skip logging in production for minimal middleware time
-  if (process.env.NODE_ENV === "development" && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
+  // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [proxy] Path and redirect messages (off by default to reduce console noise).
+  const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
+  if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
     console.log("[proxy] Path:", pathname);
   }
-  
+
   const response = NextResponse.next();
 
   try {
@@ -169,7 +170,7 @@ export async function proxy(request: NextRequest) {
 
     // If no Supabase session and trying to access protected route
     if (!session && !isPublicRoute) {
-      if (process.env.NODE_ENV === "development") {
+      if (debugProxy) {
         console.log("[proxy] No Supabase session, redirecting to login");
       }
       if (pathname.startsWith("/api/")) {
@@ -186,7 +187,7 @@ export async function proxy(request: NextRequest) {
 
     // If Supabase session exists and trying to access login, redirect to dashboard
     if (session && pathname === "/login") {
-      console.log("[proxy] Session exists, redirecting from login to dashboard");
+      if (debugProxy) console.log("[proxy] Session exists, redirecting from login to dashboard");
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
 
@@ -201,9 +202,7 @@ export async function proxy(request: NextRequest) {
       const validity = checkSessionValidity(metadata);
 
       if (!validity.isValid) {
-        if (process.env.NODE_ENV === "development") {
-          console.log("[proxy] Session expired:", validity.reason);
-        }
+        if (debugProxy) console.log("[proxy] Session expired:", validity.reason);
         const cookieSetter = {
           set: (name: string, value: string, options: any) => {
             response.cookies.set(name, value, options);

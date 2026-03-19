@@ -7,6 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
+import { logStoreActivity } from '@/lib/store-activity-feed';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -136,6 +137,13 @@ export async function POST(req: NextRequest) {
       performed_by_name: actor.performed_by_name,
       performed_by_email: actor.performed_by_email,
       audit_metadata: { description: `Offer created: ${data.offer_title}` },
+    });
+
+    await logStoreActivity({
+      storeId: merchantStoreId, section: 'offer', action: 'create',
+      entityId: data.id, entityName: data.offer_title,
+      summary: `Merchant created offer "${data.offer_title}" (${data.offer_type})`,
+      actorName: actor.performed_by_name, actorEmail: actor.performed_by_email,
     });
 
     return NextResponse.json(response);

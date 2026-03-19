@@ -63,12 +63,44 @@ export function useStoreOperationsQuery(storeId: string | null) {
   });
 }
 
-/** Invalidate store queries after mutations (e.g. toggle open/close, wallet update). */
+/** Dashboard/merchants page: aggregated stats (total, verified, pending, etc.). Cached 2min for fast revisit. */
+export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string) {
+  const params = new URLSearchParams();
+  if (fromDate) params.set("fromDate", fromDate);
+  if (toDate) params.set("toDate", toDate);
+  const qs = params.toString();
+  const url = `/api/merchant/stores/stats${qs ? `?${qs}` : ""}`;
+  return useQuery({
+    queryKey: queryKeys.merchantStores.stats(fromDate, toDate),
+    queryFn: () => fetchJson<{ success: boolean; total?: number; verified?: number; pending?: number; rejected?: number; new?: number }>(url),
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** Store menu (categories + items). Cached 3min so menu tab revisits are instant. */
+export function useStoreMenuQuery(storeId: string | null) {
+  const url = storeId ? `/api/merchant/stores/${storeId}/menu` : null;
+  return useQuery({
+    queryKey: queryKeys.merchantStore.menu(storeId ?? ""),
+    queryFn: () => fetchJson<{ success: boolean; categories?: unknown[]; items?: unknown[] }>(url!),
+    enabled: Boolean(storeId && url),
+    staleTime: 3 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    retry: 1,
+  });
+}
+
+/** Invalidate store queries after mutations (e.g. toggle open/close, wallet update, menu change). */
 export function useInvalidateMerchantStoreQueries() {
   const queryClient = useQueryClient();
   return (storeId: string) => {
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.stats(storeId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.wallet(storeId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.storeOperations(storeId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
   };
 }

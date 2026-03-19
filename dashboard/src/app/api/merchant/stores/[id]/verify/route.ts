@@ -6,12 +6,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getMerchantAccess } from "@/lib/permissions/merchant-access";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/merchant-stores";
 import { logAreaManagerActivity } from "@/lib/area-manager/activity";
-import { logActionByAuth } from "@/lib/audit/logger";
-import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
+import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { sendEmail } from "@/lib/email/send";
 
 export const runtime = "nodejs";
@@ -57,9 +57,42 @@ export async function POST(
       );
     }
 
+    const access = await getMerchantAccess(user.id, user.email);
+    if (!access) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Merchant access not found",
+          code: "MERCHANT_ACCESS_REQUIRED",
+        },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json().catch(() => ({}));
     const action = body.action === "reject" ? "reject" : "approve";
     const reason = typeof body.reason === "string" ? body.reason.trim() : undefined;
+
+    if (action === "approve" && !access.can_approve_store) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "You do not have permission to approve stores",
+          code: "PERMISSION_DENIED",
+        },
+        { status: 403 }
+      );
+    }
+    if (action === "reject" && !access.can_reject_store) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "You do not have permission to reject stores",
+          code: "PERMISSION_DENIED",
+        },
+        { status: 403 }
+      );
+    }
     const messageToOwner =
       typeof body.message === "string"
         ? body.message.trim()
@@ -145,11 +178,21 @@ export async function POST(
       user.id,
       user.email,
       "MERCHANT",
-      action === "approve" ? "UPDATE" : "UPDATE",
+      "UPDATE",
       {
         resourceType: "store",
         resourceId: String(storeId),
         actionDetails: { verification: action, reason },
+        previousValues: {
+          approval_status: currentStatus,
+          approval_reason: store.approval_reason ?? null,
+          rejected_reason: store.rejected_reason ?? null,
+        },
+        newValues: {
+          approval_status,
+          approval_reason: updateData.approval_reason ?? null,
+          rejected_reason: updateData.rejected_reason ?? null,
+        },
         ipAddress: getIpAddress(request),
         userAgent: getUserAgent(request),
         requestPath: request.nextUrl.pathname,

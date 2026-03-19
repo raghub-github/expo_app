@@ -261,6 +261,15 @@ export default function ProfileScreen() {
         </View>
       </View>
 
+      {/* Marketing — offers & promotions */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Marketing</Text>
+        <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          <GridCard icon="pricetag-outline" label="Offers & Promotions" onPress={navigate("offers")} tileWidth={tileWidth} active={isActive("offers")} />
+          <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={tileWidth} active={isActive("activity-feed")} />
+        </View>
+      </View>
+
       {/* Orders — quick settings grid */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Orders</Text>

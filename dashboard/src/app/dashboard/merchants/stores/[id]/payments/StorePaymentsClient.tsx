@@ -4,7 +4,6 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import {
   Wallet,
-  ArrowDownToLine,
   X,
   Filter,
   ChevronLeft,
@@ -27,6 +26,17 @@ import {
   Search,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { WalletRequestsSection } from "@/components/merchants/WalletRequestsSection";
+import {
+  type WalletSummary,
+  type BankAccount,
+  type LedgerEntry,
+  useGetStoreWalletQuery,
+  useGetStoreLedgerQuery,
+  useGetBankAccountsQuery,
+  useLazyGetPayoutQuoteQuery,
+  useCreatePayoutRequestMutation,
+} from "@/store/api/merchantStoreApi";
 
 const LEDGER_CATEGORIES = [
   "ORDER_EARNING",
@@ -46,47 +56,6 @@ const LEDGER_CATEGORIES = [
   "MANUAL_DEBIT",
   "TAX_ADJUSTMENT",
 ] as const;
-
-interface WalletSummary {
-  available_balance: number;
-  pending_balance: number;
-  today_earning: number;
-  yesterday_earning: number;
-  total_earned: number;
-  total_withdrawn: number;
-  pending_withdrawal_total: number;
-}
-
-interface BankAccount {
-  id: number;
-  account_holder_name: string;
-  account_number_masked: string | null;
-  ifsc_code: string;
-  bank_name: string;
-  upi_id: string | null;
-  is_primary: boolean;
-  is_active: boolean;
-  is_disabled: boolean;
-  payout_method: string;
-}
-
-interface LedgerEntry {
-  id: number;
-  direction: "CREDIT" | "DEBIT";
-  category: string;
-  balance_type: string;
-  amount: number;
-  balance_after: number;
-  reference_type: string;
-  reference_id: number | null;
-  reference_extra: string | null;
-  description: string | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string;
-  order_id: number | null;
-  formatted_order_id: string | null;
-  table_id: string | null;
-}
 
 interface OrderDetailItem {
   id: number;
@@ -160,12 +129,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   const [bankSectionExpanded, setBankSectionExpanded] = useState(false);
 
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
-  const [walletLoading, setWalletLoading] = useState(true);
-  const [ledger, setLedger] = useState<LedgerEntry[]>([]);
-  const [ledgerTotal, setLedgerTotal] = useState(0);
-  const [ledgerLoading, setLedgerLoading] = useState(true);
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
-  const [bankAccountsLoading, setBankAccountsLoading] = useState(false);
 
   const [showAddBank, setShowAddBank] = useState(false);
   const [bankActionLoading, setBankActionLoading] = useState<number | null>(null);
@@ -206,6 +170,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
 
   const ledgerParams = useMemo(
     () => ({
+      storeId,
       limit: ledgerLimit,
       offset: ledgerOffset,
       from: filterFrom || undefined,
@@ -214,77 +179,43 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
       category: filterCategory || undefined,
       search: filterSearch || undefined,
     }),
-    [ledgerLimit, ledgerOffset, filterFrom, filterTo, filterDirection, filterCategory, filterSearch]
+    [
+      storeId,
+      ledgerLimit,
+      ledgerOffset,
+      filterFrom,
+      filterTo,
+      filterDirection,
+      filterCategory,
+      filterSearch,
+    ]
   );
 
-  const fetchWallet = useCallback(async () => {
-    if (!storeId) return;
-    setWalletLoading(true);
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/wallet`);
-      const data = await res.json();
-      if (data.success && data.available_balance != null) {
-        setWallet({
-          available_balance: data.available_balance ?? 0,
-          pending_balance: data.pending_balance ?? 0,
-          today_earning: data.today_earning ?? 0,
-          yesterday_earning: data.yesterday_earning ?? 0,
-          total_earned: data.total_earned ?? 0,
-          total_withdrawn: data.total_withdrawn ?? 0,
-          pending_withdrawal_total: data.pending_withdrawal_total ?? 0,
-        });
-      }
-    } catch {
-      toast("Failed to load wallet");
-    } finally {
-      setWalletLoading(false);
-    }
-  }, [storeId, toast]);
+  const {
+    data: walletQueryData,
+    isLoading: walletQueryLoading,
+    isFetching: walletFetching,
+  } = useGetStoreWalletQuery(storeId, {
+    skip: !storeId,
+  });
 
-  const fetchLedger = useCallback(async () => {
-    if (!storeId) return;
-    setLedgerLoading(true);
-    try {
-      const q = new URLSearchParams();
-      q.set("limit", String(ledgerParams.limit));
-      q.set("offset", String(ledgerParams.offset));
-      if (ledgerParams.from) q.set("from", ledgerParams.from);
-      if (ledgerParams.to) q.set("to", ledgerParams.to);
-      if (ledgerParams.direction) q.set("direction", ledgerParams.direction);
-      if (ledgerParams.category) q.set("category", ledgerParams.category);
-      if (ledgerParams.search) q.set("search", ledgerParams.search);
-      const res = await fetch(`/api/merchant/stores/${storeId}/ledger?${q.toString()}`);
-      const data = await res.json();
-      if (data.success) {
-        setLedger(Array.isArray(data.entries) ? data.entries : []);
-        setLedgerTotal(Number(data.total) ?? 0);
-      }
-    } catch {
-      toast("Failed to load ledger");
-    } finally {
-      setLedgerLoading(false);
-    }
-  }, [storeId, ledgerParams, toast]);
+  const {
+    data: ledgerQueryData,
+    isLoading: ledgerQueryLoading,
+    isFetching: ledgerFetching,
+  } = useGetStoreLedgerQuery(ledgerParams, {
+    skip: !storeId,
+  });
 
-  const fetchBankAccounts = useCallback(async () => {
-    if (!storeId) return;
-    setBankAccountsLoading(true);
-    try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/bank-accounts`);
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setBankAccounts(data);
-      } else if (data.success && Array.isArray(data.accounts)) {
-        setBankAccounts(data.accounts);
-      } else if (data.success && Array.isArray(data.data)) {
-        setBankAccounts(data.data);
-      }
-    } catch {
-      toast("Failed to load bank accounts");
-    } finally {
-      setBankAccountsLoading(false);
-    }
-  }, [storeId, toast]);
+  const {
+    data: bankAccountsQueryData,
+    isLoading: bankAccountsQueryLoading,
+  } = useGetBankAccountsQuery(storeId, {
+    skip: !storeId || (!bankSectionExpanded && !showWithdrawal),
+  });
+
+  const [triggerPayoutQuote] = useLazyGetPayoutQuoteQuery();
+  const [createPayoutRequest] = useCreatePayoutRequestMutation();
 
   useEffect(() => {
     if (!storeId) {
@@ -295,32 +226,20 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
     (async () => {
       setIsLoading(true);
       try {
-        const [storeRes, walletRes] = await Promise.all([
-          fetch(`/api/merchant/stores/${storeId}`),
-          fetch(`/api/merchant/stores/${storeId}/wallet`),
-        ]);
+        const res = await fetch(`/api/merchant/stores/${storeId}`);
         if (cancelled) return;
-        const storeData = await storeRes.json();
-        if (storeData.success && storeData.store?.store_name) setStoreName(storeData.store.store_name);
-        else if (storeData.success && storeData.store?.name) setStoreName(storeData.store.name);
-        if (walletRes.ok) {
-          const w = await walletRes.json();
-          if (w.success && w.available_balance != null) {
-            setWallet({
-              available_balance: w.available_balance ?? 0,
-              pending_balance: w.pending_balance ?? 0,
-              today_earning: w.today_earning ?? 0,
-              yesterday_earning: w.yesterday_earning ?? 0,
-              total_earned: w.total_earned ?? 0,
-              total_withdrawn: w.total_withdrawn ?? 0,
-              pending_withdrawal_total: w.pending_withdrawal_total ?? 0,
-            });
-          }
+        const storeData = await res.json();
+        if (storeData.success && storeData.store?.store_name) {
+          setStoreName(storeData.store.store_name);
+        } else if (storeData.success && storeData.store?.name) {
+          setStoreName(storeData.store.name);
         }
       } catch {
         if (!cancelled) toast("Failed to load store");
       } finally {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     })();
     return () => {
@@ -329,13 +248,27 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   }, [storeId, toast]);
 
   useEffect(() => {
-    if (!storeId) return;
-    fetchLedger();
-  }, [storeId, fetchLedger]);
+    if (walletQueryData) {
+      setWallet(walletQueryData);
+    }
+  }, [walletQueryData]);
 
   useEffect(() => {
-    if ((bankSectionExpanded || showWithdrawal) && storeId) fetchBankAccounts();
-  }, [bankSectionExpanded, showWithdrawal, storeId, fetchBankAccounts]);
+    if (bankAccountsQueryData) {
+      setBankAccounts(bankAccountsQueryData);
+    }
+  }, [bankAccountsQueryData]);
+
+  const walletLoading = walletQueryLoading || walletFetching;
+
+  const ledger: LedgerEntry[] = useMemo(
+    () => (ledgerQueryData?.entries ?? []) as LedgerEntry[],
+    [ledgerQueryData]
+  );
+  const ledgerTotal = ledgerQueryData?.total ?? 0;
+  const ledgerLoading = ledgerQueryLoading || ledgerFetching;
+
+  const bankAccountsLoading = bankAccountsQueryLoading;
 
   useEffect(() => {
     if (bankAccounts.length === 0) return;
@@ -358,13 +291,10 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
       setPayoutQuote(null);
       return;
     }
-    let cancelled = false;
     setPayoutQuoteLoading(true);
-    setPayoutQuote(null);
-    fetch(`/api/merchant/stores/${storeId}/payout-quote?amount=${amount}`)
-      .then((res) => res.json())
+    triggerPayoutQuote({ storeId, amount })
+      .unwrap()
       .then((data) => {
-        if (cancelled) return;
         if (data.success && data.requested_amount != null) {
           setPayoutQuote({
             requested_amount: data.requested_amount ?? amount,
@@ -376,18 +306,17 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
             tax_amount: data.tax_amount ?? 0,
             net_payout_amount: data.net_payout_amount ?? amount,
           });
-        } else setPayoutQuote(null);
+        } else {
+          setPayoutQuote(null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setPayoutQuote(null);
+        setPayoutQuote(null);
       })
       .finally(() => {
-        if (!cancelled) setPayoutQuoteLoading(false);
+        setPayoutQuoteLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [showWithdrawal, storeId, withdrawalAmount]);
+  }, [showWithdrawal, storeId, triggerPayoutQuote, withdrawalAmount]);
 
   const applyFilters = () => setLedgerOffset(0);
   const clearFilters = () => {
@@ -421,21 +350,18 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
     }
     setIsWithdrawing(true);
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/payout-request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount, bank_account_id: bankId }),
-      });
-      const data = await res.json();
-      if (data.success) {
+      const result = await createPayoutRequest({
+        storeId,
+        amount,
+        bank_account_id: bankId,
+      }).unwrap();
+      if (result.success) {
         setWithdrawalAmount("");
         setShowWithdrawal(false);
         setPayoutQuote(null);
         toast("Withdrawal request submitted. You will receive the net amount in 2–3 business days.");
-        fetchWallet();
-        fetchLedger();
       } else {
-        toast(data.error || "Request failed. Please try again.");
+        toast(result.error || "Request failed. Please try again.");
       }
     } catch (err) {
       toast(err instanceof Error ? err.message : "Request failed. Please try again.");
@@ -692,13 +618,6 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               {storeName ? ` for ${storeName}` : ""}
             </p>
           </div>
-          <button
-            onClick={() => setShowWithdrawal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors"
-          >
-            <ArrowDownToLine size={18} />
-            Withdraw
-          </button>
         </div>
 
         {/* Wallet summary cards */}
@@ -923,6 +842,9 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
             </div>
           )}
         </div>
+
+        {/* Wallet adjustment requests */}
+        <WalletRequestsSection storeId={storeId} />
 
         {/* Filters + Ledger */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
@@ -1400,8 +1322,8 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
         </div>
       </div>
 
-      {/* Withdrawal modal */}
-      {showWithdrawal && (
+      {/* Withdrawal modal — removed: agents cannot withdraw; merchants use app/partnersite */}
+      {false && showWithdrawal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl max-w-md w-full max-h-[90vh] flex flex-col overflow-hidden">
             <div className="flex-shrink-0 bg-gradient-to-r from-emerald-500 to-emerald-600 p-5 flex items-center justify-between">

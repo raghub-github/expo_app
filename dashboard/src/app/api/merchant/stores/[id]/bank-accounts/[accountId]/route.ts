@@ -8,6 +8,8 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { setBankAccountDefault, setBankAccountDisabled } from "@/lib/db/operations/merchant-store-bank-accounts";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -47,15 +49,28 @@ export async function PATCH(
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
+    const store = access.store as { id: number };
     const body = await request.json().catch(() => ({}));
-    // TODO: update merchant_bank_accounts set is_primary / is_disabled
+
     if (body.set_default === true) {
+      await setBankAccountDefault(store.id, accountIdNum);
+      await logStoreActivity({ storeId: store.id, section: "bank_account", action: "set_default", entityId: accountIdNum, summary: `Agent set bank account #${accountIdNum} as default`, actorType: "agent", source: "dashboard" });
       return NextResponse.json({ success: true });
     }
-    if (body.set_disabled === true || body.set_disabled === false) {
+
+    if (body.set_disabled === true) {
+      await setBankAccountDisabled(store.id, accountIdNum, true);
+      await logStoreActivity({ storeId: store.id, section: "bank_account", action: "disable", entityId: accountIdNum, summary: `Agent disabled bank account #${accountIdNum}`, actorType: "agent", source: "dashboard" });
       return NextResponse.json({ success: true });
     }
-    return NextResponse.json({ success: false, error: "No action" }, { status: 400 });
+
+    if (body.set_disabled === false) {
+      await setBankAccountDisabled(store.id, accountIdNum, false);
+      await logStoreActivity({ storeId: store.id, section: "bank_account", action: "enable", entityId: accountIdNum, summary: `Agent enabled bank account #${accountIdNum}`, actorType: "agent", source: "dashboard" });
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ success: false, error: "No valid action (set_default or set_disabled)" }, { status: 400 });
   } catch (e) {
     console.error("[PATCH /api/merchant/stores/[id]/bank-accounts/[accountId]]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

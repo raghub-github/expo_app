@@ -192,4 +192,10 @@ export const ApiErrorResponseSchema = z.object({
 });
 export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
 
+// =========================
+// Merchant Wallet Engine
+// =========================
+
+export * from "./wallet";
+
 

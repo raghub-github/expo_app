@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess, genId } from "../../../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,9 @@ export async function POST(
       VALUES (${menuItemId}, ${customizationId}, ${customization_title}, ${body.customization_type ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
       RETURNING id, customization_id
     `;
+    try {
+      await logStoreActivity({ storeId, section: "customization", action: "create", summary: `Agent added customization group to item #${itemId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({
       success: true,
       id: Number((row as any)?.id),

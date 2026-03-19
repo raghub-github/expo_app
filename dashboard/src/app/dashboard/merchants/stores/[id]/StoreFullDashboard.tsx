@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useStore } from "@/hooks/useStore";
@@ -232,7 +232,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
   const invalidateStoreQueries = useInvalidateMerchantStoreQueries();
   const operationsQuery = useStoreOperationsQuery(storeId);
   const walletQuery = useStoreWalletQuery(storeId);
-  const statsQuery = useStoreStatsQuery(storeId, statsDate || undefined, { refetchInterval: 15000 });
+  const statsQuery = useStoreStatsQuery(storeId, statsDate || undefined, { refetchInterval: 60000 });
 
   const [isStoreOpen, setIsStoreOpen] = useState(true);
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false);
@@ -566,11 +566,16 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     }
   }, [storeId, invalidateStoreQueries, toast]);
 
-  const criticalLoading =
-    (operationsQuery.isLoading && !operationsQuery.data) ||
-    (walletQuery.isLoading && !walletQuery.data) ||
-    (statsQuery.isLoading && !statsQuery.data);
-  const isLoading = storeLoading || criticalLoading;
+  const categoryDist = useMemo(
+    () => (categoryDistribution.length ? categoryDistribution : [{ name: "No data", value: 1, color: "#e2e8f0" }]),
+    [categoryDistribution]
+  );
+  const donutData = useMemo(
+    () => (donutVegNonVeg.length ? donutVegNonVeg : [{ name: "No data", value: 1, color: "#e2e8f0" }]),
+    [donutVegNonVeg]
+  );
+
+  const isLoading = storeLoading;
 
   // Avoid hydration mismatch: server and first client render have no query cache,
   // so server renders skeleton. Defer showing real content until after client mount.
@@ -595,9 +600,6 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
       </div>
     );
   }
-
-  const categoryDist = categoryDistribution.length ? categoryDistribution : [{ name: "No data", value: 1, color: "#e2e8f0" }];
-  const donutData = donutVegNonVeg.length ? donutVegNonVeg : [{ name: "No data", value: 1, color: "#e2e8f0" }];
 
   return (
     <>

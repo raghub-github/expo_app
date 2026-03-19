@@ -58,8 +58,10 @@ export async function GET(
     const items = await sql`
       SELECT id, store_id, item_id, item_name, item_description, item_image_url,
              category_id, food_type, spice_level, cuisine_type,
-             base_price, selling_price, in_stock, is_active, is_deleted, display_order,
+             base_price, selling_price, discount_percentage, tax_percentage,
+             in_stock, is_active, is_deleted, display_order,
              has_customizations, has_addons, has_variants,
+             is_popular, is_recommended,
              preparation_time_minutes, serves, serves_label, item_size_value, item_size_unit,
              approval_status::text,
              (SELECT EXISTS(

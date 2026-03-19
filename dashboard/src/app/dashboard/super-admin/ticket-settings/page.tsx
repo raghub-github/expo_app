@@ -5,6 +5,15 @@ import Link from "next/link";
 import { ArrowLeft, FolderGit2, Tag, Plus, Pencil, Trash2, X } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useRouter } from "next/navigation";
+import {
+  useGetTicketReferenceDataQuery,
+  useCreateTicketGroupMutation,
+  useUpdateTicketGroupMutation,
+  useDeleteTicketGroupMutation,
+  useCreateTicketTagMutation,
+  useUpdateTicketTagMutation,
+  useDeleteTicketTagMutation,
+} from "@/store/api/superAdminApi";
 
 type TitleRow = { id?: number; titleCode: string; titleText: string };
 
@@ -73,6 +82,22 @@ export default function TicketSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const {
+    data: referenceData,
+    isLoading: referenceLoading,
+    isFetching: referenceFetching,
+    error: referenceError,
+  } = useGetTicketReferenceDataQuery(undefined, {
+    skip: !isSuperAdmin,
+  } as any);
+
+  const [createGroupMutation] = useCreateTicketGroupMutation();
+  const [updateGroupMutation] = useUpdateTicketGroupMutation();
+  const [deleteGroupMutation] = useDeleteTicketGroupMutation();
+  const [createTagMutation] = useCreateTicketTagMutation();
+  const [updateTagMutation] = useUpdateTicketTagMutation();
+  const [deleteTagMutation] = useDeleteTicketTagMutation();
+
   useEffect(() => {
     if (!loading && !isSuperAdmin) {
       router.push("/dashboard");
@@ -80,22 +105,14 @@ export default function TicketSettingsPage() {
     }
   }, [loading, isSuperAdmin, router]);
 
-  const fetchGroups = () =>
-    fetch("/api/tickets/reference-data/groups")
-      .then((r) => r.json())
-      .then((d) => d.success && d.data?.groups && setGroups(d.data.groups));
-
-  const fetchTags = () =>
-    fetch("/api/tickets/reference-data/tags")
-      .then((r) => r.json())
-      .then((d) => d.success && d.data?.tags && setTags(d.data.tags));
-
   useEffect(() => {
     if (!isSuperAdmin) return;
-    setLoadingData(true);
-    Promise.all([fetchGroups(), fetchTags()])
-      .finally(() => setLoadingData(false));
-  }, [isSuperAdmin]);
+    setLoadingData(referenceLoading || referenceFetching);
+    if (referenceData) {
+      setGroups(referenceData.groups as Group[]);
+      setTags(referenceData.tags as TagRecord[]);
+    }
+  }, [isSuperAdmin, referenceData, referenceLoading, referenceFetching]);
 
   const createGroup = async () => {
     if (!groupForm?.groupCode?.trim() || !groupForm?.groupName?.trim()) {
@@ -106,26 +123,19 @@ export default function TicketSettingsPage() {
     setError(null);
     try {
       const titles = (groupForm.titles ?? []).filter((t) => t.titleCode?.trim() && t.titleText?.trim());
-      const res = await fetch("/api/tickets/reference-data/groups", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          groupCode: groupForm.groupCode.trim(),
-          groupName: groupForm.groupName.trim(),
-          groupDescription: groupForm.groupDescription?.trim() || null,
-          parentGroupId: groupForm.parentGroupId ?? null,
-          displayOrder: groupForm.displayOrder ?? null,
-          serviceType: groupForm.serviceType || null,
-          ticketSection: groupForm.ticketSection || null,
-          ticketCategory: groupForm.ticketCategory || null,
-          sourceRole: groupForm.sourceRole || null,
-          titles: titles.map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() })),
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed");
+      await createGroupMutation({
+        groupCode: groupForm.groupCode.trim(),
+        groupName: groupForm.groupName.trim(),
+        groupDescription: groupForm.groupDescription?.trim() || null,
+        parentGroupId: groupForm.parentGroupId ?? null,
+        displayOrder: groupForm.displayOrder ?? null,
+        serviceType: groupForm.serviceType || null,
+        ticketSection: groupForm.ticketSection || null,
+        ticketCategory: groupForm.ticketCategory || null,
+        sourceRole: groupForm.sourceRole || null,
+        titles: titles.map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() })),
+      }).unwrap();
       setGroupForm(null);
-      await fetchGroups();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create group");
     } finally {
@@ -143,15 +153,8 @@ export default function TicketSettingsPage() {
           .filter((t) => t.titleCode?.trim() && t.titleText?.trim())
           .map((t) => ({ titleCode: t.titleCode.trim(), titleText: t.titleText.trim() }));
       }
-      const res = await fetch(`/api/tickets/reference-data/groups/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed");
+      await updateGroupMutation({ id, updates: payload as any }).unwrap();
       setGroupForm(null);
-      await fetchGroups();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update group");
     } finally {
@@ -164,11 +167,8 @@ export default function TicketSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tickets/reference-data/groups/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed");
+      await deleteGroupMutation(id).unwrap();
       setGroupForm(null);
-      await fetchGroups();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to deactivate group");
     } finally {
@@ -184,20 +184,13 @@ export default function TicketSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/tickets/reference-data/tags", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tagCode: tagForm.tagCode.trim(),
-          tagName: tagForm.tagName.trim(),
-          tagDescription: tagForm.tagDescription?.trim() || null,
-          tagColor: tagForm.tagColor?.trim() || null,
-        }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed");
+      await createTagMutation({
+        tagCode: tagForm.tagCode.trim(),
+        tagName: tagForm.tagName.trim(),
+        tagDescription: tagForm.tagDescription?.trim() || null,
+        tagColor: tagForm.tagColor?.trim() || null,
+      }).unwrap();
       setTagForm(null);
-      await fetchTags();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create tag");
     } finally {
@@ -209,15 +202,8 @@ export default function TicketSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tickets/reference-data/tags/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(updates),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed");
+      await updateTagMutation({ id, updates }).unwrap();
       setTagForm(null);
-      await fetchTags();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update tag");
     } finally {
@@ -230,11 +216,8 @@ export default function TicketSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tickets/reference-data/tags/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed");
+      await deleteTagMutation(id).unwrap();
       setTagForm(null);
-      await fetchTags();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to deactivate tag");
     } finally {

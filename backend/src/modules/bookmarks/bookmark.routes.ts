@@ -25,7 +25,11 @@ export async function bookmarkRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: z.object({ storeId: z.string().min(1) }),
-        response: { 200: z.object({ saved: z.boolean() }) },
+        response: {
+          200: z.object({ saved: z.boolean() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
       },
     },
     async (request, reply) => {
@@ -50,7 +54,11 @@ export async function bookmarkRoutes(app: FastifyInstance) {
     {
       schema: {
         body: z.object({ storeId: z.string().min(1), saved: z.boolean() }),
-        response: { 200: z.object({ saved: z.boolean() }) },
+        response: {
+          200: z.object({ saved: z.boolean() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
       },
     },
     async (request, reply) => {

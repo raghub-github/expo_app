@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../../../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -35,6 +36,9 @@ export async function DELETE(
     if (!r) return NextResponse.json({ success: false, error: "Link not found" }, { status: 404 });
 
     await sql`DELETE FROM merchant_item_modifier_groups WHERE id = ${linkRowId}`;
+    try {
+      await logStoreActivity({ storeId, section: "addon", action: "unlink", summary: `Agent unlinked modifier group from item #${itemId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/items/[itemId]/modifier-groups/[linkId]]", e);

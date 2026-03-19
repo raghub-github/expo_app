@@ -57,7 +57,10 @@ export async function plansRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: subscriptionQuerySchema,
-        response: { 200: subscriptionResponseSchema },
+        response: {
+          200: subscriptionResponseSchema,
+          500: subscriptionResponseSchema,
+        },
       },
     },
     async (request, reply) => {
@@ -133,7 +136,10 @@ export async function plansRoutes(app: FastifyInstance) {
     "/plans",
     {
       schema: {
-        response: { 200: responseSchema },
+        response: {
+          200: responseSchema,
+          500: responseSchema,
+        },
       },
     },
     async (request, reply) => {

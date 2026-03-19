@@ -106,14 +106,14 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-    const ipAddress = getIpAddress(request);
-    const userAgent = getUserAgent(request);
+    const ipAddress = getIpAddress(request) ?? "";
+    const userAgent = getUserAgent(request) ?? "";
 
     // Respond immediately so proxy/client never block on audit
     setImmediate(() => {
       void runAuditInBackground({
         userId: user.id,
-        email: user.email,
+        email: user.email!,
         body,
         ipAddress,
         userAgent,

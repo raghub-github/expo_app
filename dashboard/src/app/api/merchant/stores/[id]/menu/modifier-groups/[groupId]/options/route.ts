@@ -27,12 +27,13 @@ export async function GET(
     if (!g) return NextResponse.json({ success: false, error: "Modifier group not found" }, { status: 404 });
 
     const options = await sql`
-      SELECT id, option_id, name, price_delta::text, image_url, in_stock, default_quantity, display_order
+      SELECT id, option_code, name, price_delta::text, image_url, in_stock, default_quantity, display_order
       FROM merchant_modifier_options
       WHERE modifier_group_id = ${modifierGroupId}
       ORDER BY display_order ASC, id ASC
     `;
-    return NextResponse.json({ success: true, options });
+    const optionsWithId = (options as any[]).map((o) => ({ ...o, option_id: o.option_code }));
+    return NextResponse.json({ success: true, options: optionsWithId });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/menu/modifier-groups/[groupId]/options]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
@@ -87,11 +88,30 @@ export async function POST(
     }
 
     const optionCode = genId("MO_");
-    const [row] = await sql`
-      INSERT INTO merchant_modifier_options (modifier_group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
-      VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${body.image_url ?? null}, ${body.in_stock ?? true}, ${body.default_quantity ?? 0}, ${body.display_order ?? 0})
-      RETURNING id, option_code
-    `;
+    let row: any;
+    try {
+      [row] = await sql`
+        INSERT INTO merchant_modifier_options (modifier_group_id, group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
+        VALUES (${modifierGroupId}, ${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${body.image_url ?? null}, ${body.in_stock ?? true}, ${body.default_quantity ?? 0}, ${body.display_order ?? 0})
+        RETURNING id, option_code
+      `;
+    } catch (insertErr: any) {
+      const isGroupIdMissing = insertErr?.code === "42703" && String(insertErr?.message || "").includes("group_id");
+      const isGroupIdNull = insertErr?.code === "23502" && String(insertErr?.message || "").includes("group_id");
+      if (isGroupIdMissing) {
+        [row] = await sql`
+          INSERT INTO merchant_modifier_options (modifier_group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
+          VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${body.image_url ?? null}, ${body.in_stock ?? true}, ${body.default_quantity ?? 0}, ${body.display_order ?? 0})
+          RETURNING id, option_code
+        `;
+      } else if (isGroupIdNull) {
+        [row] = await sql`
+          INSERT INTO merchant_modifier_options (group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
+          VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${body.image_url ?? null}, ${body.in_stock ?? true}, ${body.default_quantity ?? 0}, ${body.display_order ?? 0})
+          RETURNING id, option_code
+        `;
+      } else throw insertErr;
+    }
     const r = row as any;
     return NextResponse.json({ success: true, id: Number(r?.id), option_id: r?.option_code ?? r?.option_id }, { status: 201 });
   } catch (e) {

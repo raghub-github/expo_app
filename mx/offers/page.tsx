@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, Suspense, useRef } from 'react'
+import React, { useState, useEffect, Suspense, useRef, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { fetchStoreById, fetchStoreByName, fetchAllOffers, createOffer, updateOffer, deleteOffer, uploadOfferImage, fetchMenuItems } from '@/lib/database'
@@ -177,6 +177,37 @@ function OffersContent() {
       setFilteredMenuItems(filtered)
     }
   }, [menuItemSearch, menuItems])
+
+  const offersByItemId = useMemo(() => {
+    const now = new Date();
+    const map = new Map<
+      string,
+      { totalCount: number; activeCount: number }
+    >();
+    offers.forEach((offer) => {
+      if (offer.offer_sub_type !== 'SPECIFIC_ITEM' || !offer.menu_item_ids?.length) return;
+      const isWithinDates =
+        new Date(offer.valid_from) <= now && now <= new Date(offer.valid_till);
+      const isActive = Boolean(offer.is_active && isWithinDates);
+      offer.menu_item_ids.forEach((itemId) => {
+        const prev = map.get(itemId) ?? { totalCount: 0, activeCount: 0 };
+        prev.totalCount += 1;
+        if (isActive) prev.activeCount += 1;
+        map.set(itemId, prev);
+      });
+    });
+    return map;
+  }, [offers]);
+
+  const isItemEligibleForCurrentOffer = (item: MenuItem): boolean => {
+    if (formData.offer_type !== 'FLAT') {
+      return true;
+    }
+    // For flat offers, only freeze items that are already mapped to any offer.
+    const stats = offersByItemId.get(item.item_id);
+    if (stats && stats.totalCount > 0) return false;
+    return true;
+  };
 
   // Handle clicks outside dropdowns
   useEffect(() => {
@@ -1192,6 +1223,12 @@ function OffersContent() {
                                 ) : (
                                   filteredMenuItems.map(item => {
                                     const isSelected = formData.menu_item_ids.includes(item.item_id)
+                                    const stats = offersByItemId.get(item.item_id)
+                                    const hasActiveOffer = (stats?.activeCount ?? 0) > 0
+                                    if (!isItemEligibleForCurrentOffer(item)) {
+                                      // Skip ineligible items for current flat discount.
+                                      return null
+                                    }
                                     return (
                                       <div
                                         key={item.item_id}
@@ -1207,12 +1244,15 @@ function OffersContent() {
                                           isSelected ? 'bg-green-50' : ''
                                         }`}
                                       >
-                                        <div className="flex-1 min-w-0">
+                                        <div className="flex-1 min-w-0 mr-2">
                                           <div className="flex items-center gap-2">
                                             <div className="text-sm font-medium text-gray-900 truncate">
                                               {item.item_name}
                                             </div>
-                                            <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                            <span className="text-[10px] font-mono text-gray-500">
+                                              #{item.item_id}
+                                            </span>
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                                               item.category_type === 'NON_VEG' 
                                                 ? 'bg-red-100 text-red-800' 
                                                 : item.category_type === 'VEG'
@@ -1222,8 +1262,26 @@ function OffersContent() {
                                               {item.category_type}
                                             </span>
                                           </div>
-                                          <div className="text-xs text-gray-500 mt-0.5">
-                                            {item.food_category_item} • ₹{item.actual_price}
+                                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-600">
+                                            <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 font-medium">
+                                              ₹{item.actual_price}
+                                            </span>
+                                            <span className="inline-flex items-center rounded-full bg-gray-50 px-2 py-0.5">
+                                              {item.food_category_item}
+                                            </span>
+                                            {stats && stats.totalCount > 0 && (
+                                              <span
+                                                className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
+                                                  hasActiveOffer
+                                                    ? 'bg-amber-100 text-amber-800'
+                                                    : 'bg-emerald-50 text-emerald-700'
+                                                }`}
+                                              >
+                                                {hasActiveOffer
+                                                  ? `${stats.activeCount} active offer${stats.activeCount > 1 ? 's' : ''}`
+                                                  : `${stats.totalCount} mapped offer${stats.totalCount > 1 ? 's' : ''}`}
+                                              </span>
+                                            )}
                                           </div>
                                         </div>
                                         {isSelected && (

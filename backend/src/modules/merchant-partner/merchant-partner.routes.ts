@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getSql } from "../../db/client.js";
+import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import { auth } from "../../plugins/auth.js";
 import {
   isWithinOperatingHours,
@@ -2309,6 +2310,719 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         return reply.send({ ok: true });
       });
 
+      /** GET /merchant-partner/stores/:storeId/bank-accounts — list ALL bank/UPI accounts (including disabled). */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/bank-accounts",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const rows = await sql`
+            SELECT id, store_id, account_holder_name, account_number, ifsc_code, bank_name,
+                   branch_name, account_type, is_verified, verification_status, upi_id, upi_verified,
+                   is_primary, is_active, is_disabled, payout_method, beneficiary_name, created_at, updated_at
+            FROM merchant_store_bank_accounts
+            WHERE store_id = ${storeId}
+            ORDER BY is_primary DESC NULLS LAST, created_at DESC
+          `;
+          const accounts = (rows as any[]).map((r) => ({
+            id: r.id,
+            store_id: r.store_id,
+            account_holder_name: r.account_holder_name,
+            account_number: r.account_number,
+            account_number_masked: r.account_number ? `****${String(r.account_number).slice(-4)}` : null,
+            ifsc_code: r.ifsc_code,
+            bank_name: r.bank_name,
+            branch_name: r.branch_name,
+            account_type: r.account_type,
+            is_verified: r.is_verified === true,
+            verification_status: r.verification_status ?? null,
+            upi_id: r.upi_id ?? null,
+            is_primary: r.is_primary === true,
+            is_active: r.is_active !== false,
+            is_disabled: r.is_disabled === true,
+            payout_method: r.payout_method ?? null,
+            beneficiary_name: r.beneficiary_name ?? null,
+            created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+            updated_at: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+          }));
+          return reply.send({ success: true, accounts });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/bank-accounts — add a new bank/UPI account. */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: {
+          payout_method?: string;
+          account_holder_name: string;
+          account_number: string;
+          ifsc_code?: string;
+          bank_name?: string;
+          branch_name?: string | null;
+          account_type?: string | null;
+          upi_id?: string | null;
+          beneficiary_name?: string | null;
+        };
+      }>("/stores/:storeId/bank-accounts", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const body = (req.body || {}) as Record<string, unknown>;
+        const payoutMethod = String(body.payout_method || "bank").toLowerCase();
+        if (payoutMethod !== "bank" && payoutMethod !== "upi") {
+          return reply.code(400).send({ error: "payout_method must be bank or upi" });
+        }
+        const holderName = String(body.account_holder_name || "").trim();
+        const accNum = String(body.account_number || "").trim();
+        if (!holderName || !accNum) {
+          return reply.code(400).send({ error: "account_holder_name and account_number are required" });
+        }
+        if (payoutMethod === "bank") {
+          const ifsc = String(body.ifsc_code || "").trim();
+          const bankName = String(body.bank_name || "").trim();
+          if (!ifsc || !bankName) {
+            return reply.code(400).send({ error: "ifsc_code and bank_name required for bank" });
+          }
+        }
+        if (payoutMethod === "upi" && !String(body.upi_id || "").trim()) {
+          return reply.code(400).send({ error: "upi_id required for upi" });
+        }
+
+        const countRows = await sql`
+          SELECT COUNT(*)::int AS cnt FROM merchant_store_bank_accounts WHERE store_id = ${storeId}
+        `;
+        const isFirst = ((countRows[0] as any)?.cnt ?? 0) === 0;
+
+        const [row] = await sql`
+          INSERT INTO merchant_store_bank_accounts (
+            store_id, payout_method, account_holder_name, account_number,
+            ifsc_code, bank_name, branch_name, account_type,
+            upi_id, beneficiary_name,
+            is_primary, is_active, is_disabled, verification_status
+          ) VALUES (
+            ${storeId}, ${payoutMethod}, ${holderName}, ${accNum},
+            ${payoutMethod === "bank" ? String(body.ifsc_code || "").trim().toUpperCase() : "N/A"},
+            ${payoutMethod === "bank" ? String(body.bank_name || "").trim() : "UPI"},
+            ${body.branch_name ? String(body.branch_name).trim() : null},
+            ${body.account_type ? String(body.account_type).trim() : null},
+            ${payoutMethod === "upi" ? String(body.upi_id || "").trim() : null},
+            ${body.beneficiary_name ? String(body.beneficiary_name).trim() : holderName},
+            ${isFirst}, true, false, 'pending'
+          ) RETURNING id, account_holder_name, is_primary, payout_method, created_at
+        `;
+        await logStoreActivity({
+          storeId, section: "bank_account", action: "create",
+          entityId: (row as any)?.id ?? null,
+          entityName: holderName,
+          summary: `Added ${payoutMethod.toUpperCase()} account "${holderName}"`,
+          diff: { payout_method: payoutMethod, is_primary: isFirst },
+          actorType: "merchant", source: "merchant_app",
+        });
+        return reply.code(201).send({ success: true, account: row });
+      });
+
+      /** PATCH /merchant-partner/stores/:storeId/bank-accounts/:accountId — set default, disable, or enable. */
+      protectedApp.patch<{
+        Params: { storeId: string; accountId: string };
+        Body: { set_default?: boolean; set_disabled?: boolean };
+      }>("/stores/:storeId/bank-accounts/:accountId", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const accountId = Number(req.params.accountId);
+        if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(accountId) || accountId < 1) {
+          return reply.code(400).send({ error: "invalid_id" });
+        }
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const storeRows = await sql`
+          SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const accRows = await sql`
+          SELECT id, store_id FROM merchant_store_bank_accounts WHERE id = ${accountId} AND store_id = ${storeId}
+        `;
+        if (accRows.length === 0) return reply.code(404).send({ error: "account_not_found" });
+
+        const body = (req.body || {}) as Record<string, unknown>;
+
+        if (body.set_default === true) {
+          await sql`UPDATE merchant_store_bank_accounts SET is_primary = false, updated_at = NOW() WHERE store_id = ${storeId} AND id != ${accountId}`;
+          await sql`UPDATE merchant_store_bank_accounts SET is_primary = true, is_active = true, is_disabled = false, updated_at = NOW() WHERE id = ${accountId}`;
+          await logStoreActivity({
+            storeId, section: "bank_account", action: "set_default",
+            entityId: accountId, summary: `Set bank account #${accountId} as default`,
+            actorType: "merchant", source: "merchant_app",
+          });
+          return reply.send({ success: true });
+        }
+
+        if (body.set_disabled === true) {
+          await sql`UPDATE merchant_store_bank_accounts SET is_active = false, is_disabled = true, is_primary = false, updated_at = NOW() WHERE id = ${accountId}`;
+          await logStoreActivity({
+            storeId, section: "bank_account", action: "disable",
+            entityId: accountId, summary: `Disabled bank account #${accountId}`,
+            actorType: "merchant", source: "merchant_app",
+          });
+          return reply.send({ success: true });
+        }
+
+        if (body.set_disabled === false) {
+          await sql`UPDATE merchant_store_bank_accounts SET is_active = true, is_disabled = false, updated_at = NOW() WHERE id = ${accountId}`;
+          await logStoreActivity({
+            storeId, section: "bank_account", action: "enable",
+            entityId: accountId, summary: `Enabled bank account #${accountId}`,
+            actorType: "merchant", source: "merchant_app",
+          });
+          return reply.send({ success: true });
+        }
+
+        return reply.code(400).send({ error: "No valid action (set_default or set_disabled)" });
+      });
+
+      /** Helper: validate offer item mappings for a store before create/update. */
+      async function validateOfferItemMappings(params: {
+        sql: ReturnType<typeof getSql>;
+        storeId: number;
+        offerType: string;
+        menuItemIds: unknown;
+        excludeOfferId?: string | null;
+      }): Promise<{ ok: true } | { ok: false; error: string }> {
+        const { sql, storeId, offerType, menuItemIds, excludeOfferId } = params;
+        // Currently we only enforce item-freeze rule for FLAT offers.
+        if (offerType !== "FLAT") {
+          return { ok: true };
+        }
+        if (!Array.isArray(menuItemIds) || menuItemIds.length === 0) {
+          return { ok: true };
+        }
+        const itemIds = menuItemIds.map((v) => String(v));
+        // Load all existing offers for this store and detect any that already map these items.
+        const rows = await sql`
+          SELECT offer_id, offer_title, offer_metadata
+          FROM merchant_offers
+          WHERE store_id = ${storeId}
+        `;
+        const conflicts: { offer_id: string; offer_title: string | null; item_id: string }[] = [];
+        for (const r of rows as any[]) {
+          const existingOfferId = String(r.offer_id ?? "");
+          if (excludeOfferId && existingOfferId === excludeOfferId) continue;
+          const meta = (r.offer_metadata as Record<string, unknown>) ?? {};
+          const existingItems = Array.isArray(meta.menu_item_ids) ? meta.menu_item_ids.map((v) => String(v)) : [];
+          if (!existingItems.length) continue;
+          for (const id of itemIds) {
+            if (existingItems.includes(id)) {
+              conflicts.push({
+                offer_id: existingOfferId,
+                offer_title: (r.offer_title as string) ?? null,
+                item_id: id,
+              });
+            }
+          }
+        }
+        if (!conflicts.length) {
+          return { ok: true };
+        }
+        // Build a compact, human-readable error message listing the first few conflicting items/offers.
+        const samples = conflicts.slice(0, 5).map((c) => {
+          const title = c.offer_title ? `"${c.offer_title}"` : c.offer_id;
+          return `item ${c.item_id} (already mapped in offer ${title})`;
+        });
+        const suffix = conflicts.length > samples.length ? `, and ${conflicts.length - samples.length} more` : "";
+        return {
+          ok: false,
+          error: `Some items are already mapped to other offers and cannot be reused for this flat discount: ${samples.join(
+            "; "
+          )}${suffix}.`,
+        };
+      }
+
+      /** GET /merchant-partner/stores/:storeId/offers — list all offers for this store. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/offers",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (storeCheck.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const rows = await sql`
+            SELECT id, offer_id, store_id, offer_title, offer_description, offer_type, offer_sub_type,
+                   discount_value, discount_percentage, max_discount_amount,
+                   min_order_amount, max_order_amount, min_items,
+                   buy_quantity, get_quantity, coupon_code,
+                   offer_image_url, valid_from, valid_till,
+                   is_active, is_featured, auto_apply, is_stackable, priority,
+                   per_order_limit, first_order_only, new_user_only,
+                   max_uses_total, max_uses_per_user, current_uses,
+                   offer_metadata, created_at, updated_at, created_by_name, updated_by_name
+            FROM merchant_offers
+            WHERE store_id = ${storeId}
+            ORDER BY created_at DESC
+          `;
+          const offers = (rows as any[]).map((r) => {
+            const meta = (r.offer_metadata as Record<string, unknown>) ?? {};
+            return {
+              ...r,
+              menu_item_ids: (meta.menu_item_ids as string[] | null) ?? null,
+              combo_ids: (meta.combo_ids as number[] | null) ?? null,
+            };
+          });
+          return reply.send({ success: true, offers });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/offers — create an offer. */
+      protectedApp.post<{ Params: { storeId: string }; Body: Record<string, unknown> }>(
+        "/stores/:storeId/offers",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (storeCheck.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const body = (req.body || {}) as Record<string, unknown>;
+          const title = String(body.offer_title || "").trim();
+          if (!title) return reply.code(400).send({ error: "offer_title required" });
+          if (!body.valid_from || !body.valid_till) return reply.code(400).send({ error: "valid_from and valid_till required" });
+
+          const offerType = String(body.offer_type || "PERCENTAGE");
+          const offerId = `OFF-${storeId}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+
+          const baseMeta: Record<string, unknown> = {};
+          if (Array.isArray(body.menu_item_ids)) baseMeta.menu_item_ids = body.menu_item_ids;
+          if (Array.isArray(body.combo_ids)) baseMeta.combo_ids = body.combo_ids;
+
+          // Enforce item-freeze rule for flat offers in backend: an item already mapped to any offer
+          // cannot be re-used in a new FLAT offer.
+          const validation = await validateOfferItemMappings({
+            sql,
+            storeId,
+            offerType,
+            menuItemIds: baseMeta.menu_item_ids ?? [],
+          });
+          if (!validation.ok) {
+            return reply.code(400).send({ error: validation.error });
+          }
+
+          const sqlAny = sql as any;
+          const [row] = await sqlAny`
+            INSERT INTO merchant_offers (
+              offer_id, store_id, offer_title, offer_description, offer_type, offer_sub_type,
+              discount_value, discount_percentage, max_discount_amount,
+              min_order_amount, max_order_amount, min_items,
+              buy_quantity, get_quantity, coupon_code,
+              offer_image_url, valid_from, valid_till,
+              is_active, auto_apply, is_stackable, priority,
+              per_order_limit, first_order_only, new_user_only,
+              max_uses_total, max_uses_per_user,
+              offer_metadata
+            ) VALUES (
+              ${offerId}, ${storeId}, ${title}, ${body.offer_description ?? null}, ${offerType}, ${body.offer_sub_type ?? "ALL_ORDERS"},
+              ${body.discount_value ?? null}, ${body.discount_percentage ?? null}, ${body.max_discount_amount ?? null},
+              ${body.min_order_amount ?? null}, ${body.max_order_amount ?? null}, ${body.min_items ?? null},
+              ${body.buy_quantity ?? null}, ${body.get_quantity ?? null}, ${body.coupon_code ?? null},
+              ${body.offer_image_url ?? null}, ${new Date(String(body.valid_from)).toISOString()}, ${new Date(String(body.valid_till)).toISOString()},
+              ${body.is_active ?? true}, ${body.auto_apply ?? true}, ${body.is_stackable ?? false}, ${body.priority ?? 0},
+              ${body.per_order_limit ?? 1}, ${body.first_order_only ?? false}, ${body.new_user_only ?? false},
+              ${body.max_uses_total ?? null}, ${body.max_uses_per_user ?? null},
+              ${Object.keys(baseMeta).length ? JSON.stringify(baseMeta) : null}
+            ) RETURNING *
+          `;
+          await logStoreActivity({
+            storeId, section: "offer", action: "create",
+            entityId: (row as any)?.id ?? null,
+            entityName: title,
+            summary: `Created offer "${title}" (${offerType})`,
+            diff: { offer_type: offerType, menu_item_ids: baseMeta.menu_item_ids ?? null, combo_ids: baseMeta.combo_ids ?? null },
+            actorType: "merchant", source: "merchant_app",
+          });
+          return reply.code(201).send({ success: true, offer: row });
+        }
+      );
+
+      /** PATCH /merchant-partner/stores/:storeId/offers/:offerId — update offer fields. */
+      protectedApp.patch<{ Params: { storeId: string; offerId: string }; Body: Record<string, unknown> }>(
+        "/stores/:storeId/offers/:offerId",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const offerIdParam = req.params.offerId;
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (storeCheck.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const existing = await sql`SELECT id, offer_type, offer_metadata FROM merchant_offers WHERE offer_id = ${offerIdParam} AND store_id = ${storeId}`;
+          if (existing.length === 0) return reply.code(404).send({ error: "offer_not_found" });
+
+          const body = (req.body || {}) as Record<string, unknown>;
+
+          const existingMeta = ((existing[0] as any).offer_metadata as Record<string, unknown>) ?? {};
+          if (body.menu_item_ids !== undefined) {
+            existingMeta.menu_item_ids = Array.isArray(body.menu_item_ids) ? body.menu_item_ids : null;
+          }
+
+          // Determine effective offer type and menu_item_ids after this update,
+          // then re-run the same backend validation used on create.
+          const effectiveOfferType = String(body.offer_type ?? (existing[0] as any).offer_type ?? "PERCENTAGE");
+          const effectiveMenuItems = existingMeta.menu_item_ids ?? [];
+          const validation = await validateOfferItemMappings({
+            sql,
+            storeId,
+            offerType: effectiveOfferType,
+            menuItemIds: effectiveMenuItems,
+            excludeOfferId: offerIdParam,
+          });
+          if (!validation.ok) {
+            return reply.code(400).send({ error: validation.error });
+          }
+          if (body.combo_ids !== undefined) {
+            existingMeta.combo_ids = Array.isArray(body.combo_ids) ? body.combo_ids : null;
+          }
+
+          const sqlAny = sql as any;
+          const [updated] = await sqlAny`
+            UPDATE merchant_offers SET
+              offer_title = COALESCE(${body.offer_title ?? null}, offer_title),
+              offer_description = COALESCE(${body.offer_description ?? null}, offer_description),
+              offer_type = COALESCE(${body.offer_type ?? null}, offer_type),
+              offer_sub_type = COALESCE(${body.offer_sub_type ?? null}, offer_sub_type),
+              discount_value = COALESCE(${body.discount_value ?? null}, discount_value),
+              discount_percentage = COALESCE(${body.discount_percentage ?? null}, discount_percentage),
+              max_discount_amount = COALESCE(${body.max_discount_amount ?? null}, max_discount_amount),
+              min_order_amount = COALESCE(${body.min_order_amount ?? null}, min_order_amount),
+              buy_quantity = COALESCE(${body.buy_quantity ?? null}, buy_quantity),
+              get_quantity = COALESCE(${body.get_quantity ?? null}, get_quantity),
+              coupon_code = COALESCE(${body.coupon_code ?? null}, coupon_code),
+              valid_from = COALESCE(${body.valid_from ? new Date(String(body.valid_from)).toISOString() : null}, valid_from),
+              valid_till = COALESCE(${body.valid_till ? new Date(String(body.valid_till)).toISOString() : null}, valid_till),
+              is_active = COALESCE(${body.is_active ?? null}, is_active),
+              auto_apply = COALESCE(${body.auto_apply ?? null}, auto_apply),
+              offer_metadata = ${JSON.stringify(existingMeta)},
+              updated_at = NOW()
+            WHERE offer_id = ${offerIdParam} AND store_id = ${storeId}
+            RETURNING *
+          `;
+          await logStoreActivity({
+            storeId, section: "offer", action: "update",
+            entityId: (existing[0] as any)?.id ?? null,
+            entityName: (updated as any)?.offer_title ?? offerIdParam,
+            summary: `Updated offer "${(updated as any)?.offer_title ?? offerIdParam}"`,
+            diff: { fields_updated: Object.keys(body).filter(k => !["id", "offer_id", "store_id", "created_at"].includes(k)) },
+            actorType: "merchant", source: "merchant_app",
+          });
+          return reply.send({ success: true, offer: updated });
+        }
+      );
+
+      /**
+       * POST /merchant-partner/stores/:storeId/offers/:offerId/upload-image
+       * Multipart: file
+       *
+       * Stores one image per offer at:
+       *   docs/merchants/{parent_code}/stores/{store_code}/offers/{offerId}.{ext}
+       *
+       * Returns a host-agnostic, non-expiring URL:
+       *   /v1/attachments/proxy?key=<r2_key>
+       */
+      protectedApp.post<{ Params: { storeId: string; offerId: string } }>(
+        "/stores/:storeId/offers/:offerId/upload-image",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const offerIdParam = String(req.params.offerId || "").trim();
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          if (!offerIdParam) return reply.code(400).send({ error: "offer_id_required" });
+
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`
+            SELECT ms.id, ms.store_id AS store_code, mp.parent_merchant_id AS parent_code
+            FROM merchant_stores ms
+            LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+            WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+            LIMIT 1
+          `;
+          if ((storeCheck as any[]).length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const offerRows = await sql`
+            SELECT id, offer_title, offer_image_url
+            FROM merchant_offers
+            WHERE offer_id = ${offerIdParam} AND store_id = ${storeId}
+            LIMIT 1
+          `;
+          if ((offerRows as any[]).length === 0) return reply.code(404).send({ error: "offer_not_found" });
+
+          const data = await (req as any).file?.();
+          if (!data) return reply.code(400).send({ error: "no_file" });
+          const buffer = await data.toBuffer();
+          if (buffer.length > 10 * 1024 * 1024) return reply.code(400).send({ error: "file_too_large" });
+
+          const filename = String(data.filename || "");
+          const ext = (filename && /\.(webp|jpe?g|png)$/i.exec(filename)?.[1]) || "jpg";
+          const safeExt = ext.toLowerCase() === "jpeg" ? "jpg" : ext.toLowerCase();
+
+          const storeCode = String((storeCheck[0] as any).store_code ?? storeId);
+          const parentCode = String((storeCheck[0] as any).parent_code ?? parentId);
+          const key = `docs/merchants/${parentCode}/stores/${storeCode}/offers/${offerIdParam}.${safeExt}`;
+
+          // Upload to R2
+          const { uploadToR2, deleteFromR2 } = await import("../../services/r2/r2Service.js");
+          let uploadedKey: string | null = null;
+          try {
+            const result = await uploadToR2(buffer, key, data.mimetype || "image/jpeg");
+            uploadedKey = result.key;
+          } catch (e: any) {
+            req.log.error(e, "offer image upload failed");
+            return reply.code(500).send({ error: "upload_failed", message: e?.message });
+          }
+
+          const imageUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`;
+
+          // Best-effort delete previous image if it was stored as proxy URL with key
+          try {
+            const prevUrl = String((offerRows[0] as any).offer_image_url || "");
+            const m = /key=([^&]+)/.exec(prevUrl);
+            const prevKey = m?.[1] ? decodeURIComponent(m[1]) : null;
+            if (prevKey && prevKey !== uploadedKey) {
+              deleteFromR2(prevKey).catch(() => undefined);
+            }
+          } catch {
+            // ignore
+          }
+
+          await sql`
+            UPDATE merchant_offers
+            SET offer_image_url = ${imageUrl}, updated_at = NOW()
+            WHERE offer_id = ${offerIdParam} AND store_id = ${storeId}
+          `;
+
+          try {
+            await logStoreActivity({
+              storeId,
+              section: "offer",
+              action: "image_update",
+              entityId: (offerRows[0] as any)?.id ?? null,
+              entityName: (offerRows[0] as any)?.offer_title ?? offerIdParam,
+              summary: `Updated offer image "${(offerRows[0] as any)?.offer_title ?? offerIdParam}"`,
+              diff: { offer_image_url: imageUrl, r2_key: uploadedKey },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
+
+          return reply.code(201).send({ success: true, image_url: imageUrl, r2_key: uploadedKey });
+        }
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/offers/:offerId — soft-delete (set is_active=false). */
+      protectedApp.delete<{ Params: { storeId: string; offerId: string } }>(
+        "/stores/:storeId/offers/:offerId",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          const offerIdParam = req.params.offerId;
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (storeCheck.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          await sql`UPDATE merchant_offers SET is_active = false, updated_at = NOW() WHERE offer_id = ${offerIdParam} AND store_id = ${storeId}`;
+          await logStoreActivity({
+            storeId, section: "offer", action: "delete",
+            entityName: offerIdParam,
+            summary: `Deactivated offer "${offerIdParam}"`,
+            actorType: "merchant", source: "merchant_app",
+          });
+          return reply.send({ success: true });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/wallet — wallet summary. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/wallet",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { getWalletSummary } = await import("../../lib/merchant-wallet-engine.js");
+          const summary = await getWalletSummary(storeId);
+          return reply.send({ success: true, ...summary });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/wallet/ledger — paginated ledger. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string; offset?: string; from?: string; to?: string; direction?: string; category?: string; search?: string } }>(
+        "/stores/:storeId/wallet/ledger",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const { queryLedger } = await import("../../lib/merchant-wallet-engine.js");
+          const result = await queryLedger(storeId, {
+            limit: Number(req.query.limit) || 50,
+            offset: Number(req.query.offset) || 0,
+            from: req.query.from || undefined,
+            to: req.query.to || undefined,
+            direction: (req.query.direction === "CREDIT" || req.query.direction === "DEBIT") ? req.query.direction : undefined,
+            category: req.query.category || undefined,
+            search: req.query.search || undefined,
+          });
+          return reply.send({ success: true, ...result });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/payout-quote — withdrawal breakdown. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { amount: string } }>(
+        "/stores/:storeId/payout-quote",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          const amount = parseFloat(req.query.amount);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          if (isNaN(amount) || amount < 100) return reply.code(400).send({ error: "amount must be >= 100" });
+
+          const { getPayoutQuote } = await import("../../lib/merchant-wallet-engine.js");
+          const quote = await getPayoutQuote(storeId, amount);
+          return reply.send({ success: true, ...quote });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/payout-request — create withdrawal. */
+      protectedApp.post<{ Params: { storeId: string }; Body: { amount: number; bank_account_id: number } }>(
+        "/stores/:storeId/payout-request",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const body = (req.body || {}) as Record<string, unknown>;
+          const amount = Number(body.amount);
+          const bankAccountId = Number(body.bank_account_id);
+          if (isNaN(amount) || amount < 100) return reply.code(400).send({ error: "amount must be >= 100" });
+          if (!Number.isFinite(bankAccountId) || bankAccountId < 1) return reply.code(400).send({ error: "bank_account_id required" });
+
+          try {
+            const { createWithdrawalRequest } = await import("../../lib/merchant-wallet-engine.js");
+            const result = await createWithdrawalRequest(storeId, amount, bankAccountId, "merchant_app");
+            return reply.code(201).send({ success: true, ...result });
+          } catch (e) {
+            return reply.code(400).send({ error: e instanceof Error ? e.message : "Withdrawal failed" });
+          }
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/activity-feed — recent activity for this store with filters. */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string; section?: string; source?: string; actor_type?: string; action?: string } }>(
+        "/stores/:storeId/activity-feed",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeCheck = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (storeCheck.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const limit = Math.min(Number(req.query.limit) || 50, 200);
+          const section = req.query.section || null;
+          const source = req.query.source || null;
+          const actorType = req.query.actor_type || null;
+          const action = req.query.action || null;
+
+          const rows = await sql`
+            SELECT * FROM store_activity_feed
+            WHERE store_id = ${storeId}
+              AND (${section}::text IS NULL OR section = ${section})
+              AND (${source}::text IS NULL OR source = ${source})
+              AND (${actorType}::text IS NULL OR actor_type = ${actorType})
+              AND (${action}::text IS NULL OR action = ${action})
+            ORDER BY created_at DESC
+            LIMIT ${limit}
+          `;
+
+          return reply.send({ success: true, activities: rows });
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/status — real-time store open/closed status + availability metadata for partner app. */
       protectedApp.get<{ Params: { storeId: string } }>(
         "/stores/:storeId/status",
@@ -2407,7 +3121,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           let activeSched: (SchedRow & { startsAt: Date; endsAt: Date }) | null = null;
           let upcomingSched: (SchedRow & { startsAt: Date; endsAt: Date }) | null = null;
 
-          for (const rowRaw of rawSchedRows as SchedRow[]) {
+          for (const rowRaw of rawSchedRows as unknown as SchedRow[]) {
             const startsAt = new Date(
               rowRaw.starts_at instanceof Date ? rowRaw.starts_at.toISOString() : String(rowRaw.starts_at)
             );
@@ -2438,7 +3152,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               const tokenRows = await sql`
                 SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
               `;
-              const tokens = (tokenRows as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+              const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
               await sendExpoPush(tokens, {
                 title: reminderTitle,
                 body: reminderBody,
@@ -2603,7 +3317,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               const tokenRows = await sql`
                 SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
               `;
-              const tokens = (tokenRows as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+              const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
               if (tokens.length > 0) {
                 const notifTitle = "Your store can now reopen";
                 const notifBody = "Business hours are active and your scheduled closure has ended.";
@@ -2627,7 +3341,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const baseAccepting =
             baseAcceptingOverride !== null ? baseAcceptingOverride : row.is_accepting_orders === true;
           const availAccepting =
-            availAcceptingOverride !== null ? availsAcceptingOverride : row.avail_accepting !== false;
+            availAcceptingOverride !== null ? availAcceptingOverride : row.avail_accepting !== false;
           let available = row.is_available !== false;
           const active = row.is_active !== false;
           if (isActiveSchedule) {
@@ -3167,7 +3881,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ORDER BY day ASC
           `;
           const countByDay = new Map<string, number>();
-          for (const r of rows as Array<{ day: string; orders_count: number }>) {
+          for (const r of rows as unknown as Array<{ day: string; orders_count: number }>) {
             if (r?.day) countByDay.set(r.day, Number(r.orders_count) || 0);
           }
           const days: Array<{ date: string; label: string; orders_count: number }> = [];
@@ -3220,7 +3934,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ORDER BY created_at DESC
             LIMIT ${limit}
           `;
-          const history = (rows as Array<{
+          const history = (rows as unknown as Array<{
             id: number;
             action: string;
             restriction_type: string | null;
@@ -3294,7 +4008,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             LIMIT 200
           `;
 
-          const data = (rows as Array<{
+          const data = (rows as unknown as Array<{
             id: number;
             store_id: number;
             order_id: number | null;
@@ -3379,7 +4093,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           LIMIT 200
         `;
 
-        const typedRows = rows as Array<{
+        const typedRows = rows as unknown as Array<{
           id: number;
           store_id: number;
           order_id: number | null;
@@ -3537,7 +4251,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ORDER BY created_at DESC
             LIMIT ${limit}
           `;
-          const notifications = (rows as Array<{
+          const notifications = (rows as unknown as Array<{
             id: number;
             store_id: number;
             type: string;
@@ -3613,7 +4327,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ORDER BY holiday_date ASC, closed_from ASC NULLS FIRST
           `;
 
-          const holidays = (rows as Array<{
+          const holidays = (rows as unknown as Array<{
             id: number;
             store_id: number;
             holiday_name: string;
@@ -3884,7 +4598,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const tokenRows = await sql`
             SELECT token FROM merchant_store_push_tokens WHERE store_id = ${storeId}
           `;
-          const tokens = (tokenRows as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
+          const tokens = (tokenRows as unknown as Array<{ token: string }>).map((t) => t.token).filter(Boolean);
           await sendExpoPush(tokens, {
             title: "Scheduled store closure set",
             body: "Your store closure schedule has been set successfully.",

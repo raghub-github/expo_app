@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess, genId, getModifierLimits } from "../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -83,6 +84,9 @@ export async function POST(
       RETURNING id, group_code
     `;
     const r = row as any;
+    try {
+      await logStoreActivity({ storeId, section: "addon", action: "create", summary: `Agent created modifier group`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, id: Number(r?.id), group_id: r?.group_code ?? r?.group_id }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/modifier-groups]", e);

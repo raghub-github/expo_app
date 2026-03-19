@@ -9,6 +9,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
 
 export const runtime = "nodejs";
 
@@ -50,6 +51,10 @@ export async function PATCH(
     }
 
     const sql = getSql();
+    const [prev] = await sql`
+      SELECT item_name, approval_status::text AS approval_status
+      FROM merchant_menu_items WHERE id = ${menuItemId} AND store_id = ${storeId}
+    `;
     const result = await sql`
       UPDATE merchant_menu_items
       SET approval_status = ${st}::merchant_menu_item_approval_status,
@@ -59,6 +64,19 @@ export async function PATCH(
       WHERE id = ${menuItemId} AND store_id = ${storeId}
     `;
     if ((result as any)?.count === 0) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
+    const systemUser = await getSystemUserByEmail(user.email);
+    const agentId = systemUser?.id ?? null;
+    try {
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_items",
+        fieldName: "approval_status",
+        oldValue: prev ? (prev as any).approval_status : null,
+        newValue: st,
+        actionType: "update",
+      });
+    } catch (_logErr) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PATCH /api/merchant/stores/[id]/menu/items/[itemId]/approval]", e);

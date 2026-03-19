@@ -174,7 +174,10 @@ export async function meRoutes(app: FastifyInstance) {
     "/profile",
     {
       schema: {
-        response: { 200: profileResponseSchema },
+        response: {
+          200: profileResponseSchema,
+          401: z.object({ error: z.string(), message: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -225,7 +228,12 @@ export async function meRoutes(app: FastifyInstance) {
     {
       schema: {
         body: patchBodySchema,
-        response: { 200: profileResponseSchema },
+        response: {
+          200: profileResponseSchema,
+          400: z.object({ message: z.string() }),
+          401: z.object({ error: z.string(), message: z.string() }),
+          500: z.object({ message: z.string() }),
+        },
       },
     },
     async (req, reply) => {

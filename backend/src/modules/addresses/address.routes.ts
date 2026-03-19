@@ -69,6 +69,7 @@ export async function addressRoutes(app: FastifyInstance) {
               isLastUsed: z.boolean(),
             })
           ),
+          403: z.object({ error: z.string() }),
         },
       },
     },
@@ -113,6 +114,7 @@ export async function addressRoutes(app: FastifyInstance) {
         response: {
           201: z.object({ id: z.number() }),
           400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
           503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
@@ -148,7 +150,12 @@ export async function addressRoutes(app: FastifyInstance) {
       schema: {
         params: z.object({ id: z.string() }),
         body: addressBodySchema.partial(),
-        response: { 200: z.object({ ok: z.boolean() }), 404: z.object({ error: z.string() }) },
+        response: {
+          200: z.object({ ok: z.boolean() }),
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
       },
     },
     async (request, reply) => {
@@ -169,7 +176,12 @@ export async function addressRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.string() }),
-        response: { 200: z.object({ ok: z.boolean() }), 404: z.object({ error: z.string() }) },
+        response: {
+          200: z.object({ ok: z.boolean() }),
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
       },
     },
     async (request, reply) => {
@@ -189,7 +201,12 @@ export async function addressRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.string() }),
-        response: { 200: z.object({ ok: z.boolean() }), 404: z.object({ error: z.string() }) },
+        response: {
+          200: z.object({ ok: z.boolean() }),
+          400: z.object({ error: z.string() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
       },
     },
     async (request, reply) => {
@@ -217,6 +234,7 @@ export async function addressRoutes(app: FastifyInstance) {
             address: z.string().nullable(),
             lockedForOrder: z.boolean(),
           }),
+          403: z.object({ error: z.string() }),
         },
       },
     },
@@ -253,6 +271,7 @@ export async function addressRoutes(app: FastifyInstance) {
         body: activeLocationBodySchema,
         response: {
           200: z.object({ ok: z.boolean() }),
+          403: z.object({ error: z.string() }),
           423: z.object({ error: z.string(), lockedForOrder: z.boolean() }),
         },
       },

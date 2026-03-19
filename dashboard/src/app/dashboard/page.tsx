@@ -21,7 +21,7 @@ export default function DashboardHome() {
   };
 
   const handleServicePointCreated = () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.servicePoints.list() });
+    // RTK Query invalidates ServicePoint cache on create; no React Query invalidation needed.
   };
 
   return (

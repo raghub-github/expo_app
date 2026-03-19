@@ -13,8 +13,46 @@ export const CATEGORY_SUGGESTIONS = [
 ].map((n) => (n.length > 30 ? n.slice(0, 30) : n));
 
 export const CUSTOMIZATION_VARIANT_LIMIT = 10;
-export const FOOD_TYPES = ["Vegetarian", "Non-Vegetarian", "Vegan", "Eggitarian"];
+/** Same values as merchant app and DB: VEG, NON_VEG, EGG, Vegan */
+export const FOOD_TYPES = [
+  { value: "VEG", label: "Veg" },
+  { value: "NON_VEG", label: "Non-Veg" },
+  { value: "EGG", label: "Egg" },
+  { value: "Vegan", label: "Vegan" },
+] as const;
+/** Display order; DB may store "Mild" or "MILD" – normalize when loading */
 export const SPICE_LEVELS = ["Mild", "Medium", "Hot", "Very Hot"];
+/** Map API/DB spice value to form option (e.g. MILD -> Mild) */
+export function normalizeSpiceLevelForForm(v: string | null | undefined): string {
+  if (v == null || v === "") return "";
+  const u = (v as string).trim();
+  if (!u) return "";
+  const lower = u.toLowerCase();
+  if (lower === "mild") return "Mild";
+  if (lower === "medium") return "Medium";
+  if (lower === "hot") return "Hot";
+  if (lower === "very hot" || lower === "very_hot" || lower === "extra_hot") return "Very Hot";
+  return u;
+}
+/** Map API/DB food_type to form value (VEG, NON_VEG, EGG, Vegan) */
+export function normalizeFoodTypeForForm(v: string | null | undefined): string {
+  if (v == null || v === "") return "";
+  const u = (v as string).trim();
+  if (!u) return "";
+  const upper = u.toUpperCase();
+  if (upper === "VEG" || u === "Vegetarian") return "VEG";
+  if (upper === "NON_VEG" || u === "Non-Vegetarian" || u === "Non-Veg") return "NON_VEG";
+  if (upper === "EGG" || u === "Eggitarian" || u === "Egg") return "EGG";
+  if (u === "Vegan") return "Vegan";
+  return u;
+}
+
+/** Display label for food_type (VEG -> "Veg", etc.) */
+export function getFoodTypeLabel(v: string | null | undefined): string {
+  const value = normalizeFoodTypeForForm(v) || (v as string) || "";
+  const found = FOOD_TYPES.find((t) => t.value === value);
+  return found ? found.label : value;
+}
 export const CUISINE_TOP_COUNT = 7;
 export const CUSTOMIZATION_TYPES = ["Radio", "Checkbox", "Dropdown", "Text"];
 
@@ -127,6 +165,9 @@ export interface MenuCategory {
   id: number;
   store_id: number;
   category_name: string;
+  category_description?: string | null;
+  parent_category_id?: number | null;
+  display_order?: number | null;
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;

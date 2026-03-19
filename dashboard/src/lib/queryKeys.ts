@@ -74,13 +74,22 @@ export const queryKeys = {
     reports: (type: string) => ["analytics", "reports", type] as const,
   },
 
-  // Merchant store dashboard (stats, wallet, store-operations) – shared cache to avoid duplicate calls
+  // Merchant stores list (dashboard/merchants) – stats and list cached for fast revisit
+  merchantStores: {
+    stats: (fromDate?: string, toDate?: string) =>
+      ["merchant-stores", "stats", fromDate ?? "", toDate ?? ""] as const,
+    list: (params: { filter: string; search?: string; category?: string; fromDate?: string; toDate?: string }) =>
+      ["merchant-stores", "list", params] as const,
+  },
+
+  // Merchant store dashboard (stats, wallet, store-operations, menu) – shared cache to avoid duplicate calls
   merchantStore: {
     stats: (storeId: string, date?: string) =>
       ["merchant-store", storeId, "stats", date ?? "today"] as const,
     wallet: (storeId: string) => ["merchant-store", storeId, "wallet"] as const,
     storeOperations: (storeId: string) =>
       ["merchant-store", storeId, "store-operations"] as const,
+    menu: (storeId: string) => ["merchant-store", storeId, "menu"] as const,
   },
 
   // Rider Dashboard

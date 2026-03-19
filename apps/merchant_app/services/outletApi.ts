@@ -1,6 +1,8 @@
 /**
  * Outlet (store) info and operating hours — backend CRUD.
- * All requests require Authorization: Bearer <token>. Store id = merchant_stores.id (numeric).
+ * Store timing table (merchant_store_operating_hours) and schedule engine are managed entirely
+ * in the backend; this app only reads/updates via these APIs. Do not add schedule or open/close
+ * logic in the app. All requests require Authorization: Bearer <token>. Store id = merchant_stores.id (numeric).
  */
 
 import { getConfig, resolveUrlForDevice } from "@/config/env";

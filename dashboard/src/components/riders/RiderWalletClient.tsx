@@ -9,6 +9,7 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { AddPenaltyModal } from "./AddPenaltyModal";
 import { AddAmountModal } from "./AddAmountModal";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
+import { useGetRiderDetailsQuery, useGetRiderLedgerQuery } from "@/store/api/riderApi";
 import Link from "next/link";
 import { History, PlusCircle, AlertCircle } from "lucide-react";
 
@@ -111,73 +112,36 @@ export function RiderWalletClient() {
     }
   }, []);
 
-  const fetchWallet = useCallback(async (riderId: number) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/riders/${riderId}`);
-      const json = await res.json();
-      if (!res.ok || !json.success) throw new Error(json.error || "Failed to load");
-      setWallet(json.data.wallet ? {
-        totalBalance: json.data.wallet.totalBalance,
-        earningsFood: json.data.wallet.earningsFood,
-        earningsParcel: json.data.wallet.earningsParcel,
-        earningsPersonRide: json.data.wallet.earningsPersonRide,
-        penaltiesFood: json.data.wallet.penaltiesFood,
-        penaltiesParcel: json.data.wallet.penaltiesParcel,
-        penaltiesPersonRide: json.data.wallet.penaltiesPersonRide,
-        totalWithdrawn: json.data.wallet.totalWithdrawn,
-      } : null);
-      const payments = (json.data?.onboardingPayments ?? []).map((p: { id: number; amount: string; provider: string; refId: string; status: string; createdAt: string }) => ({
-        id: p.id,
-        amount: p.amount,
-        provider: p.provider,
-        refId: p.refId,
-        status: p.status,
-        createdAt: p.createdAt,
-      }));
-      setOnboardingPayments(payments);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load wallet");
-      setWallet(null);
-      setOnboardingPayments([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const riderId = rider?.id ?? riderFromContext?.id ?? null;
 
-  const fetchRecentLedger = useCallback(async (riderId: number) => {
-    setLedgerLoading(true);
-    try {
-      const res = await fetch(`/api/riders/${riderId}/ledger?limit=15`);
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        setRecentLedger([]);
-        return;
-      }
-      const rows = (json.data?.ledger ?? []).map((r: { id: number; entryType: string; amount: string; balance: string | null; serviceType: string | null; createdAt: string }) => ({
-        id: r.id,
-        entryType: r.entryType,
-        amount: r.amount,
-        balance: r.balance,
-        serviceType: r.serviceType,
-        createdAt: r.createdAt,
-      }));
-      setRecentLedger(rows);
-    } catch {
-      setRecentLedger([]);
-    } finally {
-      setLedgerLoading(false);
-    }
-  }, []);
+  const {
+    data: riderDetails,
+    isLoading: riderDetailsLoading,
+    isFetching: riderDetailsFetching,
+    error: riderDetailsError,
+  } = useGetRiderDetailsQuery(riderId as number, {
+    skip: riderId == null,
+  } as any);
+
+  const {
+    data: ledgerData,
+    isLoading: ledgerQueryLoading,
+    isFetching: ledgerQueryFetching,
+  } = useGetRiderLedgerQuery(
+    riderId ? { riderId, filters: { limit: 15 } } : ({ riderId: 0 } as any),
+    {
+      skip: riderId == null,
+    } as any
+  );
 
   const riderFromContext = riderContext?.currentRiderInfo
     ? { id: riderContext.currentRiderInfo.id, name: riderContext.currentRiderInfo.name, mobile: riderContext.currentRiderInfo.mobile }
     : null;
 
   useEffect(() => {
-    if (searchValue) resolveRider(searchValue);
-    else if (riderFromContext) {
+    if (searchValue) {
+      resolveRider(searchValue);
+    } else if (riderFromContext) {
       setRider(riderFromContext);
       setError(null);
     } else {
@@ -188,14 +152,63 @@ export function RiderWalletClient() {
   }, [searchValue, riderFromContext?.id, resolveRider]);
 
   useEffect(() => {
-    if (rider) {
-      fetchWallet(rider.id);
-      fetchRecentLedger(rider.id);
+    if (!riderId || !riderDetails) {
+      setWallet(null);
+      setOnboardingPayments([]);
+      return;
+    }
+    if (riderDetails.wallet) {
+      setWallet({
+        totalBalance: riderDetails.wallet.totalBalance,
+        earningsFood: riderDetails.wallet.earningsFood,
+        earningsParcel: riderDetails.wallet.earningsParcel,
+        earningsPersonRide: riderDetails.wallet.earningsPersonRide,
+        penaltiesFood: riderDetails.wallet.penaltiesFood,
+        penaltiesParcel: riderDetails.wallet.penaltiesParcel,
+        penaltiesPersonRide: riderDetails.wallet.penaltiesPersonRide,
+        totalWithdrawn: riderDetails.wallet.totalWithdrawn,
+      });
     } else {
+      setWallet(null);
+    }
+    const payments = (riderDetails.onboardingPayments ?? []).map((p) => ({
+      id: p.id,
+      amount: p.amount,
+      provider: p.provider,
+      refId: p.refId,
+      status: p.status,
+      createdAt: p.createdAt,
+    }));
+    setOnboardingPayments(payments);
+  }, [riderId, riderDetails]);
+
+  useEffect(() => {
+    if (!ledgerData) {
       setRecentLedger([]);
+      return;
+    }
+    const rows = (ledgerData.ledger ?? []).map((r) => ({
+      id: r.id,
+      entryType: r.entryType,
+      amount: r.amount,
+      balance: r.balance,
+      serviceType: r.serviceType,
+      createdAt: r.createdAt,
+    }));
+    setRecentLedger(rows);
+  }, [ledgerData]);
+
+  useEffect(() => {
+    const err = riderDetailsError;
+    if (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setWallet(null);
       setOnboardingPayments([]);
     }
-  }, [rider, fetchWallet, fetchRecentLedger]);
+  }, [riderDetailsError]);
+
+  const combinedWalletLoading = riderDetailsLoading || riderDetailsFetching;
+  const combinedLedgerLoading = ledgerQueryLoading || ledgerQueryFetching;
 
   const hasSearch = searchValue.length > 0;
 

@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -103,5 +104,18 @@ export async function POST(
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
   const code = (data as any)?.option_code ?? (data as any)?.option_id
+
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'addon',
+      action: 'create',
+      entityId: data?.id ?? null,
+      entityName: name,
+      summary: `Merchant added option "${name}" to modifier group #${modifierGroupId}`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, id: data?.id, option_id: code }, { status: 201 })
 }

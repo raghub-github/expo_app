@@ -4,8 +4,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
+
+async function getAgentIdForStore(storeId: number): Promise<number | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) return null;
+  const systemUser = await getSystemUserByEmail(user.email);
+  return systemUser?.id ?? null;
+}
 
 export async function GET(
   _request: NextRequest,
@@ -27,10 +39,35 @@ export async function GET(
       FROM merchant_menu_combos WHERE id = ${cId} AND store_id = ${storeId}
     `;
     if (!c) return NextResponse.json({ success: false, error: "Combo not found" }, { status: 404 });
-    const components = await sql`
-      SELECT id, menu_item_id, variant_id, quantity, display_order
-      FROM merchant_menu_combo_components WHERE combo_id = ${cId} ORDER BY display_order ASC, id ASC
+    const componentsRaw = await sql`
+      SELECT cc.id,
+             cc.menu_item_id,
+             cc.variant_id,
+             cc.quantity,
+             cc.display_order,
+             mi.item_name,
+             mi.item_image_url,
+             mi.selling_price,
+             v.variant_name,
+             v.variant_price
+      FROM merchant_menu_combo_components cc
+      LEFT JOIN merchant_menu_items mi ON mi.id = cc.menu_item_id AND mi.store_id = ${storeId}
+      LEFT JOIN merchant_menu_item_variants v ON v.id = cc.variant_id
+      WHERE cc.combo_id = ${cId}
+      ORDER BY cc.display_order ASC, cc.id ASC
     `;
+    const components = (Array.isArray(componentsRaw) ? componentsRaw : [componentsRaw]).map((row: any) => ({
+      id: row.id,
+      menu_item_id: row.menu_item_id,
+      variant_id: row.variant_id,
+      quantity: row.quantity,
+      display_order: row.display_order,
+      item_name: row.item_name ?? null,
+      variant_name: row.variant_name ?? null,
+      item_image_url: row.item_image_url ?? null,
+      item_price: row.selling_price != null ? Number(row.selling_price) : null,
+      variant_price: row.variant_price != null ? Number(row.variant_price) : null,
+    }));
     return NextResponse.json({ success: true, combo: { ...(c as any), components } });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/menu/combos/[comboId]]", e);
@@ -78,6 +115,21 @@ export async function PUT(
           updated_at = NOW()
       WHERE id = ${cId} AND store_id = ${storeId}
     `;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_combos",
+        fieldName: "combo",
+        oldValue: JSON.stringify({ combo_name: e.combo_name, description: e.description, combo_price: Number(e.combo_price) }),
+        newValue: JSON.stringify({ combo_name, description: body.description !== undefined ? body.description : e.description, combo_price }),
+        actionType: "update",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "combo", action: "update", entityId: cId, summary: `Agent updated combo #${cId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (err) {
     console.error("[PUT /api/merchant/stores/[id]/menu/combos/[comboId]]", err);
@@ -100,10 +152,26 @@ export async function DELETE(
     if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
 
     const sql = getSql();
-    const [c] = await sql`SELECT id FROM merchant_menu_combos WHERE id = ${cId} AND store_id = ${storeId}`;
+    const [c] = await sql`SELECT id, combo_name, combo_price FROM merchant_menu_combos WHERE id = ${cId} AND store_id = ${storeId}`;
     if (!c) return NextResponse.json({ success: false, error: "Combo not found" }, { status: 404 });
+    const comboRow = c as { id: number; combo_name: string; combo_price: unknown };
 
     await sql`UPDATE merchant_menu_combos SET is_deleted = true, updated_at = NOW() WHERE id = ${cId} AND store_id = ${storeId}`;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_combos",
+        fieldName: "combo",
+        oldValue: JSON.stringify({ combo_name: comboRow.combo_name, combo_price: comboRow.combo_price }),
+        newValue: null,
+        actionType: "delete",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "combo", action: "delete", entityId: cId, summary: `Agent deleted combo #${cId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/combos/[comboId]]", e);

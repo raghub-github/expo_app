@@ -26,7 +26,7 @@ import { locationSearchRoutes } from "./modules/location-search/location-search.
 import { distanceRoutes } from "./modules/distance/distance.routes.js";
 import { plansRoutes } from "./modules/plans/plans.routes.js";
 import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
-import { runStoreScheduleTick } from "./modules/merchant-partner/store-schedule-engine.js";
+import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
@@ -84,7 +84,7 @@ await app.register(rateLimit, {
   errorResponseBuilder: (request, context) => {
     return {
       error: "rate_limit_exceeded",
-      message: `Rate limit exceeded. Max ${context.max} requests per ${context.timeWindow}.`,
+      message: `Rate limit exceeded. Max ${context.max} requests per configured window.`,
       requestId: request.id,
       retryAfter: Math.ceil(context.ttl / 1000),
     };
@@ -197,6 +197,27 @@ app.get("/v1/razorpay-checkout", async (req, reply) => {
 </body>
 </html>`;
   return reply.type("text/html").send(html);
+});
+
+// Internal: trigger schedule tick for a store (e.g. after operating hours updated from dashboard).
+// Requires X-Internal-Secret header to match BACKEND_SCHEDULE_TICK_SECRET. Used so store open/close
+// is re-evaluated immediately when hours are changed outside the backend (e.g. dashboard PATCH).
+app.post<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/schedule-tick", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  try {
+    await runStoreScheduleTickForStore(storeId, req.log);
+    return reply.send({ ok: true });
+  } catch (e) {
+    req.log.error({ err: e, storeId }, "schedule_tick_failed");
+    return reply.code(500).send({ error: "schedule_tick_failed" });
+  }
 });
 
 await app.register(authRoutes, { prefix: "/v1/auth" });

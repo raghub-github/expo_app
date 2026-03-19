@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -48,6 +49,9 @@ export async function PUT(
       WHERE id = ${modifierGroupId} AND store_id = ${storeId}
     `;
 
+    try {
+      await logStoreActivity({ storeId, section: "addon", action: "update", entityId: modifierGroupId, summary: `Agent updated modifier group #${modifierGroupId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/modifier-groups/[groupId]]", e);
@@ -77,6 +81,9 @@ export async function DELETE(
 
     // Deleting group will cascade delete options and item links.
     await sql`DELETE FROM merchant_modifier_groups WHERE id = ${modifierGroupId} AND store_id = ${storeId}`;
+    try {
+      await logStoreActivity({ storeId, section: "addon", action: "delete", entityId: modifierGroupId, summary: `Agent deleted modifier group #${modifierGroupId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/modifier-groups/[groupId]]", e);

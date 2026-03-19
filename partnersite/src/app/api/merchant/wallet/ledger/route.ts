@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { WALLET_CONSTANTS } from '@/lib/wallet-types';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -22,7 +23,7 @@ async function resolveStoreInternalId(db: ReturnType<typeof getDb>, storeId: str
 
 /**
  * GET /api/merchant/wallet/ledger?storeId=GMMC1015&from=&to=&direction=&category=&search=&limit=50&offset=0
- * Returns paginated ledger entries with strong filters.
+ * Returns paginated V2 ledger entries (includes balance_before, gst, commission, tds, order_id, status).
  */
 export async function GET(req: NextRequest) {
   try {
@@ -48,23 +49,26 @@ export async function GET(req: NextRequest) {
         success: true,
         entries: [],
         total: 0,
-        limit: 50,
+        limit: WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE,
         offset: 0,
       });
     }
 
     const walletId = wallet.id as number;
-    const from = req.nextUrl.searchParams.get('from'); // YYYY-MM-DD
+    const from = req.nextUrl.searchParams.get('from');
     const to = req.nextUrl.searchParams.get('to');
-    const direction = req.nextUrl.searchParams.get('direction'); // CREDIT | DEBIT
+    const direction = req.nextUrl.searchParams.get('direction');
     const category = req.nextUrl.searchParams.get('category');
     const search = req.nextUrl.searchParams.get('search')?.trim();
-    const limit = Math.min(100, Math.max(1, parseInt(req.nextUrl.searchParams.get('limit') ?? '50', 10) || 50));
+    const limit = Math.min(WALLET_CONSTANTS.MAX_LEDGER_PAGE_SIZE, Math.max(1, parseInt(req.nextUrl.searchParams.get('limit') ?? String(WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE), 10) || WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE));
     const offset = Math.max(0, parseInt(req.nextUrl.searchParams.get('offset') ?? '0', 10) || 0);
 
     let query = db
       .from('merchant_wallet_ledger')
-      .select('id, direction, category, balance_type, amount, balance_after, reference_type, reference_id, reference_extra, description, metadata, created_at', { count: 'exact' })
+      .select(
+        'id, direction, category, balance_type, amount, balance_before, balance_after, reference_type, reference_id, reference_extra, description, metadata, status, order_id, gst_amount, commission_amount, tds_amount, created_at',
+        { count: 'exact' }
+      )
       .eq('wallet_id', walletId)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -100,14 +104,19 @@ export async function GET(req: NextRequest) {
       category: row.category,
       balance_type: row.balance_type,
       amount: Number(row.amount),
+      balance_before: row.balance_before != null ? Number(row.balance_before) : null,
       balance_after: Number(row.balance_after),
       reference_type: row.reference_type,
       reference_id: row.reference_id,
       reference_extra: row.reference_extra,
       description: row.description,
       metadata: row.metadata,
+      status: row.status ?? 'COMPLETED',
+      order_id: row.order_id ?? null,
+      gst_amount: row.gst_amount != null ? Number(row.gst_amount) : null,
+      commission_amount: row.commission_amount != null ? Number(row.commission_amount) : null,
+      tds_amount: row.tds_amount != null ? Number(row.tds_amount) : null,
       created_at: row.created_at,
-      order_id: null as number | null,
       formatted_order_id: null as string | null,
       table_id: null as string | null,
     }));

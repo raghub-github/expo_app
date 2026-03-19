@@ -13,6 +13,11 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { TablePagination } from "./TablePagination";
 import { AddAmountModal } from "./AddAmountModal";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
+import {
+  useGetRiderOrdersQuery,
+  useGetRiderWalletCreditRequestsQuery,
+  useAddRiderPenaltyMutation,
+} from "@/store/api/riderApi";
 import Link from "next/link";
 import { MoreVertical } from "lucide-react";
 
@@ -123,38 +128,60 @@ export function RiderOrdersClient() {
     }
   }, []);
 
-  const fetchOrders = useCallback(async (riderId: number) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      if (filterSearch.trim()) params.set("q", filterSearch.trim());
-      if (orderType !== "all") params.set("orderType", orderType);
-      if (status !== "all") params.set("status", status);
-      if (from) params.set("from", from);
-      if (to) params.set("to", to);
-      params.set("limit", String(pageSize));
-      params.set("offset", String((page - 1) * pageSize));
-      const res = await fetch(`/api/riders/${riderId}/orders?${params.toString()}`);
-      const json = await res.json();
-      if (!res.ok || !json.success) throw new Error(json.error || "Failed to load orders");
-      setOrders(json.data?.orders ?? []);
-      setTotal(json.data?.total ?? 0);
-    } catch (err: any) {
-      setError(err?.message || "Failed to load orders");
-      setOrders([]);
-      setTotal(0);
-    } finally {
-      setLoading(false);
-    }
-  }, [filterSearch, orderType, status, from, to, page, pageSize]);
-
   const riderFromContext = riderContext?.currentRiderInfo
     ? { id: riderContext.currentRiderInfo.id, name: riderContext.currentRiderInfo.name, mobile: riderContext.currentRiderInfo.mobile }
     : null;
 
+  const riderId = rider?.id ?? riderFromContext?.id ?? null;
+
+  const {
+    data: ordersData,
+    isLoading: ordersLoading,
+    isFetching: ordersFetching,
+    error: ordersError,
+    refetch: refetchOrders,
+  } = useGetRiderOrdersQuery(
+    riderId
+      ? {
+          riderId,
+          filters: {
+            q: filterSearch.trim() || undefined,
+            orderType,
+            status,
+            from,
+            to,
+            limit: pageSize,
+            offset: (page - 1) * pageSize,
+          },
+        }
+      : ({ riderId: 0 } as any),
+    {
+      skip: riderId == null,
+    } as any
+  );
+
+  const {
+    data: pendingCredits,
+  } = useGetRiderWalletCreditRequestsQuery(
+    riderId ? { riderId, status: "pending" } : ({ riderId: 0, status: "pending" } as any),
+    { skip: riderId == null } as any
+  );
+
+  const {
+    data: approvedCredits,
+  } = useGetRiderWalletCreditRequestsQuery(
+    riderId ? { riderId, status: "approved", limit: 100 } : ({ riderId: 0, status: "approved", limit: 100 } as any),
+    { skip: riderId == null } as any
+  );
+
+  const [addPenaltyMutation, { isLoading: addPenaltyMutating }] = useAddRiderPenaltyMutation();
+
   useEffect(() => setSearchInput(searchValue), [searchValue]);
-  useEffect(() => setFilterSearch(searchParams.get("orderId") || searchParams.get("q") || ""), [searchParams.get("orderId"), searchParams.get("q")]);
+  useEffect(
+    () => setFilterSearch(searchParams.get("orderId") || searchParams.get("q") || ""),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [searchParams.get("orderId"), searchParams.get("q")]
+  );
   useEffect(() => {
     if (searchValue) resolveRider(searchValue);
     else if (riderFromContext) {
@@ -166,9 +193,25 @@ export function RiderOrdersClient() {
       setError(null);
     }
   }, [searchValue, riderFromContext?.id, resolveRider]);
+
   useEffect(() => {
-    if (rider) fetchOrders(rider.id);
-  }, [rider, fetchOrders]);
+    setLoading(ordersLoading || ordersFetching);
+  }, [ordersLoading, ordersFetching]);
+
+  useEffect(() => {
+    if (!ordersData) {
+      setOrders([]);
+      setTotal(0);
+      return;
+    }
+    setOrders(ordersData.orders ?? []);
+    setTotal(ordersData.total ?? 0);
+  }, [ordersData]);
+
+  useEffect(() => {
+    if (!ordersError) return;
+    setError(ordersError instanceof Error ? ordersError.message : String(ordersError));
+  }, [ordersError]);
 
   useEffect(() => {
     setPage(1);
@@ -179,53 +222,31 @@ export function RiderOrdersClient() {
     setPage(1);
   }, []);
 
-  const fetchPendingCreditOrderIds = useCallback(async (riderId: number) => {
-    try {
-      const res = await fetch(`/api/wallet-credit-requests?riderId=${riderId}&status=pending`);
-      const json = await res.json();
-      if (res.ok && json.success && Array.isArray(json.data)) {
-        const ids = new Set<number>();
-        for (const r of json.data) {
-          if (r.orderId != null) ids.add(r.orderId);
-        }
-        setPendingCreditOrderIds(ids);
-      } else {
-        setPendingCreditOrderIds(new Set());
-      }
-    } catch {
+  useEffect(() => {
+    if (!pendingCredits) {
       setPendingCreditOrderIds(new Set());
+      return;
     }
-  }, []);
-
-  const fetchApprovedExtraByOrderId = useCallback(async (riderId: number) => {
-    try {
-      const res = await fetch(`/api/wallet-credit-requests?riderId=${riderId}&status=approved&limit=100`);
-      const json = await res.json();
-      if (res.ok && json.success && Array.isArray(json.data)) {
-        const map = new Map<number, number>();
-        for (const r of json.data) {
-          if (r.orderId == null) continue;
-          const amt = Number(r.amount) || 0;
-          map.set(r.orderId, (map.get(r.orderId) ?? 0) + amt);
-        }
-        setApprovedExtraByOrderId(map);
-      } else {
-        setApprovedExtraByOrderId(new Map());
-      }
-    } catch {
-      setApprovedExtraByOrderId(new Map());
+    const ids = new Set<number>();
+    for (const r of pendingCredits) {
+      if (r.orderId != null) ids.add(r.orderId);
     }
-  }, []);
+    setPendingCreditOrderIds(ids);
+  }, [pendingCredits]);
 
   useEffect(() => {
-    if (rider) {
-      fetchPendingCreditOrderIds(rider.id);
-      fetchApprovedExtraByOrderId(rider.id);
-    } else {
-      setPendingCreditOrderIds(new Set());
+    if (!approvedCredits) {
       setApprovedExtraByOrderId(new Map());
+      return;
     }
-  }, [rider, fetchPendingCreditOrderIds, fetchApprovedExtraByOrderId]);
+    const map = new Map<number, number>();
+    for (const r of approvedCredits) {
+      if (r.orderId == null) continue;
+      const amt = Number(r.amount) || 0;
+      map.set(r.orderId, (map.get(r.orderId) ?? 0) + amt);
+    }
+    setApprovedExtraByOrderId(map);
+  }, [approvedCredits]);
 
   const { data: riderAccess } = useRiderAccessQuery();
   const canAddPenaltyForService = useCallback(
@@ -247,13 +268,13 @@ export function RiderOrdersClient() {
     if (from) p.set("from", from);
     if (to) p.set("to", to);
     router.push(`/dashboard/riders/orders?${p.toString()}`);
-    if (rider) fetchOrders(rider.id);
-  }, [searchValue, filterSearch, orderType, status, from, to, rider, router, fetchOrders]);
+    if (riderId) refetchOrders();
+  }, [searchValue, filterSearch, orderType, status, from, to, riderId, router, refetchOrders]);
 
   const handleAddPenaltyFromOrder = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!rider || !addPenaltyForOrder) return;
+      if (!riderId || !addPenaltyForOrder) return;
       const reason = addPenaltyForm.reason.trim();
       if (!reason) {
         setError("Reason is required.");
@@ -267,19 +288,16 @@ export function RiderOrdersClient() {
       setAddPenaltySubmitting(true);
       setError(null);
       try {
-        const res = await fetch(`/api/riders/${rider.id}/penalties`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        await addPenaltyMutation({
+          riderId,
+          body: {
             amount: Math.round(amount * 100) / 100,
             reason,
             serviceType: addPenaltyForOrder.serviceType,
             penaltyType: "other",
             orderId: addPenaltyForOrder.orderId,
-          }),
-        });
-        const json = await res.json();
-        if (!res.ok || !json.success) throw new Error(json.error || "Failed to add penalty");
+          },
+        }).unwrap();
         setAddPenaltyForOrder(null);
         setAddPenaltyForm({ reason: "", penaltyPercent: 100 });
       } catch (err: unknown) {
@@ -288,7 +306,7 @@ export function RiderOrdersClient() {
         setAddPenaltySubmitting(false);
       }
     },
-    [rider, addPenaltyForOrder, addPenaltyForm]
+    [riderId, addPenaltyForOrder, addPenaltyForm, addPenaltyMutation]
   );
 
   useEffect(() => {

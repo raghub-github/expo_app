@@ -20,16 +20,19 @@ async function assertStoreAccess(storeId: number) {
     (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
   if (!allowed) return { ok: false as const, status: 403, error: "Forbidden" };
   let areaManagerId: number | null = null;
+  let systemUser: Awaited<ReturnType<typeof getSystemUserByEmail>> = null;
   if (!(await isSuperAdmin(user.id, user.email))) {
-    const systemUser = await getSystemUserByEmail(user.email);
+    systemUser = await getSystemUserByEmail(user.email);
     if (systemUser) {
       const am = await getAreaManagerByUserId(systemUser.id);
       if (am) areaManagerId = am.id;
     }
+  } else {
+    systemUser = await getSystemUserByEmail(user.email);
   }
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) return { ok: false as const, status: 404, error: "Store not found" };
-  return { ok: true as const, store };
+  return { ok: true as const, store, user, systemUser };
 }
 
 export async function POST(
@@ -45,6 +48,13 @@ export async function POST(
     const access = await assertStoreAccess(storeId);
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
+    }
+    // Only the merchant (store owner) can initiate withdrawals. Agents (system_users) cannot.
+    if (access.systemUser) {
+      return NextResponse.json(
+        { success: false, error: "Only the merchant can initiate withdrawals. Agents cannot withdraw." },
+        { status: 403 }
+      );
     }
     const body = await request.json().catch(() => ({}));
     const amount = Number(body.amount);

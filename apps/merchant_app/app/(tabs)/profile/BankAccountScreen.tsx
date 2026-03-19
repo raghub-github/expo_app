@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -15,7 +15,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
-import { getBankAccount, upsertBankAccount, type BankAccountPayload, type BankAccount } from "@/services/bankAccountApi";
+import {
+  listBankAccounts,
+  addBankAccount,
+  setAccountDefault,
+  setAccountDisabled,
+  type BankAccount,
+  type BankAccountPayload,
+} from "@/services/bankAccountApi";
 
 const IFSC_REGEX = /^[A-Za-z]{4}0[A-Za-z0-9]{6}$/;
 
@@ -24,8 +31,12 @@ export default function BankAccountScreen() {
   const { token } = useAuth();
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [account, setAccount] = useState<BankAccount>(null);
+  const [accounts, setAccounts] = useState<BankAccount[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [actionLoading, setActionLoading] = useState<number | null>(null);
+
+  const [payoutMethod, setPayoutMethod] = useState<"bank" | "upi">("bank");
   const [holderName, setHolderName] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [confirmAccountNumber, setConfirmAccountNumber] = useState("");
@@ -33,10 +44,23 @@ export default function BankAccountScreen() {
   const [bankName, setBankName] = useState("");
   const [branchName, setBranchName] = useState("");
   const [upiId, setUpiId] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [payoutSelection, setPayoutSelection] = useState<"BANK" | "UPI">("BANK");
+  const [saving, setSaving] = useState(false);
 
   const storeId = selectedStore?.id ?? null;
+
+  const reload = useCallback(async () => {
+    if (!storeId || !token) return;
+    setLoading(true);
+    try {
+      const list = await listBankAccounts(storeId, token);
+      setAccounts(list);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }, [storeId, token]);
 
   useEffect(() => {
     if (!storeId || !token) {
@@ -45,95 +69,40 @@ export default function BankAccountScreen() {
       else if (!storeId) setError("No store selected.");
       return;
     }
-    let cancelled = false;
-    setLoading(true);
-    getBankAccount(storeId, token)
-      .then((data) => {
-        if (cancelled) return;
-        setAccount(data);
-        if (data) {
-          setHolderName(data.account_holder_name ?? "");
-          setAccountNumber(data.account_number ?? "");
-          setConfirmAccountNumber(data.account_number ?? "");
-          setIfsc(data.ifsc_code ?? "");
-          setBankName(data.bank_name ?? "");
-          setBranchName(data.branch_name ?? "");
-          setUpiId(data.upi_id ?? "");
-          const method = (data.payout_method || "").toUpperCase();
-          if (method === "UPI") setPayoutSelection("UPI");
-          else setPayoutSelection("BANK");
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load bank account.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storeId, token]);
+    reload();
+  }, [storeId, token, reload]);
 
-  const statusLabel = (() => {
-    if (!account) return "Not added";
-    if (account.is_disabled) return "Disabled";
-    if (account.is_verified) return "Verified";
-    const status = (account.verification_status || "").toLowerCase();
-    if (status === "rejected") return "Rejected";
-    if (status === "under_review") return "Under review";
-    return "Pending verification";
-  })();
+  const resetForm = () => {
+    setPayoutMethod("bank");
+    setHolderName("");
+    setAccountNumber("");
+    setConfirmAccountNumber("");
+    setIfsc("");
+    setBankName("");
+    setBranchName("");
+    setUpiId("");
+  };
 
-  const statusStyle = (() => {
-    if (!account) return styles.statusPillPending;
-    if (account.is_disabled) return styles.statusPillDisabled;
-    if (account.is_verified) return styles.statusPillVerified;
-    const status = (account.verification_status || "").toLowerCase();
-    if (status === "rejected") return styles.statusPillError;
-    return styles.statusPillPending;
-  })();
-
-  const canTogglePayoutMethod = useMemo(
-    () => !!(accountNumber.trim() && upiId.trim()),
-    [accountNumber, upiId]
-  );
-
-  const fieldsDisabled = useMemo(
-    () => account?.is_verified === true && account.is_disabled === false,
-    [account]
-  );
-
-  const onSave = async () => {
+  const handleAdd = async () => {
     if (!storeId || !token) return;
     const trimmedName = holderName.trim();
     const trimmedAcc = accountNumber.trim();
     const trimmedConfirm = confirmAccountNumber.trim();
     const trimmedIfsc = ifsc.trim().toUpperCase();
     const trimmedBank = bankName.trim();
-    const trimmedBranch = branchName.trim();
     const trimmedUpi = upiId.trim();
 
-    if (fieldsDisabled && account) {
-      // Only allow payout method toggle when account is already verified.
-      if (!canTogglePayoutMethod) {
-        Alert.alert(
-          "Change not allowed",
-          "Your bank account is verified. To change bank details, please raise a support ticket from Help Centre."
-        );
-        return;
-      }
-    } else {
-      if (!trimmedName || !trimmedAcc || !trimmedIfsc || !trimmedBank) {
-        Alert.alert("Missing details", "Please fill all required fields marked with *.");
-        return;
-      }
-      if (trimmedAcc.length < 8) {
-        Alert.alert("Invalid account number", "Account number looks too short.");
-        return;
-      }
-      if (trimmedAcc !== trimmedConfirm) {
-        Alert.alert("Account number mismatch", "Account number and confirm account number must match.");
+    if (!trimmedName || !trimmedAcc) {
+      Alert.alert("Missing details", "Account holder name and account number are required.");
+      return;
+    }
+    if (trimmedAcc !== trimmedConfirm) {
+      Alert.alert("Mismatch", "Account number and confirm account number must match.");
+      return;
+    }
+    if (payoutMethod === "bank") {
+      if (!trimmedIfsc || !trimmedBank) {
+        Alert.alert("Missing details", "IFSC and bank name required for bank accounts.");
         return;
       }
       if (!IFSC_REGEX.test(trimmedIfsc)) {
@@ -141,76 +110,90 @@ export default function BankAccountScreen() {
         return;
       }
     }
+    if (payoutMethod === "upi" && !trimmedUpi) {
+      Alert.alert("Missing UPI ID", "Enter a valid UPI ID.");
+      return;
+    }
 
     const payload: BankAccountPayload = {
+      payout_method: payoutMethod,
       account_holder_name: trimmedName,
       account_number: trimmedAcc,
-      ifsc_code: trimmedIfsc,
-      bank_name: trimmedBank,
-      branch_name: trimmedBranch || null,
-      upi_id: trimmedUpi || null,
-      payout_method: payoutSelection === "UPI" && trimmedUpi ? "UPI" : "BANK",
+      ifsc_code: payoutMethod === "bank" ? trimmedIfsc : undefined,
+      bank_name: payoutMethod === "bank" ? trimmedBank : undefined,
+      branch_name: branchName.trim() || null,
+      upi_id: payoutMethod === "upi" ? trimmedUpi : null,
       beneficiary_name: trimmedName,
     };
 
     setSaving(true);
     try {
-      await upsertBankAccount(storeId, payload, token);
-      Alert.alert(
-        "Saved",
-        fieldsDisabled
-          ? "Payout method updated. Future payouts will follow the selected option."
-          : "Bank account details updated. Verification may take a few minutes."
-      );
-      setAccount((prev) =>
-        prev
-          ? {
-              ...prev,
-              account_holder_name: payload.account_holder_name,
-              account_number: payload.account_number,
-              ifsc_code: payload.ifsc_code,
-              bank_name: payload.bank_name,
-              branch_name: payload.branch_name ?? null,
-              upi_id: payload.upi_id ?? null,
-              payout_method: payload.payout_method ?? null,
-              beneficiary_name: payload.beneficiary_name ?? null,
-              is_verified: false,
-              verification_status: "pending",
-            }
-          : {
-              id: -1,
-              store_id: storeId,
-              account_holder_name: payload.account_holder_name,
-              account_number: payload.account_number,
-              ifsc_code: payload.ifsc_code,
-              bank_name: payload.bank_name,
-              branch_name: payload.branch_name ?? null,
-              account_type: null,
-              is_verified: false,
-              verification_status: "pending",
-              upi_id: payload.upi_id ?? null,
-              upi_verified: false,
-              is_primary: true,
-              is_active: true,
-              is_disabled: false,
-              payout_method: payload.payout_method ?? null,
-              beneficiary_name: payload.beneficiary_name ?? null,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }
-      );
+      await addBankAccount(storeId, payload, token);
+      Alert.alert("Added", "Bank/UPI account added successfully.");
+      resetForm();
+      setShowAddForm(false);
+      await reload();
     } catch (e) {
-      Alert.alert("Save failed", e instanceof Error ? e.message : "Could not update bank account.");
+      Alert.alert("Failed", e instanceof Error ? e.message : "Could not add account.");
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) {
+  const handleSetDefault = async (acc: BankAccount) => {
+    if (!storeId || !token) return;
+    if (acc.is_primary) return;
+    Alert.alert("Set as default?", `Make "${acc.account_holder_name}" the default payout account?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Set Default",
+        onPress: async () => {
+          setActionLoading(acc.id);
+          try {
+            await setAccountDefault(storeId, acc.id, token);
+            await reload();
+          } catch (e) {
+            Alert.alert("Failed", e instanceof Error ? e.message : "Could not set default.");
+          } finally {
+            setActionLoading(null);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleToggleDisable = async (acc: BankAccount) => {
+    if (!storeId || !token) return;
+    if (acc.is_primary && !acc.is_disabled) {
+      Alert.alert("Cannot disable", "Set another account as default before disabling this one.");
+      return;
+    }
+    const action = acc.is_disabled ? "Enable" : "Disable";
+    Alert.alert(`${action} account?`, `${action} "${acc.account_holder_name}"?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: action,
+        style: acc.is_disabled ? "default" : "destructive",
+        onPress: async () => {
+          setActionLoading(acc.id);
+          try {
+            await setAccountDisabled(storeId, acc.id, !acc.is_disabled, token);
+            await reload();
+          } catch (e) {
+            Alert.alert("Failed", e instanceof Error ? e.message : "Could not update.");
+          } finally {
+            setActionLoading(null);
+          }
+        },
+      },
+    ]);
+  };
+
+  if (loading && accounts.length === 0) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-        <Text style={styles.loadingText}>Loading bank account…</Text>
+        <Text style={styles.loadingText}>Loading bank accounts…</Text>
       </View>
     );
   }
@@ -218,11 +201,7 @@ export default function BankAccountScreen() {
   if (error && !storeId) {
     return (
       <View style={styles.centered}>
-        <Ionicons
-          name="alert-circle-outline"
-          size={40}
-          color={GatiMitraMerchant.textTertiary}
-        />
+        <Ionicons name="alert-circle-outline" size={40} color={GatiMitraMerchant.textTertiary} />
         <Text style={styles.errorText}>{error}</Text>
       </View>
     );
@@ -234,211 +213,187 @@ export default function BankAccountScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}
     >
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.card}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
-          <View style={styles.headerLeft}>
-            <Text style={styles.title}>Payout bank account</Text>
-            <Text style={styles.subtitle}>
-              Money from your GatiMitra orders will be settled to this account.
-            </Text>
-          </View>
-          <View style={[styles.statusPill, statusStyle]}>
-            <Text style={styles.statusText}>{statusLabel}</Text>
-          </View>
-        </View>
-
-        {canTogglePayoutMethod && (
-          <View style={styles.toggleRow}>
-            <Pressable
-              onPress={() => setPayoutSelection("BANK")}
-              style={({ pressed }) => [
-                styles.toggleChip,
-                payoutSelection === "BANK" && styles.toggleChipActive,
-                pressed && styles.toggleChipPressed,
-              ]}
-            >
-              <Text
-                style={
-                  payoutSelection === "BANK"
-                    ? styles.toggleTextActive
-                    : styles.toggleText
-                }
-              >
-                Bank
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setPayoutSelection("UPI")}
-              style={({ pressed }) => [
-                styles.toggleChip,
-                payoutSelection === "UPI" && styles.toggleChipActive,
-                pressed && styles.toggleChipPressed,
-              ]}
-            >
-              <Text
-                style={
-                  payoutSelection === "UPI"
-                    ? styles.toggleTextActive
-                    : styles.toggleText
-                }
-              >
-                UPI
-              </Text>
-            </Pressable>
-          </View>
-        )}
-
-        {payoutSelection === "BANK" && (
-          <>
-            <Text style={styles.sectionTitle}>Bank details</Text>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                Account holder name <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={holderName}
-                onChangeText={setHolderName}
-                placeholder="As per bank records"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-                autoCapitalize="words"
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                Account number <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={accountNumber}
-                onChangeText={setAccountNumber}
-                placeholder="Enter account number"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-                keyboardType="number-pad"
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                Confirm account number <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={confirmAccountNumber}
-                onChangeText={setConfirmAccountNumber}
-                placeholder="Re-enter account number"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-                keyboardType="number-pad"
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                IFSC code <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={ifsc}
-                onChangeText={(t) => setIfsc(t.toUpperCase())}
-                placeholder="e.g. HDFC0001234"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-                autoCapitalize="characters"
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                Bank name <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={bankName}
-                onChangeText={setBankName}
-                placeholder="e.g. HDFC Bank"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Branch name</Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={branchName}
-                onChangeText={setBranchName}
-                placeholder="e.g. Andheri (E)"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-              />
-            </View>
-          </>
-        )}
-
-        {payoutSelection === "UPI" && (
-          <>
-            <Text style={styles.sectionTitle}>UPI details</Text>
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                UPI ID <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                editable={!fieldsDisabled}
-                style={[styles.input, fieldsDisabled && styles.inputDisabled]}
-                value={upiId}
-                onChangeText={setUpiId}
-                placeholder="yourname@bank"
-                placeholderTextColor={GatiMitraMerchant.textTertiary}
-                autoCapitalize="none"
-              />
-              <Text style={styles.hint}>
-                Payouts will be routed to this UPI ID once it is verified.
-              </Text>
-            </View>
-          </>
-        )}
-
-        <View style={styles.infoBox}>
-          <Ionicons
-            name="shield-checkmark-outline"
-            size={18}
-            color={GatiMitraMerchant.primary}
-          />
-          <Text style={styles.infoText}>
-            We only use these details to credit your payouts. Sensitive fields are
-            stored securely and are not shared publicly.
+          <Text style={styles.title}>Bank & UPI Accounts</Text>
+          <Text style={styles.subtitle}>
+            Manage your payout accounts. You cannot delete accounts; only disable them.
           </Text>
         </View>
 
-        {/* Save button hidden as per latest requirement; logic kept for potential future auto-save. */}
-        {false && (
-          <Pressable
-            onPress={onSave}
-            disabled={saving}
-            style={({ pressed }) => [
-              styles.saveBtn,
-              saving && styles.saveBtnDisabled,
-              pressed && !saving && styles.saveBtnPressed,
+        {accounts.length === 0 && !loading && (
+          <View style={styles.emptyCard}>
+            <Ionicons name="wallet-outline" size={36} color={GatiMitraMerchant.textTertiary} />
+            <Text style={styles.emptyText}>No bank/UPI accounts added yet.</Text>
+          </View>
+        )}
+
+        {accounts.map((acc) => (
+          <View
+            key={acc.id}
+            style={[
+              styles.accountCard,
+              acc.is_disabled && styles.accountCardDisabled,
+              acc.is_primary && styles.accountCardPrimary,
             ]}
           >
-            {saving ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Text style={styles.saveBtnText}>Save bank details</Text>
+            <View style={styles.accountHeader}>
+              <View style={styles.accountBadges}>
+                {acc.is_primary && (
+                  <View style={styles.badgePrimary}>
+                    <Ionicons name="star" size={10} color="#fff" />
+                    <Text style={styles.badgeText}>Default</Text>
+                  </View>
+                )}
+                <View style={[styles.badgeMethod, acc.payout_method === "upi" ? styles.badgeUpi : styles.badgeBank]}>
+                  <Text style={styles.badgeMethodText}>
+                    {(acc.payout_method || "bank").toUpperCase()}
+                  </Text>
+                </View>
+                {acc.is_disabled && (
+                  <View style={styles.badgeDisabled}>
+                    <Text style={styles.badgeText}>Disabled</Text>
+                  </View>
+                )}
+                {acc.is_verified && (
+                  <View style={styles.badgeVerified}>
+                    <Ionicons name="checkmark-circle" size={10} color="#fff" />
+                    <Text style={styles.badgeText}>Verified</Text>
+                  </View>
+                )}
+              </View>
+              {actionLoading === acc.id && (
+                <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+              )}
+            </View>
+
+            <Text style={styles.accName}>{acc.account_holder_name}</Text>
+            <Text style={styles.accDetail}>
+              {acc.account_number_masked ?? `****${String(acc.account_number).slice(-4)}`}
+              {acc.ifsc_code && acc.ifsc_code !== "N/A" ? ` · ${acc.ifsc_code}` : ""}
+            </Text>
+            {acc.bank_name && acc.bank_name !== "UPI" && (
+              <Text style={styles.accDetail}>{acc.bank_name}{acc.branch_name ? ` – ${acc.branch_name}` : ""}</Text>
             )}
+            {acc.upi_id && <Text style={styles.accDetail}>UPI: {acc.upi_id}</Text>}
+
+            <View style={styles.accountActions}>
+              {!acc.is_primary && !acc.is_disabled && (
+                <Pressable
+                  onPress={() => handleSetDefault(acc)}
+                  disabled={actionLoading === acc.id}
+                  style={({ pressed }) => [styles.actionBtn, styles.actionDefault, pressed && styles.actionPressed]}
+                >
+                  <Ionicons name="star-outline" size={14} color={GatiMitraMerchant.primary} />
+                  <Text style={styles.actionDefaultText}>Set Default</Text>
+                </Pressable>
+              )}
+              <Pressable
+                onPress={() => handleToggleDisable(acc)}
+                disabled={actionLoading === acc.id || (acc.is_primary && !acc.is_disabled)}
+                style={({ pressed }) => [
+                  styles.actionBtn,
+                  acc.is_disabled ? styles.actionEnable : styles.actionDisable,
+                  pressed && styles.actionPressed,
+                  (acc.is_primary && !acc.is_disabled) && styles.actionBtnHidden,
+                ]}
+              >
+                <Ionicons
+                  name={acc.is_disabled ? "eye-outline" : "eye-off-outline"}
+                  size={14}
+                  color={acc.is_disabled ? "#16a34a" : "#dc2626"}
+                />
+                <Text style={acc.is_disabled ? styles.actionEnableText : styles.actionDisableText}>
+                  {acc.is_disabled ? "Enable" : "Disable"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
+
+        {!showAddForm ? (
+          <Pressable
+            onPress={() => setShowAddForm(true)}
+            style={({ pressed }) => [styles.addBtn, pressed && styles.addBtnPressed]}
+          >
+            <Ionicons name="add-circle-outline" size={20} color={GatiMitraMerchant.primary} />
+            <Text style={styles.addBtnText}>Add Bank / UPI Account</Text>
           </Pressable>
+        ) : (
+          <View style={styles.formCard}>
+            <Text style={styles.formTitle}>Add New Account</Text>
+
+            <View style={styles.methodToggle}>
+              <Pressable
+                onPress={() => setPayoutMethod("bank")}
+                style={[styles.methodChip, payoutMethod === "bank" && styles.methodChipActive]}
+              >
+                <Text style={payoutMethod === "bank" ? styles.methodTextActive : styles.methodText}>Bank</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPayoutMethod("upi")}
+                style={[styles.methodChip, payoutMethod === "upi" && styles.methodChipActive]}
+              >
+                <Text style={payoutMethod === "upi" ? styles.methodTextActive : styles.methodText}>UPI</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Account holder name <Text style={styles.req}>*</Text></Text>
+              <TextInput style={styles.input} value={holderName} onChangeText={setHolderName} placeholder="As per bank records" placeholderTextColor={GatiMitraMerchant.textTertiary} autoCapitalize="words" />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Account number <Text style={styles.req}>*</Text></Text>
+              <TextInput style={styles.input} value={accountNumber} onChangeText={setAccountNumber} placeholder="Enter account number" placeholderTextColor={GatiMitraMerchant.textTertiary} keyboardType="number-pad" />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Confirm account number <Text style={styles.req}>*</Text></Text>
+              <TextInput style={styles.input} value={confirmAccountNumber} onChangeText={setConfirmAccountNumber} placeholder="Re-enter account number" placeholderTextColor={GatiMitraMerchant.textTertiary} keyboardType="number-pad" />
+            </View>
+
+            {payoutMethod === "bank" && (
+              <>
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>IFSC code <Text style={styles.req}>*</Text></Text>
+                  <TextInput style={styles.input} value={ifsc} onChangeText={(t) => setIfsc(t.toUpperCase())} placeholder="e.g. HDFC0001234" placeholderTextColor={GatiMitraMerchant.textTertiary} autoCapitalize="characters" />
+                </View>
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>Bank name <Text style={styles.req}>*</Text></Text>
+                  <TextInput style={styles.input} value={bankName} onChangeText={setBankName} placeholder="e.g. HDFC Bank" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+                </View>
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>Branch name</Text>
+                  <TextInput style={styles.input} value={branchName} onChangeText={setBranchName} placeholder="e.g. Andheri (E)" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+                </View>
+              </>
+            )}
+
+            {payoutMethod === "upi" && (
+              <View style={styles.fieldGroup}>
+                <Text style={styles.label}>UPI ID <Text style={styles.req}>*</Text></Text>
+                <TextInput style={styles.input} value={upiId} onChangeText={setUpiId} placeholder="yourname@bank" placeholderTextColor={GatiMitraMerchant.textTertiary} autoCapitalize="none" />
+              </View>
+            )}
+
+            <View style={styles.formActions}>
+              <Pressable onPress={handleAdd} disabled={saving} style={({ pressed }) => [styles.saveBtn, saving && styles.saveBtnDisabled, pressed && !saving && styles.saveBtnPressed]}>
+                {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.saveBtnText}>Add Account</Text>}
+              </Pressable>
+              <Pressable onPress={() => { resetForm(); setShowAddForm(false); }} style={({ pressed }) => [styles.cancelBtn, pressed && styles.cancelBtnPressed]}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
         )}
-      </View>
+
+        <View style={styles.infoBox}>
+          <Ionicons name="shield-checkmark-outline" size={18} color={GatiMitraMerchant.primary} />
+          <Text style={styles.infoText}>
+            Accounts cannot be deleted. You can only disable them. The default account receives all payouts.
+          </Text>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -447,169 +402,62 @@ export default function BankAccountScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
   scroll: { flex: 1 },
-  content: { padding: H_PADDING, paddingBottom: 32, flexGrow: 1 },
-  centered: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: H_PADDING,
-  },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: GatiMitraMerchant.textSecondary,
-  },
-  errorText: {
-    marginTop: 12,
-    fontSize: 15,
-    color: GatiMitraMerchant.textSecondary,
-    textAlign: "center",
-  },
-  card: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    ...GatiMitraMerchant.shadowSm,
-  },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  headerLeft: { flex: 1, marginRight: 8 },
-  title: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
-  },
-  subtitle: {
-    marginTop: 4,
-    fontSize: 12,
-    color: GatiMitraMerchant.textSecondary,
-  },
-  fieldGroup: { marginTop: 10 },
-  sectionTitle: {
-    marginTop: 6,
-    fontSize: 13,
-    fontWeight: "700",
-    color: GatiMitraMerchant.textPrimary,
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  required: { color: GatiMitraMerchant.error },
-  input: {
-    marginTop: 4,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-    color: GatiMitraMerchant.textPrimary,
-    backgroundColor: GatiMitraMerchant.cardBg,
-  },
-  inputDisabled: {
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    color: GatiMitraMerchant.textSecondary,
-  },
-  hint: {
-    marginTop: 4,
-    fontSize: 11,
-    color: GatiMitraMerchant.textTertiary,
-  },
-  infoBox: {
-    marginTop: 14,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    padding: 10,
-    borderRadius: 10,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 12,
-    color: GatiMitraMerchant.textSecondary,
-  },
-  saveBtn: {
-    marginTop: 18,
-    borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 12,
-  },
+  content: { padding: H_PADDING, paddingBottom: 40 },
+  centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: H_PADDING },
+  loadingText: { marginTop: 12, fontSize: 14, color: GatiMitraMerchant.textSecondary },
+  errorText: { marginTop: 12, fontSize: 15, color: GatiMitraMerchant.textSecondary, textAlign: "center" },
+  headerRow: { marginBottom: 14 },
+  title: { fontSize: 18, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  subtitle: { marginTop: 4, fontSize: 12, color: GatiMitraMerchant.textSecondary },
+  emptyCard: { alignItems: "center", padding: 24, backgroundColor: GatiMitraMerchant.cardBg, borderRadius: CARD_RADIUS, borderWidth: 1, borderColor: GatiMitraMerchant.border, marginBottom: 12 },
+  emptyText: { marginTop: 8, fontSize: 13, color: GatiMitraMerchant.textTertiary },
+  accountCard: { backgroundColor: GatiMitraMerchant.cardBg, borderRadius: CARD_RADIUS, padding: 14, borderWidth: 1, borderColor: GatiMitraMerchant.border, marginBottom: 10, ...GatiMitraMerchant.shadowSm },
+  accountCardDisabled: { opacity: 0.6, borderColor: "#e5e7eb" },
+  accountCardPrimary: { borderColor: GatiMitraMerchant.primary, borderWidth: 1.5 },
+  accountHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  accountBadges: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
+  badgePrimary: { flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: GatiMitraMerchant.primary, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 99 },
+  badgeMethod: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 99 },
+  badgeBank: { backgroundColor: "#3b82f6" },
+  badgeUpi: { backgroundColor: "#8b5cf6" },
+  badgeMethodText: { fontSize: 10, fontWeight: "700", color: "#fff" },
+  badgeDisabled: { backgroundColor: "#9ca3af", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 99 },
+  badgeVerified: { flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "#16a34a", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 99 },
+  badgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
+  accName: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
+  accDetail: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  accountActions: { flexDirection: "row", gap: 8, marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: "#f3f4f6" },
+  actionBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
+  actionDefault: { borderColor: GatiMitraMerchant.primary, backgroundColor: "#fff7ed" },
+  actionDefaultText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.primary },
+  actionDisable: { borderColor: "#fecaca", backgroundColor: "#fef2f2" },
+  actionDisableText: { fontSize: 12, fontWeight: "600", color: "#dc2626" },
+  actionEnable: { borderColor: "#bbf7d0", backgroundColor: "#f0fdf4" },
+  actionEnableText: { fontSize: 12, fontWeight: "600", color: "#16a34a" },
+  actionPressed: { opacity: 0.7 },
+  actionBtnHidden: { opacity: 0 },
+  addBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 14, backgroundColor: GatiMitraMerchant.cardBg, borderRadius: CARD_RADIUS, borderWidth: 1, borderColor: GatiMitraMerchant.primary, borderStyle: "dashed", marginBottom: 12 },
+  addBtnPressed: { opacity: 0.7 },
+  addBtnText: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.primary },
+  formCard: { backgroundColor: GatiMitraMerchant.cardBg, borderRadius: CARD_RADIUS, padding: 14, borderWidth: 1, borderColor: GatiMitraMerchant.primary, marginBottom: 12, ...GatiMitraMerchant.shadowSm },
+  formTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.textPrimary, marginBottom: 10 },
+  methodToggle: { flexDirection: "row", backgroundColor: "#f3f4f6", borderRadius: 99, padding: 2, marginBottom: 12, alignSelf: "flex-start" },
+  methodChip: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 99 },
+  methodChipActive: { backgroundColor: "#fff", ...GatiMitraMerchant.shadowSm },
+  methodText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  methodTextActive: { fontSize: 12, fontWeight: "700", color: GatiMitraMerchant.primary },
+  fieldGroup: { marginTop: 8 },
+  label: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary, textTransform: "uppercase", letterSpacing: 0.3 },
+  req: { color: GatiMitraMerchant.error },
+  input: { marginTop: 4, borderWidth: 1, borderColor: GatiMitraMerchant.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: GatiMitraMerchant.textPrimary, backgroundColor: "#fff" },
+  formActions: { flexDirection: "row", gap: 10, marginTop: 14 },
+  saveBtn: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: 99, backgroundColor: GatiMitraMerchant.primary },
   saveBtnDisabled: { opacity: 0.6 },
   saveBtnPressed: { opacity: 0.85 },
-  saveBtnText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#fff",
-  },
-  statusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    alignSelf: "flex-start",
-  },
-  statusText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#fff",
-    textTransform: "uppercase",
-  },
-  statusPillVerified: {
-    backgroundColor: GatiMitraMerchant.statusCompleted,
-  },
-  statusPillPending: {
-    backgroundColor: GatiMitraMerchant.statusPending,
-  },
-  statusPillError: {
-    backgroundColor: GatiMitraMerchant.error,
-  },
-  statusPillDisabled: {
-    backgroundColor: GatiMitraMerchant.textTertiary,
-  },
-  toggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    alignSelf: "flex-start",
-    marginTop: 4,
-    marginBottom: 8,
-    borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    padding: 2,
-  },
-  toggleChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  toggleChipActive: {
-    backgroundColor: "#fff",
-  },
-  toggleChipPressed: {
-    opacity: 0.8,
-  },
-  toggleText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
-  },
-  toggleTextActive: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: GatiMitraMerchant.primary,
-  },
+  saveBtnText: { fontSize: 14, fontWeight: "600", color: "#fff" },
+  cancelBtn: { flex: 1, alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: 99, borderWidth: 1, borderColor: GatiMitraMerchant.border },
+  cancelBtnPressed: { opacity: 0.7 },
+  cancelBtnText: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  infoBox: { flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 12, borderRadius: 10, backgroundColor: GatiMitraMerchant.surfaceSubtle, borderWidth: 1, borderColor: GatiMitraMerchant.border, marginTop: 4 },
+  infoText: { flex: 1, fontSize: 12, color: GatiMitraMerchant.textSecondary },
 });
-

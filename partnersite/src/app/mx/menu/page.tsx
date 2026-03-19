@@ -265,9 +265,33 @@ const globalStyles = `
   html { scrollbar-width: none; -ms-overflow-style: none; }
 `;
 
-// Food type options
-const FOOD_TYPES = ['Vegetarian', 'Non-Vegetarian', 'Vegan', 'Eggitarian'];
+// Food type options — same values as merchant app and dashboard (DB stores VEG, NON_VEG, EGG, Vegan)
+const FOOD_TYPES = [
+  { value: 'VEG', label: 'Veg' },
+  { value: 'NON_VEG', label: 'Non-Veg' },
+  { value: 'EGG', label: 'Egg' },
+  { value: 'Vegan', label: 'Vegan' },
+];
 const SPICE_LEVELS = ['Mild', 'Medium', 'Hot', 'Very Hot'];
+function normalizeSpiceLevelForForm(v: string | null | undefined): string {
+  if (v == null || v === '') return '';
+  const u = String(v).trim().toLowerCase();
+  if (u === 'mild') return 'Mild';
+  if (u === 'medium') return 'Medium';
+  if (u === 'hot') return 'Hot';
+  if (u === 'very hot' || u === 'very_hot' || u === 'extra_hot') return 'Very Hot';
+  return String(v).trim();
+}
+function normalizeFoodTypeForForm(v: string | null | undefined): string {
+  if (v == null || v === '') return '';
+  const u = String(v).trim();
+  const upper = u.toUpperCase();
+  if (upper === 'VEG' || u === 'Vegetarian') return 'VEG';
+  if (upper === 'NON_VEG' || u === 'Non-Vegetarian' || u === 'Non-Veg') return 'NON_VEG';
+  if (upper === 'EGG' || u === 'Eggitarian' || u === 'Egg') return 'EGG';
+  if (u === 'Vegan') return 'Vegan';
+  return u;
+}
 // Default cuisine list (used as seed; UI will merge with cuisines from DB per store)
 const CUISINE_TYPES = [
   'North Indian', 'Chinese', 'Fast Food', 'South Indian', 'Biryani', 'Pizza', 'Bakery', 'Street Food', 'Burger', 'Mughlai', 'Momos', 'Sandwich', 'Mithai', 'Rolls', 'Beverages', 'Desserts', 'Cafe', 'Healthy Food', 'Maharashtrian', 'Tea', 'Bengali', 'Ice Cream', 'Juices', 'Shake', 'Shawarma', 'Gujarati', 'Italian', 'Continental', 'Lebanese', 'Salad', 'Andhra', 'Waffle', 'Coffee', 'Kebab', 'Arabian', 'Kerala', 'Asian', 'Seafood', 'Pasta', 'BBQ', 'Rajasthani', 'Wraps', 'Paan', 'Hyderabadi', 'Mexican', 'Bihari', 'Goan', 'Assamese', 'American', 'Mandi', 'Chettinad', 'Mishti', 'Bar Food', 'Malwani', 'Odia', 'Roast Chicken', 'Tamil', 'Japanese', 'Finger Food', 'Korean', 'North Eastern', 'Thai', 'Kathiyawadi', 'Bubble Tea', 'Mangalorean', 'Burmese', 'Sushi', 'Lucknowi', 'Modern Indian', 'Tibetan', 'Afghan', 'Oriental', 'Pancake', 'Kashmiri', 'Middle Eastern', 'Grocery', 'Konkan', 'European', 'Awadhi', 'Hot dogs', 'Sindhi', 'Turkish', 'Naga', 'Mediterranean', 'Nepalese', 'Cuisine Varies', 'Saoji', 'Charcoal Chicken', 'Steak', 'Frozen Yogurt', 'Panini', 'Parsi', 'Sichuan', 'Iranian', 'Grilled Chicken', 'French', 'Raw Meats', 'Drinks Only', 'Vietnamese', 'Liquor', 'Greek', 'Himachali', 'Bohri', 'Garhwali', 'Cantonese', 'Malaysian', 'Belgian', 'British', 'African', 'Spanish', 'Manipuri', 'Egyptian', 'Sri Lankan', 'Relief fund', 'Bangladeshi', 'Indonesian', 'Tex-Mex', 'Irish', 'Singaporean', 'South American', 'Mongolian', 'German', 'Russian', 'Brazilian', 'Pakistani', 'Australian', 'Moroccan', 'Filipino', 'Hot Pot', 'Retail Products', 'Mizo', 'Portuguese', 'Indian', 'Tripuri', 'Delight Goodies', 'Meghalayan', 'Sikkimese', 'Armenian', 'Afghani',
@@ -572,14 +596,14 @@ function ItemForm(props: ItemFormProps) {
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs font-medium text-gray-600">Food type</label>
-                <select disabled={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.food_type || ''} onChange={e => !readOnly && setFormData({ ...formData, food_type: e.target.value })}>
+                <select disabled={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={normalizeFoodTypeForForm(formData.food_type) || ''} onChange={e => !readOnly && setFormData({ ...formData, food_type: e.target.value })}>
                   <option value="">—</option>
-                  {FOOD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  {FOOD_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
               <div>
                 <label className="text-xs font-medium text-gray-600">Spice</label>
-                <select disabled={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.spice_level || ''} onChange={e => !readOnly && setFormData({ ...formData, spice_level: e.target.value })}>
+                <select disabled={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={normalizeSpiceLevelForForm(formData.spice_level) || ''} onChange={e => !readOnly && setFormData({ ...formData, spice_level: e.target.value })}>
                   <option value="">—</option>
                   {SPICE_LEVELS.map(l => <option key={l} value={l}>{l}</option>)}
                 </select>
@@ -860,14 +884,14 @@ function ItemForm(props: ItemFormProps) {
 
         {activeSection === 'customization' && (
           <div className="space-y-3">
-            {!readOnly && <p className="text-xs text-gray-500">Max {CUSTOMIZATION_VARIANT_LIMIT} customizations & variants total. Current: {totalOptionsCount}/{CUSTOMIZATION_VARIANT_LIMIT}</p>}
+            <p className="text-xs text-gray-500">Customizations & add-ons (extra cheese, spice level, etc.). Max {CUSTOMIZATION_VARIANT_LIMIT} total. Current: {totalOptionsCount}/{CUSTOMIZATION_VARIANT_LIMIT}</p>
             {!readOnly && (
             <div className="bg-gray-50 p-3 rounded-lg">
-              <h3 className="text-xs font-semibold text-gray-700 mb-2">{editingCustomizationIndex !== null ? 'Edit' : 'Add'} customization</h3>
+              <h3 className="text-xs font-semibold text-gray-700 mb-2">{editingCustomizationIndex !== null ? 'Edit' : 'Add'} customization group</h3>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="sm:col-span-2">
-                  <label className="text-xs text-gray-600">Title *</label>
-                  <input type="text" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={newCustomization.customization_title} onChange={e => setNewCustomization({...newCustomization, customization_title: e.target.value})} placeholder="e.g. Choose Size" />
+                  <label className="text-xs text-gray-600">Group name *</label>
+                  <input type="text" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={newCustomization.customization_title} onChange={e => setNewCustomization({...newCustomization, customization_title: e.target.value})} placeholder="e.g. Toppings" />
                 </div>
                 <div>
                   <label className="text-xs text-gray-600">Type</label>
@@ -885,7 +909,7 @@ function ItemForm(props: ItemFormProps) {
                 <div className="col-span-2 sm:col-span-4 flex items-center gap-3">
                   <label className="flex items-center gap-1.5"><input type="checkbox" checked={newCustomization.is_required} onChange={e => setNewCustomization({...newCustomization, is_required: e.target.checked})} className="h-3.5 w-3.5" /><span className="text-xs text-gray-700">Required</span></label>
                   <button type="button" onClick={handleAddCustomization} disabled={atOptionsLimit && editingCustomizationIndex === null} className="px-3 py-1.5 bg-orange-500 text-white rounded text-xs font-medium hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {editingCustomizationIndex !== null ? 'Update' : 'Add'}
+                    {editingCustomizationIndex !== null ? 'Update' : 'Add group'}
                   </button>
                   {editingCustomizationIndex !== null && (
                     <button type="button" onClick={() => { setNewCustomization({ customization_title: '', customization_type: 'Checkbox', is_required: false, min_selection: 0, max_selection: 1, display_order: customizations.length }); setEditingCustomizationIndex(null); }} className="px-3 py-1.5 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300">Cancel</button>
@@ -897,24 +921,27 @@ function ItemForm(props: ItemFormProps) {
 
             {customizations.length > 0 ? (
               <div className="space-y-2">
+                <h3 className="text-xs font-semibold text-gray-700">Existing groups ({customizations.length})</h3>
                 {customizations.map((cust, custIndex) => (
                   <div key={custIndex} className="border border-gray-200 rounded-lg p-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <span className="text-sm font-medium text-gray-900">{cust.customization_title}</span>
-                        <span className="text-xs text-gray-500 ml-2">{cust.customization_type}</span>
-                        {cust.is_required && <span className="text-xs text-red-600 ml-1">Required</span>}
-                        <span className="text-xs text-gray-400 ml-1">{cust.min_selection}-{cust.max_selection}</span>
+                        <span className="text-xs text-gray-500 ml-2">{cust.customization_type} {cust.min_selection}-{cust.max_selection}</span>
+                        <span className="text-xs ml-1">
+                          {cust.is_required ? <span className="text-red-600">Required</span> : <span className="text-gray-500">Optional</span>}
+                          <span className="text-gray-400"> · Min {cust.min_selection} / Max {cust.max_selection}</span>
+                        </span>
                       </div>
                       {!readOnly && (
                       <div className="flex gap-1 flex-shrink-0">
                         <button type="button" onClick={() => handleEditCustomization(custIndex)} className="p-1 text-blue-600 hover:bg-blue-50 rounded"><Edit2 size={12} /></button>
                         <button type="button" onClick={() => handleDeleteCustomization(custIndex)} className="p-1 text-red-600 hover:bg-red-50 rounded"><Trash2 size={12} /></button>
-                        <button type="button" onClick={() => handleAddAddon(custIndex)} className="text-xs text-orange-600 font-medium px-1.5 py-0.5">+ Addon</button>
+                        <button type="button" onClick={() => handleAddAddon(custIndex)} className="text-xs text-orange-600 font-medium px-1.5 py-0.5">Add add-on</button>
                       </div>
                       )}
                     </div>
-                    {cust.addons && cust.addons.length > 0 && (
+                    {cust.addons && cust.addons.length > 0 ? (
                       <div className="mt-2 pl-2 border-l border-gray-200 space-y-1">
                         {cust.addons.map((addon, addonIndex) => (
                           <div key={addonIndex} className="flex items-center gap-2">
@@ -922,49 +949,50 @@ function ItemForm(props: ItemFormProps) {
                               <span className="text-xs text-gray-800">{addon.addon_name} — ₹{addon.addon_price}</span>
                             ) : (
                               <>
-                                <input type="text" className="flex-1 min-w-0 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_name} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_name', e.target.value)} placeholder="Name" />
+                                <input type="text" className="flex-1 min-w-0 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_name} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_name', e.target.value)} placeholder="Add-on name (e.g. Extra cheese)" />
                                 <span className="text-gray-500 text-xs">₹</span>
-                                <input type="number" min="0" step="0.01" className="w-14 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_price} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_price', Number(e.target.value))} />
-                                <button type="button" onClick={() => handleDeleteAddon(custIndex, addonIndex)} className="p-0.5 text-red-500"><Trash2 size={12} /></button>
+                                <input type="number" min="0" step="0.01" className="w-14 px-2 py-1 border border-gray-200 rounded text-xs" value={addon.addon_price} onChange={e => handleUpdateAddon(custIndex, addonIndex, 'addon_price', Number(e.target.value))} placeholder="0" />
+                                <button type="button" onClick={() => handleDeleteAddon(custIndex, addonIndex)} className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded">Remove</button>
                               </>
                             )}
                           </div>
                         ))}
                       </div>
+                    ) : (
+                      <p className="text-xs text-gray-500 mt-2">No add-ons in this group.</p>
                     )}
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-gray-500 py-2">No customizations. Add sizes, toppings, or addons.</p>
+              <p className="text-xs text-gray-500 py-2">No customizations added yet. Create a group above.</p>
             )}
 
             <div className="border-t border-gray-200 pt-3">
               <h3 className="text-xs font-semibold text-gray-700 mb-2">
-                Variants (optional)
+                Variants (optional) — size, half/full, etc.
                 {(formData.customizations?.length || 0) + (formData.variants?.length || 0) >= CUSTOMIZATION_VARIANT_LIMIT && (
-                  <span className="text-amber-600 font-normal ml-1">— Max {CUSTOMIZATION_VARIANT_LIMIT} total</span>
+                  <span className="text-amber-600 font-normal ml-1">· Max {CUSTOMIZATION_VARIANT_LIMIT} total</span>
                 )}
               </h3>
+              {(formData.variants || []).length > 0 && (
+                <p className="text-xs text-gray-500 mb-2">Existing variants ({(formData.variants || []).length})</p>
+              )}
               {(formData.variants || []).map((v: Variant, idx: number) => (
                 <div key={idx} className="flex flex-wrap items-end gap-3 mb-3 p-2.5 bg-gray-50 rounded-lg border border-gray-200">
                   {readOnly ? (
-                    <span className="text-sm text-gray-800">{v.variant_type || '—'} / {v.variant_name} — ₹{typeof v.variant_price === 'number' ? v.variant_price : ''}</span>
+                    <span className="text-sm text-gray-800">{v.variant_name || v.variant_type || '—'} — ₹{typeof v.variant_price === 'number' ? v.variant_price : ''}</span>
                   ) : (
                     <>
-                      <div className="min-w-[120px]">
-                        <label className="text-xs text-gray-600 block mb-0.5">Title *</label>
-                        <input type="text" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={v.variant_type ?? ''} onChange={e => { const vars = [...(formData.variants || [])]; vars[idx] = { ...vars[idx], variant_type: e.target.value }; setFormData({ ...formData, variants: vars }); }} placeholder="e.g. Choose Size" />
+                      <div className="min-w-[140px]">
+                        <label className="text-xs text-gray-600 block mb-0.5">Variant name *</label>
+                        <input type="text" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={v.variant_name || v.variant_type || ''} onChange={e => { const vars = [...(formData.variants || [])]; vars[idx] = { ...vars[idx], variant_name: e.target.value, variant_type: e.target.value }; setFormData({ ...formData, variants: vars }); }} placeholder="e.g. Half, Full" />
                       </div>
                       <div className="min-w-[100px]">
-                        <label className="text-xs text-gray-600 block mb-0.5">Name *</label>
-                        <input type="text" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={v.variant_name} onChange={e => { const vars = [...(formData.variants || [])]; vars[idx] = { ...vars[idx], variant_name: e.target.value }; setFormData({ ...formData, variants: vars }); }} placeholder="e.g. Medium" />
-                      </div>
-                      <div className="min-w-[80px]">
-                        <label className="text-xs text-gray-600 block mb-0.5">Price (₹) *</label>
+                        <label className="text-xs text-gray-600 block mb-0.5">Variant price (₹) *</label>
                         <input type="number" min="0" step="0.01" className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm" value={typeof v.variant_price === 'number' ? v.variant_price : ''} onChange={e => { const vars = [...(formData.variants || [])]; vars[idx] = { ...vars[idx], variant_price: Number(e.target.value) || 0 }; setFormData({ ...formData, variants: vars }); }} placeholder="0" />
                       </div>
-                      <button type="button" onClick={() => { const vars = (formData.variants || []).filter((_: Variant, i: number) => i !== idx); setFormData({ ...formData, variants: vars, has_variants: vars.length > 0 }); }} className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end"><Trash2 size={14} /></button>
+                      <button type="button" onClick={() => { const vars = (formData.variants || []).filter((_: Variant, i: number) => i !== idx); setFormData({ ...formData, variants: vars, has_variants: vars.length > 0 }); }} className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end" aria-label="Remove variant"><Trash2 size={14} /></button>
                     </>
                   )}
                 </div>
@@ -977,9 +1005,9 @@ function ItemForm(props: ItemFormProps) {
                   const vars = [...(formData.variants || []), { variant_name: '', variant_type: '', variant_price: 0, menu_item_id: 0 }];
                   setFormData({ ...formData, variants: vars, has_variants: true });
                 }}
-                className="mt-2 px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="mt-2 px-3 py-1.5 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                + Add Variant
+                Add variant
               </button>
               )}
             </div>
@@ -1958,17 +1986,19 @@ function MenuContent() {
       }
     }
     
+    const basePriceStr = item.base_price != null ? (typeof item.base_price === 'number' ? item.base_price.toFixed(2) : String(item.base_price)) : '';
+    const sellingPriceStr = item.selling_price != null ? (typeof item.selling_price === 'number' ? item.selling_price.toFixed(2) : String(item.selling_price)) : '';
     setEditForm({
       item_name: item.item_name || '',
       item_description: item.item_description || '',
       item_image_url: item.item_image_url || '',
       image: null,
-      food_type: item.food_type || '',
-      spice_level: item.spice_level || '',
+      food_type: normalizeFoodTypeForForm(item.food_type) || '',
+      spice_level: normalizeSpiceLevelForForm(item.spice_level) || '',
       cuisine_type: item.cuisine_type || '',
-      base_price: item.base_price?.toString() || '',
-      selling_price: item.selling_price?.toString() || '',
-      discount_percentage: item.discount_percentage?.toString() || '0',
+      base_price: basePriceStr,
+      selling_price: sellingPriceStr,
+      discount_percentage: item.discount_percentage?.toString() ?? '0',
       tax_percentage: item.tax_percentage?.toString() ?? '5',
       in_stock: item.in_stock ?? true,
       available_quantity: item.available_quantity?.toString() || '',

@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
 import { deleteFromR2, extractR2KeyFromUrl } from '@/lib/r2'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -335,6 +336,18 @@ export async function POST(req: NextRequest) {
       }])
     }
 
+    try {
+      await logStoreActivity({
+        storeId: store.id,
+        section: 'menu_item',
+        action: 'create',
+        entityId: menuItemId,
+        entityName: body.item_name,
+        summary: `Merchant created item "${body.item_name}"`,
+        actorType: 'merchant',
+      });
+    } catch (_) {}
+
     return NextResponse.json(data)
   } catch (err: unknown) {
     console.error('[menu-items POST]', err)
@@ -580,6 +593,18 @@ export async function PATCH(req: NextRequest) {
         .single()
       data = itemRow
     }
+    try {
+      await logStoreActivity({
+        storeId: store.id,
+        section: 'menu_item',
+        action: 'update',
+        entityId: data?.id ?? null,
+        entityName: body.item_name ?? data?.item_name ?? null,
+        summary: `Merchant updated item "${body.item_name ?? data?.item_name ?? itemId}"`,
+        actorType: 'merchant',
+      });
+    } catch (_) {}
+
     return NextResponse.json(data ?? {})
   } catch (err: unknown) {
     console.error('[menu-items PATCH]', err)

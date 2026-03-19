@@ -1,3 +1,8 @@
+/**
+ * Store status (open/closed, auto-open from schedule, manual lock, temp close) — backend only.
+ * The backend schedule engine and merchant_store_availability own all logic; this app only
+ * reads status and sends toggle/flag updates via API. Do not duplicate schedule or open/close logic here.
+ */
 import { getConfig } from "@/config/env";
 import { authFetch } from "@/services/authFetch";
 
