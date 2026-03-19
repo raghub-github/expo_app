@@ -172,6 +172,11 @@ export async function POST(request: NextRequest) {
       city,
     } = body;
 
+    // Normalize strings
+    if (primary_role) {
+      primary_role = primary_role.trim();
+    }
+
     // Normalize mobile numbers
     const { normalizeMobileNumber } = await import("@/lib/utils/mobile-normalizer");
     if (mobile) {

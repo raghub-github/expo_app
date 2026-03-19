@@ -5,8 +5,9 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getUniqueRoles } from "@/lib/db/operations/users";
 import { checkPermission } from "@/lib/permissions/engine";
+import { getDb } from "@/lib/db/client";
+import { sql } from "drizzle-orm";
 
 export const runtime = 'nodejs';
 
@@ -41,8 +42,22 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fetch unique roles
-    const roles = await getUniqueRoles();
+    // Fetch available roles from system_roles (data-driven)
+    const db = getDb();
+    const result = await db.execute<{ role_name: string }>(
+      sql`SELECT DISTINCT trim(role_name) AS role_name
+          FROM public.system_roles
+          WHERE (is_active IS NULL OR is_active = TRUE)
+          ORDER BY role_name ASC`
+    );
+
+    const rows = Array.isArray((result as any).rows)
+      ? (result as any).rows
+      : (result as any);
+
+    const roles = rows
+      .map((r: any) => r.role_name)
+      .filter((r: any) => typeof r === "string" && r.length > 0);
 
     return NextResponse.json({
       success: true,

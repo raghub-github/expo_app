@@ -142,7 +142,7 @@ export function AddChildStoreClient() {
 
   const [refreshingStepStatus, setRefreshingStepStatus] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
-  const [amContact, setAmContact] = useState<{ name?: string; phone?: string; email?: string } | null>(null);
+  const [amContact, setAmContact] = useState<{ id?: string; name?: string; phone?: string; email?: string } | null>(null);
   const [paymentStepAutoAdvanced, setPaymentStepAutoAdvanced] = useState(false);
   const [showPaymentRefreshPrompt, setShowPaymentRefreshPrompt] = useState(false);
   const [agreementStepAutoAdvanced, setAgreementStepAutoAdvanced] = useState(false);
@@ -707,10 +707,12 @@ export function AddChildStoreClient() {
           managerType?: string;
           areaManagerId?: number | null;
           areaManagerName?: string | null;
+          areaManagerCode?: string | null;
           areaManagerPhone?: string | null;
           areaManagerEmail?: string | null;
         };
         setAmContact({
+          id: fromApi.areaManagerCode ?? undefined,
           name: fromApi.areaManagerName ?? undefined,
           phone: fromApi.areaManagerPhone ?? undefined,
           email: fromApi.areaManagerEmail ?? undefined,
@@ -1855,6 +1857,17 @@ export function AddChildStoreClient() {
               <span className="font-medium">
                 PID:{" "}
                 <strong className="font-mono text-indigo-700">{parentPid || "—"}</strong>
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-100 text-[11px] font-medium text-indigo-800">
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                <span>
+                  AM:{" "}
+                  <span className="font-semibold">
+                    {amContact?.id
+                      ? `${amContact.id}${amContact.name ? ` · ${amContact.name}` : ""}`
+                      : amContact?.name || amContact?.email || "You"}
+                  </span>
+                </span>
               </span>
             </div>
             <button
