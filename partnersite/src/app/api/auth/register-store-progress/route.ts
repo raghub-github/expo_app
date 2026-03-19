@@ -156,9 +156,27 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: true, progress: null });
     }
 
-    const stepStore = (progress.form_data as any)?.step_store;
-    const progressStoreDbId = stepStore?.storeDbId ? Number(stepStore.storeDbId) : null;
-    const progressStorePublicId = stepStore?.storePublicId;
+    let stepStore = (progress.form_data as any)?.step_store;
+    let progressStoreDbId = stepStore?.storeDbId ? Number(stepStore.storeDbId) : null;
+    let progressStorePublicId = stepStore?.storePublicId;
+
+    if ((!progressStorePublicId || !progressStoreDbId) && (progress as any).store_id) {
+      const storeInternalId = Number((progress as any).store_id);
+      if (Number.isFinite(storeInternalId)) {
+        const { data: storeRow } = await db
+          .from("merchant_stores")
+          .select("id, store_id")
+          .eq("id", storeInternalId)
+          .maybeSingle();
+        if (storeRow) {
+          stepStore = { storeDbId: storeRow.id, storePublicId: storeRow.store_id };
+          progressStoreDbId = storeRow.id as number;
+          progressStorePublicId = storeRow.store_id as string;
+          const formData = ((progress.form_data as Record<string, unknown>) || {}) as Record<string, unknown>;
+          progress = { ...progress, form_data: { ...formData, step_store: stepStore } } as ProgressRow;
+        }
+      }
+    }
     if (progressStoreDbId) {
       const { data: storeExists } = await db
         .from("merchant_stores")
@@ -167,6 +185,29 @@ export async function GET(req: NextRequest) {
         .maybeSingle();
       if (!storeExists) {
         return NextResponse.json({ success: true, progress: null });
+      }
+
+      // Enrich form_data.step1 from merchant_stores so fields like owner_full_name load when store was created from AM (progress may not have step1 saved yet)
+      const { data: storeRow } = await db
+        .from("merchant_stores")
+        .select("store_name, owner_full_name, store_display_name, store_description, store_email, store_phones, store_type, custom_store_type")
+        .eq("id", progressStoreDbId)
+        .maybeSingle();
+      if (storeRow) {
+        const formData = (progress.form_data || {}) as Record<string, unknown>;
+        const step1 = (formData.step1 || {}) as Record<string, unknown>;
+        const mergedStep1 = {
+          ...step1,
+          store_name: storeRow.store_name ?? step1.store_name,
+          owner_full_name: storeRow.owner_full_name ?? step1.owner_full_name,
+          store_display_name: storeRow.store_display_name ?? step1.store_display_name,
+          store_description: storeRow.store_description ?? step1.store_description,
+          store_email: storeRow.store_email ?? step1.store_email,
+          store_phones: storeRow.store_phones ?? step1.store_phones,
+          store_type: storeRow.store_type ?? step1.store_type,
+          custom_store_type: storeRow.custom_store_type ?? step1.custom_store_type,
+        };
+        progress = { ...progress, form_data: { ...formData, step1: mergedStep1 } } as ProgressRow;
       }
     }
 
@@ -190,6 +231,9 @@ export async function GET(req: NextRequest) {
         const rawDrug = docRow.drug_license_document_url ?? null;
         const rawPharmacist = docRow.pharmacist_certificate_document_url ?? null;
         const rawPharmacyCouncil = docRow.pharmacy_council_registration_document_url ?? null;
+        const rawTrade = docRow.trade_license_document_url ?? null;
+        const rawShopEst = docRow.shop_establishment_document_url ?? null;
+        const rawUdyam = docRow.udyam_document_url ?? null;
         const rawOther = docRow.other_document_url ?? null;
         const [
           pan_image_url,
@@ -200,6 +244,9 @@ export async function GET(req: NextRequest) {
           drug_license_image_url,
           pharmacist_certificate_url,
           pharmacy_council_registration_url,
+          trade_license_document_url,
+          shop_establishment_document_url,
+          udyam_document_url,
           other_document_file_url,
         ] = await Promise.all([
           toFreshSignedUrl(rawPan),
@@ -210,6 +257,9 @@ export async function GET(req: NextRequest) {
           toFreshSignedUrl(rawDrug),
           toFreshSignedUrl(rawPharmacist),
           toFreshSignedUrl(rawPharmacyCouncil),
+          toFreshSignedUrl(rawTrade),
+          toFreshSignedUrl(rawShopEst),
+          toFreshSignedUrl(rawUdyam),
           toFreshSignedUrl(rawOther),
         ]);
         const mergedStep4 = {
@@ -233,6 +283,14 @@ export async function GET(req: NextRequest) {
           pharmacist_certificate_url: pharmacist_certificate_url ?? rawPharmacist,
           pharmacist_expiry_date: docRow.pharmacist_certificate_expiry_date ?? step4.pharmacist_expiry_date,
           pharmacy_council_registration_url: pharmacy_council_registration_url ?? rawPharmacyCouncil,
+          trade_license_number: docRow.trade_license_document_number ?? (step4 as any).trade_license_number,
+          trade_license_document_url: trade_license_document_url ?? rawTrade,
+          trade_license_expiry_date: docRow.trade_license_expiry_date ?? (step4 as any).trade_license_expiry_date,
+          shop_establishment_number: docRow.shop_establishment_document_number ?? (step4 as any).shop_establishment_number,
+          shop_establishment_document_url: shop_establishment_document_url ?? rawShopEst,
+          shop_establishment_expiry_date: docRow.shop_establishment_expiry_date ?? (step4 as any).shop_establishment_expiry_date,
+          udyam_number: docRow.udyam_document_number ?? (step4 as any).udyam_number,
+          udyam_document_url: udyam_document_url ?? rawUdyam,
           other_document_number: docRow.other_document_number ?? step4.other_document_number,
           other_document_type: docRow.other_document_type ?? step4.other_document_type,
           other_document_name: docRow.other_document_name ?? step4.other_document_name,
@@ -623,6 +681,7 @@ export async function PUT(req: NextRequest) {
           const step1 = mergedFormData.step1 as Record<string, unknown>;
           const updatePayload: Record<string, unknown> = {
             store_name: step1.store_name || null,
+            owner_full_name: step1.owner_full_name && String(step1.owner_full_name).trim() ? String(step1.owner_full_name).trim() : null,
             store_display_name: step1.store_display_name || null,
             store_description: step1.store_description || null,
             store_type: toEnumStoreType(step1.store_type as string) || "RESTAURANT",
@@ -876,6 +935,9 @@ export async function PUT(req: NextRequest) {
         drugLicenseDocumentUrl,
         pharmacistCertificateUrl,
         pharmacyCouncilUrl,
+        tradeLicenseUrl,
+        shopEstablishmentUrl,
+        udyamUrl,
         otherDocumentUrl,
       ] = [
         normalizeDocValue(docs.pan_image_url),
@@ -886,11 +948,14 @@ export async function PUT(req: NextRequest) {
         normalizeDocValue(docs.drug_license_image_url),
         normalizeDocValue(docs.pharmacist_certificate_url),
         normalizeDocValue(docs.pharmacy_council_registration_url),
+        normalizeDocValue(docs.trade_license_document_url),
+        normalizeDocValue(docs.shop_establishment_document_url),
+        normalizeDocValue(docs.udyam_document_url),
         normalizeDocValue(docs.other_document_file_url),
       ];
       const { data: existingDocRow } = await db
         .from("merchant_store_documents")
-        .select("pan_document_url, aadhaar_document_url, aadhaar_document_metadata, gst_document_url, fssai_document_url, drug_license_document_url, pharmacist_certificate_document_url, pharmacy_council_registration_document_url, other_document_url")
+        .select("pan_document_url, aadhaar_document_url, aadhaar_document_metadata, gst_document_url, fssai_document_url, drug_license_document_url, pharmacist_certificate_document_url, pharmacy_council_registration_document_url, trade_license_document_url, shop_establishment_document_url, udyam_document_url, other_document_url")
         .eq("store_id", stepStore.storeDbId)
         .single();
       const existing = existingDocRow as Record<string, unknown> | null;
@@ -906,6 +971,9 @@ export async function PUT(req: NextRequest) {
           [drugLicenseDocumentUrl, existing.drug_license_document_url],
           [pharmacistCertificateUrl, existing.pharmacist_certificate_document_url],
           [pharmacyCouncilUrl, existing.pharmacy_council_registration_document_url],
+          [tradeLicenseUrl, existing.trade_license_document_url],
+          [shopEstablishmentUrl, existing.shop_establishment_document_url],
+          [udyamUrl, existing.udyam_document_url],
           [otherDocumentUrl, existing.other_document_url],
         ];
         for (const [newVal, oldVal] of pairs) {
@@ -970,6 +1038,20 @@ export async function PUT(req: NextRequest) {
         pharmacy_council_registration_document_name:
           (docs.pharmacy_council_registration?.name ??
             (docs.pharmacy_council_registration_url ? "pharmacy_council" : null)) || null,
+        trade_license_document_number: docs.trade_license_number || null,
+        trade_license_document_url: tradeLicenseUrl || null,
+        trade_license_document_name:
+          docs.trade_license_document?.name || (docs.trade_license_document_url ? "trade_license" : null) || null,
+        trade_license_expiry_date: parseDate(docs.trade_license_expiry_date),
+        shop_establishment_document_number: docs.shop_establishment_number || null,
+        shop_establishment_document_url: shopEstablishmentUrl || null,
+        shop_establishment_document_name:
+          docs.shop_establishment_document?.name || (docs.shop_establishment_document_url ? "shop_establishment" : null) || null,
+        shop_establishment_expiry_date: parseDate(docs.shop_establishment_expiry_date),
+        udyam_document_number: docs.udyam_number || null,
+        udyam_document_url: udyamUrl || null,
+        udyam_document_name:
+          docs.udyam_document?.name || (docs.udyam_document_url ? "udyam" : null) || null,
         other_document_number: docs.other_document_number || null,
         other_document_url: otherDocumentUrl || null,
         other_document_name:

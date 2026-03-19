@@ -6,7 +6,7 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth } from "@/lib/area-manager/auth";
-import { countMerchantStoresByStatus, countMerchantParents, countChildStores } from "@/lib/db/operations/merchant-stores";
+import { countMerchantStoresByStatus, countMerchantParents, countMerchantParentsWithFilters, countChildStores } from "@/lib/db/operations/merchant-stores";
 import {
   countRidersByStatus,
   countRidersByAvailability,
@@ -29,16 +29,25 @@ export async function GET() {
     const authResult = await requireAreaManagerApiAuth(getAuthUser);
     if (authResult.error) return authResult.error;
     const { resolved } = authResult;
-    const areaManagerId = resolved.isSuperAdmin ? null : resolved.areaManager.id;
+    // Super admin: null = overall counts. Area manager: use real area_managers.id only.
+    const areaManagerId = resolved.isSuperAdmin
+      ? null
+      : resolved.areaManager.id > 0
+        ? resolved.areaManager.id
+        : null;
 
     if (resolved.managerType === "MERCHANT") {
       const counts = await countMerchantStoresByStatus(areaManagerId);
-      const parentCount = await countMerchantParents(areaManagerId);
+      // Superadmin: complete parent count (all merchant_parents). Area manager: parents that have at least one child under them.
+      const parentCount = resolved.isSuperAdmin
+        ? await countMerchantParentsWithFilters({ areaManagerId: null })
+        : await countMerchantParents(areaManagerId);
       const childCount = await countChildStores(areaManagerId);
       return NextResponse.json({
         success: true,
         data: {
           managerType: "MERCHANT",
+          isSuperAdmin: !!resolved.isSuperAdmin,
           stores: {
             total: counts.total,
             verified: counts.verified,
@@ -80,6 +89,7 @@ export async function GET() {
       success: true,
       data: {
         managerType: "RIDER",
+        isSuperAdmin: !!resolved.isSuperAdmin,
         riders: {
           total: riderCounts.total,
           active: riderCounts.active,

@@ -65,7 +65,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
     return trimmed;
   }, []);
 
-  // Get placeholder text based on dashboard type
+  // Get placeholder text based on dashboard type and path
   const placeholder = useMemo(() => {
     if (!dashboardType) return "Search...";
     switch (dashboardType) {
@@ -76,11 +76,13 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
       case "MERCHANT":
         return "e.g. GMMC1001 or 1001 (child) / GMMP1001 or 1001 (parent)";
       case "AREA_MANAGER":
-        return "Search by Area Manager ID or Number...";
+        return pathname.includes("/stores")
+          ? "Search by Store ID, Parent ID, or Number..."
+          : "Search by Area Manager ID or Number...";
       default:
         return "Search...";
     }
-  }, [dashboardType]);
+  }, [dashboardType, pathname]);
 
   // Clear search button loading when pathname or search params change (after navigation)
   const queryString = searchParams.toString();
@@ -100,33 +102,39 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
   // Render merchant-specific search with dropdowns
   if (dashboardType === "MERCHANT") {
+    const isAssignAmPage = pathname.startsWith("/dashboard/merchants/assign-am");
+    const searchButtonLoading = loading || (isAssignAmPage && (merchantsSearch?.assignAmSearchLoading ?? false));
     return (
       <div className={`flex items-center gap-2 ${compact ? "w-full max-w-md" : "w-full max-w-2xl"}`}>
         <form onSubmit={(e) => {
           e.preventDefault();
-          setLoading(true);
-          const basePath = currentDashboard?.href || "/dashboard";
+          const basePath = isAssignAmPage
+            ? "/dashboard/merchants/assign-am"
+            : currentDashboard?.href || "/dashboard";
           const normalized = normalizeMerchantSearch(localSearchValue, merchantType);
           if (!normalized) {
             const keep = new URLSearchParams(searchParams.toString());
             keep.delete("search");
             keep.delete("parent");
             keep.delete("child");
-            // Preserve portal when clearing search so we don't flip Admin ↔ Merchant unexpectedly
             if (currentPortal === "merchant") keep.set("portal", "merchant");
             const qs = keep.toString();
             router.push(qs ? `${basePath}?${qs}` : basePath);
             return;
           }
+          // Show spinner immediately on click (before any async work)
+          if (isAssignAmPage) merchantsSearch?.setAssignAmSearchLoading(true);
+          else setLoading(true);
+
           const params = new URLSearchParams(searchParams.toString());
           params.set("search", normalized);
           if (merchantType === "parent") params.set("parent", "true");
           else params.set("child", "true");
-          // If user is currently in Merchant portal (e.g. on a store dashboard), keep them in merchant portal for search
           if (currentPortal === "merchant") params.set("portal", "merchant");
           setLocalSearchValue(normalized);
-          // Trigger with value + filter immediately so fetch uses them before URL update (fixes first-click result)
-          merchantsSearch?.triggerMerchantSearch(normalized, merchantType);
+          if (!pathname.startsWith("/dashboard/merchants/assign-am")) {
+            merchantsSearch?.triggerMerchantSearch(normalized, merchantType);
+          }
           router.push(`${basePath}?${params.toString()}`);
         }} className="flex-1 flex flex-col sm:flex-row gap-2">
           <div className="flex-1 flex flex-col sm:flex-row gap-2">
@@ -160,12 +168,12 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           </div>
           <button
             type="submit"
-            disabled={loading}
+            disabled={searchButtonLoading}
             className={`cursor-pointer rounded-lg font-medium bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
               compact ? "px-3 py-1.5 text-sm h-9" : "px-4 py-2"
             }`}
           >
-            {loading ? (
+            {searchButtonLoading ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span className="hidden sm:inline">Searching...</span>
@@ -201,18 +209,19 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
         if (!value) return;
         
         // For customer dashboard, route directly to /all with search params
-        // For other dashboards, use the base path
-        const params = new URLSearchParams();
+        // For area manager stores, keep search on stores page
+        const params = new URLSearchParams(searchParams.toString());
         params.set("search", value);
-        
+
         let targetPath: string;
         if (dashboardType === "CUSTOMER") {
-          // Always route to /all for customer searches
           targetPath = "/dashboard/customers/all";
+        } else if (dashboardType === "AREA_MANAGER" && pathname.includes("/stores")) {
+          targetPath = pathname;
         } else {
           targetPath = currentDashboard?.href || "/dashboard";
         }
-        
+
         router.push(`${targetPath}?${params.toString()}`);
       }} className="flex-1 flex gap-2">
         <input

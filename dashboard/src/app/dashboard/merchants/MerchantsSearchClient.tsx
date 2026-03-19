@@ -487,9 +487,13 @@ export function MerchantsSearchClient() {
       {/* Main-area toggle removed: Admin/Merchant toggle stays only in header. Merchant portal: no sticky bar in main area. */}
       {portal === "admin" && (
         <div className="sticky top-0 z-10 -mx-2 bg-white px-2 pb-2 pt-0.5 shadow-[0_1px_0_0_rgba(0,0,0,0.05)]">
-          {/* Top row: Merchants title (left) + Date filter (right top, just above Rejected card area) - no bg, no shadow */}
+          {/* Top row: Merchants / Assign AM title (left) + Date filter (right top, just above Rejected card area) - no bg, no shadow */}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h1 className="text-sm font-semibold text-gray-900">Merchants</h1>
+            <h1 className="text-sm font-semibold text-gray-900">
+              {typeof window !== "undefined" && window.location.pathname.startsWith("/dashboard/merchants/assign-am")
+                ? "Assign AM to Stores"
+                : "Merchants"}
+            </h1>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] font-medium uppercase text-gray-500">Date filter</span>
               <input

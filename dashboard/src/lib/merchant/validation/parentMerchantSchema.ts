@@ -23,6 +23,8 @@ export const parentMerchantSchema = z.object({
   city: z.string().optional(),
   state: z.string().optional(),
   pincode: z.string().optional(),
+  store_logo: z.string().max(2000).optional().or(z.literal("").transform(() => undefined)),
+  supabase_user_id: z.string().uuid().optional().or(z.literal("").transform(() => undefined)),
   updated_by: z.string().optional(),
   deleted_at: z.string().optional(),
   deleted_by: z.number().optional(),

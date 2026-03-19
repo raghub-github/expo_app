@@ -10,6 +10,8 @@ import {
   listOrdersCore,
   getOrderManualStatusHistory,
   getFoodDeliveryInstructions,
+  recordEtaBreachIfNeeded,
+  ensureOrderEtaWhenAccepted,
   type OrderSearchType,
   type OrderStatusFilter,
 } from "@/lib/db/operations/orders-core";
@@ -137,19 +139,27 @@ export async function GET(request: NextRequest) {
         merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
       }
       if (orderId != null && Number.isFinite(orderId)) {
-        const [remarks, recons, history, deliveryInstructions] = await Promise.all([
+        const [remarks, recons, history, deliveryInstructions, etaSet, etaBreach] = await Promise.all([
           getOrderRemarksCount(orderId),
           getOrderReconsCount(orderId),
           getOrderManualStatusHistory(orderId),
           first?.orderType === "food"
             ? getFoodDeliveryInstructions(orderId)
             : Promise.resolve(null),
+          ensureOrderEtaWhenAccepted(orderId),
+          recordEtaBreachIfNeeded(orderId),
         ]);
         remarksCount = remarks;
         reconsCount = recons;
         statusHistory = history;
         if (deliveryInstructions !== undefined) {
           data = [{ ...data[0], deliveryInstructions: deliveryInstructions ?? null }];
+        }
+        if (etaSet != null) {
+          data = [{ ...data[0], estimatedDeliveryTime: etaSet.estimatedDeliveryTime.toISOString() }];
+        }
+        if (etaBreach != null) {
+          data = [{ ...data[0], etaBreachedAt: etaBreach.etaBreachedAt, etaBreachedTimelineId: etaBreach.etaBreachedTimelineId }];
         }
       }
     }

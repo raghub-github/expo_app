@@ -25,6 +25,9 @@ export async function GET() {
       data: {
         managerType: resolved.managerType,
         areaManagerId: resolved.isSuperAdmin ? null : resolved.areaManager.id,
+        areaManagerName: resolved?.areaManager?.areaCode ?? null,
+        areaManagerPhone: null,
+        areaManagerEmail: null,
       },
     });
   } catch (error) {

@@ -3,8 +3,98 @@
  */
 
 import { getDb } from "@/lib/db/client";
-import { riders, activityLogs, stores } from "@/lib/db/schema";
-import { eq, and, isNull, or, ilike, desc, sql, type SQL } from "drizzle-orm";
+import { riders, activityLogs, stores, areaManagers, systemUsers } from "@/lib/db/schema";
+import { eq, and, lt, isNull, or, ilike, desc, sql, type SQL } from "drizzle-orm";
+
+export interface AreaManagerListRow {
+  id: number;
+  userId: number;
+  managerType: string;
+  areaCode: string | null;
+  localityCode: string | null;
+  city: string | null;
+  status: string;
+  fullName: string | null;
+  email: string | null;
+}
+
+/**
+ * Get overall count of area managers per type (MERCHANT, RIDER). For super admin only.
+ */
+export async function countAreaManagersByType(): Promise<{ merchant: number; rider: number }> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      managerType: areaManagers.managerType,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(areaManagers)
+    .groupBy(areaManagers.managerType);
+
+  let merchant = 0;
+  let rider = 0;
+  for (const r of rows) {
+    if (r.managerType === "MERCHANT") merchant = Number(r.count ?? 0);
+    if (r.managerType === "RIDER") rider = Number(r.count ?? 0);
+  }
+  return { merchant, rider };
+}
+
+/**
+ * List all area managers by manager_type (MERCHANT | RIDER). For super admin only.
+ */
+export async function listAreaManagersByType(params: {
+  managerType: "MERCHANT" | "RIDER";
+  limit?: number;
+  cursor?: string;
+}): Promise<{ items: AreaManagerListRow[]; nextCursor: string | null }> {
+  const db = getDb();
+  const limit = Math.min(params.limit ?? 50, 100);
+  const limitVal = limit + 1;
+
+  const cursorId = params.cursor ? parseInt(params.cursor, 10) : undefined;
+  const whereConditions =
+    cursorId != null && !isNaN(cursorId)
+      ? and(eq(areaManagers.managerType, params.managerType), lt(areaManagers.id, cursorId))
+      : eq(areaManagers.managerType, params.managerType);
+
+  const rows = await db
+    .select({
+      id: areaManagers.id,
+      userId: areaManagers.userId,
+      managerType: areaManagers.managerType,
+      areaCode: areaManagers.areaCode,
+      localityCode: areaManagers.localityCode,
+      city: areaManagers.city,
+      status: areaManagers.status,
+      fullName: systemUsers.fullName,
+      email: systemUsers.email,
+    })
+    .from(areaManagers)
+    .innerJoin(systemUsers, eq(areaManagers.userId, systemUsers.id))
+    .where(whereConditions)
+    .orderBy(desc(areaManagers.id))
+    .limit(limitVal);
+
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const last = items[items.length - 1];
+  const nextCursor = hasMore && last ? String(last.id) : null;
+  return {
+    items: items.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      managerType: r.managerType,
+      areaCode: r.areaCode,
+      localityCode: r.localityCode,
+      city: r.city,
+      status: r.status,
+      fullName: r.fullName ?? null,
+      email: r.email ?? null,
+    })),
+    nextCursor,
+  };
+}
 
 const RIDER_STATUS_ACTIVE = "ACTIVE";
 const RIDER_STATUS_INACTIVE = "INACTIVE";

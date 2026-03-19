@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import OrderTimeline from "./OrderTimeline";
+import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderRightSidebar from "./OrderRightSidebar";
 import CustomerDetails from "./CustomerDetails";
 import MerchantDetails from "./MerchantDetails";
@@ -77,6 +77,16 @@ interface OrderDetail {
   manualStatusUpdatedByEmail?: string | null;
   /** Delivery instructions from orders_food (food orders only). */
   deliveryInstructions?: string | null;
+  /** ETA in seconds from creation (for timeline). */
+  etaSeconds?: number | null;
+  /** Expected delivery timestamp (for timeline ETA labels). */
+  estimatedDeliveryTime?: string | null;
+  /** First ETA when order accepted (sidebar "First ETA"). */
+  firstEtaAt?: string | null;
+  /** When ETA was first breached (from DB). */
+  etaBreachedAt?: string | null;
+  /** order_timelines.id of stage current when ETA was first breached (red dot). */
+  etaBreachedTimelineId?: number | null;
 }
 
 /** Merchant summary from order API for MX card (show immediately on load) */
@@ -125,6 +135,9 @@ interface OrderTicketSummary {
   status: string;
   subject: string;
   createdAt: string;
+  ticketSource?: string;
+  resolvedByName?: string | null;
+  resolvedByEmail?: string | null;
 }
 
 function toMerchantProfile(summary: MerchantSummaryFromApi) {
@@ -214,6 +227,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   const [showTicketsModal, setShowTicketsModal] = useState(false);
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
   const loggedInEmail = useUserEmail();
 
   useEffect(() => {
@@ -227,27 +241,15 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
     }
 
     let cancelled = false;
-    const params = new URLSearchParams({
-      limit: "20",
-      offset: "0",
-      q: String(order.id),
-    });
-
-    fetch(`/api/tickets?${params.toString()}`)
+    fetch(`/api/orders/${order.id}/tickets`)
       .then((res) => res.json())
-      .then((body) => {
+      .then((body: { success?: boolean; data?: OrderTicketSummary[] }) => {
         if (cancelled) return;
-        const tickets = Array.isArray(body?.data?.tickets) ? body.data.tickets : [];
-        const mapped: OrderTicketSummary[] = tickets
-          .filter((t: any) => t.orderId === order.id)
-          .map((t: any) => ({
-            id: t.id,
-            ticketNumber: t.ticketNumber,
-            status: t.status,
-            subject: t.subject,
-            createdAt: t.createdAt,
-          }));
-        setOrderTickets(mapped);
+        if (body?.success && Array.isArray(body.data)) {
+          setOrderTickets(body.data);
+        } else {
+          setOrderTickets([]);
+        }
       })
       .catch(() => {
         if (!cancelled) setOrderTickets([]);
@@ -263,6 +265,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
 
     if (!orderPublicId) {
       setOrder(null);
+      setTimelineEntries(null);
       setError("Invalid order ID.");
       setLoading(false);
       return;
@@ -278,12 +281,29 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
       limit: "1",
     });
 
-    fetch(`/api/orders/core?${params.toString()}`)
-      .then((res) => res.json())
-      .then(async (body) => {
+    const orderIdForParallel = refetchTrigger > 0 && order?.id ? order.id : null;
+
+    const fetchOrder = fetch(`/api/orders/core?${params.toString()}`).then((res) => res.json());
+    const fetchTimeline =
+      orderIdForParallel != null
+        ? fetch(`/api/orders/${orderIdForParallel}/timeline`).then((res) => res.json().catch(() => null))
+        : Promise.resolve(null);
+
+    Promise.all([fetchOrder, orderIdForParallel != null ? fetchTimeline : Promise.resolve(null)])
+      .then(async ([body, timelineBodyOrNull]) => {
         if (cancelled) return;
+        let timelineBody = timelineBodyOrNull;
+        if (timelineBody == null && body?.success && Array.isArray(body?.data) && body.data.length > 0) {
+          const row = body.data[0] as any;
+          timelineBody = await fetch(`/api/orders/${row.id}/timeline`).then((r) => r.json().catch(() => null));
+        }
         if (body.success && Array.isArray(body.data) && body.data.length > 0) {
           const row = body.data[0] as any;
+          const timeline =
+            timelineBody?.success && Array.isArray(timelineBody?.data)
+              ? (timelineBody.data as OrderTimelineEntry[])
+              : [];
+          if (cancelled) return;
           if (body.merchantSummary != null && typeof body.merchantSummary === "object") {
             setMerchantSummary(body.merchantSummary as MerchantSummaryFromApi);
           } else {
@@ -313,6 +333,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             return Number.isFinite(n) ? n : null;
           };
 
+          setTimelineEntries(timeline);
           setOrder({
             id: row.id,
             formattedOrderId: row.formattedOrderId,
@@ -360,6 +381,11 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             updatedAt: row.updatedAt,
             manualStatusUpdatedByEmail: row.manualStatusUpdatedByEmail ?? null,
             deliveryInstructions: row.deliveryInstructions ?? null,
+            etaSeconds: row.etaSeconds ?? null,
+            estimatedDeliveryTime: row.estimatedDeliveryTime != null ? String(row.estimatedDeliveryTime) : null,
+            firstEtaAt: row.firstEtaAt != null ? String(row.firstEtaAt) : null,
+            etaBreachedAt: row.etaBreachedAt != null ? String(row.etaBreachedAt) : null,
+            etaBreachedTimelineId: row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
           });
 
           // Load refunds in the same initial load, so payment card stats
@@ -375,13 +401,31 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
           } catch {
             if (!cancelled) setOrderRefunds([]);
           }
+
+          // Load tickets for this order via order-scoped API (uses ORDER_FOOD access, not TICKET)
+          if (!cancelled && row.id != null && Number.isFinite(Number(row.id))) {
+            fetch(`/api/orders/${row.id}/tickets`)
+              .then((res) => res.json())
+              .then((ticketBody: { success?: boolean; data?: OrderTicketSummary[] }) => {
+                if (ticketBody?.success && Array.isArray(ticketBody.data)) {
+                  setOrderTickets(ticketBody.data);
+                } else {
+                  setOrderTickets([]);
+                }
+              })
+              .catch(() => setOrderTickets([]));
+          } else {
+            setOrderTickets([]);
+          }
         } else {
           setMerchantSummary(null);
           setInitialRemarksCount(0);
           setInitialReconsCount(0);
           setStatusHistory([]);
+          setTimelineEntries(null);
           setError("Order not found.");
           setOrderRefunds([]);
+          setOrderTickets([]);
         }
       })
       .catch(() => !cancelled && setError("Failed to load order."))
@@ -392,13 +436,14 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   }, [orderPublicId, refetchTrigger]);
 
   const openStatusModal = useCallback(() => {
-    const dbStatus = order?.status?.toLowerCase();
+    const status = order?.status?.toLowerCase();
+    if (status === "cancelled" || status === "rejected") return;
     if (
-      dbStatus === "picked_up" ||
-      dbStatus === "in_transit" ||
-      dbStatus === "delivered"
+      status === "picked_up" ||
+      status === "in_transit" ||
+      status === "delivered"
     ) {
-      setSelectedStatus(dbStatus);
+      setSelectedStatus(status);
     } else {
       setSelectedStatus("picked_up");
     }
@@ -417,6 +462,26 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
         setShowStatusModal(false);
+        // Optimistic update: show new status and timeline entry instantly
+        setOrder((prev) =>
+          prev
+            ? { ...prev, status: selectedStatus, currentStatus: selectedStatus }
+            : prev
+        );
+        setTimelineEntries((prev) => {
+          const newEntry: OrderTimelineEntry = {
+            id: -Date.now(),
+            orderId: order.id,
+            status: selectedStatus,
+            previousStatus: order.status ?? null,
+            actorType: "system",
+            actorId: null,
+            actorName: null,
+            statusMessage: null,
+            occurredAt: new Date().toISOString(),
+          };
+          return [...(prev ?? []), newEntry];
+        });
         setRefetchTrigger((t) => t + 1);
       }
     } finally {
@@ -481,10 +546,27 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         .replace(/\b\w/g, (c) => c.toUpperCase())
     : "—";
 
+  const statusForChip = (statusLabel ?? "").toString().toLowerCase();
+
+  const orderStatusChipClasses = (() => {
+    if (statusForChip === "delivered")
+      return "bg-emerald-100 border-emerald-300 text-emerald-900";
+    if (statusForChip === "cancelled")
+      return "bg-sky-200 border-sky-300 text-sky-900";
+    if (statusForChip === "failed")
+      return "bg-red-50 border-red-200 text-red-800";
+    if (["in_transit", "picked_up"].includes(statusForChip))
+      return "bg-amber-50 border-amber-200 text-amber-800";
+    if (["assigned", "accepted", "reached_store"].includes(statusForChip))
+      return "bg-sky-50 border-sky-200 text-sky-800";
+    return "bg-slate-100 border-slate-200 text-slate-700";
+  })();
+
   // For the dropdown trigger, show current status label or "Select Option".
   const dbStatus = (order.status ?? "").toString().toLowerCase();
   const statusOptionMatch = STATUS_OPTIONS.find((opt) => opt.value === dbStatus);
   const statusButtonLabel = statusOptionMatch ? statusOptionMatch.label : "Select Option";
+  const isOrderCancelledOrRejected = dbStatus === "cancelled" || dbStatus === "rejected";
 
   // Status rules: no status can be marked twice; flow follows progression.
   // Dispatch Ready (current): Dispatched & Delivered active; Dispatch Ready not selectable again.
@@ -512,6 +594,9 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
     order.orderSource === "internal" || !order.orderSource
       ? "Customer app"
       : order.orderSource.charAt(0).toUpperCase() + order.orderSource.slice(1);
+
+  const orderCategoryChipClasses = "bg-slate-100 border-slate-200 text-slate-700";
+  const orderSourceChipClasses = "bg-slate-100 border-slate-200 text-slate-700";
 
   const effectiveRoutedTo = order.routedToEmail ?? null;
 
@@ -609,37 +694,48 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         {/* Order status summary inline header */}
         <section className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
-            {orderTickets && orderTickets.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowTicketsModal(true)}
-                className="inline-flex items-center gap-1.5 text-[11px] text-slate-700 cursor-pointer"
-              >
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
-                  Ticket
-                </span>
-                <span className="font-mono text-[11px] text-slate-900">
-                  {orderTickets[0].ticketNumber}
-                </span>
-                {orderTickets.length > 1 && (
-                  <span className="text-[10px] text-slate-500">
-                    +{orderTickets.length - 1} more
+            {orderTickets && orderTickets.length > 0 && (() => {
+              const lastTicket = orderTickets[0];
+              const statusLabel = lastTicket.status
+                ? lastTicket.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                : "—";
+              return (
+                <button
+                  type="button"
+                  onClick={() => setShowTicketsModal(true)}
+                  className="inline-flex items-center gap-1.5 text-[11px] text-slate-700 cursor-pointer"
+                >
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                    <span className="font-mono">{lastTicket.ticketNumber}</span>
+                    <span className="text-emerald-600/80">·</span>
+                    <span>{statusLabel}</span>
                   </span>
-                )}
-                <span className="ml-0.5 text-[10px] text-slate-500">▾</span>
-              </button>
-            )}
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-normal text-slate-700">
+                  {orderTickets.length > 1 && (
+                    <span className="text-[10px] text-slate-500">
+                      +{orderTickets.length - 1} more
+                    </span>
+                  )}
+                  <span className="ml-0.5 text-[10px] text-slate-500">▾</span>
+                </button>
+              );
+            })()}
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-normal ${orderStatusChipClasses}`}
+            >
               Order status:&nbsp;
-              <span className="font-medium text-slate-900">{orderStatusLabel}</span>
+              <span className="font-medium">{orderStatusLabel}</span>
             </span>
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-normal text-slate-700">
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-normal ${orderCategoryChipClasses}`}
+            >
               Order category:&nbsp;
-              <span className="font-medium text-slate-900">{orderCategoryLabel}</span>
+              <span className="font-medium">{orderCategoryLabel}</span>
             </span>
-            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-normal text-slate-700">
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-normal ${orderSourceChipClasses}`}
+            >
               Order source:&nbsp;
-              <span className="font-medium text-slate-900">{orderSourceLabel}</span>
+              <span className="font-medium">{orderSourceLabel}</span>
             </span>
           </div>
           <div className="relative ml-auto flex items-center gap-2">
@@ -659,12 +755,13 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             )}
             <button
               type="button"
-              onClick={openStatusModal}
-              className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white pl-2 pr-1.5 text-[11px] text-slate-700 shadow-sm transition hover:bg-slate-50 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
-              title="Update order status"
+              onClick={() => !isOrderCancelledOrRejected && openStatusModal()}
+              disabled={isOrderCancelledOrRejected}
+              className="inline-flex h-6 min-h-0 items-center gap-1 rounded border border-slate-200 bg-white pl-2 pr-1.5 text-[11px] leading-tight text-slate-700 shadow-sm transition focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-white"
+              title={isOrderCancelledOrRejected ? "Order is cancelled" : "Update order status"}
             >
               {statusButtonLabel}
-              <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+              <ChevronDown className="h-3 w-3 text-slate-400 shrink-0" />
             </button>
             {showStatusModal && (
               <>
@@ -722,9 +819,29 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
           </div>
         </section>
 
-        {/* Order progress timeline (more compact) */}
-        <div className="mt-2">
-          <OrderTimeline order={{ status: statusLabel || "" }} />
+        {/* Order progress timeline (event-driven from order_timelines, loaded with order = no spinner) */}
+        <div className="mt-2 mb-1">
+          <OrderTimeline
+            orderId={order.id}
+            initialEntries={timelineEntries}
+            currentStatus={statusLabel || undefined}
+            orderCreatedAt={order.createdAt ? new Date(order.createdAt) : undefined}
+            etaAt={(() => {
+              if (order.estimatedDeliveryTime)
+                return new Date(order.estimatedDeliveryTime);
+              if (order.etaSeconds != null && order.createdAt)
+                return new Date(new Date(order.createdAt).getTime() + Number(order.etaSeconds) * 1000);
+              const entries = timelineEntries ?? [];
+              const withEta = entries.filter((e) => e.expectedByAt);
+              if (withEta.length > 0) {
+                const latest = withEta[withEta.length - 1];
+                const t = latest.expectedByAt;
+                if (t) return new Date(t);
+              }
+              return undefined;
+            })()}
+            etaBreachedTimelineId={order.etaBreachedTimelineId ?? undefined}
+          />
         </div>
 
         {/* Main info sections */}
@@ -889,7 +1006,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-900">Tickets for this order</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Routed Tickets</h2>
               <button
                 type="button"
                 className="text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
@@ -899,33 +1016,59 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               </button>
             </div>
             <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
-              {orderTickets.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer"
-                  onClick={() => {
-                    window.open(`/dashboard/tickets/${t.id}`, "_blank");
-                  }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-[11px] text-emerald-700">
-                      {t.ticketNumber}
-                    </span>
-                    <span className="text-[10px] text-slate-500">
-                      {new Date(t.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  {t.subject && (
-                    <p className="text-[11px] text-slate-700 truncate">
-                      {t.subject}
+              {orderTickets.map((t) => {
+                const subjectWithoutHash = (t.subject ?? "").replace(/\s*\(#\d+\)\s*$/i, "").trim();
+                const sourceLabel = t.ticketSource
+                  ? t.ticketSource.replace(/\b\w/g, (c) => c.toUpperCase())
+                  : null;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="w-full text-left px-3 py-2 rounded-md border border-slate-100 hover:bg-slate-50 flex flex-col gap-0.5 cursor-pointer"
+                    onClick={() => {
+                      window.open(`/dashboard/tickets/${t.id}`, "_blank");
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="font-mono text-[11px] text-emerald-700">
+                        {t.ticketNumber}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {sourceLabel && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                            {sourceLabel}
+                          </span>
+                        )}
+                        <span className="text-[10px] text-slate-500">
+                          {new Date(t.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                    {subjectWithoutHash && (
+                      <p className="text-[11px] text-slate-700 truncate">
+                        {subjectWithoutHash}
+                      </p>
+                    )}
+                    <p className="text-[10px] text-slate-500 capitalize">
+                      Status: {t.status || "unknown"}
+                      {(t.resolvedByEmail ?? t.resolvedByName) ? (
+                        <>
+                          {" · "}
+                          <span className="text-slate-600">
+                            Updated by:{" "}
+                            <span className="font-medium text-slate-700">
+                              {t.resolvedByEmail && t.resolvedByName
+                                ? `${t.resolvedByEmail} (${t.resolvedByName})`
+                                : t.resolvedByEmail ?? t.resolvedByName}
+                            </span>
+                          </span>
+                        </>
+                      ) : null}
                     </p>
-                  )}
-                  <p className="text-[10px] text-slate-500 capitalize">
-                    Status: {t.status || "unknown"}
-                  </p>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>

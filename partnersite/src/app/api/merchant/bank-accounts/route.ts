@@ -96,65 +96,131 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'storeId is required' }, { status: 400 });
     }
 
-    const payoutMethod = (body.payout_method || 'bank').toLowerCase();
-    if (!['bank', 'upi'].includes(payoutMethod)) {
+    const payoutMethod = String(body.payout_method || 'bank').toLowerCase().trim();
+    if (payoutMethod !== 'bank' && payoutMethod !== 'upi') {
       return NextResponse.json({ error: 'payout_method must be bank or upi' }, { status: 400 });
     }
 
-    const accountHolderName = body.account_holder_name?.trim();
-    const accountNumber = body.account_number?.trim();
-    const ifscCode = body.ifsc_code?.trim();
-    const bankName = body.bank_name?.trim();
-    if (!accountHolderName || !accountNumber) {
-      return NextResponse.json({ error: 'account_holder_name and account_number are required' }, { status: 400 });
+    const rawHolder = (body.account_holder_name ?? '').trim();
+    const rawAccount = (body.account_number ?? '').trim();
+    const ifscCode = body.ifsc_code ? String(body.ifsc_code).trim() : '';
+    const bankName = body.bank_name ? String(body.bank_name).trim() : '';
+
+    // Validation rules mirror AM dashboard:
+    // - For bank: holder + account + IFSC + bank name are mandatory.
+    // - For UPI: only upi_id is mandatory; holder/account are optional.
+    if (payoutMethod === 'bank') {
+      if (!rawHolder || !rawAccount) {
+        return NextResponse.json(
+          { error: 'account_holder_name and account_number are required for bank' },
+          { status: 400 },
+        );
+      }
+      if (!ifscCode || !bankName) {
+        return NextResponse.json(
+          { error: 'ifsc_code and bank_name required for bank' },
+          { status: 400 },
+        );
+      }
     }
-    if (payoutMethod === 'bank' && (!ifscCode || !bankName)) {
-      return NextResponse.json({ error: 'ifsc_code and bank_name required for bank' }, { status: 400 });
-    }
-    if (payoutMethod === 'upi' && !body.upi_id?.trim()) {
+
+    const upiId = payoutMethod === 'upi' ? String(body.upi_id ?? '').trim() : '';
+    if (payoutMethod === 'upi' && !upiId) {
       return NextResponse.json({ error: 'upi_id required for upi' }, { status: 400 });
     }
 
+    const accountHolderName =
+      payoutMethod === 'bank'
+        ? rawHolder || null
+        : rawHolder || null; // optional for upi
+
+    const accountNumber =
+      payoutMethod === 'bank'
+        ? rawAccount || null
+        : rawAccount || null; // do NOT copy upi_id into account_number
+
     const db = getDb();
-    const storeInternalId = await resolveStoreInternalId(db, storeId);
+    const storeInternalId = await resolveStoreInternalId(db, storeId.trim());
     if (storeInternalId === null) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    const { count } = await db
+    // One row per store: see AM dashboard semantics. Try to update existing primary row; otherwise insert first.
+    const { data: existingRows, error: existingErr } = await db
       .from('merchant_store_bank_accounts')
-      .select('id', { count: 'exact', head: true })
-      .eq('store_id', storeInternalId);
-    const isFirst = (count ?? 0) === 0;
+      .select('id')
+      .eq('store_id', storeInternalId)
+      .order('is_primary', { ascending: false })
+      .order('created_at', { ascending: true })
+      .limit(1);
 
-    const insert: Record<string, unknown> = {
-      store_id: storeInternalId,
-      payout_method: payoutMethod,
+    if (existingErr) {
+      console.error('[merchant/bank-accounts POST] existing lookup', existingErr);
+      return NextResponse.json({ error: 'Failed to resolve existing bank account' }, { status: 500 });
+    }
+
+    const basePayload: Record<string, unknown> = {
       account_holder_name: accountHolderName,
-      account_number: accountNumber,
-      ifsc_code: payoutMethod === 'bank' ? ifscCode : 'N/A',
-      bank_name: payoutMethod === 'bank' ? bankName : 'UPI',
       branch_name: body.branch_name?.trim() || null,
       account_type: body.account_type?.trim() || null,
-      is_primary: isFirst,
-      is_active: true,
-      is_disabled: false,
+      payout_method: payoutMethod,
       bank_proof_type: body.bank_proof_type?.trim() || null,
       bank_proof_file_url: body.bank_proof_file_url?.trim() || null,
       upi_qr_screenshot_url: body.upi_qr_screenshot_url?.trim() || null,
-      upi_id: payoutMethod === 'upi' ? body.upi_id?.trim() : null,
       verification_status: 'pending',
     };
 
-    const { data: row, error } = await db
-      .from('merchant_store_bank_accounts')
-      .insert(insert)
-      .select('id, account_holder_name, is_primary, payout_method, created_at')
-      .single();
+    if (payoutMethod === 'bank') {
+      basePayload.account_number = accountNumber;
+      basePayload.ifsc_code = ifscCode;
+      basePayload.bank_name = bankName;
+      basePayload.upi_id = null;
+    } else {
+      basePayload.account_number = accountNumber;
+      basePayload.ifsc_code = ifscCode || null;
+      basePayload.bank_name = bankName || null;
+      basePayload.upi_id = upiId || null;
+    }
 
-    if (error) {
-      console.error('[merchant/bank-accounts POST]', error);
-      return NextResponse.json({ error: error.message || 'Failed to add bank account' }, { status: 500 });
+    let row: { id: number; account_holder_name: string | null; is_primary: boolean | null; payout_method: string | null; created_at: string | Date | null } | null =
+      null;
+
+    if (Array.isArray(existingRows) && existingRows.length > 0) {
+      // Update existing row so bank + UPI live in the same record
+      const existingId = (existingRows[0] as { id: number }).id;
+      const { data, error } = await db
+        .from('merchant_store_bank_accounts')
+        .update(basePayload)
+        .eq('id', existingId)
+        .select('id, account_holder_name, is_primary, payout_method, created_at')
+        .single();
+
+      if (error) {
+        console.error('[merchant/bank-accounts POST] update', error);
+        return NextResponse.json({ error: error.message || 'Failed to update bank account' }, { status: 500 });
+      }
+      row = data as any;
+    } else {
+      // No existing account – insert first row for this store
+      const insertPayload: Record<string, unknown> = {
+        ...basePayload,
+        store_id: storeInternalId,
+        is_primary: true,
+        is_active: true,
+        is_disabled: false,
+      };
+
+      const { data, error } = await db
+        .from('merchant_store_bank_accounts')
+        .insert(insertPayload)
+        .select('id, account_holder_name, is_primary, payout_method, created_at')
+        .single();
+
+      if (error) {
+        console.error('[merchant/bank-accounts POST] insert', error);
+        return NextResponse.json({ error: error.message || 'Failed to add bank account' }, { status: 500 });
+      }
+      row = data as any;
     }
 
     const actor = await getAuditActor();
@@ -169,7 +235,7 @@ export async function POST(req: NextRequest) {
         bank_account_id: (row as { id: number }).id,
         payout_method: payoutMethod,
         account_holder_name: accountHolderName,
-        is_primary: isFirst,
+        is_primary: (row as any).is_primary ?? true,
       },
       ...actor,
       ip_address: ip,

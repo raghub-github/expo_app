@@ -29,6 +29,8 @@ interface OrderRightSidebarProps {
     routedToEmail?: string | null;
     /** Delivery instructions from orders_food (food orders only). */
     deliveryInstructions?: string | null;
+    /** First ETA (expected delivery) when order accepted. */
+    firstEtaAt?: string | null;
   };
   /** Counts from order API so "See all (N)" shows instantly without waiting for list fetch. */
   initialRemarksCount?: number;
@@ -964,102 +966,111 @@ export default function OrderRightSidebar({
   return (
     <>
     <aside className="w-full space-y-3 text-[12px] text-slate-600">
-      {/* Order details card */}
-      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-        <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
-          <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800">
-            <i className="bi bi-info-circle text-emerald-500" />
+      {/* Order details card — compact labels & spacing */}
+      <section className="rounded-xl border border-slate-200 bg-white p-3 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+        <div className="mb-2 flex items-center justify-between border-b border-slate-100 pb-1.5">
+          <h3 className="flex items-center gap-1 text-[12px] font-semibold text-slate-800">
+            <i className="bi bi-info-circle text-[11px] text-emerald-500" />
             Order details
           </h3>
         </div>
-        <dl className="space-y-1.5 text-[12px] text-slate-600">
-          <div className="flex items-center justify-between">
-            <dt>Items:</dt>
-            <dd className="flex items-center gap-2 font-medium text-slate-700">
+        <dl className="space-y-1 text-[11px] text-slate-600">
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Items:</dt>
+            <dd className="flex min-w-0 items-center justify-end gap-1.5 font-medium text-slate-700">
               <span>(1)</span>
               <span
                 role="button"
                 tabIndex={0}
-                className="cursor-pointer text-[13px] font-medium text-emerald-600 hover:text-emerald-700"
+                className="cursor-pointer text-emerald-600 hover:text-emerald-700"
                 onClick={() => setShowItemsRefundModal(true)}
                 onKeyDown={(e) => e.key === "Enter" && setShowItemsRefundModal(true)}
               >
-                <i className="bi bi-eye" /> View Items
+                <i className="bi bi-eye" /> View
               </span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Assignment before Acceptance:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Assign before accept:</dt>
             <dd>
-              <span className="inline-block rounded-[999px] bg-red-500 px-3 py-0.5 text-[11px] font-semibold text-white">
+              <span className="inline-block rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-semibold text-white">
                 False
               </span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Distance:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Distance:</dt>
             <dd className="font-medium text-slate-700">
               {order.distanceKm != null ? `${Number(order.distanceKm).toFixed(2)} km` : "—"}
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Delivery Type:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Delivery type:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
                 DELIVERY
               </span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Delivery Initiator:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Initiated by:</dt>
             <dd className="font-medium text-slate-700">Merchant</dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Locality Type:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Locality:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
                 GREEN
               </span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Delivered By:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Delivered by:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-cyan-50 px-2.5 py-0.5 text-[11px] font-medium text-cyan-700 ring-1 ring-cyan-100">
+              <span className="inline-flex items-center rounded-full bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700 ring-1 ring-cyan-100">
                 GATIMITRA_DIRECT
               </span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>System KPT:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">System KPT:</dt>
             <dd className="font-medium text-slate-700">18 mins</dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Contactless Delivery:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Contactless:</dt>
             <dd>
-              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-100">
+              <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-100">
                 TRUE
               </span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>Client Order ID:</dt>
-            <dd className="flex items-center gap-1 font-medium text-slate-700">
-              <i className="bi bi-clipboard text-[11px] text-slate-500 cursor-pointer" />
-              <span>{order.orderId ?? `#${order.id}`}</span>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">Order ID:</dt>
+            <dd className="flex min-w-0 items-center justify-end gap-1 font-medium text-slate-700">
+              <i className="bi bi-clipboard text-slate-500 cursor-pointer shrink-0" />
+              <span className="truncate">{order.orderId ?? `#${order.id}`}</span>
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>First ETA:</dt>
-            <dd className="font-medium text-slate-700">
-              19-12-2025 09:25:38 AM
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">First ETA:</dt>
+            <dd className="min-w-0 font-medium text-slate-700 text-right">
+              {order.firstEtaAt
+                ? new Date(order.firstEtaAt).toLocaleString("en-IN", {
+                    day: "2-digit",
+                    month: "2-digit",
+                    year: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hour12: true,
+                  })
+                : "—"}
             </dd>
           </div>
-          <div className="flex items-center justify-between">
-            <dt>CX Instructions:</dt>
+          <div className="flex items-center justify-between gap-2">
+            <dt className="shrink-0">CX Instructions:</dt>
             <dd>
               <span
-                className="cursor-pointer text-[13px] font-medium text-emerald-600 hover:text-emerald-700"
+                className="cursor-pointer font-medium text-emerald-600 hover:text-emerald-700"
                 onClick={openCxInstructions}
                 onKeyDown={(e) => e.key === "Enter" && openCxInstructions()}
                 role="button"

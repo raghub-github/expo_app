@@ -67,6 +67,8 @@ export async function GET(request: NextRequest) {
     const closedFrom = searchParams.get("closedFrom");
     const closedTo = searchParams.get("closedTo");
     const searchQuery = (searchParams.get("q") || "").trim();
+    const orderIdParam = searchParams.get("orderId");
+    const orderIdFilter = orderIdParam != null && orderIdParam !== "" ? parseInt(orderIdParam, 10) : null;
     const sortByParam = (searchParams.get("sortBy") || "created_at").toLowerCase();
     const sortOrderParam = (searchParams.get("sortOrder") || "desc").toLowerCase();
 
@@ -133,6 +135,9 @@ export async function GET(request: NextRequest) {
     }
     if (closedTo) {
       whereConditions.push(sql`ut.closed_at IS NOT NULL AND ut.closed_at < (${closedTo}::date + interval '1 day')`);
+    }
+    if (orderIdFilter != null && !Number.isNaN(orderIdFilter)) {
+      whereConditions.push(sql`ut.order_id = ${orderIdFilter}`);
     }
     if (searchQuery) {
       const num = parseInt(searchQuery, 10);

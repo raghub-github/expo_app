@@ -1,7 +1,3 @@
-/**
- * GatiMitra Partner welcome — first cover from public/wlcm.png, then 5 remote; 6 total, auto-slide. Login / Sign up.
- */
-
 import { useEffect, useRef, useState } from "react";
 import {
   View,
@@ -12,11 +8,13 @@ import {
   Dimensions,
   Animated,
   ImageSourcePropType,
+  Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
+import { getConfig } from "@/config/env";
 
 const { width, height } = Dimensions.get("window");
 const SLIDE_INTERVAL_MS = 4000;
@@ -124,9 +122,35 @@ export default function WelcomeScreen() {
             ]}
             onPress={() => router.push("/(auth)/signup-webview")}
           >
-            <Text style={styles.secondaryBtnText}>Sign up</Text>
+            <Text style={styles.secondaryBtnText}>Join as Partner</Text>
           </Pressable>
         </Animated.View>
+
+        <View style={styles.agreement}>
+          <Text style={styles.agreementLine1}>By continuing, you agree to our</Text>
+          <View style={styles.agreementLinks}>
+            <Pressable
+              onPress={() => Linking.openURL(`${getConfig().storeWebBaseUrl}/terms`).catch(() => {})}
+              style={({ pressed }) => [pressed && styles.agreementLinkPressed]}
+            >
+              <Text style={styles.agreementLink}>Terms of service</Text>
+            </Pressable>
+            <Text style={styles.agreementSeparator}>|</Text>
+            <Pressable
+              onPress={() => Linking.openURL(`${getConfig().storeWebBaseUrl}/privacy`).catch(() => {})}
+              style={({ pressed }) => [pressed && styles.agreementLinkPressed]}
+            >
+              <Text style={styles.agreementLink}>Privacy Policy</Text>
+            </Pressable>
+            <Text style={styles.agreementSeparator}>|</Text>
+            <Pressable
+              onPress={() => Linking.openURL(`${getConfig().storeWebBaseUrl}/code-of-conduct`).catch(() => {})}
+              style={({ pressed }) => [pressed && styles.agreementLinkPressed]}
+            >
+              <Text style={styles.agreementLink}>Code of Conduct</Text>
+            </Pressable>
+          </View>
+        </View>
       </View>
     </View>
   );
@@ -190,9 +214,40 @@ const styles = StyleSheet.create({
   buttons: {
     paddingHorizontal: 24,
     paddingTop: 20,
-    paddingBottom: 40,
+    paddingBottom: 24,
     backgroundColor: GatiMitraMerchant.background,
     gap: 12,
+  },
+  agreement: {
+    alignItems: "center",
+    marginTop: 8,
+  },
+  agreementLine1: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    textAlign: "center",
+  },
+  agreementLinks: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    flexWrap: "wrap",
+    marginTop: 6,
+    gap: 4,
+  },
+  agreementLink: {
+    fontSize: 13,
+    color: GatiMitraMerchant.primary,
+    textDecorationLine: "underline",
+    textDecorationStyle: "dashed",
+  },
+  agreementSeparator: {
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+  },
+  agreementLinkPressed: {
+    opacity: 0.7,
   },
   primaryBtn: {
     backgroundColor: GatiMitraMerchant.primary,
@@ -202,9 +257,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   primaryBtnText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#fff",
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#FFFFFF",
+    letterSpacing: 0.5,
   },
   secondaryBtn: {
     backgroundColor: GatiMitraMerchant.background,
@@ -212,13 +268,14 @@ const styles = StyleSheet.create({
     borderRadius: BUTTON_RADIUS,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: GatiMitraMerchant.primary,
+    borderWidth: 2.5,
+    borderColor: GatiMitraMerchant.primaryDark,
   },
   secondaryBtnText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: GatiMitraMerchant.primary,
+    fontSize: 18,
+    fontWeight: "800",
+    color: GatiMitraMerchant.primaryDark,
+    letterSpacing: 0.5,
   },
   btnPressedOpacity: {
     opacity: 0.88,

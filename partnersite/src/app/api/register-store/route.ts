@@ -13,6 +13,247 @@ function getSupabaseAdmin() {
   });
 }
 
+async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEmail: string | null; storePublicId: string | null }) {
+  const { ownerName, ownerEmail, storePublicId } = args;
+  if (!ownerEmail) return;
+
+  const gmailUser = process.env.EMAIL_ID || process.env.SMTP_FROM_EMAIL;
+  const gmailPass = process.env.EMAIL_APP_PASSWORD;
+  const fromEmail = process.env.SMTP_FROM_EMAIL || gmailUser;
+  const fromName = process.env.SMTP_FROM_NAME || 'GatiMitra Team';
+
+  if (!gmailUser || !gmailPass || !fromEmail) {
+    console.warn('[register-store] Email env not configured; skipping welcome email');
+    return;
+  }
+
+  console.log('[register-store] Welcome email queued for', ownerEmail);
+
+  const { default: nodemailer } = await import('nodemailer');
+  // Gmail SMTP defaults (app password)
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: {
+      user: gmailUser,
+      pass: gmailPass,
+    },
+  });
+
+  const safeName = (ownerName || '').toString().trim() || 'Partner';
+  const safeStoreId = (storePublicId || '').toString().trim();
+  const dashboardUrl = 'https://partner.gatimitra.com/auth/post-login';
+
+  const htmlBody = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Welcome to GatiMitra</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body, table, td, p, a { margin:0; padding:0; }
+    img { border:0; line-height:100%; outline:none; text-decoration:none; }
+    table { border-collapse:collapse; }
+    a { text-decoration:none; }
+    @media only screen and (max-width: 620px) {
+      .wrapper { width:100% !important; padding:16px !important; }
+      .card { border-radius:16px !important; }
+      .content { padding:20px !important; }
+      .h1 { font-size:22px !important; }
+      .body { font-size:14px !important; }
+      .cta { width:100% !important; }
+    }
+  </style>
+</head>
+<body style="margin:0; padding:0; background-color:#f3f4f6; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;">
+
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6; padding:24px 12px;">
+    <tr>
+      <td align="center">
+
+        <table class="wrapper" width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%;">
+
+          <tr>
+            <td>
+              <table width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(135deg,#f97316 0%, #22c55e 52%, #0ea5e9 100%); border-radius:20px 20px 0 0; padding:0;">
+                <tr>
+                  <td style="padding:22px 24px 18px 24px;">
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="left">
+                          <!-- Brand pill -->
+                          <div style="display:inline-block; background:rgba(255,255,255,0.92); border:1px solid rgba(255,255,255,0.55); border-radius:999px; padding:7px 14px; box-shadow:0 10px 22px rgba(15,23,42,0.18);">
+                            <span style="font-size:14px; font-weight:800; letter-spacing:0.2px; color:#0f172a;">
+                              Gati<span style="color:#16a34a;">Mitra</span>
+                            </span>
+                            <span style="display:inline-block; margin-left:10px; font-size:11px; font-weight:700; color:#0f172a; opacity:0.75;">
+                              Partner
+                            </span>
+                          </div>
+                          ${safeStoreId ? `
+                          <div style="margin-top:8px; display:inline-block; background:rgba(15,23,42,0.10); border-radius:999px; padding:4px 10px; font-size:11px; font-weight:600; color:#0f172a; border:1px solid rgba(15,23,42,0.08);">
+                            Store ID&nbsp;<span style="color:#022c22;">#${safeStoreId}</span>
+                          </div>` : ``}
+                        </td>
+                        <td align="right" style="vertical-align:top;">
+                          <!-- Floating status badge -->
+                          <div style="display:inline-block; background:rgba(255,255,255,0.20); border:1px solid rgba(255,255,255,0.35); border-radius:999px; padding:7px 10px; color:#ffffff; font-size:11px; font-weight:700;">
+                            ✅ Registered
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <h1 class="h1" style="margin:16px 0 6px 0; color:#ffffff; font-size:26px; font-weight:800; letter-spacing:-0.2px;">
+                      Welcome to GatiMitra! 🎉
+                    </h1>
+                    <p style="margin:0; color:rgba(255,255,255,0.92); font-size:14px; line-height:1.65;">
+                      Your store has been successfully registered and is now under quick verification.
+                    </p>
+
+                    <!-- Subtle highlight strip -->
+                    <div style="margin-top:14px; background:rgba(255,255,255,0.20); border:1px solid rgba(255,255,255,0.25); border-radius:14px; padding:12px 14px;">
+                      <table width="100%" cellpadding="0" cellspacing="0">
+                        <tr>
+                          <td style="color:#ffffff; font-size:12px; line-height:1.6;">
+                            <strong style="font-weight:800;">What’s next:</strong> verification usually takes <strong style="font-weight:800;">24–48 hours</strong>.
+                          </td>
+                          <td align="right" style="white-space:nowrap;">
+                            <div style="display:inline-block; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,0.92); color:#0f172a; font-size:11px; font-weight:800;">
+                              🚀 Live soon
+                            </div>
+                          </td>
+                        </tr>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <table class="card" width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:0 0 20px 20px; box-shadow:0 12px 30px rgba(15,23,42,0.12); overflow:hidden;">
+                <tr>
+                  <td class="content" style="padding:24px 28px 22px 28px;">
+
+                    <p class="body" style="margin:0 0 12px 0; font-size:14px; color:#111827; line-height:1.7;">
+                      Hi <strong>${safeName}</strong>,
+                    </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      We’re excited to inform you that your store has been <strong>successfully registered</strong> on the GatiMitra platform.
+                    </p>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background:#ecfdf3; border-radius:12px; border:1px solid #bbf7d0; margin-bottom:18px;">
+                      <tr>
+                        <td style="padding:14px 16px;">
+                          <table cellpadding="0" cellspacing="0" width="100%">
+                            <tr>
+                              <td valign="top" style="width:24px; padding-right:8px;">
+                                <div style="width:20px; height:20px; border-radius:999px; background:#22c55e; color:#ffffff; font-size:13px; text-align:center; line-height:20px;">✓</div>
+                              </td>
+                              <td>
+                                <p style="margin:0 0 4px 0; font-size:14px; font-weight:600; color:#166534;">Your store is now registered & under review</p>
+                                <p style="margin:0; font-size:13px; color:#166534; line-height:1.6;">Our team is reviewing your details for activation. This process typically takes <strong>24–48 hours</strong>.</p>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background:#fffbeb; border-radius:12px; border:1px solid #fef3c7; margin-bottom:18px;">
+                      <tr>
+                        <td style="padding:14px 16px;">
+                          <p style="margin:0 0 6px 0; font-size:14px; font-weight:600; color:#92400e;">🟡 What happens next?</p>
+                          <ul style="margin:0; padding-left:18px; font-size:13px; color:#78350f; line-height:1.7;">
+                            <li>Your store will be <strong>activated</strong> on the platform</li>
+                            <li>You’ll be able to <strong>start receiving orders</strong></li>
+                            <li>Your store will be <strong>fully visible to customers</strong></li>
+                          </ul>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb; border-radius:12px; border:1px solid #e5e7eb; margin-bottom:22px;">
+                      <tr>
+                        <td style="padding:14px 16px;">
+                          <p style="margin:0 0 6px 0; font-size:14px; font-weight:600; color:#111827;">💡 While you wait…</p>
+                          <ul style="margin:0; padding-left:18px; font-size:13px; color:#4b5563; line-height:1.7;">
+                            <li>Double-check your <strong>menu and pricing</strong></li>
+                            <li>Ensure your store is <strong>stocked and ready</strong></li>
+                            <li>Verify your <strong>operating hours & contact details</strong></li>
+                          </ul>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">
+                      <tr>
+                        <td align="center">
+                          <a href="${dashboardUrl}" target="_blank" class="cta" style="display:inline-block; padding:12px 28px; border-radius:999px; background:linear-gradient(135deg,#10b981,#22c55e); color:#ffffff !important; font-size:14px; font-weight:600; box-shadow:0 10px 24px rgba(16,185,129,0.35);">View Dashboard</a>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e5e7eb; padding-top:16px;">
+                      <tr>
+                        <td>
+                          <p style="margin:0 0 4px 0; font-size:13px; color:#4b5563; line-height:1.7;">🤝 <strong>Need help? We’re here for you.</strong></p>
+                          <p style="margin:0; font-size:13px; color:#4b5563; line-height:1.7;">
+                            Email us at <a href="mailto:support@gatimitra.com" style="color:#2563eb;">support@gatimitra.com</a> for any onboarding or account-related queries.
+                          </p>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:18px;">
+                      <tr>
+                        <td>
+                          <p style="margin:0 0 10px 0; font-size:13px; color:#4b5563; line-height:1.7;">We’re excited to partner with you and help grow your business with <strong>GatiMitra</strong> 💙</p>
+                          <p style="margin:0; font-size:13px; color:#111827; line-height:1.7;">Best regards,<br /><strong>Team GatiMitra</strong></p>
+                        </td>
+                      </tr>
+                    </table>
+
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="background:#f9fafb; padding:14px 18px; text-align:center; border-top:1px solid #e5e7eb;">
+                    <p style="margin:0; font-size:11px; color:#6b7280; line-height:1.6;">
+                      GatiMitra On-Demand Services Private Limited<br />
+                      India’s Leading Low-Cost Delivery Platform<br />
+                      <a href="https://partner.gatimitra.com" style="color:#2563eb;">partner.gatimitra.com</a>
+                    </p>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>`;
+
+  await transporter.sendMail({
+    from: fromName ? `${fromName} <${fromEmail}>` : fromEmail,
+    to: ownerEmail,
+    subject: `Welcome to GatiMitra, ${safeName}`,
+    html: htmlBody,
+  });
+
+  console.log('[register-store] Sent welcome email to', ownerEmail);
+}
+
 export async function POST(req: NextRequest) {
         // Validate required document fields before DB insert
         function validateDocuments(documentUrls: any[]): { valid: boolean, errors: Record<string, string> } {
@@ -647,6 +888,10 @@ export async function POST(req: NextRequest) {
 
           contractPdfR2Key = originalKey;
           contractPdfUrlStored = `/api/attachments/proxy?key=${encodeURIComponent(originalKey)}`;
+        } else {
+          // Fallback: if we couldn't derive an R2 key but still have a URL/value,
+          // persist it directly so the contract is at least reachable.
+          contractPdfUrlStored = rawValue;
         }
       }
 
@@ -654,6 +899,13 @@ export async function POST(req: NextRequest) {
       const commissionSecond = agreementAcceptance.commissionFromSecondMonthPct != null ? Number(agreementAcceptance.commissionFromSecondMonthPct) : 15;
       const effectiveFrom = agreementAcceptance.agreementEffectiveFrom ? new Date(agreementAcceptance.agreementEffectiveFrom).toISOString() : new Date().toISOString();
       const effectiveTo = agreementAcceptance.agreementEffectiveTo ? new Date(agreementAcceptance.agreementEffectiveTo).toISOString() : null;
+
+      const resolvedSignerName =
+        (storeData as any)?.owner_full_name &&
+        String((storeData as any).owner_full_name).trim()
+          ? String((storeData as any).owner_full_name).trim()
+          : (agreementAcceptance.signerName && String(agreementAcceptance.signerName).trim()) ||
+            null;
 
       const basePayload = {
         store_id: storeData.id,
@@ -669,13 +921,16 @@ export async function POST(req: NextRequest) {
           agreement_effective_to: effectiveTo,
         },
         contract_pdf_url: contractPdfUrlStored ?? agreementAcceptance.templatePdfUrl ?? null,
-        signer_name: agreementAcceptance.signerName || null,
+        signer_name: resolvedSignerName,
         signer_email: agreementAcceptance.signerEmail || null,
         signer_phone: agreementAcceptance.signerPhone || null,
         signature_data_url: agreementAcceptance.signatureDataUrl,
         signature_hash: signatureHash,
         terms_accepted: !!agreementAcceptance.agreedToTerms,
-        contract_read_confirmed: !!agreementAcceptance.agreedToContract,
+        contract_read_confirmed: agreementAcceptance.agreedToRead != null
+          ? !!agreementAcceptance.agreedToRead
+          : !!agreementAcceptance.agreedToContract,
+        digital_signature_confirmed: !!agreementAcceptance.agreedToContract,
         accepted_at: new Date().toISOString(),
         accepted_ip: ipAddress,
         user_agent: userAgent,
@@ -708,6 +963,7 @@ export async function POST(req: NextRequest) {
           updated_at: new Date().toISOString(),
           current_step: 9,
           step_6_completed: true, // Mark final step as completed
+          step_9_completed: true,
           completed_steps: 9
         })
         .eq('parent_id', parentId)
@@ -719,6 +975,28 @@ export async function POST(req: NextRequest) {
       console.warn('[register-store] Failed to mark progress as completed:', progressError);
       // Don't fail the entire registration if this update fails
     }
+
+    // 7. Fire-and-forget welcome email to owner email (do not block response)
+    (async () => {
+      try {
+        const ownerEmail =
+          (storeData as any)?.store_email ||
+          (typeof step1?.store_email === 'string' ? step1.store_email : null);
+        const ownerName =
+          (storeData as any)?.owner_full_name ||
+          (typeof step1?.owner_full_name === 'string' ? step1.owner_full_name : null) ||
+          (storeData as any)?.store_name ||
+          (typeof step1?.store_name === 'string' ? step1.store_name : null);
+
+        await sendWelcomeEmailToOwner({
+          ownerName,
+          ownerEmail,
+          storePublicId: storeId || null,
+        });
+      } catch (emailErr) {
+        console.warn('[register-store] Failed to send welcome email:', emailErr);
+      }
+    })();
 
     return NextResponse.json({ success: true, storeId });
   } catch (e: any) {

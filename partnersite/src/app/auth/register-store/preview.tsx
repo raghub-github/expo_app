@@ -45,18 +45,36 @@ interface PreviewPageProps {
   onBack: () => void;
   onContinueToPlans: () => void;
   actionLoading?: boolean;
+  showFooter?: boolean;
 }
 
-const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo, onBack, onContinueToPlans, actionLoading = false }: PreviewPageProps) => {
+const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo, onBack, onContinueToPlans, actionLoading = false, showFooter = true }: PreviewPageProps) => {
 
-  // Calculate document count dynamically
+  // Calculate document count based on visible logical documents,
+  // not every key in the documents object – this matches the cards
+  // rendered in the "Documents" section + bank block.
   const documentCount = useMemo(() => {
     if (!documents) return 0;
-    return Object.keys(documents).filter(k => {
-      const val = documents[k];
-      return val !== null && val !== '' && val !== undefined && 
-             (typeof val !== 'object' || (val && Object.keys(val).length > 0));
-    }).length;
+
+    let count = 0;
+
+    if (documents.pan_number) count += 1;
+    if (documents.aadhar_number) count += 1;
+    if (documents.fssai_number) count += 1;
+    if (documents.gst_number) count += 1;
+    if (documents.drug_license_number) count += 1;
+    if (documents.pharmacist_registration_number) count += 1;
+
+    // Additional licenses stored only in extended AM flow
+    if (documents.trade_license_number) count += 1;
+    if (documents.shop_establishment_number) count += 1;
+    if (documents.udyam_number) count += 1;
+    if (documents.other_document_number || documents.other_document_type) count += 1;
+
+    // Bank / payout details – treat as one logical document if present
+    if (documents.bank && Object.keys(documents.bank).length > 0) count += 1;
+
+    return count;
   }, [documents]);
 
   // Format store hours dynamically
@@ -253,10 +271,15 @@ const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo
                             )}
                             {galleryUrls.length > 0 && (
                               <div className="space-y-1">
-                                <label className="text-[10px] sm:text-xs font-medium text-slate-500">Gallery ({galleryUrls.length})</label>
-                                <div className="flex flex-wrap gap-1">
-                                  {galleryUrls.slice(0, 2).map((src: string, idx: number) => (
-                                    <div key={idx} className="w-16 h-16 sm:w-20 sm:h-20 rounded-lg border-2 border-slate-200 overflow-hidden">
+                                <label className="text-[10px] sm:text-xs font-medium text-slate-500">
+                                  Gallery ({Math.min(galleryUrls.length, 5)})
+                                </label>
+                                <div className="flex gap-1">
+                                  {galleryUrls.slice(0, 5).map((src: string, idx: number) => (
+                                    <div
+                                      key={idx}
+                                      className="w-16 h-16 sm:w-20 sm:h-20 rounded-lg border-2 border-slate-200 overflow-hidden flex-shrink-0"
+                                    >
                                       <img
                                         src={normalizedImageSrc(src)}
                                         alt={`Gallery ${idx + 1}`}
@@ -265,11 +288,6 @@ const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo
                                       />
                                     </div>
                                   ))}
-                                  {galleryUrls.length > 2 && (
-                                    <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-lg border-2 border-slate-200 bg-slate-100 flex items-center justify-center">
-                                      <span className="text-xs font-semibold text-slate-600">+{galleryUrls.length - 2}</span>
-                                    </div>
-                                  )}
                                 </div>
                               </div>
                             )}
@@ -584,30 +602,32 @@ const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo
       </div>
 
       {/* Navigation - Fixed bottom */}
-      <div className="fixed bottom-0 left-14 sm:left-[13rem] md:left-56 lg:left-60 right-0 z-20 bg-white border-t border-slate-200 px-2 sm:px-3 md:px-4 py-2 sm:py-2.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-end gap-2">
-          <button
-            onClick={onBack}
-            disabled={actionLoading}
-            className="px-3 py-1.5 sm:px-4 sm:py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1.5 font-medium text-xs sm:text-sm disabled:opacity-60 disabled:cursor-not-allowed min-h-[2.25rem] sm:min-h-[2.5rem]"
-          >
-            {actionLoading ? <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin shrink-0" /> : <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />}
-            <span>Previous</span>
-          </button>
-          <button
-            onClick={onContinueToPlans}
-            disabled={actionLoading}
-            className="px-4 py-1.5 sm:px-5 sm:py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-all duration-200 font-semibold flex items-center gap-1.5 shadow-md hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed text-xs sm:text-sm min-h-[2.25rem] sm:min-h-[2.5rem]"
-          >
-            {actionLoading ? (
-              <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin shrink-0" />
-            ) : (
-              <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 rotate-180 shrink-0" />
-            )}
-            <span className="truncate">{actionLoading ? 'Loading...' : 'Continue to plans'}</span>
-          </button>
+      {showFooter && (
+        <div className="fixed bottom-0 left-14 sm:left-[13rem] md:left-56 lg:left-60 right-0 z-20 bg-white border-t border-slate-200 px-2 sm:px-3 md:px-4 py-2 sm:py-2.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-end gap-2">
+            <button
+              onClick={onBack}
+              disabled={actionLoading}
+              className="px-3 py-1.5 sm:px-4 sm:py-2 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1.5 font-medium text-xs sm:text-sm disabled:opacity-60 disabled:cursor-not-allowed min-h-[2.25rem] sm:min-h-[2.5rem]"
+            >
+              {actionLoading ? <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin shrink-0" /> : <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />}
+              <span>Previous</span>
+            </button>
+            <button
+              onClick={onContinueToPlans}
+              disabled={actionLoading}
+              className="px-4 py-1.5 sm:px-5 sm:py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-all duration-200 font-semibold flex items-center gap-1.5 shadow-md hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed text-xs sm:text-sm min-h-[2.25rem] sm:min-h-[2.5rem]"
+            >
+              {actionLoading ? (
+                <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin shrink-0" />
+              ) : (
+                <ChevronLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4 rotate-180 shrink-0" />
+              )}
+              <span className="truncate">{actionLoading ? 'Loading...' : 'Continue to plans'}</span>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Global Styles for Scrollbar Hide */}
       <style dangerouslySetInnerHTML={{ __html: `

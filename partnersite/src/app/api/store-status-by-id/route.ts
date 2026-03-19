@@ -23,13 +23,14 @@ export async function GET(req: NextRequest) {
 
     const db = getSupabaseAdmin();
 
-    // Get store information from database
+    // Get store information from database (including owner_full_name so we can use it for signer name)
     const { data: storeData, error: storeError } = await db
       .from("merchant_stores")
       .select(`
         id,
         store_id,
         store_name,
+        owner_full_name,
         approval_status,
         status,
         onboarding_completed,

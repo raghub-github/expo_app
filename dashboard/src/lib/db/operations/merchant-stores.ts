@@ -1,6 +1,6 @@
 /**
  * Area Manager: operations on merchant_stores and merchant_parents (raw SQL).
- * Use these when the DB has merchant_stores/merchant_parents with area_manager_id.
+ * Parent–AM association is via parent_area_managers; merchant_stores has area_manager_id.
  */
 
 import { getSql } from "../client";
@@ -86,7 +86,10 @@ export interface MerchantParentRow {
 export type DelistType = "temporary_delisted" | "permanently_delisted" | "compliance_hold";
 
 /**
- * Count merchant_parents by area_manager_id.
+ * Count parent merchants visible to this area manager.
+ * merchant_parents has no area_manager_id; count only parents that have at least
+ * one child store (merchant_stores) under this area_manager_id.
+ * When areaManagerId is null (super admin), return overall count: distinct parents that have at least one child store.
  */
 export async function countMerchantParents(
   areaManagerId: number | null
@@ -95,20 +98,22 @@ export async function countMerchantParents(
   const result =
     areaManagerId != null
       ? await sql`
-    SELECT count(*)::int AS total
-    FROM merchant_parents
-    WHERE area_manager_id = ${areaManagerId}
+    SELECT count(DISTINCT ms.parent_id)::int AS total
+    FROM merchant_stores ms
+    WHERE ms.deleted_at IS NULL AND ms.area_manager_id = ${areaManagerId} AND ms.parent_id IS NOT NULL
   `
       : await sql`
-    SELECT count(*)::int AS total
-    FROM merchant_parents
+    SELECT count(DISTINCT parent_id)::int AS total
+    FROM merchant_stores
+    WHERE deleted_at IS NULL AND parent_id IS NOT NULL
   `;
   const row = Array.isArray(result) ? result[0] : result;
   return Number(row?.total ?? 0);
 }
 
 /**
- * Count child stores (stores with parent_id) by area_manager_id.
+ * Count child stores (stores with parent_id). When areaManagerId is set, only those assigned to that area manager.
+ * When areaManagerId is null (super admin), return overall count of all child stores.
  */
 export async function countChildStores(
   areaManagerId: number | null
@@ -131,9 +136,60 @@ export async function countChildStores(
 }
 
 /**
+ * Count child stores for a specific parent (same filters as listMerchantStores when parentId is set).
+ */
+export async function countChildStoresForParent(params: {
+  areaManagerId: number | null;
+  parentId: number;
+  approval_status?: string;
+  status?: string;
+  search?: string;
+}): Promise<number> {
+  const sql = getSql();
+  const searchRaw = params.search?.trim() ?? "";
+  const search = searchRaw ? `%${searchRaw}%` : null;
+  let searchCondition = sql``;
+  if (search) {
+    const parentIdNum = /^\d+$/.test(searchRaw) ? parseInt(searchRaw, 10) : null;
+    if (parentIdNum != null && !Number.isNaN(parentIdNum)) {
+      searchCondition = sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search} OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search} OR parent_id = ${parentIdNum})`;
+    } else {
+      searchCondition = sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search} OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search})`;
+    }
+  }
+  let statusCondition = sql``;
+  if (params.approval_status) {
+    if (params.approval_status === "SUBMITTED" || params.approval_status === "PENDING") {
+      statusCondition = sql`AND approval_status IN ('DRAFT', 'SUBMITTED', 'UNDER_VERIFICATION')`;
+    } else if (params.approval_status === "REJECTED") {
+      statusCondition = sql`AND approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED')`;
+    } else {
+      statusCondition = sql`AND approval_status = ${params.approval_status}`;
+    }
+  }
+  let storeStatusCondition = sql``;
+  if (params.status === "ACTIVE") {
+    storeStatusCondition = sql`AND status = 'ACTIVE'`;
+  } else if (params.status === "INACTIVE") {
+    storeStatusCondition = sql`AND status = 'INACTIVE'`;
+  }
+  const result = await sql`
+    SELECT count(*)::int AS total
+    FROM merchant_stores
+    WHERE deleted_at IS NULL
+    AND parent_id = ${params.parentId}
+    ${params.areaManagerId != null ? sql`AND area_manager_id = ${params.areaManagerId}` : sql``}
+    ${statusCondition}
+    ${storeStatusCondition}
+    ${searchCondition}
+  `;
+  const row = Array.isArray(result) ? result[0] : result;
+  return Number(row?.total ?? 0);
+}
+
+/**
  * Count merchant_stores by area_manager_id and by approval_status/status for dashboard metrics.
- * new = stores created in the last 30 days (any status).
- * When createdFrom/createdTo are set, all counts are restricted to that date range.
+ * Only counts child stores (parent_id IS NOT NULL). When areaManagerId is null (super admin), overall counts.
  */
 export async function countMerchantStoresByStatus(
   areaManagerId: number | null,
@@ -151,27 +207,13 @@ export async function countMerchantStoresByStatus(
     areaManagerId != null
       ? sql`deleted_at IS NULL AND area_manager_id = ${areaManagerId}`
       : sql`deleted_at IS NULL`;
-  // Only count child stores (parent_id IS NOT NULL) so stats match list
   const childCondition = sql`AND parent_id IS NOT NULL`;
   const fromDate = options?.createdFrom?.trim();
   const toDate = options?.createdTo?.trim();
   const dateFromCondition = fromDate ? sql`AND created_at >= (${fromDate}::date)` : sql``;
   const dateToCondition = toDate ? sql`AND created_at <= (${toDate}::date + interval '1 day')` : sql``;
 
-  const scope =
-    areaManagerId != null
-      ? await sql`
-    SELECT
-      count(*)::int AS total,
-      count(*) FILTER (WHERE approval_status = 'APPROVED')::int AS verified,
-      count(*) FILTER (WHERE approval_status IN ('DRAFT', 'SUBMITTED', 'UNDER_VERIFICATION'))::int AS pending,
-      count(*) FILTER (WHERE approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED'))::int AS rejected,
-      count(*) FILTER (WHERE is_active = true AND status = 'ACTIVE')::int AS active,
-      count(*) FILTER (WHERE created_at >= (now() - interval '30 days'))::int AS new
-    FROM merchant_stores
-    WHERE ${baseCondition} ${childCondition} ${dateFromCondition} ${dateToCondition}
-  `
-      : await sql`
+  const scope = await sql`
     SELECT
       count(*)::int AS total,
       count(*) FILTER (WHERE approval_status = 'APPROVED')::int AS verified,
@@ -469,7 +511,9 @@ export async function relistMerchantStore(params: {
 }
 
 /**
- * List merchant_parents (parent stores) by area_manager_id.
+ * List merchant_parents (parent stores). When areaManagerId is set, includes parents that have at
+ * least one child store under that AM, or parents assigned to this AM in parent_area_managers
+ * so newly registered parents appear before any child is added. When null (super admin), all parents.
  */
 export async function listMerchantParents(params: {
   areaManagerId: number | null;
@@ -482,31 +526,55 @@ export async function listMerchantParents(params: {
   const limit = Math.min(params.limit || 20, 100);
   const limitVal = limit + 1;
   const cursorId = params.cursor ? parseInt(params.cursor, 10) : null;
-  const search = params.search?.trim() ? `%${params.search.trim()}%` : null;
+  const searchRaw = params.search?.trim() ?? "";
+  const search = searchRaw ? `%${searchRaw}%` : null;
+
+  // Search: parent_merchant_id, parent_name, registered_phone; when numeric also match id
+  let searchCondition = sql``;
+  if (search) {
+    const idNum = /^\d+$/.test(searchRaw) ? parseInt(searchRaw, 10) : null;
+    if (idNum != null && !Number.isNaN(idNum)) {
+      searchCondition = sql`AND (mp.parent_name ILIKE ${search} OR mp.parent_merchant_id ILIKE ${search} OR mp.registered_phone ILIKE ${search} OR mp.registered_phone_normalized ILIKE ${search} OR mp.id = ${idNum})`;
+    } else {
+      searchCondition = sql`AND (mp.parent_name ILIKE ${search} OR mp.parent_merchant_id ILIKE ${search} OR mp.registered_phone ILIKE ${search} OR mp.registered_phone_normalized ILIKE ${search})`;
+    }
+  }
 
   // Build approval_status filter condition for parent stores
   // parent_approval_status enum: 'APPROVED', 'REJECTED', 'BLOCKED', 'SUSPENDED'
   let statusCondition = sql``;
   if (params.approval_status) {
     if (params.approval_status === "APPROVED") {
-      // VERIFIED = APPROVED
-      statusCondition = sql`AND approval_status = 'APPROVED'`;
+      statusCondition = sql`AND mp.approval_status = 'APPROVED'`;
     } else if (params.approval_status === "REJECTED") {
-      // REJECTED = REJECTED, BLOCKED, SUSPENDED
-      statusCondition = sql`AND approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED')`;
+      statusCondition = sql`AND mp.approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED')`;
+    } else {
+      statusCondition = sql`AND mp.approval_status = ${params.approval_status}`;
     }
-    // PENDING doesn't apply to parent stores (they don't have pending status)
   }
 
-  // Use only columns that exist in merchant_parents (no area_manager_id/created_by_name in base schema)
+  // When areaManagerId set: include parents assigned to this AM in parent_area_managers,
+  // or that have at least one child store under this AM
+  const areaManagerCondition =
+    params.areaManagerId != null
+      ? sql`AND (
+          EXISTS (SELECT 1 FROM parent_area_managers pam WHERE pam.parent_id = mp.id AND pam.area_manager_id = ${params.areaManagerId})
+          OR EXISTS (
+            SELECT 1 FROM merchant_stores ms
+            WHERE ms.parent_id = mp.id AND ms.deleted_at IS NULL AND ms.area_manager_id = ${params.areaManagerId}
+          )
+        )`
+      : sql``;
+
   const rows = await sql<MerchantParentRow[]>`
-    SELECT id, parent_merchant_id, parent_name, owner_name, registered_phone, city, approval_status
-    FROM merchant_parents
+    SELECT mp.id, mp.parent_merchant_id, mp.parent_name, mp.owner_name, mp.registered_phone, mp.city, mp.approval_status
+    FROM merchant_parents mp
     WHERE 1=1
+    ${areaManagerCondition}
     ${statusCondition}
-    ${cursorId != null ? sql`AND id < ${cursorId}` : sql``}
-    ${search ? sql`AND (parent_name ILIKE ${search} OR parent_merchant_id ILIKE ${search} OR registered_phone ILIKE ${search} OR registered_phone_normalized ILIKE ${search})` : sql``}
-    ORDER BY id DESC
+    ${cursorId != null ? sql`AND mp.id < ${cursorId}` : sql``}
+    ${searchCondition}
+    ORDER BY mp.id DESC
     LIMIT ${limitVal}
   `;
   const hasMore = rows.length > limit;
@@ -517,7 +585,60 @@ export async function listMerchantParents(params: {
 }
 
 /**
- * List merchant_stores for area manager with optional parent info (parent_id -> merchant_parents).
+ * Count merchant_parents with same area/search/approval scope as listMerchantParents (for list total).
+ */
+export async function countMerchantParentsWithFilters(params: {
+  areaManagerId: number | null;
+  search?: string;
+  approval_status?: string;
+}): Promise<number> {
+  const sql = getSql();
+  const searchRaw = params.search?.trim() ?? "";
+  const search = searchRaw ? `%${searchRaw}%` : null;
+  let searchCondition = sql``;
+  if (search) {
+    const idNum = /^\d+$/.test(searchRaw) ? parseInt(searchRaw, 10) : null;
+    if (idNum != null && !Number.isNaN(idNum)) {
+      searchCondition = sql`AND (mp.parent_name ILIKE ${search} OR mp.parent_merchant_id ILIKE ${search} OR mp.registered_phone ILIKE ${search} OR mp.registered_phone_normalized ILIKE ${search} OR mp.id = ${idNum})`;
+    } else {
+      searchCondition = sql`AND (mp.parent_name ILIKE ${search} OR mp.parent_merchant_id ILIKE ${search} OR mp.registered_phone ILIKE ${search} OR mp.registered_phone_normalized ILIKE ${search})`;
+    }
+  }
+  let statusCondition = sql``;
+  if (params.approval_status) {
+    if (params.approval_status === "APPROVED") {
+      statusCondition = sql`AND mp.approval_status = 'APPROVED'`;
+    } else if (params.approval_status === "REJECTED") {
+      statusCondition = sql`AND mp.approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED')`;
+    } else {
+      statusCondition = sql`AND mp.approval_status = ${params.approval_status}`;
+    }
+  }
+  const areaManagerCondition =
+    params.areaManagerId != null
+      ? sql`AND (
+          EXISTS (SELECT 1 FROM parent_area_managers pam WHERE pam.parent_id = mp.id AND pam.area_manager_id = ${params.areaManagerId})
+          OR EXISTS (
+            SELECT 1 FROM merchant_stores ms
+            WHERE ms.parent_id = mp.id AND ms.deleted_at IS NULL AND ms.area_manager_id = ${params.areaManagerId}
+          )
+        )`
+      : sql``;
+  const result = await sql`
+    SELECT count(*)::int AS total
+    FROM merchant_parents mp
+    WHERE 1=1
+    ${areaManagerCondition}
+    ${statusCondition}
+    ${searchCondition}
+  `;
+  const row = Array.isArray(result) ? result[0] : result;
+  return Number((row as { total: number })?.total ?? 0);
+}
+
+/**
+ * List merchant_stores for area manager. When areaManagerId is set, only stores under that area manager.
+ * When null (super admin), all stores.
  */
 export async function listMerchantStores(params: {
   areaManagerId: number | null;
@@ -557,6 +678,17 @@ export async function listMerchantStores(params: {
     // Fall through to ILIKE search if exact match missed (e.g. wrong case stored)
   }
 
+  // Search: store_id, store_name, store_display_name, store_phones (number), parent_id (when numeric)
+  let searchCondition = sql``;
+  if (search) {
+    const parentIdNum = /^\d+$/.test(searchRaw) ? parseInt(searchRaw, 10) : null;
+    if (parentIdNum != null && !Number.isNaN(parentIdNum)) {
+      searchCondition = sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search} OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search} OR parent_id = ${parentIdNum})`;
+    } else {
+      searchCondition = sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search} OR array_to_string(COALESCE(store_phones, ARRAY[]::text[]), ' ') ILIKE ${search})`;
+    }
+  }
+
   // Build filter conditions
   let filterCondition = sql``;
   if (params.filter === "child") {
@@ -572,7 +704,7 @@ export async function listMerchantStores(params: {
   // Build approval_status filter condition
   let statusCondition = sql``;
   if (params.approval_status) {
-    if (params.approval_status === "SUBMITTED") {
+    if (params.approval_status === "SUBMITTED" || params.approval_status === "PENDING") {
       // PENDING includes DRAFT, SUBMITTED, and UNDER_VERIFICATION
       statusCondition = sql`AND approval_status IN ('DRAFT', 'SUBMITTED', 'UNDER_VERIFICATION')`;
     } else if (params.approval_status === "REJECTED") {
@@ -580,6 +712,14 @@ export async function listMerchantStores(params: {
     } else {
       statusCondition = sql`AND approval_status = ${params.approval_status}`;
     }
+  }
+
+  // Store status filter (ACTIVE / INACTIVE) for merchant_stores.status
+  let storeStatusCondition = sql``;
+  if (params.status === "ACTIVE") {
+    storeStatusCondition = sql`AND status = 'ACTIVE'`;
+  } else if (params.status === "INACTIVE") {
+    storeStatusCondition = sql`AND status = 'INACTIVE'`;
   }
 
   // New stores: created in last 30 days (optional, can combine with approval_status)
@@ -610,10 +750,11 @@ export async function listMerchantStores(params: {
     ${filterCondition}
     ${cursorId != null ? sql`AND id < ${cursorId}` : sql``}
     ${statusCondition}
+    ${storeStatusCondition}
     ${newOnlyCondition}
     ${dateFromCondition}
     ${dateToCondition}
-    ${search ? sql`AND (store_id ILIKE ${search} OR store_name ILIKE ${search} OR store_display_name ILIKE ${search})` : sql``}
+    ${searchCondition}
     ORDER BY id DESC
     LIMIT ${limitVal}
   `;
@@ -944,6 +1085,177 @@ export async function getParentMerchantIdByParentId(
 }
 
 /**
+ * Get parent_name and parent_merchant_id by merchant_parents.id (for header/sidebar display).
+ */
+export async function getParentDetailsByParentId(
+  parentId: number
+): Promise<{ parent_name: string | null; parent_merchant_id: string | null }> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT parent_name, parent_merchant_id FROM merchant_parents WHERE id = ${parentId} LIMIT 1
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  if (!row || typeof row !== "object") return { parent_name: null, parent_merchant_id: null };
+  const r = row as { parent_name?: string | null; parent_merchant_id?: string | null };
+  return {
+    parent_name: typeof r.parent_name === "string" ? r.parent_name : null,
+    parent_merchant_id: typeof r.parent_merchant_id === "string" ? r.parent_merchant_id : null,
+  };
+}
+
+/**
+ * Generate next child store_id in GMMC1001, GMMC1002, ... format (same as partnersite).
+ */
+export async function getNextChildStoreId(): Promise<string> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT store_id FROM merchant_stores WHERE store_id ~ '^GMMC\\d+$' ORDER BY store_id DESC LIMIT 1
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  const lastId = row && typeof (row as { store_id?: string }).store_id === "string" ? (row as { store_id: string }).store_id : null;
+  let nextNum = 1001;
+  if (lastId) {
+    const match = lastId.match(/^GMMC(\d+)$/);
+    if (match) nextNum = parseInt(match[1], 10) + 1;
+  }
+  return `GMMC${nextNum}`;
+}
+
+export interface CreateMerchantStoreChildParams {
+  parentId: number;
+  storeId: string;
+  storeName: string;
+  ownerFullName?: string | null;
+  storeDisplayName?: string | null;
+  legalBusinessName?: string | null;
+  storeType?: string | null;
+  customStoreType?: string | null;
+  storeEmail?: string | null;
+  storePhones?: string[] | null;
+  storeDescription?: string | null;
+  areaManagerId: number | null;
+  createdBy?: number | null;
+}
+
+/**
+ * Insert a new child store (merchant_stores) with step-1 style fields. Address set to placeholder until step 2.
+ */
+export async function createMerchantStoreChild(
+  params: CreateMerchantStoreChildParams
+): Promise<{ id: number; store_id: string } | null> {
+  const sql = getSql();
+  const phones = Array.isArray(params.storePhones) ? params.storePhones.filter(Boolean) : [];
+  const storeType = (params.storeType && String(params.storeType).trim()) || "RESTAURANT";
+  const customStoreType =
+    params.customStoreType && String(params.customStoreType).trim()
+      ? String(params.customStoreType).trim()
+      : null;
+  const inserted = await sql`
+    INSERT INTO merchant_stores (
+      store_id, parent_id, store_name, owner_full_name, store_display_name, store_description, store_type, custom_store_type,
+      store_email, store_phones, full_address, city, state, postal_code, country,
+      area_manager_id, status, approval_status, current_onboarding_step, onboarding_completed,
+      is_active, is_accepting_orders, is_available, created_by
+    ) VALUES (
+      ${params.storeId},
+      ${params.parentId},
+      ${params.storeName},
+      ${params.ownerFullName?.trim() || null},
+      ${params.storeDisplayName?.trim() || null},
+      ${params.storeDescription?.trim() || null},
+      ${storeType},
+      ${customStoreType},
+      ${params.storeEmail?.trim() || null},
+      ${phones.length ? sql.array(phones) : null},
+      'Pending',
+      'Pending',
+      'Pending',
+      'Pending',
+      'IN',
+      ${params.areaManagerId},
+      'INACTIVE',
+      'DRAFT',
+      1,
+      false,
+      false,
+      false,
+      false,
+      ${params.createdBy ?? null}
+    )
+    RETURNING id, store_id
+  `;
+  const row = Array.isArray(inserted) ? inserted[0] : inserted;
+  return row ? (row as { id: number; store_id: string }) : null;
+}
+
+/**
+ * Get a single merchant_stores row by internal id only (no area_manager check).
+ * Used by progress GET so "Complete registration" always loads data when store exists.
+ */
+export async function getMerchantStoreByIdOnly(
+  storeInternalId: number
+): Promise<{ id: number; parent_id: number; store_id: string; area_manager_id: number | null } | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT id, parent_id, store_id, area_manager_id
+    FROM merchant_stores
+    WHERE id = ${storeInternalId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return row ? (row as { id: number; parent_id: number; store_id: string; area_manager_id: number | null }) : null;
+}
+
+/**
+ * Get a single merchant_stores row by internal id; optionally restrict by area_manager_id.
+ * When store.area_manager_id is null (e.g. created from partner app), allow any AM.
+ * Used by progress POST so only assigned AM (or null) can save.
+ */
+export async function getMerchantStoreForProgress(
+  storeInternalId: number,
+  parentId: number,
+  areaManagerId: number | null
+): Promise<{ id: number; parent_id: number; store_id: string; area_manager_id: number | null } | null> {
+  const store = await getMerchantStoreByIdOnly(storeInternalId);
+  if (!store) return null;
+  if (areaManagerId != null && store.area_manager_id != null && store.area_manager_id !== areaManagerId) return null;
+  return store;
+}
+
+/** Step1 fields from merchant_stores for pre-filling add-child / progress form. */
+export async function getMerchantStoreStep1Fields(
+  storeInternalId: number
+): Promise<{
+  store_name: string | null;
+  owner_full_name: string | null;
+  store_display_name: string | null;
+  store_description: string | null;
+  store_email: string | null;
+  store_phones: string[] | null;
+  store_type: string | null;
+  custom_store_type: string | null;
+} | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT store_name, owner_full_name, store_display_name, store_description, store_email, store_phones, store_type, custom_store_type
+    FROM merchant_stores
+    WHERE id = ${storeInternalId} AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return row ? (row as {
+    store_name: string | null;
+    owner_full_name: string | null;
+    store_display_name: string | null;
+    store_description: string | null;
+    store_email: string | null;
+    store_phones: string[] | null;
+    store_type: string | null;
+    custom_store_type: string | null;
+  }) : null;
+}
+
+/**
  * Get child merchant_stores (same parent_id) for a given parent_id.
  */
 export async function getChildMerchantStores(
@@ -997,11 +1309,13 @@ export async function updateMerchantStore(
     approved_by?: number | null;
     approved_at?: Date | null;
     store_name?: string;
+    owner_full_name?: string | null;
     store_display_name?: string;
     store_description?: string | null;
     store_email?: string | null;
     store_phones?: string[] | null;
     store_type?: string | null;
+    custom_store_type?: string | null;
     full_address?: string | null;
     landmark?: string | null;
     city?: string | null;
@@ -1046,11 +1360,13 @@ export async function updateMerchantStore(
   if (data.approved_by !== undefined) setClauses.push(sql`approved_by = ${data.approved_by}`);
   if (data.approved_at !== undefined) setClauses.push(sql`approved_at = ${data.approved_at instanceof Date ? data.approved_at.toISOString() : data.approved_at}`);
   if (data.store_name !== undefined) setClauses.push(sql`store_name = ${data.store_name}`);
+  if (data.owner_full_name !== undefined) setClauses.push(sql`owner_full_name = ${data.owner_full_name}`);
   if (data.store_display_name !== undefined) setClauses.push(sql`store_display_name = ${data.store_display_name}`);
   if (data.store_description !== undefined) setClauses.push(sql`store_description = ${data.store_description}`);
   if (data.store_email !== undefined) setClauses.push(sql`store_email = ${data.store_email}`);
   if (data.store_phones !== undefined) setClauses.push(sql`store_phones = ${sql.array(data.store_phones)}`);
   if (data.store_type !== undefined) setClauses.push(sql`store_type = ${data.store_type}`);
+  if (data.custom_store_type !== undefined) setClauses.push(sql`custom_store_type = ${data.custom_store_type}`);
   if (data.full_address !== undefined) setClauses.push(sql`full_address = ${data.full_address}`);
   if (data.landmark !== undefined) setClauses.push(sql`landmark = ${data.landmark}`);
   if (data.city !== undefined) setClauses.push(sql`city = ${data.city}`);

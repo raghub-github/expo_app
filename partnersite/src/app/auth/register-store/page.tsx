@@ -235,7 +235,15 @@ const StoreRegistrationForm = () => {
   const [menuUploadIds, setMenuUploadIds] = useState<number[]>([]);
   const [menuUploadError, setMenuUploadError] = useState('');
   const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
-  const [confirmModal, setConfirmModal] = useState<{ title: string; message: string; variant?: 'warning' | 'error' | 'info'; confirmLabel?: string; onConfirm: () => void; onCancel?: () => void } | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    variant?: 'warning' | 'error' | 'info';
+    confirmLabel?: string;
+    onConfirm: () => Promise<void> | void;
+    onCancel?: () => void;
+    isLoading?: boolean;
+  } | null>(null);
   const [isImageDragActive, setIsImageDragActive] = useState(false);
   const [isCsvDragActive, setIsCsvDragActive] = useState(false);
   const [isPdfDragActive, setIsPdfDragActive] = useState(false);
@@ -246,6 +254,7 @@ const StoreRegistrationForm = () => {
   const [draftStorePublicId, setDraftStorePublicId] = useState<string | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [contractTextForSignature, setContractTextForSignature] = useState<string>('');
+  const [agreementReadConfirmed, setAgreementReadConfirmed] = useState(false);
   const [agreementTemplate, setAgreementTemplate] = useState<{ id?: number; template_key: string; title: string; version: string; content_markdown: string; pdf_url: string | null } | null>(null);
 
   const normalizeStoreHours = (incoming: any, fallback: StoreSetupData["store_hours"]) => {
@@ -326,6 +335,11 @@ const StoreRegistrationForm = () => {
         fssai_expiry_date: saved.step4.fssai_expiry_date ?? prev.fssai_expiry_date,
         drug_license_expiry_date: saved.step4.drug_license_expiry_date ?? prev.drug_license_expiry_date,
         pharmacist_expiry_date: saved.step4.pharmacist_expiry_date ?? prev.pharmacist_expiry_date,
+        trade_license_number: (s4 as any).trade_license_number ?? (prev as any).trade_license_number,
+        trade_license_expiry_date: (s4 as any).trade_license_expiry_date ?? (prev as any).trade_license_expiry_date,
+        shop_establishment_number: (s4 as any).shop_establishment_number ?? (prev as any).shop_establishment_number,
+        shop_establishment_expiry_date: (s4 as any).shop_establishment_expiry_date ?? (prev as any).shop_establishment_expiry_date,
+        udyam_number: (s4 as any).udyam_number ?? (prev as any).udyam_number,
         other_document_type: saved.step4.other_document_type ?? prev.other_document_type,
         other_document_number: saved.step4.other_document_number ?? prev.other_document_number,
         other_document_name: saved.step4.other_document_name ?? prev.other_document_name,
@@ -338,13 +352,29 @@ const StoreRegistrationForm = () => {
         drug_license_image_url: (typeof s4.drug_license_image_url === 'string' ? s4.drug_license_image_url : null) ?? null,
         pharmacist_certificate_url: (typeof s4.pharmacist_certificate_url === 'string' ? s4.pharmacist_certificate_url : null) ?? null,
         pharmacy_council_registration_url: (typeof s4.pharmacy_council_registration_url === 'string' ? s4.pharmacy_council_registration_url : null) ?? null,
+        trade_license_document_url: (typeof (s4 as any).trade_license_document_url === 'string' ? (s4 as any).trade_license_document_url : null) ?? null,
+        shop_establishment_document_url: (typeof (s4 as any).shop_establishment_document_url === 'string' ? (s4 as any).shop_establishment_document_url : null) ?? null,
+        udyam_document_url: (typeof (s4 as any).udyam_document_url === 'string' ? (s4 as any).udyam_document_url : null) ?? null,
         other_document_file_url: (typeof s4.other_document_file_url === 'string' ? s4.other_document_file_url : null) ?? null,
         bank: saved.step4.bank && typeof saved.step4.bank === 'object'
           ? {
               ...(prev.bank || {}),
               ...saved.step4.bank,
-              bank_proof_file_url: (typeof (saved.step4.bank as any).bank_proof_file_url === 'string' ? (saved.step4.bank as any).bank_proof_file_url : null) ?? null,
-              upi_qr_screenshot_url: (typeof (saved.step4.bank as any).upi_qr_screenshot_url === 'string' ? (saved.step4.bank as any).upi_qr_screenshot_url : null) ?? null,
+              // Preserve account_type and bank_proof_type from existing bank state if step4.bank doesn't have them
+              account_type:
+                (saved.step4.bank as any).account_type ??
+                (prev.bank ? prev.bank.account_type : ''),
+              bank_proof_type:
+                (saved.step4.bank as any).bank_proof_type ??
+                (prev.bank as any)?.bank_proof_type,
+              bank_proof_file_url:
+                (typeof (saved.step4.bank as any).bank_proof_file_url === 'string'
+                  ? (saved.step4.bank as any).bank_proof_file_url
+                  : null) ?? null,
+              upi_qr_screenshot_url:
+                (typeof (saved.step4.bank as any).upi_qr_screenshot_url === 'string'
+                  ? (saved.step4.bank as any).upi_qr_screenshot_url
+                  : null) ?? null,
             }
           : prev.bank,
       }));
@@ -593,9 +623,15 @@ const StoreRegistrationForm = () => {
                 gst_number: storeDocuments.gst_document_number ?? prev.gst_number,
                 drug_license_number: storeDocuments.drug_license_document_number ?? prev.drug_license_number,
                 pharmacist_registration_number: storeDocuments.pharmacist_certificate_document_number ?? prev.pharmacist_registration_number,
-                fssai_expiry_date: storeDocuments.fssai_expiry_date ?? prev.fssai_expiry_date,
-                drug_license_expiry_date: storeDocuments.drug_license_expiry_date ?? prev.drug_license_expiry_date,
-                pharmacist_expiry_date: storeDocuments.pharmacist_certificate_expiry_date ?? prev.pharmacist_expiry_date,
+                trade_license_number: storeDocuments.trade_license_document_number ?? (prev as any).trade_license_number,
+                shop_establishment_number: storeDocuments.shop_establishment_document_number ?? (prev as any).shop_establishment_number,
+                udyam_number: storeDocuments.udyam_document_number ?? (prev as any).udyam_number,
+                // Ensure dates are compatible with <input type="date"> (YYYY-MM-DD)
+                fssai_expiry_date: typeof storeDocuments.fssai_expiry_date === 'string' ? storeDocuments.fssai_expiry_date.slice(0, 10) : prev.fssai_expiry_date,
+                drug_license_expiry_date: typeof storeDocuments.drug_license_expiry_date === 'string' ? storeDocuments.drug_license_expiry_date.slice(0, 10) : prev.drug_license_expiry_date,
+                pharmacist_expiry_date: typeof storeDocuments.pharmacist_certificate_expiry_date === 'string' ? storeDocuments.pharmacist_certificate_expiry_date.slice(0, 10) : prev.pharmacist_expiry_date,
+                trade_license_expiry_date: typeof storeDocuments.trade_license_expiry_date === 'string' ? storeDocuments.trade_license_expiry_date.slice(0, 10) : (prev as any).trade_license_expiry_date,
+                shop_establishment_expiry_date: typeof storeDocuments.shop_establishment_expiry_date === 'string' ? storeDocuments.shop_establishment_expiry_date.slice(0, 10) : (prev as any).shop_establishment_expiry_date,
                 other_document_type: storeDocuments.other_document_type ?? prev.other_document_type,
                 other_document_number: storeDocuments.other_document_number ?? prev.other_document_number,
                 other_document_name: storeDocuments.other_document_name ?? prev.other_document_name,
@@ -608,6 +644,9 @@ const StoreRegistrationForm = () => {
                 drug_license_image_url: storeDocuments.drug_license_document_url ?? (prev as any).drug_license_image_url,
                 pharmacist_certificate_url: storeDocuments.pharmacist_certificate_document_url ?? (prev as any).pharmacist_certificate_url,
                 pharmacy_council_registration_url: storeDocuments.pharmacy_council_registration_document_url ?? (prev as any).pharmacy_council_registration_url,
+                trade_license_document_url: storeDocuments.trade_license_document_url ?? (prev as any).trade_license_document_url,
+                shop_establishment_document_url: storeDocuments.shop_establishment_document_url ?? (prev as any).shop_establishment_document_url,
+                udyam_document_url: storeDocuments.udyam_document_url ?? (prev as any).udyam_document_url,
                 other_document_file_url: storeDocuments.other_document_url ?? (prev as any).other_document_file_url,
               }));
               
@@ -629,9 +668,13 @@ const StoreRegistrationForm = () => {
                     ifsc_code: bankAccount.ifsc_code ?? '',
                     bank_name: bankAccount.bank_name ?? '',
                     branch_name: bankAccount.branch_name ?? '',
-                    account_type: bankAccount.account_type ?? '',
+                    account_type: (bankAccount.account_type as string | null)?.toLowerCase?.() || '',
                     upi_id: bankAccount.upi_id ?? '',
-                    bank_proof_type: bankAccount.bank_proof_type ?? undefined,
+                    bank_proof_type: (bankAccount.bank_proof_type as string | null)?.toLowerCase?.() as
+                      | 'passbook'
+                      | 'cancelled_cheque'
+                      | 'bank_statement'
+                      | undefined,
                     bank_proof_file_url: bankAccount.bank_proof_file_url ?? undefined,
                     upi_qr_screenshot_url: bankAccount.upi_qr_screenshot_url ?? undefined,
                   },
@@ -1314,30 +1357,40 @@ const StoreRegistrationForm = () => {
         message: 'Switching upload type will delete all previous files from the server. Continue?',
         variant: 'warning',
         confirmLabel: 'Yes, switch',
+        isLoading: false,
         onConfirm: async () => {
-          if (draftStoreDbId) {
-            try {
+          setConfirmModal((prev) => (prev ? { ...prev, isLoading: true } : prev));
+          try {
+            if (draftStoreDbId) {
               const form = new FormData();
               form.append('action', 'switch_type');
               form.append('store_id', String(draftStoreDbId));
-              form.append('new_attachment_type', mode === 'IMAGE' ? 'images' : mode === 'PDF' ? 'pdf' : 'csv');
-              await fetch('/api/auth/register-store-menu-uploads', { method: 'POST', credentials: 'include', body: form });
-            } catch (e) {
-              console.warn('Switch-type API failed:', e);
+              form.append(
+                'new_attachment_type',
+                mode === 'IMAGE' ? 'images' : mode === 'PDF' ? 'pdf' : 'csv'
+              );
+              await fetch('/api/auth/register-store-menu-uploads', {
+                method: 'POST',
+                credentials: 'include',
+                body: form,
+              });
             }
+            setMenuUploadMode(mode);
+            setMenuImageFiles([]);
+            setMenuUploadedImageUrls([]);
+            setMenuUploadedImageNames([]);
+            setMenuSpreadsheetFile(null);
+            setMenuUploadedSpreadsheetUrl(null);
+            setMenuUploadedSpreadsheetFileName(null);
+            setMenuPdfFile(null);
+            setMenuUploadedPdfUrl(null);
+            setMenuUploadedPdfFileName(null);
+            setMenuUploadIds([]);
+          } catch (e) {
+            console.warn('Switch-type API failed:', e);
+          } finally {
+            setConfirmModal(null);
           }
-          setMenuUploadMode(mode);
-          setMenuImageFiles([]);
-          setMenuUploadedImageUrls([]);
-          setMenuUploadedImageNames([]);
-          setMenuSpreadsheetFile(null);
-          setMenuUploadedSpreadsheetUrl(null);
-          setMenuUploadedSpreadsheetFileName(null);
-          setMenuPdfFile(null);
-          setMenuUploadedPdfUrl(null);
-          setMenuUploadedPdfFileName(null);
-          setMenuUploadIds([]);
-          setConfirmModal(null);
         },
         onCancel: () => setConfirmModal(null),
       });
@@ -1627,54 +1680,112 @@ const StoreRegistrationForm = () => {
 
   const nextStep = async () => {
     if (validateStep(step)) {
-      // Step 3: use menu uploads API (R2 + DB via merchant_store_media_files), then save progress
+      // Step 3: use partner-site menu uploads API (R2 + DB via merchant_store_media_files),
+      // then save progress. This route exists only in partnersite.
       if (step === 3) {
         setUploadLoading(true);
         try {
           const storeId = draftStoreDbId;
-          const hasNewFiles = menuImageFiles.length > 0 || menuSpreadsheetFile !== null || menuPdfFile !== null;
+          const hasNewFiles =
+            menuImageFiles.length > 0 ||
+            menuSpreadsheetFile !== null ||
+            menuPdfFile !== null;
           let step3Patch: Record<string, unknown> | undefined;
 
           if (storeId && hasNewFiles) {
             const form = new FormData();
-            form.append('store_id', String(storeId));
-            const at = menuUploadMode === 'IMAGE' ? 'images' : menuUploadMode === 'PDF' ? 'pdf' : 'csv';
-            form.append('attachment_type', at);
-            if (menuUploadMode === 'IMAGE' && menuImageFiles.length > 0) {
-              menuImageFiles.forEach((f) => form.append('files', f));
-            } else if (menuUploadMode === 'CSV' && menuSpreadsheetFile) {
-              form.append('file', menuSpreadsheetFile);
-            } else if (menuUploadMode === 'PDF' && menuPdfFile) {
-              form.append('file', menuPdfFile);
+            form.append("store_id", String(storeId));
+            const at =
+              menuUploadMode === "IMAGE"
+                ? "images"
+                : menuUploadMode === "PDF"
+                ? "pdf"
+                : "csv";
+            form.append("attachment_type", at);
+            if (menuUploadMode === "IMAGE" && menuImageFiles.length > 0) {
+              menuImageFiles.forEach((f) => form.append("files", f));
+            } else if (menuUploadMode === "CSV" && menuSpreadsheetFile) {
+              form.append("file", menuSpreadsheetFile);
+            } else if (menuUploadMode === "PDF" && menuPdfFile) {
+              form.append("file", menuPdfFile);
             }
-            const res = await fetch('/api/auth/register-store-menu-uploads', { method: 'POST', credentials: 'include', body: form });
+            const res = await fetch("/api/auth/register-store-menu-uploads", {
+              method: "POST",
+              credentials: "include",
+              body: form,
+            });
             const data = await res.json();
+            console.log("Menu upload API response:", {
+              status: res.status,
+              ok: res.ok,
+              attachmentType: at,
+              fileCount: (data.files || []).length,
+              error: data?.error,
+            });
             if (!res.ok) {
-              alert(data?.error || 'Upload failed. Please try again.');
+              alert(data?.error || "Upload failed. Please try again.");
               return;
             }
-            const files = (data.files || []) as { id: number; file_url: string; file_name: string | null; file_size: number | null }[];
+            const files = (data.files || []) as {
+              id: number;
+              file_url: string;
+              file_name: string | null;
+              file_size: number | null;
+            }[];
             const ids = files.map((f) => f.id);
             const urls = files.map((f) => f.file_url);
-            const names = files.map((f) => f.file_name ?? '');
-            if (menuUploadMode === 'IMAGE') {
+            const names = files.map((f) => f.file_name ?? "");
+            if (menuUploadMode === "IMAGE") {
               setMenuUploadedImageUrls(urls);
               setMenuUploadedImageNames(names);
               setMenuUploadIds(ids);
               setMenuImageFiles([]);
-              step3Patch = { step3: { menuUploadMode: 'IMAGE', menuImageUrls: urls, menuImageNames: names, menuUploadIds: ids, menuSpreadsheetUrl: null, menuSpreadsheetName: null, menuPdfUrl: null, menuPdfFileName: null } };
-            } else if (menuUploadMode === 'CSV') {
+              step3Patch = {
+                step3: {
+                  menuUploadMode: "IMAGE",
+                  menuImageUrls: urls,
+                  menuImageNames: names,
+                  menuUploadIds: ids,
+                  menuSpreadsheetUrl: null,
+                  menuSpreadsheetName: null,
+                  menuPdfUrl: null,
+                  menuPdfFileName: null,
+                },
+              };
+            } else if (menuUploadMode === "CSV") {
               setMenuUploadedSpreadsheetUrl(urls[0] ?? null);
               setMenuUploadedSpreadsheetFileName(names[0] ?? null);
               setMenuUploadIds(ids);
               setMenuSpreadsheetFile(null);
-              step3Patch = { step3: { menuUploadMode: 'CSV', menuSpreadsheetUrl: urls[0] ?? null, menuSpreadsheetName: names[0] ?? null, menuUploadIds: ids, menuImageUrls: [], menuImageNames: [], menuPdfUrl: null, menuPdfFileName: null } };
+              step3Patch = {
+                step3: {
+                  menuUploadMode: "CSV",
+                  menuSpreadsheetUrl: urls[0] ?? null,
+                  menuSpreadsheetName: names[0] ?? null,
+                  menuUploadIds: ids,
+                  menuImageUrls: [],
+                  menuImageNames: [],
+                  menuPdfUrl: null,
+                  menuPdfFileName: null,
+                },
+              };
             } else {
               setMenuUploadedPdfUrl(urls[0] ?? null);
               setMenuUploadedPdfFileName(names[0] ?? null);
               setMenuUploadIds(ids);
               setMenuPdfFile(null);
-              step3Patch = { step3: { menuUploadMode: 'PDF', menuPdfUrl: urls[0] ?? null, menuPdfFileName: names[0] ?? null, menuUploadIds: ids, menuImageUrls: [], menuImageNames: [], menuSpreadsheetUrl: null, menuSpreadsheetName: null } };
+              step3Patch = {
+                step3: {
+                  menuUploadMode: "PDF",
+                  menuPdfUrl: urls[0] ?? null,
+                  menuPdfFileName: names[0] ?? null,
+                  menuUploadIds: ids,
+                  menuImageUrls: [],
+                  menuImageNames: [],
+                  menuSpreadsheetUrl: null,
+                  menuSpreadsheetName: null,
+                },
+              };
             }
           } else {
             step3Patch = getStepPatch(3) as Record<string, unknown>;
@@ -1682,12 +1793,16 @@ const StoreRegistrationForm = () => {
 
           const result = await saveStepData(step, true, step3Patch, true);
           if (!result?.success) {
-            alert(result?.error || 'Data could not be saved. Please try again.');
+            alert(result?.error || "Data could not be saved. Please try again.");
             return;
           }
           setStep((prev) => prev + 1);
         } catch (uploadErr: unknown) {
-          alert(uploadErr instanceof Error ? uploadErr.message : 'Failed to upload menu file(s). Please try again.');
+          alert(
+            uploadErr instanceof Error
+              ? uploadErr.message
+              : "Failed to upload menu file(s). Please try again."
+          );
         } finally {
           setUploadLoading(false);
         }
@@ -1751,6 +1866,9 @@ const StoreRegistrationForm = () => {
       ['drug_license_image', 'drug_license_image_url'],
       ['pharmacist_certificate', 'pharmacist_certificate_url'],
       ['pharmacy_council_registration', 'pharmacy_council_registration_url'],
+      ['trade_license_document', 'trade_license_document_url'],
+      ['shop_establishment_document', 'shop_establishment_document_url'],
+      ['udyam_document', 'udyam_document_url'],
       ['other_document_file', 'other_document_file_url'],
     ];
     for (const [fileKey, urlKey] of urlPairs) {
@@ -1792,6 +1910,9 @@ const StoreRegistrationForm = () => {
         'drug_license_image',
         'pharmacist_certificate',
         'pharmacy_council_registration',
+        'trade_license_document',
+        'shop_establishment_document',
+        'udyam_document',
         'other_document_file',
       ];
       for (const key of uploadableDocKeys) {
@@ -1803,7 +1924,8 @@ const StoreRegistrationForm = () => {
             await deleteR2ObjectIfExists(existingUrl);
           }
           const url = await uploadToR2(value, documentsPath, `${key}_${Date.now()}`);
-          docsPatch[urlKey] = url;
+          // Store as proxy URL so "View certificate" always works consistently
+          docsPatch[urlKey] = `/api/attachments/proxy?key=${encodeURIComponent(String(url).replace(/^\/+/, ''))}`;
         } else {
           docsPatch[urlKey] = (docs as any)[urlKey] ?? null;
         }
@@ -1816,7 +1938,7 @@ const StoreRegistrationForm = () => {
             await deleteR2ObjectIfExists(bank.bank_proof_file_url);
           }
           const url = await uploadToR2(bank.bank_proof_file, bankPath, `bank_proof_${Date.now()}`);
-          docsPatch.bank.bank_proof_file_url = url;
+          docsPatch.bank.bank_proof_file_url = `/api/attachments/proxy?key=${encodeURIComponent(String(url).replace(/^\/+/, ''))}`;
         } else {
           docsPatch.bank.bank_proof_file_url = bank.bank_proof_file_url ?? null;
         }
@@ -1825,7 +1947,7 @@ const StoreRegistrationForm = () => {
             await deleteR2ObjectIfExists(bank.upi_qr_screenshot_url);
           }
           const url = await uploadToR2(bank.upi_qr_file, bankPath, `upi_qr_${Date.now()}`);
-          docsPatch.bank.upi_qr_screenshot_url = url;
+          docsPatch.bank.upi_qr_screenshot_url = `/api/attachments/proxy?key=${encodeURIComponent(String(url).replace(/^\/+/, ''))}`;
         } else {
           docsPatch.bank.upi_qr_screenshot_url = bank.upi_qr_screenshot_url ?? null;
         }
@@ -2101,7 +2223,7 @@ const StoreRegistrationForm = () => {
     'Store Informations',
     'Location details',
     'Menu setup',
-    'Restaurant documents',
+    'Store documents',
     'Operational details',
     'Preview',
     'Commission plan',
@@ -2115,92 +2237,120 @@ const StoreRegistrationForm = () => {
 
   if (showSuccess) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 overflow-auto hide-scrollbar">
-        {/* Top Header - logo only; success message is in main content below */}
-        <div className="bg-white border-b border-slate-200 px-3 sm:px-6 py-2.5 sm:py-3 shadow-sm">
-          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-            <img src="/logo.png" alt="GatiMitra" className="h-8 sm:h-9 w-auto object-contain shrink-0" />
-            <span className="text-base sm:text-lg font-semibold text-slate-800 truncate">GatiMitra</span>
+      <div className="min-h-screen bg-slate-50/80 overflow-auto hide-scrollbar">
+        {/* Compact top header */}
+        <div className="bg-white/90 backdrop-blur border-b border-slate-200 px-3 sm:px-6 py-2.5 shadow-sm">
+          <div className="max-w-3xl mx-auto flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <img src="/logo.png" alt="GatiMitra" className="h-7 sm:h-8 w-auto object-contain shrink-0" />
+              <span className="text-sm sm:text-base font-semibold text-slate-800 truncate">GatiMitra Partner</span>
+            </div>
+            {generatedStoreId && (
+              <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700 border border-emerald-100">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  Registered
+                </span>
+                <span className="text-slate-400">•</span>
+                <span>
+                  Store ID:{" "}
+                  <span className="font-mono font-semibold text-slate-700">
+                    {generatedStoreId}
+                  </span>
+                </span>
+              </div>
+            )}
           </div>
         </div>
-        
-        {/* Success Content - responsive padding and scroll */}
-        <div className="min-h-[calc(100vh-52px)] p-3 sm:p-4 flex items-center justify-center py-6 sm:py-8 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
-          <div className="w-full max-w-2xl bg-white rounded-xl sm:rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-            <div className="p-4 sm:p-6 md:p-8">
-              {/* Success Icon */}
-              <div className="flex justify-center mb-4 sm:mb-6">
-                <div className="w-16 h-16 sm:w-20 sm:h-20 bg-emerald-100 rounded-full flex items-center justify-center">
-                  <svg className="w-8 h-8 sm:w-10 sm:h-10 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-              </div>
-              
-              {/* Success Message */}
-              <div className="text-center mb-6 sm:mb-8">
-                <h2 className="text-xl sm:text-2xl font-bold text-slate-800 mb-2 sm:mb-3">Store Successfully Registered!</h2>
-                <p className="text-sm sm:text-base text-slate-600">
-                  Your store has been registered successfully with all documents verified.
-                </p>
-              </div>
-              
-              {/* Store ID Card */}
-              <div className="bg-gradient-to-r from-indigo-50 to-violet-50 rounded-lg sm:rounded-xl p-4 sm:p-6 mb-6 sm:mb-8 border border-indigo-200">
-                <div className="text-center">
-                  <div className="text-xs sm:text-sm font-medium text-slate-600 mb-1 sm:mb-2">Your Store ID</div>
-                  <div className="text-2xl sm:text-3xl md:text-4xl font-bold text-indigo-700 mb-2 sm:mb-3 font-mono tracking-wider break-all">
-                    {generatedStoreId}
+
+        {/* Success content */}
+        <div className="min-h-[calc(100vh-52px)] flex items-center justify-center px-3 sm:px-4 py-6 sm:py-10">
+          <div className="w-full max-w-xl">
+            <div className="bg-white rounded-2xl shadow-xl border border-slate-200/80 overflow-hidden">
+              <div className="h-1.5 bg-gradient-to-r from-emerald-400 via-sky-400 to-indigo-500" />
+
+              <div className="p-4 sm:p-6 md:p-7">
+                {/* Icon + title */}
+                <div className="flex items-center gap-3 sm:gap-4 mb-5 sm:mb-6">
+                  <div className="flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-emerald-50 border border-emerald-100 shadow-sm">
+                    <svg className="w-7 h-7 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.6} d="M5 13l4 4L19 7" />
+                    </svg>
                   </div>
-                  <p className="text-xs sm:text-sm text-slate-600">
-                    This is your unique Store ID. Please save it for future reference.
-                  </p>
-                </div>
-              </div>
-              
-              {/* Information Box */}
-              <div className="bg-slate-50 rounded-lg p-3 sm:p-4 mb-6 sm:mb-8">
-                <div className="flex items-start gap-2 sm:gap-3">
-                  <svg className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                  </svg>
                   <div className="min-w-0">
-                    <p className="text-xs sm:text-sm text-slate-700">
-                      Your Store ID (<span className="font-bold">{generatedStoreId}</span>) has been generated and assigned to your store. 
-                      You can use this ID for all future references, orders, and communications.
+                    <h2 className="text-lg sm:text-xl font-semibold text-slate-900">
+                      Store Successfully Registered!
+                    </h2>
+                    <p className="text-xs sm:text-sm text-slate-600">
+                      All details have been submitted. Your store is now ready for verification.
                     </p>
                   </div>
                 </div>
-              </div>
-              
-              {/* Action Buttons - responsive */}
-              <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-                <button
-                  onClick={handleViewStore}
-                  className="flex-1 px-4 sm:px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 text-sm sm:text-base"
-                >
-                  <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                  View Your Store
-                </button>
-                <button
-                  onClick={handleRegisterNewStore}
-                  className="flex-1 px-4 sm:px-6 py-3 border-2 border-indigo-200 text-indigo-700 font-medium rounded-lg hover:bg-indigo-50 transition-colors flex items-center justify-center gap-2 text-sm sm:text-base"
-                >
-                  <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
-                  Register New Store
-                </button>
-              </div>
-              
-              {/* Additional Info */}
-              <div className="mt-6 sm:mt-8 pt-4 sm:pt-6 border-t border-slate-200 text-center">
-                <p className="text-xs sm:text-sm text-slate-500">
-                  Need help? Contact support at <a href="mailto:partnerhelp@gatimitra.in" className="text-indigo-600 hover:underline">partnerhelp@gatimitra.in</a>
-                </p>
+
+                {/* Store ID highlight */}
+                {generatedStoreId && (
+                  <div className="rounded-2xl bg-gradient-to-b from-indigo-50 via-slate-50 to-slate-50 border border-indigo-100/80 px-4 sm:px-5 py-4 sm:py-5 mb-4 sm:mb-5">
+                    <div className="text-center">
+                      <p className="text-[11px] sm:text-xs font-medium uppercase tracking-[0.16em] text-slate-500 mb-2">
+                        Your Store ID
+                      </p>
+                      <p className="text-2xl sm:text-3xl font-semibold tracking-[0.2em] text-indigo-700 font-mono mb-1 break-all">
+                        {generatedStoreId}
+                      </p>
+                      <p className="text-[11px] sm:text-xs text-slate-500">
+                        Save this ID for all future references, orders, and support conversations.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Compact info row */}
+                <div className="rounded-xl bg-slate-50 border border-slate-200/80 px-3.5 py-3 mb-5">
+                  <div className="flex items-start gap-2.5">
+                    <div className="mt-0.5">
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-sky-100 text-sky-600 text-xs font-semibold">
+                        i
+                      </span>
+                    </div>
+                    <p className="text-[11px] sm:text-xs text-slate-700 leading-relaxed">
+                      You’ll shortly receive a confirmation email with your store details and next steps.
+                      Use your Store ID whenever you talk to the GatiMitra team.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Buttons */}
+                <div className="flex flex-col sm:flex-row gap-2.5 sm:gap-3 mb-3">
+                  <button
+                    onClick={handleViewStore}
+                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 text-white text-sm sm:text-[15px] font-medium px-4 sm:px-5 py-2.5 shadow-sm hover:bg-indigo-700 transition-colors"
+                  >
+                    <svg className="w-4.5 h-4.5 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                    <span>View Your Store</span>
+                  </button>
+                  <button
+                    onClick={handleRegisterNewStore}
+                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 text-slate-700 text-sm sm:text-[15px] font-medium px-4 sm:px-5 py-2.5 bg-white hover:bg-slate-50 transition-colors"
+                  >
+                    <svg className="w-4.5 h-4.5 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12m6-6H6" />
+                    </svg>
+                    <span>Register New Store</span>
+                  </button>
+                </div>
+
+                {/* Help text */}
+                <div className="pt-3 border-t border-slate-200 text-center">
+                  <p className="text-[11px] sm:text-xs text-slate-500">
+                    Need help? Contact{" "}
+                    <a href="mailto:support@gatimitra.com" className="text-indigo-600 hover:underline">
+                      support@gatimitra.com
+                    </a>
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -2498,12 +2648,22 @@ const StoreRegistrationForm = () => {
               </button>
               <button
                 type="button"
-                onClick={() => { confirmModal.onConfirm(); }}
-                className={`px-4 py-2.5 rounded-lg font-medium text-white ${
-                  confirmModal.variant === 'error' ? 'bg-red-600 hover:bg-red-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                disabled={!!confirmModal.isLoading}
+                onClick={() => {
+                  if (!confirmModal.isLoading) {
+                    confirmModal.onConfirm();
+                  }
+                }}
+                className={`px-4 py-2.5 rounded-lg font-medium text-white inline-flex items-center justify-center gap-2 ${
+                  confirmModal.variant === 'error'
+                    ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-400'
+                    : 'bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400'
                 }`}
               >
-                {confirmModal.confirmLabel ?? 'Confirm'}
+                {confirmModal.isLoading && (
+                  <span className="h-4 w-4 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
+                )}
+                <span>{confirmModal.confirmLabel ?? 'Confirm'}</span>
               </button>
             </div>
           </div>
@@ -3168,6 +3328,11 @@ const StoreRegistrationForm = () => {
                             fssai_expiry_date: saved.step4.fssai_expiry_date ?? prev.fssai_expiry_date,
                             drug_license_expiry_date: saved.step4.drug_license_expiry_date ?? prev.drug_license_expiry_date,
                             pharmacist_expiry_date: saved.step4.pharmacist_expiry_date ?? prev.pharmacist_expiry_date,
+                            trade_license_number: (s4 as any).trade_license_number ?? (prev as any).trade_license_number,
+                            trade_license_expiry_date: (s4 as any).trade_license_expiry_date ?? (prev as any).trade_license_expiry_date,
+                            shop_establishment_number: (s4 as any).shop_establishment_number ?? (prev as any).shop_establishment_number,
+                            shop_establishment_expiry_date: (s4 as any).shop_establishment_expiry_date ?? (prev as any).shop_establishment_expiry_date,
+                            udyam_number: (s4 as any).udyam_number ?? (prev as any).udyam_number,
                             other_document_type: saved.step4.other_document_type ?? prev.other_document_type,
                             other_document_number: saved.step4.other_document_number ?? prev.other_document_number,
                             other_document_name: saved.step4.other_document_name ?? prev.other_document_name,
@@ -3180,13 +3345,28 @@ const StoreRegistrationForm = () => {
                             drug_license_image_url: (typeof s4.drug_license_image_url === 'string' ? s4.drug_license_image_url : null) ?? null,
                             pharmacist_certificate_url: (typeof s4.pharmacist_certificate_url === 'string' ? s4.pharmacist_certificate_url : null) ?? null,
                             pharmacy_council_registration_url: (typeof s4.pharmacy_council_registration_url === 'string' ? s4.pharmacy_council_registration_url : null) ?? null,
+                            trade_license_document_url: (typeof (s4 as any).trade_license_document_url === 'string' ? (s4 as any).trade_license_document_url : null) ?? null,
+                            shop_establishment_document_url: (typeof (s4 as any).shop_establishment_document_url === 'string' ? (s4 as any).shop_establishment_document_url : null) ?? null,
+                            udyam_document_url: (typeof (s4 as any).udyam_document_url === 'string' ? (s4 as any).udyam_document_url : null) ?? null,
                             other_document_file_url: (typeof s4.other_document_file_url === 'string' ? s4.other_document_file_url : null) ?? null,
                             bank: saved.step4.bank && typeof saved.step4.bank === 'object'
                               ? {
                                   ...(prev.bank || {}),
                                   ...saved.step4.bank,
-                                  bank_proof_file_url: (typeof (saved.step4.bank as any).bank_proof_file_url === 'string' ? (saved.step4.bank as any).bank_proof_file_url : null) ?? null,
-                                  upi_qr_screenshot_url: (typeof (saved.step4.bank as any).upi_qr_screenshot_url === 'string' ? (saved.step4.bank as any).upi_qr_screenshot_url : null) ?? null,
+                                  account_type:
+                                    (saved.step4.bank as any).account_type ??
+                                    (prev.bank ? prev.bank.account_type : ''),
+                                  bank_proof_type:
+                                    (saved.step4.bank as any).bank_proof_type ??
+                                    (prev.bank as any)?.bank_proof_type,
+                                  bank_proof_file_url:
+                                    (typeof (saved.step4.bank as any).bank_proof_file_url === 'string'
+                                      ? (saved.step4.bank as any).bank_proof_file_url
+                                      : null) ?? null,
+                                  upi_qr_screenshot_url:
+                                    (typeof (saved.step4.bank as any).upi_qr_screenshot_url === 'string'
+                                      ? (saved.step4.bank as any).upi_qr_screenshot_url
+                                      : null) ?? null,
                                 }
                               : prev.bank,
                           }));
@@ -3319,11 +3499,12 @@ const StoreRegistrationForm = () => {
                   setActionLoading(false);
                 }
               }}
-              onContinue={async (text) => {
+              onContinue={async ({ contractText, agreedToRead }) => {
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 8, nextStep: 9, markStepComplete: true, formDataPatch: {} });
-                  setContractTextForSignature(text);
+                  setContractTextForSignature(contractText);
+                  setAgreementReadConfirmed(!!agreedToRead);
                   setStep(9);
                 } catch (err) {
                   console.error('Failed to save step 8 data:', err);
@@ -3363,6 +3544,7 @@ const StoreRegistrationForm = () => {
               agreementTemplate={agreementTemplate}
               defaultAgreementText={agreementTemplate?.content_markdown || MERCHANT_PARTNERSHIP_TERMS}
               contractTextForPdf={contractTextForSignature}
+              agreementReadConfirmed={agreementReadConfirmed}
               logoUrl={typeof process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL === "string" && process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL ? process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL : "/logo.png"}
               onBack={async () => {
                 setActionLoading(true);

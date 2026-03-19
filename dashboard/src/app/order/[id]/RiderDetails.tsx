@@ -347,16 +347,31 @@ function RiderLogModal({ isOpen, onClose, onCopy }: RiderLogModalProps) {
   );
 }
 
+type CancelActionOption = "" | "CANCEL" | "CANCEL_ASSIGN";
+
 export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetailsProps) {
   const [showLogModal, setShowLogModal] = useState(false);
   const [riderAttribute, setRiderAttribute] = useState("");
   const [rejectionOptions, setRejectionOptions] = useState<string[]>([]);
+  const [rejectionOption, setRejectionOption] = useState("");
+  const [cancelAction, setCancelAction] = useState<CancelActionOption>("");
 
   const handleAttributeChange = (value: string) => {
     setRiderAttribute(value);
     const key = value as keyof typeof STANDARD_REMARKS;
     setRejectionOptions(STANDARD_REMARKS[key] || []);
+    setRejectionOption("");
+    setCancelAction("");
   };
+
+  const handleRejectionOptionChange = (value: string) => {
+    setRejectionOption(value);
+    setCancelAction("");
+  };
+
+  const isSecondDropdownEnabled = !!riderAttribute;
+  const isThirdDropdownEnabled = isSecondDropdownEnabled && !!rejectionOption;
+  const isButtonEnabled = isThirdDropdownEnabled && !!cancelAction;
 
   const riderName = order.riderName || "—";
   const riderMobile = order.riderMobile || "—";
@@ -518,31 +533,64 @@ export default function RiderDetails({ order, onCopy, onPhoneClick }: RiderDetai
               </select>
             </div>
             <div className="relative flex-1 focus-within:z-20">
-              <select className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer">
-                <option>Select Rejection Option</option>
+              <select
+                className={`relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                  isSecondDropdownEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-60"
+                }`}
+                value={rejectionOption}
+                onChange={(e) => handleRejectionOptionChange(e.target.value)}
+                disabled={!isSecondDropdownEnabled}
+              >
+                <option value="">Select Rejection Option</option>
                 {rejectionOptions.map((o) => (
-                  <option key={o}>{o}</option>
+                  <option key={o} value={o}>{o}</option>
                 ))}
               </select>
             </div>
             <div className="relative flex-1 focus-within:z-20">
-              <select className="relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white cursor-pointer">
-                <option>Select Option</option>
+              <select
+                className={`relative z-10 flex-1 h-8 w-full border border-slate-300 rounded px-2 bg-white ${
+                  isThirdDropdownEnabled ? "cursor-pointer" : "cursor-not-allowed opacity-60"
+                }`}
+                value={cancelAction}
+                onChange={(e) =>
+                  setCancelAction(e.target.value as CancelActionOption)
+                }
+                disabled={!isThirdDropdownEnabled}
+              >
+                <option value="">Select Option</option>
                 <option value="CANCEL">CANCEL</option>
                 <option value="CANCEL_ASSIGN">CANCEL &amp; ASSIGN</option>
               </select>
             </div>
             <button
               type="button"
-              className="h-8 px-3 bg-red-600 hover:bg-red-700 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1 mt-1 md:mt-0 cursor-pointer"
+              disabled={!isButtonEnabled}
+              className={`h-8 px-3 rounded text-[11px] font-semibold inline-flex items-center gap-1 mt-1 md:mt-0 ${
+                isButtonEnabled
+                  ? cancelAction === "CANCEL_ASSIGN"
+                    ? "bg-slate-700 hover:bg-slate-800 text-white cursor-pointer"
+                    : "bg-red-600 hover:bg-red-700 text-white cursor-pointer"
+                  : "bg-slate-300 text-slate-500 cursor-not-allowed"
+              }`}
               onClick={() => {
+                if (!isButtonEnabled) return;
                 // Placeholder action; cancel flow can be wired later.
                 // eslint-disable-next-line no-alert
                 alert("Rider cancellation flow will be implemented soon.");
               }}
             >
-              <i className="bi bi-x-circle" />
-              Cancel
+              {cancelAction === "CANCEL_ASSIGN" ? (
+                <>
+                  <i className="bi bi-arrow-repeat" />
+                  Cancel &amp; Assign
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-x-circle" />
+                  Cancel
+                </>
+              )}
             </button>
           </div>
         </div>
