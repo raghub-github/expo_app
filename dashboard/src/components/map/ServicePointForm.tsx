@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Plus, X } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { useCreateServicePoint } from "@/hooks/queries/useServicePointsQuery";
+import { useCreateServicePointMutation, useGeocodeCityMutation } from "@/store/api/dashboardHomeApi";
 
 interface ServicePointFormProps {
   onSuccess?: () => void;
@@ -12,10 +12,10 @@ interface ServicePointFormProps {
 
 export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [geocodeLoading, setGeocodeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const createServicePoint = useCreateServicePoint();
+  const [createServicePoint, { isLoading: createLoading }] = useCreateServicePointMutation();
+  const [geocodeCity, { isLoading: geocodeLoading }] = useGeocodeCityMutation();
   
   const [formData, setFormData] = useState({
     name: "",
@@ -32,33 +32,16 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
       setError("Please enter a city name");
       return;
     }
-
-    setGeocodeLoading(true);
     setError(null);
-
     try {
-      const response = await fetch("/api/service-points/geocode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ city: formData.city }),
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setFormData((prev) => ({
-          ...prev,
-          latitude: result.data.latitude.toString(),
-          longitude: result.data.longitude.toString(),
-        }));
-        setError(null);
-      } else {
-        setError(result.error || "Failed to geocode city");
-      }
+      const data = await geocodeCity({ city: formData.city.trim() }).unwrap();
+      setFormData((prev) => ({
+        ...prev,
+        latitude: data.latitude.toString(),
+        longitude: data.longitude.toString(),
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to geocode city");
-    } finally {
-      setGeocodeLoading(false);
     }
   };
 
@@ -88,9 +71,8 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
         address: formData.address || null,
       };
 
-      await createServicePoint.mutateAsync(payload);
-      
-      // Wait a moment for the query to refetch before closing
+      await createServicePoint(payload).unwrap();
+
       setSuccess(true);
       setFormData({
         name: "",
@@ -99,18 +81,11 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
         longitude: "",
         address: "",
       });
-      
-      // Give time for the mutation to complete and query to refetch
+
       setTimeout(() => {
         setIsOpen(false);
         setSuccess(false);
-        // Call onSuccess callback to trigger map refresh
-        if (onSuccess) {
-          // Small delay to ensure query has refetched
-          setTimeout(() => {
-            onSuccess();
-          }, 300);
-        }
+        if (onSuccess) setTimeout(onSuccess, 300);
       }, 1500);
     } catch (err) {
       // Show user-friendly error message
@@ -323,7 +298,7 @@ export function ServicePointForm({ onSuccess }: ServicePointFormProps) {
             </button>
             <LoadingButton
               type="submit"
-              loading={createServicePoint.isPending || geocodeLoading}
+              loading={createLoading || geocodeLoading}
               loadingText="Creating..."
               variant="primary"
               size="md"

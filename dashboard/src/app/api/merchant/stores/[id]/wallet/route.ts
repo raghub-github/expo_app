@@ -1,13 +1,10 @@
 /**
  * GET /api/merchant/stores/[id]/wallet
- * Returns wallet balance and ledger for the store (dashboard MX view).
+ * Returns wallet summary for the store (dashboard MX view).
  */
 import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
-import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
-import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { assertStoreAccess } from "@/app/api/merchant/stores/[id]/menu/assert-store-access";
+import { getWalletSummary } from "@/lib/db/operations/merchant-wallet";
 
 export const runtime = "nodejs";
 
@@ -21,42 +18,36 @@ export async function GET(
     if (!Number.isFinite(storeId)) {
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    const access = await assertStoreAccess(storeId);
+    if (!access.ok) {
+      return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
+    let summary;
+    try {
+      summary = await getWalletSummary(storeId);
+    } catch (walletErr) {
+      console.error("[GET /api/merchant/stores/[id]/wallet] getWalletSummary:", walletErr);
+      summary = {
+        wallet_id: 0,
+        available_balance: 0,
+        pending_balance: 0,
+        hold_balance: 0,
+        reserve_balance: 0,
+        locked_balance: 0,
+        pending_settlement: 0,
+        lifetime_credit: 0,
+        lifetime_debit: 0,
+        total_earned: 0,
+        total_withdrawn: 0,
+        total_penalty: 0,
+        total_commission_deducted: 0,
+        status: "ACTIVE" as const,
+        today_earning: 0,
+        yesterday_earning: 0,
+        pending_withdrawal_total: 0,
+      };
     }
-    let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
-      const systemUser = await getSystemUserByEmail(user.email);
-      if (systemUser) {
-        const am = await getAreaManagerByUserId(systemUser.id);
-        if (am) areaManagerId = am.id;
-      }
-    }
-    const store = await getMerchantStoreById(storeId, areaManagerId);
-    if (!store) {
-      return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
-    }
-    // TODO: load from merchant_wallet / ledger when wired to dashboard DB
-    return NextResponse.json({
-      success: true,
-      balance: 0,
-      ledger: [],
-      available_balance: 0,
-      pending_balance: 0,
-      today_earning: 0,
-      yesterday_earning: 0,
-      total_earned: 0,
-      total_withdrawn: 0,
-      pending_withdrawal_total: 0,
-    });
+    return NextResponse.json({ success: true, ...summary });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/wallet]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

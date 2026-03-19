@@ -9,6 +9,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -57,7 +58,7 @@ export async function PATCH(
     const body = await request.json().catch(() => ({}));
     const sql = getSql();
     const [existing] = await sql`
-      SELECT id FROM merchant_offers WHERE id = ${offerIdNum} AND store_id = ${storeId}
+      SELECT id, offer_metadata FROM merchant_offers WHERE id = ${offerIdNum} AND store_id = ${storeId}
     `;
     if (!existing) {
       return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
@@ -73,6 +74,7 @@ export async function PATCH(
       buy_quantity,
       get_quantity,
       coupon_code,
+      offer_image_url,
       valid_from,
       valid_till,
       is_active,
@@ -83,6 +85,22 @@ export async function PATCH(
     if (offer_title !== undefined) {
       updates.push(`offer_title = $${p++}`);
       values.push(String(offer_title).trim());
+    }
+    if (offer_description !== undefined) {
+      updates.push(`offer_description = $${p++}`);
+      values.push(offer_description == null || offer_description === "" ? null : String(offer_description));
+    }
+    if (offer_sub_type !== undefined) {
+      updates.push(`offer_sub_type = $${p++}`);
+      values.push(String(offer_sub_type));
+    }
+    if (coupon_code !== undefined) {
+      updates.push(`coupon_code = $${p++}`);
+      values.push(coupon_code == null || coupon_code === "" ? null : String(coupon_code));
+    }
+    if (offer_image_url !== undefined) {
+      updates.push(`offer_image_url = $${p++}`);
+      values.push(offer_image_url == null || offer_image_url === "" ? null : String(offer_image_url));
     }
     if (valid_from !== undefined) {
       updates.push(`valid_from = $${p++}`);
@@ -99,6 +117,13 @@ export async function PATCH(
     if (offer_type !== undefined) {
       updates.push(`offer_type = $${p++}`);
       values.push(offer_type);
+    }
+    if (menu_item_ids !== undefined) {
+      // Keep offer targeting consistent across platforms: store menu_item_ids inside offer_metadata.
+      const currentMeta = ((existing as any).offer_metadata as Record<string, unknown>) ?? {};
+      const nextMeta = { ...currentMeta, menu_item_ids: Array.isArray(menu_item_ids) ? menu_item_ids : null };
+      updates.push(`offer_metadata = $${p++}::jsonb`);
+      values.push(JSON.stringify(nextMeta));
     }
     if (discount_value !== undefined && discount_value !== "") {
       const type = offer_type ?? "PERCENTAGE";
@@ -131,12 +156,15 @@ export async function PATCH(
     const setClause = updates.join(", ");
     const sqlUnsafe = sql as { unsafe: (q: string, v?: unknown[]) => Promise<unknown[]> };
     const [updated] = await sqlUnsafe.unsafe(
-      `UPDATE merchant_offers SET ${setClause} WHERE id = $${p} AND store_id = ${storeId} RETURNING id, offer_id, store_id, offer_title, offer_type, discount_value, discount_percentage, min_order_amount, valid_from, valid_till, is_active, created_at`,
+      `UPDATE merchant_offers SET ${setClause} WHERE id = $${p} AND store_id = ${storeId} RETURNING id, offer_id, store_id, offer_title, offer_description, offer_sub_type, coupon_code, offer_image_url, offer_type, discount_value, discount_percentage, min_order_amount, valid_from, valid_till, is_active, created_at, updated_at`,
       values
     );
     if (!updated) {
       return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
     }
+    try {
+      await logStoreActivity({ storeId, section: "offer", action: "update", entityId: offerIdNum, summary: `Agent updated offer`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, offer: updated });
   } catch (e) {
     console.error("[PATCH /api/merchant/stores/[id]/offers/[offerId]]", e);
@@ -168,6 +196,9 @@ export async function DELETE(
     if (!updated) {
       return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
     }
+    try {
+      await logStoreActivity({ storeId, section: "offer", action: "delete", entityId: offerIdNum, summary: `Agent deleted offer`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/offers/[offerId]]", e);

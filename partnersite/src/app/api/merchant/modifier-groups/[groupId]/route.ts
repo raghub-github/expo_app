@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -84,6 +85,18 @@ export async function PUT(
     console.error('[PUT /api/merchant/modifier-groups/[groupId]]', updateErr.message)
     return NextResponse.json({ success: false, error: updateErr.message }, { status: 500 })
   }
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'addon',
+      action: 'update',
+      entityId: groupId,
+      entityName: title,
+      summary: `Merchant updated modifier group #${groupId} "${title}"`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, ok: true })
 }
 
@@ -117,5 +130,17 @@ export async function DELETE(
     console.error('[DELETE /api/merchant/modifier-groups/[groupId]]', error.message)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
+
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'addon',
+      action: 'delete',
+      entityId: groupId,
+      summary: `Merchant deleted modifier group #${groupId}`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, ok: true })
 }

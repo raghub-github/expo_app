@@ -1,23 +1,27 @@
 /**
  * Shared store access for dashboard menu API routes.
+ * Returns MerchantAccess for fine-grained permission checks.
  */
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { getMerchantAccess, type MerchantAccess } from "@/lib/permissions/merchant-access";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import crypto from "node:crypto";
 
-export async function assertStoreAccess(storeId: number) {
+export async function assertStoreAccess(storeId: number): Promise<
+  | { ok: false; status: number; error: string }
+  | { ok: true; access: MerchantAccess; user: { id: string; email: string } }
+> {
   const supabase = await createServerSupabaseClient();
   const { data: { user }, error } = await supabase.auth.getUser();
   if (error || !user?.email) return { ok: false as const, status: 401, error: "Not authenticated" };
-  const allowed =
-    (await isSuperAdmin(user.id, user.email)) ||
-    (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-  if (!allowed) return { ok: false as const, status: 403, error: "Merchant dashboard access required" };
+
+  const access = await getMerchantAccess(user.id, user.email);
+  if (!access) return { ok: false as const, status: 403, error: "Merchant dashboard access required" };
+
   let areaManagerId: number | null = null;
-  if (!(await isSuperAdmin(user.id, user.email))) {
+  if (!access.isSuperAdmin && !access.isAdmin) {
     const systemUser = await getSystemUserByEmail(user.email);
     if (systemUser) {
       const am = await getAreaManagerByUserId(systemUser.id);
@@ -26,7 +30,7 @@ export async function assertStoreAccess(storeId: number) {
   }
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) return { ok: false as const, status: 404, error: "Store not found" };
-  return { ok: true as const };
+  return { ok: true as const, access, user: { id: user.id, email: user.email } };
 }
 
 function genId(prefix: string) {

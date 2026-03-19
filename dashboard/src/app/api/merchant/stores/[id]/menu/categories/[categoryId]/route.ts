@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -53,6 +54,9 @@ export async function PUT(
           updated_at = NOW()
       WHERE id = ${catId} AND store_id = ${storeId}
     `;
+    try {
+      await logStoreActivity({ storeId, section: "category", action: "update", entityId: catId, summary: `Agent updated category #${catId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/categories/[categoryId]]", e);
@@ -89,6 +93,9 @@ export async function DELETE(
     if ((result as any)?.count === 0) {
       return NextResponse.json({ success: false, error: "Category not found" }, { status: 404 });
     }
+    try {
+      await logStoreActivity({ storeId, section: "category", action: "delete", entityId: catId, summary: `Agent deleted category #${catId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/categories/[categoryId]]", e);

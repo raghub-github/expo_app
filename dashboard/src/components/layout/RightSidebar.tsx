@@ -19,6 +19,7 @@ import { TicketPropertiesPanel } from "@/components/tickets/ticket-view/TicketPr
 import { usePermission } from "@/hooks/usePermission";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
+import { WalletRequestsSummarySidebar } from "@/components/merchants/WalletRequestsSummarySidebar";
 import { useStore } from "@/hooks/useStore";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 
@@ -307,6 +308,22 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
+                    {/* Wallet requests: show only when NO specific store is selected (global context) */}
+                    {isOpen && isMerchantsDashboard && (
+                      (() => {
+                        const effectiveStoreId =
+                          storeIdFromPath ??
+                          (merchantSearchResultStore?.storeId != null
+                            ? String(merchantSearchResultStore.storeId)
+                            : null);
+                        if (effectiveStoreId) return null;
+                        return (
+                          <div className="mt-3 min-w-0">
+                            <WalletRequestsSummarySidebar />
+                          </div>
+                        );
+                      })()
+                    )}
                     {/* Store Information Card: merchant portal — from URL store, or from search result on list page; skeleton when search loading */}
                     {isOpen && portal === "merchant" && (
                       <div className="mt-3 min-w-0">

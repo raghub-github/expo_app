@@ -16,6 +16,7 @@ import {
   CUSTOMIZATION_VARIANT_LIMIT,
   SERVES_OPTIONS,
   SIZE_UNITS,
+  normalizeSpiceLevelForForm,
 } from "./menu-types";
 
 export interface ItemFormData {
@@ -157,19 +158,7 @@ export function MenuItemForm({
       .catch(() => {});
   }, [showLinkAddonPicker, storeId]);
 
-  useEffect(() => {
-    const base = parseFloat(formData.base_price) || 0;
-    const discount = parseFloat(formData.discount_percentage) || 0;
-    const tax = parseFloat(formData.tax_percentage) || 0;
-    if (base > 0) {
-      const selling = base - (base * discount) / 100 + (base * tax) / 100;
-      if (!isNaN(selling)) {
-        setFormData((prev) => ({ ...prev, selling_price: selling.toFixed(2) }));
-      }
-    } else {
-      setFormData((prev) => ({ ...prev, selling_price: "" }));
-    }
-  }, [formData.base_price, formData.discount_percentage, formData.tax_percentage, setFormData]);
+  // Selling price is not auto-calculated; offer/discount is set separately. Base and selling show actual API values.
 
   const selectedCuisines: string[] = formData.cuisine_type
     ? String(formData.cuisine_type)
@@ -274,9 +263,6 @@ export function MenuItemForm({
     setFormData({ ...formData, customizations: updated });
   };
 
-  const offerNum = Number(formData.discount_percentage);
-  const isOfferInvalid =
-    formData.discount_percentage !== "" && (isNaN(offerNum) || offerNum < 0 || offerNum > 100);
   const taxNum = Number(formData.tax_percentage);
   const isTaxInvalid =
     formData.tax_percentage !== "" && (isNaN(taxNum) || taxNum < 0 || taxNum > 100);
@@ -398,8 +384,8 @@ export function MenuItemForm({
                 >
                   <option value="">—</option>
                   {FOOD_TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
+                    <option key={t.value} value={t.value}>
+                      {t.label}
                     </option>
                   ))}
                 </select>
@@ -408,7 +394,7 @@ export function MenuItemForm({
                 <label className="text-xs font-medium text-gray-600">Spice</label>
                 <select
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  value={formData.spice_level || ""}
+                  value={normalizeSpiceLevelForForm(formData.spice_level)}
                   onChange={(e) => setFormData({ ...formData, spice_level: e.target.value })}
                 >
                   <option value="">—</option>
@@ -625,7 +611,7 @@ export function MenuItemForm({
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               <div>
                 <label className="text-xs font-medium text-gray-600">Base price (₹) *</label>
                 <input
@@ -640,40 +626,29 @@ export function MenuItemForm({
                 {isBaseInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-600">Selling (₹) *</label>
+                <label className="text-xs font-medium text-gray-600">Selling price (₹) *</label>
                 <input
                   type="number"
                   min={0}
                   step={0.01}
-                  readOnly
-                  className={`w-full px-2.5 py-1.5 border rounded text-sm bg-gray-50 ${isSellInvalid ? "border-red-300" : "border-gray-200"}`}
+                  className={`w-full px-2.5 py-1.5 border rounded text-sm ${isSellInvalid ? "border-red-300" : "border-gray-200"}`}
                   value={formData.selling_price}
+                  onChange={(e) => setFormData({ ...formData, selling_price: e.target.value })}
                   required
                 />
                 {isSellInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-600">Discount %</label>
+                <label className="text-xs font-medium text-gray-600">Tax % (from agreement)</label>
                 <input
                   type="number"
                   min={0}
                   max={100}
                   step={0.01}
-                  className={`w-full px-2.5 py-1.5 border rounded text-sm ${isOfferInvalid ? "border-red-300" : "border-gray-200"}`}
-                  value={formData.discount_percentage}
-                  onChange={(e) => setFormData({ ...formData, discount_percentage: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Tax %</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={0.01}
-                  className={`w-full px-2.5 py-1.5 border rounded text-sm ${isTaxInvalid ? "border-red-300" : "border-gray-200"}`}
+                  readOnly
+                  className="w-full px-2.5 py-1.5 border rounded text-sm bg-gray-100 border-gray-200 text-gray-700"
                   value={formData.tax_percentage}
-                  onChange={(e) => setFormData({ ...formData, tax_percentage: e.target.value })}
+                  title="Tax is set from the store agreement; not editable here."
                 />
               </div>
             </div>
@@ -821,16 +796,15 @@ export function MenuItemForm({
         {activeSection === "customization" && (
           <div className="space-y-3">
             <p className="text-xs text-gray-500">
-              Max {CUSTOMIZATION_VARIANT_LIMIT} customizations & variants total. Current: {totalOptionsCount}/
-              {CUSTOMIZATION_VARIANT_LIMIT}
+              Customizations & add-ons (extra cheese, spice level, etc.). Max {CUSTOMIZATION_VARIANT_LIMIT} total. Current: {totalOptionsCount}/{CUSTOMIZATION_VARIANT_LIMIT}
             </p>
             <div className="bg-gray-50 p-3 rounded-lg">
               <h3 className="text-xs font-semibold text-gray-700 mb-2">
-                {editingCustomizationIndex !== null ? "Edit" : "Add"} customization
+                {editingCustomizationIndex !== null ? "Edit" : "Add"} customization group
               </h3>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <div className="sm:col-span-2">
-                  <label className="text-xs text-gray-600">Title *</label>
+                  <label className="text-xs text-gray-600">Group name *</label>
                   <input
                     type="text"
                     className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
@@ -838,7 +812,7 @@ export function MenuItemForm({
                     onChange={(e) =>
                       setNewCustomization({ ...newCustomization, customization_title: e.target.value })
                     }
-                    placeholder="e.g. Choose Size"
+                    placeholder="e.g. Toppings"
                   />
                 </div>
                 <div>
@@ -898,7 +872,7 @@ export function MenuItemForm({
                     disabled={atOptionsLimit && editingCustomizationIndex === null}
                     className="px-3 py-1.5 bg-orange-500 text-white rounded text-xs font-medium hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {editingCustomizationIndex !== null ? "Update" : "Add"}
+                    {editingCustomizationIndex !== null ? "Update" : "Add group"}
                   </button>
                   {editingCustomizationIndex !== null && (
                     <button
@@ -917,17 +891,24 @@ export function MenuItemForm({
             </div>
             {customizations.length > 0 ? (
               <div className="space-y-2">
+                <h3 className="text-xs font-semibold text-gray-700">
+                  Existing groups ({customizations.length})
+                </h3>
                 {customizations.map((cust, custIndex) => (
                   <div key={custIndex} className="border border-gray-200 rounded-lg p-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <span className="text-sm font-medium text-gray-900">{cust.customization_title}</span>
-                        <span className="text-xs text-gray-500 ml-2">{cust.customization_type}</span>
-                        {cust.is_required && (
-                          <span className="text-xs text-red-600 ml-1">Required</span>
-                        )}
-                        <span className="text-xs text-gray-400 ml-1">
-                          {cust.min_selection}-{cust.max_selection}
+                        <span className="text-xs text-gray-500 ml-2">
+                          {cust.customization_type} {cust.min_selection}-{cust.max_selection}
+                        </span>
+                        <span className="text-xs ml-1">
+                          {cust.is_required ? (
+                            <span className="text-red-600">Required</span>
+                          ) : (
+                            <span className="text-gray-500">Optional</span>
+                          )}
+                          <span className="text-gray-400"> · Min {cust.min_selection} / Max {cust.max_selection}</span>
                         </span>
                       </div>
                       <div className="flex gap-1 flex-shrink-0">
@@ -935,6 +916,7 @@ export function MenuItemForm({
                           type="button"
                           onClick={() => handleEditCustomization(custIndex)}
                           className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                          aria-label="Edit group"
                         >
                           <Edit2 size={12} />
                         </button>
@@ -942,6 +924,7 @@ export function MenuItemForm({
                           type="button"
                           onClick={() => handleDeleteCustomization(custIndex)}
                           className="p-1 text-red-600 hover:bg-red-50 rounded"
+                          aria-label="Delete group"
                         >
                           <Trash2 size={12} />
                         </button>
@@ -950,11 +933,11 @@ export function MenuItemForm({
                           onClick={() => handleAddAddon(custIndex)}
                           className="text-xs text-orange-600 font-medium px-1.5 py-0.5"
                         >
-                          + Addon
+                          Add add-on
                         </button>
                       </div>
                     </div>
-                    {cust.addons && cust.addons.length > 0 && (
+                    {cust.addons && cust.addons.length > 0 ? (
                       <div className="mt-2 pl-2 border-l border-gray-200 space-y-1">
                         {cust.addons.map((addon, addonIndex) => (
                           <div key={addonIndex} className="flex items-center gap-2">
@@ -965,7 +948,7 @@ export function MenuItemForm({
                               onChange={(e) =>
                                 handleUpdateAddon(custIndex, addonIndex, "addon_name", e.target.value)
                               }
-                              placeholder="Name"
+                              placeholder="Add-on name (e.g. Extra cheese)"
                             />
                             <span className="text-gray-500 text-xs">₹</span>
                             <input
@@ -977,53 +960,45 @@ export function MenuItemForm({
                               onChange={(e) =>
                                 handleUpdateAddon(custIndex, addonIndex, "addon_price", Number(e.target.value))
                               }
+                              placeholder="0"
                             />
                             <button
                               type="button"
                               onClick={() => handleDeleteAddon(custIndex, addonIndex)}
-                              className="p-0.5 text-red-500"
+                              className="text-xs font-medium text-red-600 hover:bg-red-50 px-1.5 py-0.5 rounded"
                             >
-                              <Trash2 size={12} />
+                              Remove
                             </button>
                           </div>
                         ))}
                       </div>
+                    ) : (
+                      <p className="text-xs text-gray-500 mt-2">No add-ons in this group.</p>
                     )}
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-gray-500 py-2">No customizations. Add sizes, toppings, or addons.</p>
+              <p className="text-xs text-gray-500 py-2">No customizations added yet. Create a group above.</p>
             )}
             <div className="border-t border-gray-200 pt-3">
               <h3 className="text-xs font-semibold text-gray-700 mb-2">
-                Variants (optional)
+                Variants (optional) — size, half/full, etc.
                 {(formData.customizations?.length || 0) + (formData.variants?.length || 0) >=
                   CUSTOMIZATION_VARIANT_LIMIT && (
-                  <span className="text-amber-600 font-normal ml-1">— Max {CUSTOMIZATION_VARIANT_LIMIT} total</span>
+                  <span className="text-amber-600 font-normal ml-1">· Max {CUSTOMIZATION_VARIANT_LIMIT} total</span>
                 )}
               </h3>
+              {(formData.variants || []).length > 0 && (
+                <p className="text-xs text-gray-500 mb-2">Existing variants ({(formData.variants || []).length})</p>
+              )}
               {(formData.variants || []).map((v, idx) => (
                 <div
                   key={idx}
                   className="flex flex-wrap items-end gap-3 mb-3 p-2.5 bg-gray-50 rounded-lg border border-gray-200"
                 >
-                  <div className="min-w-[120px]">
-                    <label className="text-xs text-gray-600 block mb-0.5">Title *</label>
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
-                      value={v.variant_type ?? ""}
-                      onChange={(e) => {
-                        const vars = [...(formData.variants || [])];
-                        vars[idx] = { ...vars[idx], variant_type: e.target.value };
-                        setFormData({ ...formData, variants: vars });
-                      }}
-                      placeholder="e.g. Choose Size"
-                    />
-                  </div>
-                  <div className="min-w-[100px]">
-                    <label className="text-xs text-gray-600 block mb-0.5">Name *</label>
+                  <div className="min-w-[140px]">
+                    <label className="text-xs text-gray-600 block mb-0.5">Variant name *</label>
                     <input
                       type="text"
                       className="w-full px-2 py-1.5 border border-gray-200 rounded text-sm"
@@ -1033,11 +1008,11 @@ export function MenuItemForm({
                         vars[idx] = { ...vars[idx], variant_name: e.target.value };
                         setFormData({ ...formData, variants: vars });
                       }}
-                      placeholder="e.g. Medium"
+                      placeholder="e.g. Half, Full"
                     />
                   </div>
-                  <div className="min-w-[80px]">
-                    <label className="text-xs text-gray-600 block mb-0.5">Price (₹) *</label>
+                  <div className="min-w-[100px]">
+                    <label className="text-xs text-gray-600 block mb-0.5">Variant price (₹) *</label>
                     <input
                       type="number"
                       min={0}
@@ -1059,6 +1034,7 @@ export function MenuItemForm({
                       setFormData({ ...formData, variants: vars, has_variants: vars.length > 0 });
                     }}
                     className="p-1.5 text-red-600 hover:bg-red-50 rounded self-end"
+                    aria-label="Remove variant"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -1083,9 +1059,9 @@ export function MenuItemForm({
                   ];
                   setFormData({ ...formData, variants: vars, has_variants: true });
                 }}
-                className="mt-2 px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-sm hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="mt-2 px-3 py-1.5 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                + Add Variant
+                Add variant
               </button>
             </div>
 
@@ -1178,7 +1154,14 @@ export function MenuItemForm({
                               }}
                               className="w-full text-left px-3 py-2 rounded-lg border border-gray-200 hover:bg-orange-50 text-sm"
                             >
-                              {g.title} · {g.options_count} options
+                              <span className="flex flex-col items-start">
+                                <span className="font-semibold text-gray-900">
+                                  #{g.id} · {g.title}
+                                </span>
+                                <span className="text-[11px] text-gray-500">
+                                  {g.options_count} option{g.options_count === 1 ? "" : "s"}
+                                </span>
+                              </span>
                             </button>
                           ))}
                         {allGroupsForPicker.filter((g) => !linkedAddonGroups.some((l) => l.modifier_group_id === g.id)).length === 0 && (
@@ -1214,12 +1197,10 @@ export function MenuItemForm({
               disabled={
                 isSaving ||
                 !!imageValidationError ||
-                isOfferInvalid ||
                 isTaxInvalid ||
                 isBaseInvalid ||
                 isSellInvalid ||
                 !formData.base_price ||
-                !formData.discount_percentage ||
                 !formData.tax_percentage ||
                 !formData.selling_price
               }

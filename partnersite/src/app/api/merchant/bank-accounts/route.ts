@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
+import { logStoreActivity } from '@/lib/store-activity-feed';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -174,6 +175,13 @@ export async function POST(req: NextRequest) {
       ip_address: ip,
       user_agent: ua,
       audit_metadata: { description: 'Bank/UPI account added' },
+    });
+
+    await logStoreActivity({
+      storeId: storeInternalId, section: 'bank_account', action: 'create',
+      entityId: (row as any)?.id ?? null, entityName: accountHolderName,
+      summary: `Merchant added ${payoutMethod} account "${accountHolderName}"`,
+      actorName: actor.performed_by_name, actorEmail: actor.performed_by_email,
     });
 
     return NextResponse.json({ success: true, account: row });

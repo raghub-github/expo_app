@@ -176,7 +176,7 @@ export function TicketFilters({ variant = "sidebar", onClose, dark = false }: Ti
               })),
             ]}
             onChange={(vals) => {
-              console.log("[TicketFilters] Agent filter changed:", vals);
+              if (process.env.NEXT_PUBLIC_DEBUG_TICKETS === "true") console.log("[TicketFilters] Agent filter changed:", vals);
               updateAssignedToIds(vals);
             }}
             dark={dark}
@@ -595,11 +595,9 @@ function FilterMultiSelect({
   };
 
   const handleInputClick = () => {
-    console.log(`[FilterMultiSelect:${label}] Input clicked, current open state:`, open);
     setOpen(true);
     setTimeout(() => {
       inputRef.current?.focus();
-      console.log(`[FilterMultiSelect:${label}] Dropdown opened, options count:`, options.length);
     }, 0);
   };
 
@@ -615,17 +613,6 @@ function FilterMultiSelect({
       toggle(filtered[0].value);
     }
   };
-
-  // Debug: Log when options change (only for Agent filter)
-  useEffect(() => {
-    if (label === "Agent") {
-      console.log(`[FilterMultiSelect:${label}] Options:`, options.length, options.map(o => o.label));
-      console.log(`[FilterMultiSelect:${label}] Selected:`, selectedValues);
-      console.log(`[FilterMultiSelect:${label}] Open:`, open);
-      console.log(`[FilterMultiSelect:${label}] Search:`, search);
-      console.log(`[FilterMultiSelect:${label}] Filtered:`, filtered.length, filtered.map(o => o.label));
-    }
-  }, [options, selectedValues, open, search, filtered, label]);
 
   return (
     <div ref={ref} className="relative">

@@ -133,6 +133,7 @@ export async function createPendingOrder(
       fullAddress: store.full_address ?? null,
       latitude: store.latitude != null ? Number(store.latitude) : null,
       longitude: store.longitude != null ? Number(store.longitude) : null,
+      is_accepting_orders: store.is_accepting_orders === true,
     };
   }
 

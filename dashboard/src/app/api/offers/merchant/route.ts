@@ -5,6 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
@@ -12,22 +13,52 @@ import { apiErrorResponse } from "@/lib/api-errors";
 
 export const runtime = "nodejs";
 
-function toOfferRow(row: Record<string, unknown>) {
+const offerTypeEnum = z.enum([
+  "PERCENTAGE_DISCOUNT",
+  "FLAT_DISCOUNT",
+  "COUPON_DISCOUNT",
+  "BUY_N_GET_M",
+  "FREE_ITEM",
+  "FREE_DELIVERY",
+  "COMBO_OFFER",
+  "CASHBACK",
+  "FIRST_ORDER_OFFER",
+  "LOYALTY_BASED",
+]);
+
+const createOfferSchema = z.object({
+  title: z.string().min(1),
+  type: offerTypeEnum,
+  storeId: z.number().int().positive(),
+  priority: z.number().int().min(1).max(1000).default(100),
+  stackable: z.boolean().default(false),
+  combinableWith: z.array(z.string()).optional(),
+  maxOffersPerOrder: z.number().int().min(1).max(5).default(2),
+  validFrom: z.string().datetime(),
+  validTill: z.string().datetime(),
+  conditions: z.record(z.any()).default({}),
+  benefits: z.record(z.any()),
+  usageLimitTotal: z.number().int().positive().nullable().optional(),
+  usageLimitPerUser: z.number().int().positive().nullable().optional(),
+  status: z.enum(["DRAFT", "ACTIVE", "INACTIVE"]).default("ACTIVE"),
+});
+
+function toMerchantOfferRow(row: Record<string, unknown>) {
   const id = Number(row.id);
-  const discountValue = row.discount_value != null ? Number(row.discount_value) : null;
-  const discountPct = row.discount_percentage != null ? Number(row.discount_percentage) : null;
-  const isPct = (row.offer_type as string) === "PERCENTAGE" || discountPct != null;
   return {
     id,
-    title: row.offer_title as string,
-    offerCode: row.offer_id as string,
-    discountType: isPct ? "PERCENTAGE" : "FLAT",
-    discountValue: isPct ? (discountPct ?? 0) : (discountValue ?? 0),
-    minOrderAmount: row.min_order_amount != null ? Number(row.min_order_amount) : null,
-    validFrom: row.valid_from as string,
-    validTill: row.valid_till as string,
-    isActive: Boolean(row.is_active),
-    createdAt: row.created_at as string,
+    title: String(row.title ?? row.offer_title ?? ""),
+    offerCode: String(row.offer_id ?? id),
+    discountType: (row.type as string) === "PERCENTAGE_DISCOUNT" ? "PERCENTAGE" : "FLAT",
+    discountValue: Number((row.benefits as any)?.percentage_value ?? (row.benefits as any)?.flat_amount ?? 0),
+    minOrderAmount:
+      (row.conditions as any)?.min_order_value != null
+        ? Number((row.conditions as any).min_order_value)
+        : null,
+    validFrom: String(row.valid_from),
+    validTill: String(row.valid_till),
+    isActive: row.status === "ACTIVE",
+    createdAt: String(row.created_at),
     storeId: row.store_id != null ? Number(row.store_id) : null,
     storeName: (row.store_name as string) ?? null,
   };
@@ -55,31 +86,38 @@ export async function GET(request: NextRequest) {
     let p = 1;
 
     if (search) {
-      conditions.push(`(o.offer_title ILIKE $${p} OR o.offer_id ILIKE $${p})`);
+      conditions.push(`(o.metadata->>'legacy_offer_code' ILIKE $${p} OR o.id::text ILIKE $${p})`);
       params.push(`%${search}%`);
       p++;
     }
     if (status === "active") {
-      conditions.push(`o.is_active = true`);
+      conditions.push(`o.status = 'ACTIVE'`);
     } else if (status === "inactive") {
-      conditions.push(`o.is_active = false`);
+      conditions.push(`o.status <> 'ACTIVE'`);
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const countParams = [...params];
     const [countRow] = await sql.unsafe(
-      `SELECT COUNT(*)::int AS c FROM merchant_offers o ${whereClause}`,
+      `SELECT COUNT(*)::int AS c FROM offers o ${whereClause}`,
       countParams
     );
     const total = (countRow as { c: number })?.c ?? 0;
 
     const listParams = [...params, limit, offset];
     const rows = await sql.unsafe(
-      `SELECT o.id, o.offer_id, o.offer_title, o.offer_type, o.discount_value, o.discount_percentage,
-        o.min_order_amount, o.valid_from, o.valid_till, o.is_active, o.created_at, o.store_id,
-        s.store_name AS store_name
-       FROM merchant_offers o
+      `SELECT o.id,
+              o.store_id,
+              o.type,
+              o.conditions,
+              o.benefits,
+              o.valid_from,
+              o.valid_till,
+              o.status,
+              o.created_at,
+              s.store_name
+       FROM offers o
        LEFT JOIN merchant_stores s ON s.id = o.store_id
        ${whereClause}
        ORDER BY o.created_at DESC
@@ -87,7 +125,7 @@ export async function GET(request: NextRequest) {
       listParams
     );
 
-    const offers = (rows as Record<string, unknown>[]).map(toOfferRow);
+    const offers = (rows as Record<string, unknown>[]).map(toMerchantOfferRow);
 
     return NextResponse.json({
       success: true,
@@ -114,32 +152,31 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Only super admins can create offers" }, { status: 403 });
     }
 
-    const body = await request.json();
+    const raw = await request.json();
+    const parsed = createOfferSchema.safeParse(raw);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { success: false, error: parsed.error.flatten() },
+        { status: 400 }
+      );
+    }
+
     const {
       title,
-      offerCode,
-      discountType,
-      discountValue,
-      minOrderAmount,
+      type,
+      storeId,
+      priority,
+      stackable,
+      combinableWith,
+      maxOffersPerOrder,
       validFrom,
       validTill,
-      isActive = true,
-      storeId,
-    } = body;
-
-    if (!title || !offerCode || !discountType || discountValue == null || !validFrom || !validTill) {
-      return NextResponse.json(
-        { success: false, error: "Title, offer code, discount type, discount value, valid from, and valid till are required" },
-        { status: 400 }
-      );
-    }
-
-    if (!storeId) {
-      return NextResponse.json(
-        { success: false, error: "Store is required" },
-        { status: 400 }
-      );
-    }
+      conditions,
+      benefits,
+      usageLimitTotal,
+      usageLimitPerUser,
+      status,
+    } = parsed.data;
 
     if (new Date(validFrom) >= new Date(validTill)) {
       return NextResponse.json(
@@ -148,39 +185,81 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const offerType = discountType === "PERCENTAGE" ? "PERCENTAGE" : "FLAT";
-    const discountValueNum = Number(discountValue);
-    const minOrder = minOrderAmount != null ? Number(minOrderAmount) : null;
+    if (type === "PERCENTAGE_DISCOUNT") {
+      const pct = (benefits as any).percentage_value;
+      const cap = (benefits as any).max_discount_cap;
+      if (typeof pct !== "number" || pct <= 0 || pct > 100 || typeof cap !== "number" || cap <= 0) {
+        return NextResponse.json(
+          { success: false, error: "Percentage discounts require percentage_value (0-100] and positive max_discount_cap" },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (type === "FLAT_DISCOUNT") {
+      const flat = (benefits as any).flat_amount;
+      const minOrder = (conditions as any).min_order_value;
+      if (typeof flat !== "number" || flat <= 0 || typeof minOrder !== "number" || minOrder <= flat) {
+        return NextResponse.json(
+          { success: false, error: "Flat discounts require flat_amount > 0 and min_order_value > flat_amount" },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (type === "COUPON_DISCOUNT") {
+      const code = (benefits as any).coupon_code;
+      if (!code || typeof code !== "string") {
+        return NextResponse.json(
+          { success: false, error: "Coupon discounts require coupon_code" },
+          { status: 400 }
+        );
+      }
+    }
 
     const sql = getSql();
-
-    // Generate unique offer_id if not provided as code (offer_id is the code)
-    const code = String(offerCode).trim().toUpperCase().replace(/\s+/g, "_");
-
     const [inserted] = await sql`
-      INSERT INTO merchant_offers (
-        offer_id, offer_title, store_id, offer_type,
-        discount_value, discount_percentage,
-        min_order_amount, valid_from, valid_till, is_active
+      INSERT INTO offers (
+        store_id,
+        type,
+        subtype,
+        conditions,
+        benefits,
+        priority,
+        stackable,
+        combinable_with,
+        max_offers_per_order,
+        usage_limit_total,
+        usage_limit_per_user,
+        valid_from,
+        valid_till,
+        status,
+        stacking_policy,
+        metadata
       )
       VALUES (
-        ${code},
-        ${String(title).trim()},
-        ${storeId != null ? Number(storeId) : null},
-        ${offerType},
-        ${offerType === "FLAT" ? discountValueNum : null},
-        ${offerType === "PERCENTAGE" ? discountValueNum : null},
-        ${minOrder},
+        ${storeId},
+        ${type},
+        ${null},
+        ${JSON.stringify(conditions)}::jsonb,
+        ${JSON.stringify(benefits)}::jsonb,
+        ${priority},
+        ${stackable},
+        ${JSON.stringify(combinableWith ?? [])}::text[],
+        ${maxOffersPerOrder},
+        ${usageLimitTotal ?? null},
+        ${usageLimitPerUser ?? null},
         ${new Date(validFrom).toISOString()},
         ${new Date(validTill).toISOString()},
-        ${Boolean(isActive)}
+        ${status},
+        ${"MERCHANT_CONTROLLED"},
+        ${JSON.stringify({})}::jsonb
       )
-      RETURNING id, offer_id, offer_title, offer_type, discount_value, discount_percentage,
-        min_order_amount, valid_from, valid_till, is_active, created_at, store_id
+      RETURNING id, store_id, type, conditions, benefits, valid_from, valid_till, status, created_at
     `;
 
     const row = inserted as Record<string, unknown>;
-    const offer = toOfferRow({ ...row, store_name: null });
+    const offer = toMerchantOfferRow({ ...row, store_name: null });
 
     return NextResponse.json({ success: true, data: offer }, { status: 201 });
   } catch (error: unknown) {

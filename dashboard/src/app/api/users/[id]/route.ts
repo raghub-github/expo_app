@@ -74,8 +74,8 @@ export async function GET(
       );
     }
 
-    const user = await getSystemUserById(userId);
-    if (!user) {
+    const targetUser = await getSystemUserById(userId);
+    if (!targetUser) {
       return NextResponse.json(
         { success: false, error: "User not found" },
         { status: 404 }
@@ -84,8 +84,8 @@ export async function GET(
 
     // Fetch reportsTo user details if reportsToId exists
     let reportsToUser = null;
-    if (user.reportsToId) {
-      reportsToUser = await getSystemUserById(user.reportsToId);
+    if (targetUser.reportsToId) {
+      reportsToUser = await getSystemUserById(targetUser.reportsToId);
       if (reportsToUser) {
         reportsToUser = {
           id: reportsToUser.id,
@@ -99,13 +99,13 @@ export async function GET(
     // Include area_managers data if user is an Area Manager
     const areaManager = await getAreaManagerByUserId(userId);
     if (areaManager) {
-      (user as any).areaCode = areaManager.areaCode;
-      (user as any).localityCode = areaManager.localityCode;
-      (user as any).city = areaManager.city;
+      (targetUser as any).areaCode = areaManager.areaCode;
+      (targetUser as any).localityCode = areaManager.localityCode;
+      (targetUser as any).city = areaManager.city;
     }
 
     // Include reportsTo user in response
-    const userData: any = { ...user };
+    const userData: any = { ...targetUser };
     if (reportsToUser) {
       userData.reportsTo = reportsToUser;
     }

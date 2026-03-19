@@ -94,7 +94,7 @@ const createOrderItemSchema = z.object({
   variantId: z.string().optional().nullable(),
   variantName: z.string().optional().nullable(),
   addons: z.array(addonItemSchema).optional().default([]),
-  itemSnapshot: z.record(z.unknown()).optional().nullable(),
+  itemSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 const createOrderBodySchema = z.object({
@@ -143,7 +143,10 @@ export async function orderRoutes(app: FastifyInstance) {
     {
       schema: {
         querystring: z.object({ limit: z.coerce.number().int().min(1).max(100).optional().default(50), offset: z.coerce.number().int().min(0).optional().default(0) }),
-        response: { 200: z.array(orderSummarySchema) },
+        response: {
+          200: z.array(orderSummarySchema),
+          403: z.object({ error: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -229,6 +232,7 @@ export async function orderRoutes(app: FastifyInstance) {
         response: {
           200: z.object({ pendingId: z.string(), amount: z.number(), currency: z.string() }),
           400: z.object({ error: z.string(), message: z.string() }),
+          403: z.object({ error: z.string() }),
         },
       },
     },
@@ -294,6 +298,7 @@ export async function orderRoutes(app: FastifyInstance) {
             createdAt: z.string(),
           }),
           400: z.object({ error: z.string(), message: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
           500: z.object({ error: z.string(), message: z.string() }),
         },
       },
@@ -353,7 +358,11 @@ export async function orderRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.string().min(1) }),
-        response: { 200: orderDetailResponseSchema },
+        response: {
+          200: orderDetailResponseSchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -475,6 +484,9 @@ export async function orderRoutes(app: FastifyInstance) {
             totalAmount: z.number().optional(),
             createdAt: z.string(),
           }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string(), message: z.string().optional() }),
+          500: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
     },
@@ -632,7 +644,7 @@ export async function orderRoutes(app: FastifyInstance) {
 
       let orderIdText: string;
       try {
-        orderIdText = await db.transaction(async (tx) => {
+        const txResult = await db.transaction(async (tx) => {
           const seqResult = await tx.execute(
             sql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
           );
@@ -640,7 +652,8 @@ export async function orderRoutes(app: FastifyInstance) {
           const idText = rows[0]?.order_id ?? (rows as { order_id?: string }[])[0]?.order_id;
           if (!idText) throw new Error("Failed to generate order_id");
 
-          await tx.insert(ordersCore).values({
+          const coreInsert = tx.insert(ordersCore) as any;
+          await coreInsert.values({
             orderId: idText,
             orderType: "food",
             orderSource: "internal",
@@ -664,7 +677,7 @@ export async function orderRoutes(app: FastifyInstance) {
             distanceKm: String(distanceKm),
             paymentStatus: paymentStatus === "PAID" ? "completed" : "pending",
             paymentMethod: paymentMethodEnum,
-          });
+          } as any);
 
           const itemInserts = (items as ItemRow[]).map((i) => {
             const addonPerUnit = (i.addons ?? []).reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
@@ -686,7 +699,9 @@ export async function orderRoutes(app: FastifyInstance) {
             };
           });
 
-          const insertedItems = await tx.insert(ordersCoreItems).values(itemInserts).returning({ id: ordersCoreItems.id });
+          const insertedItems = await (tx.insert(ordersCoreItems) as any)
+            .values(itemInserts as any)
+            .returning({ id: ordersCoreItems.id });
           for (let idx = 0; idx < (items as ItemRow[]).length; idx++) {
             const row = (items as ItemRow[])[idx];
             const addons = row.addons ?? [];
@@ -707,7 +722,8 @@ export async function orderRoutes(app: FastifyInstance) {
             );
           }
 
-          await tx.insert(ordersCorePayments).values({
+          const paymentInsert = tx.insert(ordersCorePayments) as any;
+          await paymentInsert.values({
             orderId: idText,
             paymentGateway: razorpayPaymentId ? "razorpay" : undefined,
             paymentMethod: paymentMethodEnum,
@@ -717,10 +733,11 @@ export async function orderRoutes(app: FastifyInstance) {
             paymentStatus: razorpayPaymentId ? "PAID" : "PENDING",
             gatewayResponse: razorpayPaymentId ? { razorpayPaymentId, razorpayOrderId } : undefined,
             paidAt: razorpayPaymentId ? new Date() : undefined,
-          });
+          } as any);
 
           return idText;
         });
+        orderIdText = txResult as string;
       } catch (err: unknown) {
         const e = err as Record<string, unknown>;
         const errMsg = (e?.message as string) ?? String(err);

@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -51,5 +52,16 @@ export async function DELETE(
     console.error('[DELETE /api/merchant/menu-items/.../modifier-groups/[linkId]]', error.message)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'addon',
+      action: 'unlink',
+      entityId: linkId,
+      summary: `Merchant unlinked modifier group (link #${linkId}) from item #${menuItemId}`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, ok: true })
 }

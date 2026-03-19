@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -48,6 +49,9 @@ export async function PUT(
           updated_at = NOW()
       WHERE id = ${gId}
     `;
+    try {
+      await logStoreActivity({ storeId, section: "customization", action: "update", entityId: gId, summary: `Agent updated customization group #${gId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/customization-groups/[groupId]]", e);
@@ -79,6 +83,9 @@ export async function DELETE(
     if (!g) return NextResponse.json({ success: false, error: "Customization group not found" }, { status: 404 });
 
     await sql`DELETE FROM merchant_menu_item_customizations WHERE id = ${gId}`;
+    try {
+      await logStoreActivity({ storeId, section: "customization", action: "delete", entityId: gId, summary: `Agent deleted customization group #${gId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/customization-groups/[groupId]]", e);

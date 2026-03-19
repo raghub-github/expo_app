@@ -33,8 +33,38 @@ export async function logActivity(data: ActivityLog) {
     const { getSql } = await import("../db/client");
     const sql = getSql();
     
-    // Try to insert into access_activity_logs table
-    // If table doesn't exist, this will fail gracefully
+    // access_activity_logs table (0017) has: id, system_user_id, access_type, page_name, api_endpoint,
+    // http_method, action_performed, action_result, ip_address, device_info, session_id,
+    // response_time_ms, request_params, response_data, created_at. No entity_type/entity_id.
+    const requestPayload =
+      data.request_params != null
+        ? typeof data.request_params === "object" && !Array.isArray(data.request_params)
+          ? { ...data.request_params, ...(data.entity_type != null && { entity_type: data.entity_type }), ...(data.entity_id != null && { entity_id: data.entity_id }) }
+          : data.request_params
+        : (data.entity_type != null || data.entity_id != null)
+          ? { entity_type: data.entity_type ?? null, entity_id: data.entity_id ?? null }
+          : null;
+    const requestParamsStr =
+      requestPayload != null
+        ? (() => {
+            try {
+              return JSON.stringify(requestPayload);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+    const responseDataStr =
+      data.response_data != null
+        ? (() => {
+            try {
+              return typeof data.response_data === "string" ? data.response_data : JSON.stringify(data.response_data);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+
     await sql`
       INSERT INTO access_activity_logs (
         system_user_id,
@@ -48,10 +78,7 @@ export async function logActivity(data: ActivityLog) {
         device_info,
         session_id,
         request_params,
-        response_data,
-        entity_type,
-        entity_id,
-        created_at
+        response_data
       ) VALUES (
         ${data.system_user_id},
         ${data.access_type},
@@ -63,31 +90,14 @@ export async function logActivity(data: ActivityLog) {
         ${data.ip_address || null},
         ${data.device_info || null},
         ${data.session_id || null},
-        ${(() => {
-          try {
-            return data.request_params != null ? JSON.stringify(data.request_params) : null;
-          } catch {
-            return null;
-          }
-        })()},
-        ${(() => {
-          try {
-            return data.response_data != null ? JSON.stringify(data.response_data) : null;
-          } catch {
-            return null;
-          }
-        })()},
-        ${data.entity_type || null},
-        ${data.entity_id || null},
-        NOW()
+        ${requestParamsStr ?? "{}"},
+        ${responseDataStr ?? "{}"}
       )
     `;
   } catch (error) {
-    // Fallback to console logging if table doesn't exist
-    console.log("[Activity Log]", {
-      timestamp: new Date().toISOString(),
-      ...data,
-    });
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[Activity Log] DB insert failed (table may be missing):", (error as Error)?.message ?? error);
+    }
   }
 }
 

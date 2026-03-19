@@ -1,6 +1,6 @@
 /**
  * GET /api/merchant/stores/[id]/ledger
- * Query: limit, offset, from, to, direction, category, search
+ * Query: limit, offset, from, to, direction, category
  * Returns { success, entries: LedgerEntry[], total }.
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -9,6 +9,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { queryLedger } from "@/lib/db/operations/merchant-wallet";
 
 export const runtime = "nodejs";
 
@@ -47,36 +48,17 @@ export async function GET(
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
+    const store = access.store as { id: number };
     const { searchParams } = new URL(request.url);
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") ?? "50", 10) || 50));
     const offset = Math.max(0, parseInt(searchParams.get("offset") ?? "0", 10) || 0);
     const from = searchParams.get("from") ?? undefined;
     const to = searchParams.get("to") ?? undefined;
-    const direction = searchParams.get("direction") as "CREDIT" | "DEBIT" | null | undefined;
+    const direction = searchParams.get("direction") ?? undefined;
     const category = searchParams.get("category") ?? undefined;
-    const search = searchParams.get("search") ?? undefined;
 
-    // TODO: query merchant_ledger / wallet_ledger when wired; for now return stub
-    const entries: Array<{
-      id: number;
-      direction: "CREDIT" | "DEBIT";
-      category: string;
-      balance_type: string;
-      amount: number;
-      balance_after: number;
-      reference_type: string;
-      reference_id: number | null;
-      reference_extra: string | null;
-      description: string | null;
-      metadata: Record<string, unknown> | null;
-      created_at: string;
-      order_id: number | null;
-      formatted_order_id: string | null;
-      table_id: string | null;
-    }> = [];
-    const total = 0;
-
-    return NextResponse.json({ success: true, entries, total });
+    const result = await queryLedger(store.id, { limit, offset, from, to, direction, category });
+    return NextResponse.json({ success: true, entries: result.entries, total: result.total });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/ledger]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

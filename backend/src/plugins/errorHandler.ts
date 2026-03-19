@@ -26,8 +26,8 @@ async function errorHandlerPlugin(app: FastifyInstance) {
 
     // Handle Zod validation errors
     if (error.validation || error instanceof ZodError) {
-      const zodError = error instanceof ZodError ? error : null;
-      const validationErrors = zodError?.errors || error.validation || [];
+      const zodError = error instanceof ZodError ? error : undefined;
+      const validationErrors = (zodError?.issues ?? error.validation ?? []) as any[];
 
       return reply.status(400).send({
         error: "validation_error",

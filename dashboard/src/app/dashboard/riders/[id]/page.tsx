@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
+import { useGetRiderDetailsQuery } from '@/store/api/riderApi';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
@@ -194,46 +195,22 @@ export default function RiderDetailsPage() {
   const queryClient = useQueryClient();
   const riderId = parseInt(params.id as string);
 
-  const [riderData, setRiderData] = useState<RiderData | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: riderData,
+    isLoading: riderLoading,
+    isFetching: riderFetching,
+    error: riderError,
+  } = useGetRiderDetailsQuery(riderId, {
+    skip: Number.isNaN(riderId),
+  } as any);
+
+  const loading = riderLoading || riderFetching;
+  const error = riderError instanceof Error ? riderError.message : riderError ? String(riderError) : null;
 
   // Check if user has rider access
   const hasRiderAccess = dashboardAccessData?.dashboards.some(
     (d) => d.dashboardType === "RIDER" && d.isActive
   ) ?? false;
-
-  // Fetch rider data
-  useEffect(() => {
-    if (isNaN(riderId)) {
-      setError("Invalid rider ID");
-      setLoading(false);
-      return;
-    }
-
-    fetchRiderData();
-  }, [riderId]);
-
-  const fetchRiderData = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const response = await fetch(`/api/riders/${riderId}`);
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.error || "Failed to fetch rider data");
-      }
-
-      setRiderData(result.data);
-    } catch (err) {
-      console.error("Error fetching rider data:", err);
-      setError(err instanceof Error ? err.message : "Failed to fetch rider data");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleRetryAccess = () => {
     setSlowPermissionCheck(false);

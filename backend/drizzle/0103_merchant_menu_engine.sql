@@ -144,6 +144,21 @@ CREATE TABLE IF NOT EXISTS merchant_menu_combo_components (
 
 ALTER TABLE merchant_menu_combo_components ADD COLUMN IF NOT EXISTS menu_item_id BIGINT REFERENCES merchant_menu_items(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS merchant_menu_combo_components_combo_id_idx ON merchant_menu_combo_components(combo_id);
+-- Prevent duplicate same-item+variant rows inside a combo
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = 'merchant_menu_combo_components_uniq_item_variant'
+  ) THEN
+    EXECUTE '
+      CREATE UNIQUE INDEX merchant_menu_combo_components_uniq_item_variant
+      ON merchant_menu_combo_components (combo_id, menu_item_id, COALESCE(variant_id, 0))
+    ';
+  END IF;
+END$$;
 
 -- =============================================================================
 -- New tables: dietary tags & item-tag mapping

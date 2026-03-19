@@ -31,9 +31,11 @@ import {
   User,
   Bike,
   MoreVertical,
+  Wallet,
 } from 'lucide-react';
 import { useStoreFoodOrders } from '@/hooks/useStoreFoodOrders';
 import { useRightSidebar } from '@/context/RightSidebarContext';
+import { WalletAdjustmentModal } from '@/components/merchants/WalletAdjustmentModal';
 import type { OrdersFoodRow, FoodOrderStats } from '@/lib/types/food-orders';
 import { PageSkeletonOrders } from './PageSkeletonOrders';
 import { supabase } from '@/lib/supabase/client';
@@ -162,6 +164,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [headerRtoMenuOpen, setHeaderRtoMenuOpen] = useState(false);
   const headerRtoMenuRef = useRef<HTMLDivElement>(null);
+  const [walletAdjustmentOrder, setWalletAdjustmentOrder] = useState<OrdersFoodRow | null>(null);
   useEffect(() => {
     if (!headerRtoMenuOpen) return;
     const close = (e: MouseEvent) => {
@@ -1052,6 +1055,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                               onDispatch={() => setDispatchModal(selectedOrder)}
                               onComplete={() => updateStatus(selectedOrder, 'DELIVERED')}
                               onRto={() => setRtoModalOrder(selectedOrder)}
+                              onAddOrDeduct={() => setWalletAdjustmentOrder(selectedOrder)}
                               loading={actionLoading === selectedOrder.id}
                               otpVerified={otpVerified.has(selectedOrder.id)}
                               topRightLayout
@@ -1181,6 +1185,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                           }}
                           onRto={() => setRtoModalOrder(order)}
                           onComplete={() => updateStatus(order, 'DELIVERED')}
+                          onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
                           loading={actionLoading === order.id}
                           otpCode={otpCache[order.id]?.otp_code}
                           otpType={otpCache[order.id]?.otp_type}
@@ -1222,6 +1227,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     }}
                     onRto={() => setRtoModalOrder(order)}
                     onComplete={() => updateStatus(order, 'DELIVERED')}
+                    onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
                     loading={actionLoading === order.id}
                     otpCode={otpCache[order.id]?.otp_code}
                     otpType={otpCache[order.id]?.otp_type}
@@ -1247,6 +1253,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     onDispatch={() => setDispatchModal(order)}
                     onRto={() => setRtoModalOrder(order)}
                     onComplete={() => updateStatus(order, 'DELIVERED')}
+                    onAddOrDeduct={() => setWalletAdjustmentOrder(order)}
                     loading={actionLoading === order.id}
                     otpCode={otpCache[order.id]?.otp_code}
                     otpType={otpCache[order.id]?.otp_type}
@@ -1517,6 +1524,15 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Wallet adjustment modal – add or deduct from order */}
+      {walletAdjustmentOrder && (
+        <WalletAdjustmentModal
+          storeId={storeId}
+          order={walletAdjustmentOrder}
+          onClose={() => setWalletAdjustmentOrder(null)}
+        />
       )}
 
       {/* Rider's log modal – all riders assigned to this order */}
@@ -2367,6 +2383,7 @@ function OrderCard({
   onDispatch,
   onComplete,
   onRto,
+  onAddOrDeduct,
   loading,
   otpCode,
   otpType,
@@ -2384,6 +2401,7 @@ function OrderCard({
   onDispatch: () => void;
   onComplete: () => void;
   onRto: () => void;
+  onAddOrDeduct?: (order: OrdersFoodRow) => void;
   loading: boolean;
   otpCode?: string;
   otpType?: string;
@@ -2507,6 +2525,7 @@ function OrderCard({
           onDispatch={onDispatch}
           onComplete={onComplete}
           onRto={onRto}
+          onAddOrDeduct={onAddOrDeduct}
           loading={loading}
           otpVerified={otpVerified}
           compact
@@ -2527,6 +2546,7 @@ function OrderListRow({
   onDispatch,
   onRto,
   onComplete,
+  onAddOrDeduct,
   loading,
   otpCode,
   otpType,
@@ -2544,6 +2564,7 @@ function OrderListRow({
   onDispatch: () => void;
   onRto: () => void;
   onComplete: () => void;
+  onAddOrDeduct?: (order: OrdersFoodRow) => void;
   loading: boolean;
   otpCode?: string;
   otpType?: string;
@@ -2650,6 +2671,7 @@ function OrderListRow({
           onDispatch={onDispatch}
           onComplete={onComplete}
           onRto={onRto}
+          onAddOrDeduct={onAddOrDeduct}
           loading={loading}
           otpVerified={otpVerified}
           compact
@@ -2680,6 +2702,7 @@ function ActionBtns({
   onDispatch,
   onComplete,
   onRto,
+  onAddOrDeduct,
   loading,
   compact,
   otpVerified,
@@ -2694,6 +2717,7 @@ function ActionBtns({
   onDispatch: () => void;
   onComplete: () => void;
   onRto?: () => void;
+  onAddOrDeduct?: (order: OrdersFoodRow) => void;
   loading: boolean;
   compact?: boolean;
   otpVerified?: boolean;
@@ -2819,6 +2843,34 @@ function ActionBtns({
           Complete
         </button>
         <RtoMenu />
+      </div>
+    );
+  }
+  if ((status === 'DELIVERED' || status === 'CANCELLED') && onAddOrDeduct) {
+    return (
+      <div className="relative shrink-0" ref={menuRef}>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+          disabled={dis}
+          className="p-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50 transition-colors"
+          aria-label="More actions"
+        >
+          <MoreVertical size={18} />
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 top-full mt-1 py-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[180px]">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAddOrDeduct(order); setMenuOpen(false); }}
+              disabled={dis}
+              className="w-full text-left px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 rounded-none first:rounded-t-lg last:rounded-b-lg flex items-center gap-2"
+            >
+              <Wallet size={16} />
+              Add or deduct amount
+            </button>
+          </div>
+        )}
       </div>
     );
   }

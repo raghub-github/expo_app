@@ -236,9 +236,9 @@ export async function updateAddress(
   }
   if (data.fullAddress !== undefined) set.addressLine1 = data.fullAddress;
   if (data.landmark !== undefined) set.landmark = data.landmark;
-  if (data.city !== undefined) set.city = data.city.trim() || "—";
-  if (data.state !== undefined) set.state = data.state.trim() || "—";
-  if (data.pincode !== undefined) set.postalCode = data.pincode.trim() || "—";
+  if (data.city !== undefined) set.city = (data.city ?? "").trim() || "—";
+  if (data.state !== undefined) set.state = (data.state ?? "").trim() || "—";
+  if (data.pincode !== undefined) set.postalCode = (data.pincode ?? "").trim() || "—";
   if (data.country !== undefined) set.country = data.country;
   if (data.latitude != null) set.latitude = String(data.latitude);
   if (data.longitude != null) set.longitude = String(data.longitude);
@@ -259,8 +259,9 @@ export async function deleteAddress(customerId: number, addressId: number): Prom
   const result = await db
     .update(customerAddresses)
     .set({ deletedAt: new Date(), isActive: false, updatedAt: new Date() })
-    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)));
-  return (result.rowCount ?? 0) > 0;
+    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)))
+    .returning({ id: customerAddresses.id });
+  return result.length > 0;
 }
 
 export async function setAddressDefault(customerId: number, addressId: number): Promise<boolean> {
@@ -269,8 +270,9 @@ export async function setAddressDefault(customerId: number, addressId: number): 
   const result = await db
     .update(customerAddresses)
     .set({ isDefault: true })
-    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)));
-  return (result.rowCount ?? 0) > 0;
+    .where(and(eq(customerAddresses.id, addressId), eq(customerAddresses.customerId, customerId)))
+    .returning({ id: customerAddresses.id });
+  return result.length > 0;
 }
 
 /** Set is_last_used = true for this address, false for others. Call when order is placed. */

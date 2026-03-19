@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -51,6 +52,9 @@ export async function PUT(
           updated_at = NOW()
       WHERE id = ${oId}
     `;
+    try {
+      await logStoreActivity({ storeId, section: "addon", action: "update", entityId: oId, summary: `Agent updated addon option #${oId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/customization-options/[optionId]]", e);
@@ -83,6 +87,9 @@ export async function DELETE(
     if (!o) return NextResponse.json({ success: false, error: "Customization option not found" }, { status: 404 });
 
     await sql`DELETE FROM merchant_menu_item_addons WHERE id = ${oId}`;
+    try {
+      await logStoreActivity({ storeId, section: "addon", action: "delete", entityId: oId, summary: `Agent deleted addon option #${oId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/customization-options/[optionId]]", e);

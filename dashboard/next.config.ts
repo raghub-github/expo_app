@@ -13,6 +13,13 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["lucide-react"],
   },
+  /**
+   * Configure Turbopack root so it resolves Next.js from the dashboard folder
+   * instead of incorrectly treating src/app as the workspace root.
+   */
+  turbopack: {
+    root: path.join(process.cwd()),
+  },
   // Mapbox is loaded from CDN, no webpack config needed
 
   // In dev, disable browser cache for dashboard so HTML/JS updates show after code changes.

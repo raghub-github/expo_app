@@ -4,12 +4,14 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getMerchantAccess } from "@/lib/permissions/merchant-access";
+import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { ulid } from "ulid";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -29,15 +31,16 @@ export async function POST(
     if (error || !user?.email) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
-    const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
-    if (!allowed) {
-      return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
+    const access = await getMerchantAccess(user.id, user.email);
+    if (!access) {
+      return NextResponse.json({ success: false, error: "Merchant access required" }, { status: 403 });
+    }
+    if (!access.can_update_menu) {
+      return NextResponse.json({ success: false, error: "Menu update permission required" }, { status: 403 });
     }
 
     let areaManagerId: number | null = null;
-    if (!(await isSuperAdmin(user.id, user.email))) {
+    if (!access.isSuperAdmin) {
       const systemUser = await getSystemUserByEmail(user.email);
       if (systemUser) {
         const am = await getAreaManagerByUserId(systemUser.id);
@@ -102,7 +105,21 @@ export async function POST(
       RETURNING id, item_id
     `;
 
-    return NextResponse.json({ success: true, id: Number((row as any).id), item_id: (row as any).item_id }, { status: 201 });
+    const newId = Number((row as any).id);
+    try {
+      await logStoreActivity({ storeId, section: "menu_item", action: "create", entityId: newId, entityName: item_name, summary: `Agent created menu item "${item_name}"`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
+    try {
+      await logActionByAuth(user.id, user.email, "MERCHANT", "CREATE", {
+        resourceType: "MENU_ITEM",
+        resourceId: String(newId),
+        actionDetails: { storeId, item_name, item_id: (row as any).item_id },
+        ipAddress: getIpAddress(request),
+        userAgent: getUserAgent(request),
+      });
+    } catch (_) {}
+
+    return NextResponse.json({ success: true, id: newId, item_id: (row as any).item_id }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/items]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

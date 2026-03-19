@@ -5,8 +5,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
+import { deleteDocument } from "@/lib/services/r2";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
+
+async function getAgentIdForStore(storeId: number): Promise<number | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) return null;
+  const systemUser = await getSystemUserByEmail(user.email);
+  return systemUser?.id ?? null;
+}
 
 /** GET single item with variants, customizations (with addons), images, linked_modifier_groups */
 export async function GET(
@@ -26,9 +39,14 @@ export async function GET(
     const sql = getSql();
     const [item] = await sql`
       SELECT id, item_id, item_name, item_description, item_image_url, short_name, category_id,
-             food_type, spice_level, cuisine_type, base_price, selling_price, in_stock, is_active,
-             is_deleted, display_order, has_customizations, has_addons, has_variants,
-             preparation_time_minutes, serves, serves_label, item_size_value, item_size_unit,
+             food_type, spice_level, cuisine_type, base_price, selling_price,
+             discount_percentage, tax_percentage,
+             in_stock, is_active, is_deleted, display_order,
+             has_customizations, has_addons, has_variants,
+             is_popular, is_recommended,
+             COALESCE(preparation_time_minutes, preparation_time, 15)::integer AS preparation_time_minutes,
+             serves, serves_label, item_size_value, item_size_unit,
+             allergens,
              approval_status::text,
              (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
              (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' ORDER BY r.created_at DESC LIMIT 1) AS pending_change_request_type
@@ -160,9 +178,10 @@ export async function PUT(
     const sql = getSql();
     const [existing] = await sql`
       SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
-             base_price, selling_price, preparation_time_minutes, serves, serves_label,
+             base_price, selling_price, discount_percentage, tax_percentage,
+             preparation_time_minutes, serves, serves_label,
              short_name, display_order, item_size_value, item_size_unit, available_for_delivery,
-             in_stock, is_active
+             in_stock, is_active, is_popular, is_recommended, allergens
       FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeId} AND (is_deleted IS NULL OR is_deleted = false)
       LIMIT 1
@@ -182,6 +201,8 @@ export async function PUT(
           cuisine_type = ${body.cuisine_type !== undefined ? body.cuisine_type : e.cuisine_type},
           base_price = ${body.base_price !== undefined ? body.base_price : e.base_price},
           selling_price = ${body.selling_price !== undefined ? body.selling_price : e.selling_price},
+          discount_percentage = ${body.discount_percentage !== undefined ? body.discount_percentage : e.discount_percentage},
+          tax_percentage = ${body.tax_percentage !== undefined ? body.tax_percentage : e.tax_percentage},
           preparation_time_minutes = ${body.preparation_time_minutes !== undefined ? body.preparation_time_minutes : e.preparation_time_minutes},
           serves = ${body.serves !== undefined ? body.serves : e.serves},
           serves_label = ${body.serves_label !== undefined ? body.serves_label : e.serves_label},
@@ -192,9 +213,27 @@ export async function PUT(
           available_for_delivery = ${body.available_for_delivery !== undefined ? body.available_for_delivery : e.available_for_delivery},
           in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
           is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
+          is_popular = ${body.is_popular !== undefined ? body.is_popular : e.is_popular},
+          is_recommended = ${body.is_recommended !== undefined ? body.is_recommended : e.is_recommended},
+          allergens = ${body.allergens !== undefined ? (Array.isArray(body.allergens) ? body.allergens : []) : e.allergens},
           updated_at = NOW()
       WHERE id = ${menuItemId} AND store_id = ${storeId}
     `;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_items",
+        fieldName: "menu_item",
+        oldValue: JSON.stringify({ item_name: e.item_name, base_price: e.base_price, selling_price: e.selling_price }),
+        newValue: JSON.stringify({ item_name, base_price: body.base_price !== undefined ? body.base_price : e.base_price, selling_price: body.selling_price !== undefined ? body.selling_price : e.selling_price }),
+        actionType: "update",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "menu_item", action: "update", entityId: menuItemId, entityName: item_name, summary: `Agent updated menu item "${item_name}"`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/items/[itemId]]", e);
@@ -217,13 +256,14 @@ export async function DELETE(
     if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     const sql = getSql();
     const [item] = await sql`
-      SELECT id, approval_status::text AS approval_status
+      SELECT id, item_name, approval_status::text AS approval_status
       FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeId}
     `;
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
     const approvalStatus = (item as any).approval_status as string | null;
+    const itemNameForLog = (item as any).item_name as string | null;
 
     // Approved items: soft delete only (deprecate).
     if (approvalStatus === "APPROVED") {
@@ -235,6 +275,21 @@ export async function DELETE(
       if ((result as any)?.count === 0) {
         return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
       }
+      try {
+        const agentId = await getAgentIdForStore(storeId);
+        await insertActivityLog({
+          storeId,
+          agentId,
+          changedSection: "menu_items",
+          fieldName: "menu_item",
+          oldValue: JSON.stringify({ item_id: menuItemId, item_name: itemNameForLog }),
+          newValue: null,
+          actionType: "delete",
+        });
+      } catch (_logErr) {}
+      try {
+        await logStoreActivity({ storeId, section: "menu_item", action: "delete", entityId: menuItemId, summary: `Agent deleted menu item #${menuItemId}`, actorType: "agent", source: "dashboard" });
+      } catch (_) {}
       return NextResponse.json({ success: true, ok: true, mode: "SOFT_DELETE" });
     }
 
@@ -256,14 +311,29 @@ export async function DELETE(
       `;
     });
 
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_items",
+        fieldName: "menu_item",
+        oldValue: JSON.stringify({ item_id: menuItemId, item_name: itemNameForLog }),
+        newValue: null,
+        actionType: "delete",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "menu_item", action: "delete", entityId: menuItemId, summary: `Agent deleted menu item #${menuItemId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
+
     if (images.length > 0) {
       try {
-        const { deleteFileFromR2 } = await import("../../../../../../../../backend/src/services/r2.service");
         await Promise.all(
           images
             .map((img) => img.r2_key)
             .filter((key): key is string => !!key)
-            .map((key) => deleteFileFromR2(key).catch(() => undefined))
+            .map((key) => deleteDocument(key).catch(() => undefined))
         );
       } catch (e) {
         console.error("[DELETE items/[itemId]] R2 cleanup failed", e);

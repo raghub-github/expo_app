@@ -1,6 +1,7 @@
 /**
  * GET /api/merchant/stores/[id]/payout-quote?amount=123.45
  * Returns withdrawal quote: requested_amount, commission_*, net_payout_amount, etc.
+ * Reads commission rates from platform_commission_rules for the store/parent.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -8,6 +9,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
@@ -32,6 +34,32 @@ async function assertStoreAccess(storeId: number) {
   return { ok: true as const, store };
 }
 
+async function getCommissionRates(storeId: number, parentId: number | null) {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT commission_percentage, gst_on_commission_percent, tds_percent
+    FROM platform_commission_rules
+    WHERE is_active = true
+      AND (
+        (scope = 'STORE' AND scope_id = ${storeId})
+        OR (scope = 'PARENT' AND scope_id = ${parentId ?? 0})
+        OR scope = 'GLOBAL'
+      )
+    ORDER BY
+      CASE scope WHEN 'STORE' THEN 1 WHEN 'PARENT' THEN 2 ELSE 3 END
+    LIMIT 1
+  `;
+  if (rows.length > 0) {
+    const r = rows[0] as any;
+    return {
+      commission_percentage: Number(r.commission_percentage ?? 2),
+      gst_on_commission_percent: Number(r.gst_on_commission_percent ?? 18),
+      tds_percent: Number(r.tds_percent ?? 0),
+    };
+  }
+  return { commission_percentage: 2, gst_on_commission_percent: 18, tds_percent: 0 };
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -46,26 +74,29 @@ export async function GET(
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
+    const store = access.store as { id: number; parent_id?: number | null };
     const { searchParams } = new URL(request.url);
     const amount = parseFloat(searchParams.get("amount") ?? "0");
     if (!Number.isFinite(amount) || amount < 100) {
       return NextResponse.json({ success: false, error: "Amount must be at least 100" }, { status: 400 });
     }
-    // TODO: compute from platform commission rules
-    const commission_percentage = 2;
-    const commission_amount = Math.round((amount * commission_percentage) / 100 * 100) / 100;
-    const gst_on_commission_percent = 18;
-    const gst_on_commission = Math.round((commission_amount * gst_on_commission_percent) / 100 * 100) / 100;
-    const tds_amount = 0;
-    const tax_amount = gst_on_commission;
-    const net_payout_amount = Math.round((amount - commission_amount - gst_on_commission - tds_amount) * 100) / 100;
+
+    const rates = await getCommissionRates(store.id, store.parent_id ?? null);
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const commission_amount = round((amount * rates.commission_percentage) / 100);
+    const gst_on_commission = round((commission_amount * rates.gst_on_commission_percent) / 100);
+    const tds_amount = round((amount * rates.tds_percent) / 100);
+    const tax_amount = round(gst_on_commission + tds_amount);
+    const net_payout_amount = round(amount - commission_amount - gst_on_commission - tds_amount);
+
     return NextResponse.json({
       success: true,
       requested_amount: amount,
-      commission_percentage,
+      commission_percentage: rates.commission_percentage,
       commission_amount,
-      gst_on_commission_percent,
+      gst_on_commission_percent: rates.gst_on_commission_percent,
       gst_on_commission,
+      tds_percent: rates.tds_percent,
       tds_amount,
       tax_amount,
       net_payout_amount,

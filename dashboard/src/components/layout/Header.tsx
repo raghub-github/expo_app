@@ -247,8 +247,7 @@ export function Header() {
       // Check Supabase session user data for avatar (from Google OAuth)
       const sessionUser = sessionData?.session?.user;
       
-      // Debug: Log available metadata
-      if (process.env.NODE_ENV === "development") {
+      if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
         console.log("[Header] User metadata:", userMetadata);
         console.log("[Header] Session user:", sessionUser);
         console.log("[Header] App metadata:", (sessionUser as any)?.app_metadata);
@@ -276,13 +275,12 @@ export function Header() {
       
       if (possibleAvatarSources.length > 0) {
         urlToTry = possibleAvatarSources[0] as string;
-        if (process.env.NODE_ENV === "development") {
+        if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
           console.log("[Header] Found avatar in metadata:", urlToTry);
         }
       } else {
-        // Fall back to Gravatar
         urlToTry = getUserAvatarUrl(userEmail, userMetadata, 40);
-        if (process.env.NODE_ENV === "development") {
+        if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
           console.log("[Header] Using Gravatar:", urlToTry);
         }
       }

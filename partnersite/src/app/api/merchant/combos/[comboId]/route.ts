@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -71,16 +72,12 @@ export async function PUT(
   if (!combo_name) {
     return NextResponse.json({ success: false, error: 'combo_name required' }, { status: 400 })
   }
-  const combo_price = body.combo_price !== undefined ? Number(body.combo_price) : Number((existing as any).combo_price)
-  if (!Number.isFinite(combo_price) || combo_price < 0) {
-    return NextResponse.json({ success: false, error: 'Invalid combo_price' }, { status: 400 })
-  }
   const { error: updateErr } = await supabase
     .from('merchant_menu_combos')
     .update({
       combo_name,
       description: body.description !== undefined ? body.description : (existing as any).description,
-      combo_price,
+      // combo_price is calculated from combo components; keep existing value here
       image_url: body.image_url !== undefined ? body.image_url : (existing as any).image_url,
       is_active: body.is_active !== undefined ? body.is_active : (existing as any).is_active,
       display_order: body.display_order !== undefined ? body.display_order : (existing as any).display_order,
@@ -92,6 +89,18 @@ export async function PUT(
     console.error('[PUT /api/merchant/combos/[comboId]]', updateErr.message)
     return NextResponse.json({ success: false, error: updateErr.message }, { status: 500 })
   }
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'combo',
+      action: 'update',
+      entityId: cId,
+      entityName: combo_name,
+      summary: `Merchant updated combo #${cId} "${combo_name}"`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, ok: true })
 }
 
@@ -127,5 +136,17 @@ export async function DELETE(
     console.error('[DELETE /api/merchant/combos/[comboId]]', error.message)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
+
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'combo',
+      action: 'delete',
+      entityId: cId,
+      summary: `Merchant deleted combo #${cId}`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, ok: true })
 }

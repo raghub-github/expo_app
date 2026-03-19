@@ -7,6 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
+import { logStoreActivity } from '@/lib/store-activity-feed';
 import { deleteFromR2, extractR2KeyFromUrl } from '@/lib/r2';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -137,6 +138,13 @@ export async function PATCH(
       audit_metadata: { description: `Offer updated: ${data.offer_title}` },
     });
 
+    await logStoreActivity({
+      storeId: resolved.offer.store_id, section: 'offer', action: 'update',
+      entityId: resolved.offer.id, entityName: data.offer_title,
+      summary: `Merchant updated offer "${data.offer_title}"`,
+      actorName: actor.performed_by_name, actorEmail: actor.performed_by_email,
+    });
+
     return NextResponse.json(response);
   } catch (e) {
     console.error('[merchant/offers] PATCH', e);
@@ -175,21 +183,15 @@ export async function DELETE(
     const offerInternalId = resolved.offer.id;
     const offerTitle = resolved.offer.offer_title;
 
-    // Delete offer banner image from R2 before deleting the row
-    if (resolved.offer.offer_image_url) {
-      const key = extractR2KeyFromUrl(resolved.offer.offer_image_url);
-      if (key) {
-        try {
-          await deleteFromR2(key);
-        } catch (e) {
-          console.warn('[merchant/offers] DELETE R2 image failed', key, e);
-        }
-      }
-    }
-
-    const { error } = await db.from('merchant_offers').delete().eq('offer_id', offerId);
+    // Align with merchant app + dashboard: soft-delete (deactivate) instead of hard delete.
+    const { data: updated, error } = await db
+      .from('merchant_offers')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('offer_id', offerId)
+      .select()
+      .single();
     if (error) {
-      console.error('[merchant/offers] DELETE failed:', error);
+      console.error('[merchant/offers] DELETE (soft) failed:', error);
       return NextResponse.json({ error: error.message || 'Delete failed' }, { status: 500 });
     }
 
@@ -197,15 +199,22 @@ export async function DELETE(
     await logMerchantAudit(db, {
       entity_type: 'OFFER',
       entity_id: offerInternalId,
-      action: 'DELETE',
+      action: 'DEACTIVATE',
       action_field: null,
       old_value: { offer_id: offerId, offer_title: offerTitle },
-      new_value: null,
+      new_value: { offer_id: offerId, is_active: false },
       performed_by: actor.performed_by,
       performed_by_id: actor.performed_by_id,
       performed_by_name: actor.performed_by_name,
       performed_by_email: actor.performed_by_email,
-      audit_metadata: { description: `Offer deleted: ${offerTitle}` },
+      audit_metadata: { platform: 'partnersite', description: `Offer deactivated: ${offerTitle}` },
+    });
+
+    await logStoreActivity({
+      storeId: resolved.offer.store_id, section: 'offer', action: 'delete',
+      entityId: offerInternalId, entityName: offerTitle,
+      summary: `Merchant deactivated offer "${offerTitle}"`,
+      actorName: actor.performed_by_name, actorEmail: actor.performed_by_email,
     });
 
     return NextResponse.json({ success: true });

@@ -12,6 +12,8 @@ import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getOffersR2Path } from '@/lib/r2-paths';
 import { uploadToR2, deleteFromR2, extractR2KeyFromUrl, listR2KeysByPrefix } from '@/lib/r2';
 import { toStoredDocumentUrl } from '@/lib/r2';
+import { getAuditActor, logMerchantAudit } from '@/lib/audit';
+import { logStoreActivity } from '@/lib/store-activity-feed';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -107,6 +109,44 @@ export async function POST(req: NextRequest) {
     await uploadToR2(file, r2Key);
 
     const url = toStoredDocumentUrl(r2Key) ?? `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+
+    try {
+      const actor = await getAuditActor();
+      // Best-effort resolve offer internal id + title for rich audit
+      const { data: offerRow } = await db
+        .from('merchant_offers')
+        .select('id, offer_title, store_id')
+        .eq('offer_id', offerId.trim())
+        .eq('store_id', store.id)
+        .maybeSingle();
+
+      await logMerchantAudit(db, {
+        entity_type: 'OFFER',
+        entity_id: (offerRow as any)?.id ?? null,
+        action: 'IMAGE_UPDATE',
+        action_field: 'offer_image_url',
+        old_value: { currentImageUrl: currentImageUrl ?? null },
+        new_value: { offer_id: offerId.trim(), offer_image_url: url, r2_key: r2Key },
+        performed_by: actor.performed_by,
+        performed_by_id: actor.performed_by_id,
+        performed_by_name: actor.performed_by_name,
+        performed_by_email: actor.performed_by_email,
+        audit_metadata: { platform: 'partnersite', description: `Offer image updated: ${(offerRow as any)?.offer_title ?? offerId.trim()}` },
+      });
+
+      await logStoreActivity({
+        storeId: store.id,
+        section: 'offer',
+        action: 'image_update',
+        entityId: (offerRow as any)?.id ?? null,
+        entityName: (offerRow as any)?.offer_title ?? offerId.trim(),
+        summary: `Merchant updated offer image "${(offerRow as any)?.offer_title ?? offerId.trim()}"`,
+        actorName: actor.performed_by_name,
+        actorEmail: actor.performed_by_email,
+      });
+    } catch {
+      // ignore audit failure
+    }
 
     return NextResponse.json({ success: true, key: r2Key, url });
   } catch (e) {

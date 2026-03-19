@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -64,5 +65,17 @@ export async function POST(req: NextRequest) {
     console.error('[POST /api/merchant/combos]', error.message)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'combo',
+      action: 'create',
+      entityId: data?.id ?? null,
+      entityName: combo_name,
+      summary: `Merchant created combo "${combo_name}"`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, id: data?.id }, { status: 201 })
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   Plus,
   Edit2,
@@ -95,10 +95,13 @@ function getApplyToDisplay(type: Offer["offer_sub_type"]) {
 }
 
 function getStatusColor(offer: Offer) {
-  const isExpired = new Date(offer.valid_till) < new Date();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const validFrom = new Date(offer.valid_from);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const vf = new Date(offer.valid_from);
+  const vt = new Date(offer.valid_till);
+  const validFrom = new Date(vf.getFullYear(), vf.getMonth(), vf.getDate());
+  const validTill = new Date(vt.getFullYear(), vt.getMonth(), vt.getDate());
+  const isExpired = validTill < today;
   const isUpcoming = validFrom > today;
   if (isExpired) return { bg: "bg-gray-100", text: "text-gray-700", label: "EXPIRED" };
   if (!offer.is_active) return { bg: "bg-yellow-50", text: "text-amber-700", label: "INACTIVE" };
@@ -152,6 +155,48 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
       : menuItems.filter((item) =>
           item.item_name.toLowerCase().includes(menuItemSearch.toLowerCase())
         );
+
+  const offersByItemId = useMemo(() => {
+    const now = new Date();
+    const map = new Map<
+      string,
+      { totalCount: number; activeCount: number }
+    >();
+    offers.forEach((offer) => {
+      if (offer.offer_sub_type !== "SPECIFIC_ITEM" || !offer.menu_item_ids?.length) return;
+      const isWithinDates =
+        new Date(offer.valid_from) <= now && now <= new Date(offer.valid_till);
+      const isActive = Boolean(offer.is_active && isWithinDates);
+      offer.menu_item_ids.forEach((itemId) => {
+        const prev = map.get(itemId) ?? { totalCount: 0, activeCount: 0 };
+        prev.totalCount += 1;
+        if (isActive) prev.activeCount += 1;
+        map.set(itemId, prev);
+      });
+    });
+    return map;
+  }, [offers]);
+
+  const getItemPrice = (item: MenuItemForOffer): number | null => {
+    const raw =
+      item.selling_price ??
+      item.base_price ??
+      item.actual_price ??
+      null;
+    const n = typeof raw === "string" ? Number(raw) : raw;
+    return typeof n === "number" && Number.isFinite(n) ? n : null;
+  };
+
+  const isItemEligibleForCurrentOffer = (item: MenuItemForOffer): boolean => {
+    if (formData.offer_type !== "FLAT") {
+      // For non-flat offers, allow all items here (other rules already apply).
+      return true;
+    }
+    // For flat offers, only freeze items that are already mapped to any offer.
+    const stats = offersByItemId.get(item.item_id);
+    if (stats && stats.totalCount > 0) return false;
+    return true;
+  };
 
   useEffect(() => {
     if (!storeId) {
@@ -348,6 +393,33 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
           toast(data?.error || "Failed to update offer");
           return;
         }
+        // Upload offer image (one per offer) and then patch offer_image_url
+        if (imageFile && data?.offer?.offer_id) {
+          try {
+            const form = new FormData();
+            form.append("file", imageFile);
+            form.append("offerId", String(data.offer.offer_id));
+            if (imagePreview) form.append("currentImageUrl", String(imagePreview));
+            const upRes = await fetch(`/api/merchant/stores/${storeId}/offers/upload-image`, {
+              method: "POST",
+              body: form,
+            });
+            const up = await upRes.json().catch(() => ({}));
+            if (upRes.ok && up?.url) {
+              const patchRes = await fetch(`/api/merchant/stores/${storeId}/offers/${editingId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ offer_image_url: up.url }),
+              });
+              const patched = await patchRes.json().catch(() => ({}));
+              if (patchRes.ok && patched?.offer) {
+                setOffers((prev) => prev.map((o) => (o.id === editingId ? { ...o, ...patched.offer } : o)));
+              }
+            }
+          } catch {
+            // best effort
+          }
+        }
         setOffers((prev) => prev.map((o) => (o.id === editingId ? { ...o, ...payload, ...data.offer } : o)));
         toast("Offer updated successfully!");
       } else {
@@ -361,9 +433,32 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
           toast(data?.error || "Failed to create offer");
           return;
         }
-        if (data.offer) {
-          setOffers((prev) => [{ ...data.offer, id: data.offer.id }, ...prev]);
+        let created = data.offer ?? null;
+        // Create then upload image then patch offer_image_url
+        if (created && imageFile && created.offer_id) {
+          try {
+            const form = new FormData();
+            form.append("file", imageFile);
+            form.append("offerId", String(created.offer_id));
+            const upRes = await fetch(`/api/merchant/stores/${storeId}/offers/upload-image`, {
+              method: "POST",
+              body: form,
+            });
+            const up = await upRes.json().catch(() => ({}));
+            if (upRes.ok && up?.url) {
+              const patchRes = await fetch(`/api/merchant/stores/${storeId}/offers/${created.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ offer_image_url: up.url }),
+              });
+              const patched = await patchRes.json().catch(() => ({}));
+              if (patchRes.ok && patched?.offer) created = { ...created, ...patched.offer };
+            }
+          } catch {
+            // best effort
+          }
         }
+        if (created) setOffers((prev) => [{ ...created, id: created.id }, ...prev]);
         toast("Offer created successfully!");
       }
       setShowModal(false);
@@ -470,8 +565,10 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {offers.map((offer) => {
               const now = new Date();
-              const validFrom = new Date(offer.valid_from);
-              const validTill = new Date(offer.valid_till);
+              const vf = new Date(offer.valid_from);
+              const vt = new Date(offer.valid_till);
+              const validFrom = new Date(vf.getFullYear(), vf.getMonth(), vf.getDate());
+              const validTill = new Date(vt.getFullYear(), vt.getMonth(), vt.getDate());
               let statusLabel = "";
               if (now < validFrom) {
                 const totalDuration = Math.ceil((validTill.getTime() - validFrom.getTime()) / (1000 * 60 * 60 * 24));
@@ -771,14 +868,62 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                                 ) : (
                                   filteredMenuItems.map((item) => {
                                     const isSelected = formData.menu_item_ids.includes(item.item_id);
+                                    const stats = offersByItemId.get(item.item_id);
+                                    const price = getItemPrice(item);
+                                    const hasActiveOffer = (stats?.activeCount ?? 0) > 0;
+                                    if (!isItemEligibleForCurrentOffer(item)) {
+                                      // Hide ineligible items for the current flat discount configuration.
+                                      return null;
+                                    }
                                     return (
                                       <div
                                         key={item.item_id}
                                         onClick={() => toggleMenuItemSelection(item.item_id)}
-                                        className={`px-3 py-2.5 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 flex items-center justify-between ${isSelected ? "bg-green-50" : ""}`}
+                                        className={`px-3 py-2.5 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 flex items-center justify-between ${
+                                          isSelected ? "bg-green-50" : ""
+                                        }`}
                                       >
-                                        <span className="text-sm font-medium text-gray-900 truncate">{item.item_name}</span>
-                                        {isSelected && <Check size={16} className="text-green-600 flex-shrink-0 ml-2" />}
+                                        <div className="flex-1 min-w-0 mr-2">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-sm font-medium text-gray-900 truncate">
+                                              {item.item_name}
+                                            </span>
+                                            <span className="text-[10px] font-mono text-gray-500">
+                                              #{item.item_id}
+                                            </span>
+                                          </div>
+                                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px]">
+                                            {price != null && (
+                                              <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700">
+                                                ₹{price.toFixed(0)}
+                                              </span>
+                                            )}
+                                            {item.in_stock === false && (
+                                              <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 font-medium text-red-700">
+                                                Out of stock
+                                              </span>
+                                            )}
+                                            {stats && stats.totalCount > 0 && (
+                                              <span
+                                                className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${
+                                                  hasActiveOffer
+                                                    ? "bg-amber-100 text-amber-800"
+                                                    : "bg-emerald-50 text-emerald-700"
+                                                }`}
+                                              >
+                                                {hasActiveOffer
+                                                  ? `${stats.activeCount} active offer${stats.activeCount > 1 ? "s" : ""}`
+                                                  : `${stats.totalCount} mapped offer${stats.totalCount > 1 ? "s" : ""}`}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                        {isSelected && (
+                                          <Check
+                                            size={16}
+                                            className="text-green-600 flex-shrink-0 ml-2"
+                                          />
+                                        )}
                                       </div>
                                     );
                                   })

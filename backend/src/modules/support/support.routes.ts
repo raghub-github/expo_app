@@ -97,7 +97,11 @@ export async function supportRoutes(app: FastifyInstance) {
     {
       schema: {
         body: createTicketBodySchema,
-        response: { 200: createResponseSchema },
+        response: {
+          200: createResponseSchema,
+          403: z.object({ error: z.string(), message: z.string() }),
+          500: z.object({ message: z.string() }).optional(),
+        },
       },
     },
     async (req, reply) => {
@@ -163,7 +167,10 @@ export async function supportRoutes(app: FastifyInstance) {
           limit: z.coerce.number().min(1).max(100).optional().default(20),
           offset: z.coerce.number().min(0).optional().default(0),
         }),
-        response: { 200: listResponseSchema },
+        response: {
+          200: listResponseSchema,
+          403: z.object({ error: z.string(), message: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -241,7 +248,11 @@ export async function supportRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({ id: z.coerce.number() }),
-        response: { 200: ticketListItemSchema },
+        response: {
+          200: ticketListItemSchema,
+          403: z.object({ error: z.string(), message: z.string() }),
+          404: z.object({ error: z.string(), message: z.string() }),
+        },
       },
     },
     async (req, reply) => {

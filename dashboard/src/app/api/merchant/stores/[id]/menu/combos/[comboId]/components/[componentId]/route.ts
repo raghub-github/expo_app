@@ -4,8 +4,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../../../assert-store-access";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
+
+async function getAgentIdForStore(storeId: number): Promise<number | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) return null;
+  const systemUser = await getSystemUserByEmail(user.email);
+  return systemUser?.id ?? null;
+}
 
 export async function DELETE(
   _request: NextRequest,
@@ -24,13 +36,29 @@ export async function DELETE(
 
     const sql = getSql();
     const [comp] = await sql`
-      SELECT cc.id FROM merchant_menu_combo_components cc
+      SELECT cc.id, cc.menu_item_id, cc.variant_id, cc.quantity FROM merchant_menu_combo_components cc
       INNER JOIN merchant_menu_combos c ON c.id = cc.combo_id AND c.store_id = ${storeId}
       WHERE cc.id = ${compId} AND cc.combo_id = ${cId}
     `;
     if (!comp) return NextResponse.json({ success: false, error: "Component not found" }, { status: 404 });
+    const compRow = comp as { id: number; menu_item_id: number; variant_id: number | null; quantity: number };
 
     await sql`DELETE FROM merchant_menu_combo_components WHERE id = ${compId}`;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_combo_components",
+        fieldName: "combo_component",
+        oldValue: JSON.stringify({ combo_id: cId, menu_item_id: compRow.menu_item_id, variant_id: compRow.variant_id, quantity: compRow.quantity }),
+        newValue: null,
+        actionType: "delete",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "combo_component", action: "delete", summary: `Agent removed item from combo #${cId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/combos/[comboId]/components/[componentId]]", e);

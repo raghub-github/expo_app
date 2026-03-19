@@ -57,6 +57,7 @@ export async function authRoutes(app: FastifyInstance) {
           }),
           400: z.object({ error: z.string(), message: z.string().optional() }),
           404: z.object({ error: z.string(), message: z.string().optional() }),
+          500: z.object({ error: z.string(), message: z.string() }),
         },
       },
     },
@@ -334,7 +335,9 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
+          404: z.object({ error: z.string(), message: z.string() }).optional(),
           429: z.object({ error: z.string() }),
+          500: z.object({ error: z.string(), message: z.string().optional() }).optional(),
         },
       },
     },
@@ -1055,7 +1058,7 @@ export async function authRoutes(app: FastifyInstance) {
       } catch (err: any) {
         req.log?.error?.({ err }, "Merchant Supabase OTP exchange failed");
         if (err?.statusCode) throw err;
-        return reply.code(500).send({ error: "partner_lookup_failed", message: err?.message ?? "Could not load partner account." });
+        return reply.code(500 as any).send({ error: "partner_lookup_failed", message: err?.message ?? "Could not load partner account." } as any);
       }
     },
   );
@@ -1076,11 +1079,16 @@ export async function authRoutes(app: FastifyInstance) {
         response: {
           200: SessionSchema,
           400: z.object({ error: z.string() }),
+          500: z.object({ error: z.string() }).optional(),
         },
       },
     },
     async (req, reply) => {
-      const { authToken, phoneE164, deviceId } = req.body;
+      const { authToken, phoneE164, deviceId } = req.body as {
+        authToken: string;
+        phoneE164: string;
+        deviceId: string;
+      };
 
       try {
         // Verify MSG91 access token using MSG91 Widget API

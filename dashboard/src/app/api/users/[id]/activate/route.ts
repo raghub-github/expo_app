@@ -48,8 +48,8 @@ export async function POST(
     }
 
     // Check if user exists
-    const user = await getSystemUserById(userId);
-    if (!user) {
+    const targetUser = await getSystemUserById(userId);
+    if (!targetUser) {
       return NextResponse.json(
         { success: false, error: "User not found" },
         { status: 404 }

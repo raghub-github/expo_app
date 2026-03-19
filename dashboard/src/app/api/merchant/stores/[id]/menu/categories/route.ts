@@ -9,6 +9,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -78,6 +79,9 @@ export async function POST(
       )
       RETURNING id
     `;
+    try {
+      await logStoreActivity({ storeId, section: "category", action: "create", entityName: name, summary: `Agent created category "${name}"`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, id: Number((row as any).id) }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/categories]", e);

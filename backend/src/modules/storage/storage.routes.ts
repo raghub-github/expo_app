@@ -23,6 +23,15 @@ export async function storageRoutes(app: FastifyInstance) {
   // Upload file to R2
   app.post(
     "/upload",
+    {
+      schema: {
+        response: {
+          200: z.object({ signedUrl: z.string(), key: z.string() }),
+          400: z.object({ error: z.string() }),
+          500: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
     async (req, reply) => {
       try {
         // Process multipart form data - iterate through all parts
@@ -90,6 +99,10 @@ export async function storageRoutes(app: FastifyInstance) {
           200: z.object({
             signedUrl: z.string(),
           }),
+          500: z.object({
+            error: z.string(),
+            message: z.string(),
+          }),
         },
       },
     },
@@ -118,6 +131,10 @@ export async function storageRoutes(app: FastifyInstance) {
         response: {
           200: z.object({
             success: z.boolean(),
+            message: z.string(),
+          }),
+          500: z.object({
+            error: z.string(),
             message: z.string(),
           }),
         },
@@ -154,6 +171,10 @@ export async function storageRoutes(app: FastifyInstance) {
               endpoint: z.string(),
               region: z.string(),
             }).optional(),
+          }),
+          500: z.object({
+            success: z.boolean(),
+            message: z.string(),
           }),
         },
       },

@@ -11,7 +11,7 @@ import { getEnv } from "../../config/env.js";
 let r2Client: S3Client | null = null;
 let bucketName: string | null = null;
 
-function getR2Client(): S3Client {
+export function getR2Client(): S3Client {
   if (r2Client) return r2Client;
 
   const env = getEnv();
@@ -38,7 +38,7 @@ function getR2Client(): S3Client {
   return r2Client;
 }
 
-function getBucketName(): string {
+export function getBucketName(): string {
   if (bucketName) return bucketName;
   const env = getEnv();
   if (!env.R2_BUCKET_NAME) {

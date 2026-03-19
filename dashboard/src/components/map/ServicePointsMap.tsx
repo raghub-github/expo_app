@@ -3,12 +3,12 @@
 import { useState, useCallback, useEffect, useMemo, memo } from "react";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import Link from "next/link";
-import { 
-  useServicePointsQuery, 
-  useDeleteServicePoint,
+import {
+  useGetServicePointsQuery,
+  useDeleteServicePointMutation,
   SESSION_EXPIRED_MESSAGE,
-  type ServicePoint 
-} from "@/hooks/queries/useServicePointsQuery";
+  type ServicePoint,
+} from "@/store/api/dashboardHomeApi";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
 import { MapComponent } from "./MapComponent";
@@ -46,8 +46,8 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   useEffect(() => {
     setMounted(true);
   }, []);
-  const { data: servicePoints = [], isLoading, error, refetch, isFetching, dataUpdatedAt } = useServicePointsQuery();
-  const deleteServicePoint = useDeleteServicePoint();
+  const { data: servicePoints = [], isLoading, error, refetch, isFetching, dataUpdatedAt } = useGetServicePointsQuery();
+  const [deleteServicePoint, { isLoading: deleteLoading }] = useDeleteServicePointMutation();
   const [retrying, setRetrying] = useState(false);
   const handleRetry = useCallback(async () => {
     setRetrying(true);
@@ -88,7 +88,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
     setDeletingPointId(pointId);
     setDeleteStartTime(Date.now());
     try {
-      await deleteServicePoint.mutateAsync(pointId);
+      await deleteServicePoint(pointId).unwrap();
       setSelectedPoint(null);
     } catch (err) {
       console.error("Error deleting service point:", err);
@@ -119,7 +119,10 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   }
 
   if (error) {
-    const isSessionExpired = error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE;
+    const err = error as { status?: number; message?: string };
+    const isSessionExpired =
+      err?.status === 401 ||
+      (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE);
     const isNetworkError =
       error instanceof Error &&
       (error.message === "Failed to fetch" || error.name === "TypeError");

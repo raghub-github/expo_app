@@ -154,14 +154,12 @@ export default function ComboEditScreen() {
   const handleSave = async () => {
     if (readOnly) return;
     if (!token || !storeId || id == null || Number.isNaN(id)) return;
-    const p = parseFloat(price);
-    if (Number.isNaN(p) || p < 0) return;
     setSaving(true);
     try {
       await updateCombo(storeId, id, token, {
         combo_name: name.trim(),
         description: description.trim() || null,
-        combo_price: p,
+        // combo_price is derived from components; do not allow manual override here
       });
       setCombo((prev) => prev ? { ...prev, combo_name: name.trim(), description: description.trim() || null, combo_price: price } : null);
     } catch (e) {

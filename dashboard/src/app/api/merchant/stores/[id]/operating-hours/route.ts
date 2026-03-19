@@ -8,6 +8,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getMerchantAccess } from "@/lib/permissions/merchant-access";
+import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
@@ -235,6 +237,13 @@ export async function PATCH(
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
     }
+    const access = await getMerchantAccess(user.id, user.email);
+    if (!access) {
+      return NextResponse.json({ success: false, error: "Merchant access required" }, { status: 403 });
+    }
+    if (!access.can_update_store_timing) {
+      return NextResponse.json({ success: false, error: "Permission denied: cannot update store timing" }, { status: 403 });
+    }
     const systemUser = await getSystemUserByEmail(user.email);
     const agentId = systemUser?.id ?? null;
 
@@ -347,6 +356,34 @@ export async function PATCH(
       }
     } catch (logErr) {
       console.warn("[PATCH operating-hours] activity log insert failed:", logErr);
+    }
+    await logActionByAuth(user.id, user.email, "MERCHANT", "UPDATE", {
+      resourceType: "OPERATING_HOURS",
+      resourceId: String(storeId),
+      actionDetails: { storeId },
+      previousValues: oldRow ?? undefined,
+      newValues: newPayload,
+      ipAddress: getIpAddress(request),
+      userAgent: getUserAgent(request),
+      requestPath: `/api/merchant/stores/${storeId}/operating-hours`,
+      requestMethod: "PATCH",
+    });
+    // Notify backend to re-run schedule engine for this store (store timing is managed by backend).
+    const backendUrl = process.env.BACKEND_URL ?? process.env.NEXT_PUBLIC_BACKEND_URL;
+    const scheduleTickSecret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (
+      backendUrl &&
+      scheduleTickSecret &&
+      typeof backendUrl === "string" &&
+      typeof scheduleTickSecret === "string"
+    ) {
+      const base = backendUrl.replace(/\/+$/, "");
+      fetch(`${base}/v1/internal/stores/${storeId}/schedule-tick`, {
+        method: "POST",
+        headers: { "X-Internal-Secret": scheduleTickSecret },
+      }).catch((err) => {
+        console.warn("[PATCH operating-hours] backend schedule-tick request failed:", err);
+      });
     }
     return NextResponse.json({ success: true });
   } catch (e) {

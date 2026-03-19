@@ -6,6 +6,11 @@
  *   - CLOSE store when current time is outside operating hours
  * Respects: manual_lock (block_auto_open), manual_close_until, scheduled closures.
  * All options: toggle open/close, closed for today, temp closed, manual open, scheduled off.
+ *
+ * Source of truth: This module and merchant-partner routes own all store timing and
+ * availability logic. Tables: merchant_store_operating_hours (schedule), merchant_store_availability
+ * (toggle, auto_open_from_schedule, block_auto_open, manual_close_until). Frontends (merchant app,
+ * dashboard) must use backend APIs only; do not duplicate schedule or open/close logic in the frontend.
  */
 
 import { getSql } from "../../db/client.js";
@@ -515,7 +520,7 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
       if (Number.isFinite(sid)) hoursByStore.set(sid, r);
     }
 
-    for (const store of storeRows as StoreRow[]) {
+    for (const store of storeRows as unknown as StoreRow[]) {
       const storeId = store.store_id;
       if (!Number.isInteger(storeId) || storeId < 1) continue;
 

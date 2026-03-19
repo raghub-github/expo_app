@@ -22,6 +22,8 @@ import ContactUsScreen from "./ContactUsScreen";
 import HelpChatScreen from "./HelpChatScreen";
 import MyTicketsScreen from "./MyTicketsScreen";
 import StoreStatusScreen from "./StoreStatusScreen";
+import OffersScreen from "./OffersScreen";
+import ActivityFeedScreen from "./ActivityFeedScreen";
 import { useProfileNav } from "@/context/ProfileNavContext";
 
 const SLUG_TITLES: Record<string, string> = {
@@ -43,6 +45,8 @@ const SLUG_TITLES: Record<string, string> = {
   settlements: "Settlement History",
   commission: "Commission Details",
   "tax-reports": "Tax Reports",
+  offers: "Offers & Promotions",
+  "activity-feed": "Recent Activity",
   notifications: "Notifications",
   language: "Language",
   help: "Help Centre",
@@ -117,6 +121,14 @@ export default function ProfileSlugScreen() {
 
   if (slug === "tickets") {
     return <MyTicketsScreen />;
+  }
+
+  if (slug === "offers") {
+    return <OffersScreen />;
+  }
+
+  if (slug === "activity-feed") {
+    return <ActivityFeedScreen />;
   }
 
   const title = (slug && SLUG_TITLES[slug]) || slug || "Settings";

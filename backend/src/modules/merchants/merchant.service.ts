@@ -319,7 +319,6 @@ export async function getMenuItemFullConfig(
   return {
     item: {
       id: item.item_id,
-      menuItemId: item.id,
       name: item.item_name,
       description: item.item_description ?? null,
       price: parseFloat(item.selling_price),
@@ -426,6 +425,7 @@ export async function search(params: {
       avg_preparation_time_minutes: null,
       is_active: true,
       is_accepting_orders: true,
+      is_available: null,
       status: null,
     }));
 

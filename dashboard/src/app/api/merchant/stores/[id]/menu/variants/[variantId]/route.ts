@@ -4,8 +4,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../../assert-store-access";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
+
+async function getAgentIdForStore(storeId: number): Promise<number | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) return null;
+  const systemUser = await getSystemUserByEmail(user.email);
+  return systemUser?.id ?? null;
+}
 
 export async function PUT(
   request: NextRequest,
@@ -51,6 +63,21 @@ export async function PUT(
           updated_at = NOW()
       WHERE id = ${vId}
     `;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_item_variants",
+        fieldName: "variant",
+        oldValue: JSON.stringify({ variant_name: e.variant_name, variant_price: e.variant_price }),
+        newValue: JSON.stringify({ variant_name, variant_price }),
+        actionType: "update",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "variant", action: "update", entityId: vId, summary: `Agent updated variant #${vId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/variants/[variantId]]", e);
@@ -74,14 +101,30 @@ export async function DELETE(
 
     const sql = getSql();
     const [v] = await sql`
-      SELECT v.id FROM merchant_menu_item_variants v
+      SELECT v.id, v.variant_name, v.variant_price, v.menu_item_id FROM merchant_menu_item_variants v
       INNER JOIN merchant_menu_items m ON m.id = v.menu_item_id AND m.store_id = ${storeId}
       WHERE v.id = ${vId}
       LIMIT 1
     `;
     if (!v) return NextResponse.json({ success: false, error: "Variant not found" }, { status: 404 });
+    const vRow = v as { id: number; variant_name: string; variant_price: unknown; menu_item_id: number };
 
     await sql`DELETE FROM merchant_menu_item_variants WHERE id = ${vId}`;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_item_variants",
+        fieldName: "variant",
+        oldValue: JSON.stringify({ menu_item_id: vRow.menu_item_id, variant_name: vRow.variant_name, variant_price: vRow.variant_price }),
+        newValue: null,
+        actionType: "delete",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "variant", action: "delete", entityId: vId, summary: `Agent deleted variant #${vId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/variants/[variantId]]", e);

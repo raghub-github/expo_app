@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
+import { logStoreActivity } from '@/lib/store-activity-feed'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -119,5 +120,16 @@ export async function POST(
     console.error('[POST /api/merchant/menu-items/[itemId]/modifier-groups]', error.message)
     return NextResponse.json({ success: false, error: error.message }, { status: 500 })
   }
+  try {
+    await logStoreActivity({
+      storeId: access.storeIdNum,
+      section: 'addon',
+      action: 'link',
+      entityId: inserted?.id ?? null,
+      summary: `Merchant linked modifier group #${modifier_group_id} to item #${menuItemId}`,
+      actorType: 'merchant',
+    });
+  } catch (_) {}
+
   return NextResponse.json({ success: true, id: inserted?.id }, { status: 201 })
 }

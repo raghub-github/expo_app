@@ -15,6 +15,11 @@ import { TablePagination } from "./TablePagination";
 import { Plus, RotateCcw, RefreshCw, ChevronDown, X } from "lucide-react";
 import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { useRiderAccessQuery } from "@/hooks/queries/useRiderAccessQuery";
+import {
+  useGetRiderPenaltiesQuery,
+  useAddRiderPenaltyMutation,
+  useRevertRiderPenaltyMutation,
+} from "@/store/api/riderApi";
 
 interface Penalty {
   id: number;
@@ -110,52 +115,36 @@ export function RiderPenaltiesClient() {
     [riderAccess]
   );
 
-  const fetchPenalties = useCallback(
-    async (r: RiderSummaryInfo | null) => {
-      if (!r) {
-        setPenalties([]);
-        return;
-      }
+  const riderId = rider?.id ?? riderFromContext?.id ?? null;
 
-      try {
-        setLoading(true);
-        setError(null);
-
-        const params = new URLSearchParams();
-        params.set("limit", String(limit));
-        params.set("offset", String((page - 1) * limit));
-        if (appliedFilterSearch.trim()) params.set("q", appliedFilterSearch.trim());
-        if (serviceType && serviceType !== "all") {
-          params.set("serviceType", serviceType);
+  const {
+    data: penaltiesData,
+    isLoading: penaltiesLoading,
+    isFetching: penaltiesFetching,
+    error: penaltiesError,
+    refetch: refetchPenalties,
+  } = useGetRiderPenaltiesQuery(
+    riderId
+      ? {
+          riderId,
+          filters: {
+            limit,
+            offset: (page - 1) * limit,
+            from,
+            to,
+            serviceType,
+            status,
+            q: appliedFilterSearch.trim() || undefined,
+          },
         }
-        if (status && status !== "all") {
-          params.set("status", status);
-        }
-        if (from) params.set("from", from);
-        if (to) params.set("to", to);
-
-        const res = await fetch(
-          `/api/riders/${r.id}/penalties?${params.toString()}`
-        );
-        const json = await res.json();
-
-        if (!res.ok || !json.success) {
-          throw new Error(json.error || "Failed to load penalties");
-        }
-
-        setPenalties(json.data.penalties || []);
-        setTotal(json.data.total ?? 0);
-      } catch (err: unknown) {
-        console.error("[RiderPenalties] Error loading penalties:", err);
-        setError(err instanceof Error ? err.message : "Failed to load penalties");
-        setPenalties([]);
-        setTotal(0);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [limit, page, appliedFilterSearch, serviceType, status, from, to]
+      : ({ riderId: 0 } as any),
+    {
+      skip: riderId == null,
+    } as any
   );
+
+  const [addPenaltyMutation, { isLoading: addPenaltyMutating }] = useAddRiderPenaltyMutation();
+  const [revertPenaltyMutation, { isLoading: revertPenaltyMutating }] = useRevertRiderPenaltyMutation();
 
   const openRevertModal = useCallback((penaltyId: number) => {
     setRevertPenaltyId(penaltyId);
@@ -166,33 +155,26 @@ export function RiderPenaltiesClient() {
 
   const handleRevert = useCallback(
     async (penaltyId: number, reason?: string) => {
-      if (!rider) return;
+      if (!riderId) return;
       setRevertingId(penaltyId);
       try {
-        const res = await fetch(
-          `/api/riders/${rider.id}/penalties/${penaltyId}/revert`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ reason: (reason ?? "").trim() || undefined }),
-          }
-        );
-        const json = await res.json();
-        if (!res.ok || !json.success) {
-          throw new Error(json.error || "Revert failed");
-        }
+        await revertPenaltyMutation({
+          riderId,
+          penaltyId,
+          reason: (reason ?? "").trim() || undefined,
+        }).unwrap();
         setShowRevertModal(false);
         setRevertPenaltyId(null);
         setRevertReason("");
-        invalidateRiderSummary(queryClient, rider.id);
-        await fetchPenalties(rider);
+        invalidateRiderSummary(queryClient, riderId);
+        await refetchPenalties();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to revert penalty");
       } finally {
         setRevertingId(null);
       }
     },
-    [rider, queryClient, fetchPenalties]
+    [riderId, queryClient, revertPenaltyMutation, refetchPenalties]
   );
 
   const confirmRevert = useCallback(() => {
@@ -282,7 +264,7 @@ export function RiderPenaltiesClient() {
   const handleAddPenalty = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!rider) return;
+      if (!riderId) return;
       const amount = parseFloat(addPenaltyForm.amount);
       const reason = addPenaltyForm.reason.trim();
       const orderIdRaw = addPenaltyForm.orderId.trim();
@@ -307,32 +289,30 @@ export function RiderPenaltiesClient() {
       setAddPenaltySubmitting(true);
       setError(null);
       try {
-        const res = await fetch(`/api/riders/${rider.id}/penalties`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        await addPenaltyMutation({
+          riderId,
+          body: {
             amount,
             reason,
-            serviceType: addPenaltyForm.serviceType && ["food", "parcel", "person_ride"].includes(addPenaltyForm.serviceType) ? addPenaltyForm.serviceType : null,
+            serviceType:
+              addPenaltyForm.serviceType && ["food", "parcel", "person_ride"].includes(addPenaltyForm.serviceType)
+                ? addPenaltyForm.serviceType
+                : null,
             penaltyType: addPenaltyForm.penaltyType,
             ...(orderId != null && !Number.isNaN(orderId) ? { orderId } : {}),
-          }),
-        });
-        const json = await res.json();
-        if (!res.ok || !json.success) {
-          throw new Error(json.error || "Failed to add penalty");
-        }
+          },
+        }).unwrap();
         setShowAddPenalty(false);
         setAddPenaltyForm({ amount: "", reason: "", serviceType: "", penaltyType: "other", orderId: "" });
-        invalidateRiderSummary(queryClient, rider.id);
-        await fetchPenalties(rider);
+        invalidateRiderSummary(queryClient, riderId);
+        await refetchPenalties();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Failed to add penalty");
       } finally {
         setAddPenaltySubmitting(false);
       }
     },
-    [rider, queryClient, addPenaltyForm, fetchPenalties]
+    [riderId, queryClient, addPenaltyForm, addPenaltyMutation, refetchPenalties]
   );
 
   // Rider from context (persists when navigating from Rider Information to Penalties)
@@ -352,12 +332,24 @@ export function RiderPenaltiesClient() {
     }
   }, [hasSearch, searchValue, riderFromContext?.id, resolveRider]);
 
-  // Fetch penalties whenever rider or applied filters change
   useEffect(() => {
-    if (rider) {
-      fetchPenalties(rider);
+    setLoading(penaltiesLoading || penaltiesFetching);
+  }, [penaltiesLoading, penaltiesFetching]);
+
+  useEffect(() => {
+    if (!penaltiesData) {
+      setPenalties([]);
+      setTotal(0);
+      return;
     }
-  }, [rider, fetchPenalties]);
+    setPenalties(penaltiesData.penalties ?? []);
+    setTotal(penaltiesData.total ?? 0);
+  }, [penaltiesData]);
+
+  useEffect(() => {
+    if (!penaltiesError) return;
+    setError(penaltiesError instanceof Error ? penaltiesError.message : String(penaltiesError));
+  }, [penaltiesError]);
 
   // Debounce filter search: apply 400ms after user stops typing
   useEffect(() => {

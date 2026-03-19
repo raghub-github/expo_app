@@ -6,6 +6,7 @@ import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban } from 
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
 import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
+import { useMerchantStoresStatsQuery } from "@/hooks/queries/useMerchantStoreQueries";
 
 type FilterMode = "child" | "parent";
 
@@ -232,10 +233,23 @@ export function MerchantsSearchClient() {
   const [error, setError] = useState<string | null>(null);
   const [parentItems, setParentItems] = useState<ParentRow[]>([]);
   const [childItems, setChildItems] = useState<ChildRow[]>([]);
-  const [stats, setStats] = useState<StoreStats | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
   const [dateFromInput, setDateFromInput] = useState("");
   const [dateToInput, setDateToInput] = useState("");
+
+  const fromDate = useMemo(() => searchParams.get("fromDate") ?? "", [searchParams]);
+  const toDate = useMemo(() => searchParams.get("toDate") ?? "", [searchParams]);
+  const statsQuery = useMerchantStoresStatsQuery(fromDate || undefined, toDate || undefined);
+  const stats: StoreStats | null =
+    statsQuery.data && (statsQuery.data as { success?: boolean }).success
+      ? {
+          total: (statsQuery.data as StoreStats).total ?? 0,
+          verified: (statsQuery.data as StoreStats).verified ?? 0,
+          pending: (statsQuery.data as StoreStats).pending ?? 0,
+          rejected: (statsQuery.data as StoreStats).rejected ?? 0,
+          new: (statsQuery.data as StoreStats).new ?? 0,
+        }
+      : null;
+  const statsLoading = statsQuery.isLoading;
 
   const filter = useMemo((): FilterMode => {
     if (searchParams.get("parent") === "true") return "parent";
@@ -251,9 +265,6 @@ export function MerchantsSearchClient() {
     () => searchParams.get("category") as CategoryKey | null,
     [searchParams]
   );
-
-  const fromDate = useMemo(() => searchParams.get("fromDate") ?? "", [searchParams]);
-  const toDate = useMemo(() => searchParams.get("toDate") ?? "", [searchParams]);
 
   const hasSearchParams = searchQuery.length > 0;
   const hasCategory = category != null && ["verified", "pending", "rejected", "new", "total"].includes(category);
@@ -302,37 +313,6 @@ export function MerchantsSearchClient() {
     setDateFromInput(searchParams.get("fromDate") ?? "");
     setDateToInput(searchParams.get("toDate") ?? "");
   }, [searchParams]);
-
-  // Fetch stats (refetch when date filter changes so cards update with filter)
-  useEffect(() => {
-    let cancelled = false;
-    setStatsLoading(true);
-    const params = new URLSearchParams();
-    if (fromDate) params.set("fromDate", fromDate);
-    if (toDate) params.set("toDate", toDate);
-    const qs = params.toString();
-    fetch(`/api/merchant/stores/stats${qs ? `?${qs}` : ""}`, { method: "GET" })
-      .then((res) => res.json().catch(() => null))
-      .then((data: { success?: boolean } & StoreStats) => {
-        if (cancelled || !data?.success) return;
-        setStats({
-          total: data.total ?? 0,
-          verified: data.verified ?? 0,
-          pending: data.pending ?? 0,
-          rejected: data.rejected ?? 0,
-          new: data.new ?? 0,
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setStats(null);
-      })
-      .finally(() => {
-        if (!cancelled) setStatsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [fromDate, toDate]);
 
   // Sync merchant search state to context for RightSidebar skeleton and store card (shared loading = loading || !hasSearched)
   // NOTE: We intentionally omit `merchantsSearch` from deps to avoid an infinite loop, since the context

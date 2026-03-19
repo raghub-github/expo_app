@@ -121,7 +121,10 @@ export async function riderRoutes(app: FastifyInstance) {
           heading: z.number().optional(),
           accuracy: z.number().optional(),
         }),
-        response: { 200: z.object({ ok: z.literal(true) }) },
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          403: z.object({ error: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -381,7 +384,7 @@ export async function riderRoutes(app: FastifyInstance) {
           r2Key: z.string().optional(), // R2 storage key - allows URL regeneration
           extractedName: z.string().optional(),
           extractedDob: z.string().optional(), // ISO date string
-          metadata: z.record(z.any()).optional(),
+          metadata: z.record(z.string(), z.unknown()).optional(),
         }),
         response: {
           200: z.object({
@@ -392,7 +395,15 @@ export async function riderRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const { riderId, docType, fileUrl, r2Key, extractedName, extractedDob, metadata } = req.body;
+      const { riderId, docType, fileUrl, r2Key, extractedName, extractedDob, metadata } = req.body as {
+        riderId: number;
+        docType: "aadhaar" | "pan" | "dl" | "rc" | "selfie";
+        fileUrl: string;
+        r2Key?: string;
+        extractedName?: string;
+        extractedDob?: string;
+        metadata?: Record<string, unknown>;
+      };
       const db = getDb();
 
       // Extract R2 key for rollback if needed
@@ -446,9 +457,12 @@ export async function riderRoutes(app: FastifyInstance) {
 
         // If Aadhaar document, update rider table with name and DOB
         if (docType === "aadhaar" && (extractedName || extractedDob)) {
-          const updateData: { name?: string; dob?: Date } = {};
+          const updateData: { name?: string; dob?: string } = {};
           if (extractedName) updateData.name = extractedName;
-          if (extractedDob) updateData.dob = new Date(extractedDob);
+          if (extractedDob) {
+            const d = new Date(extractedDob);
+            updateData.dob = Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+          }
           
           await db
             .update(riders)
@@ -496,7 +510,7 @@ export async function riderRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const { riderId, stage } = req.body;
+      const { riderId, stage } = req.body as { riderId: number; stage: "MOBILE_VERIFIED" | "KYC" | "PAYMENT" | "APPROVAL" | "ACTIVE" };
       const db = getDb();
 
       // Verify rider exists
@@ -537,7 +551,7 @@ export async function riderRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const { documentId } = req.body;
+      const { documentId } = req.body as { documentId: number };
       const db = getDb();
 
       // Get document

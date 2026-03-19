@@ -2,16 +2,15 @@ import { headers } from "next/headers";
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
 import { StoreLayoutWrapper } from "./StoreLayoutWrapper";
 
-/** Fetch full store (verification=1) so profile, sidebar, and cache get Store Details, Location, Banner, Gallery. */
+/** Fetch full store (verification=1). Cached 90s so revisits and nav within store are fast. */
 async function getStore(storeId: number) {
   const h = await headers();
-  // Server-side fetch: use localhost so NEXT_PUBLIC_APP_URL (e.g. Cloudflare tunnel) is not used from Node (ENOTFOUND). Vercel sets VERCEL_URL.
   const base =
     process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : `http://127.0.0.1:${process.env.PORT || 3000}`;
   const res = await fetch(`${base}/api/merchant/stores/${storeId}?verification=1`, {
-    cache: "no-store",
+    next: { revalidate: 90 },
     headers: { cookie: h.get("cookie") ?? "" },
   });
   if (!res.ok) return null;

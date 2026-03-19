@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getAuditActor, logMerchantAudit } from '@/lib/audit-merchant';
+import { logStoreActivity } from '@/lib/store-activity-feed';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -139,6 +140,21 @@ export async function PATCH(
         ip_address: ip,
         user_agent: ua,
         audit_metadata: { description: descriptions[actionField] || actionField },
+      });
+    }
+
+    if (actionField) {
+      const actionMap: Record<string, string> = {
+        BANK_ACCOUNT_SET_DEFAULT: 'set_default',
+        BANK_ACCOUNT_DISABLE: 'disable',
+        BANK_ACCOUNT_ENABLE: 'enable',
+      };
+      await logStoreActivity({
+        storeId: storeInternalId, section: 'bank_account',
+        action: actionMap[actionField] ?? 'update',
+        entityId: accountId,
+        summary: `Merchant ${actionField.toLowerCase().replace(/_/g, ' ')} for account #${accountId}`,
+        actorName: actor.performed_by_name, actorEmail: actor.performed_by_email,
       });
     }
 

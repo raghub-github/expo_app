@@ -1,7 +1,10 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { useStoreMenuQuery } from "@/hooks/queries/useMerchantStoreQueries";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   Plus,
   Edit2,
@@ -12,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  Layers,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { R2Image } from "@/components/ui/R2Image";
@@ -20,6 +24,9 @@ import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
 import {
   ITEM_PLACEHOLDER_SVG,
   CATEGORY_SUGGESTIONS,
+  normalizeFoodTypeForForm,
+  normalizeSpiceLevelForForm,
+  getFoodTypeLabel,
   type MenuItem,
   type MenuCategory,
   type Customization,
@@ -57,12 +64,24 @@ const defaultItemFormData: ItemFormData = {
   variants: [],
 };
 
-function normalizeCategory(c: { id?: number; name?: string; category_name?: string }): MenuCategory {
+function normalizeCategory(c: {
+  id?: number;
+  store_id?: number;
+  name?: string;
+  category_name?: string;
+  category_description?: string | null;
+  parent_category_id?: number | null;
+  display_order?: number | null;
+  is_active?: boolean;
+}): MenuCategory {
   return {
     id: c.id ?? 0,
-    store_id: 0,
+    store_id: Number(c.store_id) ?? 0,
     category_name: c.category_name ?? c.name ?? "—",
-    is_active: true,
+    category_description: c.category_description ?? undefined,
+    parent_category_id: c.parent_category_id ?? undefined,
+    display_order: c.display_order ?? undefined,
+    is_active: c.is_active !== false,
   };
 }
 
@@ -110,8 +129,13 @@ function normalizeItem(
 
 export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: string; onSwitchToAddonLibrary?: () => void }) {
   const { toast } = useToast();
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<{ categories?: unknown[]; items?: unknown[] } | null>(null);
+  const queryClient = useQueryClient();
+  const menuQuery = useStoreMenuQuery(storeId);
+  const data = menuQuery.data ?? null;
+  const loading = menuQuery.isLoading;
+  const refreshMenu = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
+  }, [queryClient, storeId]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED">("ALL");
@@ -144,6 +168,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [categoryError, setCategoryError] = useState<string | null>(null);
   const [categorySuggestionsOpen, setCategorySuggestionsOpen] = useState(false);
+  const [showManageCategoriesModal, setShowManageCategoriesModal] = useState(false);
+  const [showDeleteCategoryModal, setShowDeleteCategoryModal] = useState(false);
+  const [deleteCategoryId, setDeleteCategoryId] = useState<number | null>(null);
+  const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(null);
+  const [isDeletingCategory, setIsDeletingCategory] = useState(false);
+  const [parentCategoryIdInForm, setParentCategoryIdInForm] = useState<number | null>(null);
 
   const [addForm, setAddForm] = useState<ItemFormData>(defaultItemFormData);
   const [editForm, setEditForm] = useState<ItemFormData>(defaultItemFormData);
@@ -198,28 +228,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetch(`/api/merchant/stores/${storeId}/menu`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!cancelled && d) setData(d);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storeId]);
-
   const storePublicId = (data as any)?.store?.store_id as string | null | undefined;
-
-  const refreshMenu = async () => {
-    const d = await fetch(`/api/merchant/stores/${storeId}/menu`).then((r) => (r.ok ? r.json() : null));
-    if (d) setData(d);
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -261,8 +270,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         actionStatus: "SUCCESS",
         requestMethod: "POST",
       });
-      // refresh menu + CR list
-      fetch(`/api/merchant/stores/${storeId}/menu`).then((r) => (r.ok ? r.json() : null)).then((d) => d && setData(d));
+      refreshMenu();
       if (storePublicId) {
         const params = new URLSearchParams();
         params.set("storeId", storePublicId);
@@ -312,7 +320,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         actionStatus: "SUCCESS",
         requestMethod: "POST",
       });
-      // refresh CR list
+      refreshMenu();
       if (storePublicId) {
         const params = new URLSearchParams();
         params.set("storeId", storePublicId);
@@ -345,9 +353,34 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
 
   const rawCategories = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<string, unknown>[];
   const categories: MenuCategory[] = rawCategories.map((c, i) => {
-    const norm = normalizeCategory(c as { id?: number; name?: string; category_name?: string });
+    const norm = normalizeCategory(c as {
+      id?: number;
+      store_id?: number;
+      name?: string;
+      category_name?: string;
+      category_description?: string | null;
+      parent_category_id?: number | null;
+      display_order?: number | null;
+      is_active?: boolean;
+    });
     return { ...norm, id: (norm.id && norm.id > 0) ? norm.id : i + 1 };
   });
+  const parentCategories = useMemo(() => categories.filter((c) => !c.parent_category_id).sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)), [categories]);
+  const childrenByParentId = useMemo(() => {
+    const map = new Map<number, MenuCategory[]>();
+    for (const c of categories) {
+      if (c.parent_category_id == null) continue;
+      const list = map.get(c.parent_category_id) ?? [];
+      list.push(c);
+      map.set(c.parent_category_id, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
+    return map;
+  }, [categories]);
+  const displayCategoriesForChips = useMemo(
+    () => parentCategories.flatMap((p) => [p, ...(childrenByParentId.get(p.id) ?? [])]),
+    [parentCategories, childrenByParentId]
+  );
   const rawItems = (data && "items" in data && Array.isArray(data.items) ? data.items : []) as Record<string, unknown>[];
   const menuItems: MenuItem[] = rawItems.map((item, i) => normalizeItem(item, i));
 
@@ -467,18 +500,22 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           addonMap[c.id] = (c.addons ?? []).map((o: any) => o.id).filter((id: number) => Number.isFinite(id));
       });
       initialEditAddonIdsRef.current = addonMap;
+      const basePriceNum = data.base_price != null ? Number(data.base_price) : null;
+      const sellingPriceNum = data.selling_price != null ? Number(data.selling_price) : null;
+      const discountNum = data.discount_percentage != null ? Number(data.discount_percentage) : 0;
+      const taxNum = data.tax_percentage != null ? Number(data.tax_percentage) : 5;
       setEditForm({
         ...defaultItemFormData,
         item_name: data.item_name ?? "",
         item_description: data.item_description ?? "",
         item_image_url: data.item_image_url ?? "",
-        food_type: data.food_type ?? "",
-        spice_level: data.spice_level ?? "",
+        food_type: normalizeFoodTypeForForm(data.food_type),
+        spice_level: normalizeSpiceLevelForForm(data.spice_level),
         cuisine_type: data.cuisine_type ?? "",
-        base_price: String(data.base_price ?? ""),
-        selling_price: String(data.selling_price ?? ""),
-        discount_percentage: String(item.discount_percentage ?? "0"),
-        tax_percentage: String(item.tax_percentage ?? "5"),
+        base_price: basePriceNum != null ? basePriceNum.toFixed(2) : "",
+        selling_price: sellingPriceNum != null ? sellingPriceNum.toFixed(2) : "",
+        discount_percentage: String(discountNum),
+        tax_percentage: String(taxNum),
         in_stock: data.in_stock ?? true,
         has_customizations: customizations.length > 0,
         has_addons: customizations.some((c) => (c.addons?.length ?? 0) > 0),
@@ -504,16 +541,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         : typeof item.allergens === "string"
           ? item.allergens
           : "";
+      const basePriceNum = item.base_price != null ? Number(item.base_price) : null;
+      const sellingPriceNum = item.selling_price != null ? Number(item.selling_price) : null;
       setEditForm({
         ...defaultItemFormData,
         item_name: item.item_name ?? "",
         item_description: item.item_description ?? "",
         item_image_url: item.item_image_url ?? "",
-        food_type: item.food_type ?? "",
-        spice_level: item.spice_level ?? "",
+        food_type: normalizeFoodTypeForForm(item.food_type),
+        spice_level: normalizeSpiceLevelForForm(item.spice_level),
         cuisine_type: item.cuisine_type ?? "",
-        base_price: String(item.base_price ?? ""),
-        selling_price: String(item.selling_price ?? ""),
+        base_price: basePriceNum != null ? basePriceNum.toFixed(2) : "",
+        selling_price: sellingPriceNum != null ? sellingPriceNum.toFixed(2) : "",
         discount_percentage: String(item.discount_percentage ?? "0"),
         tax_percentage: String(item.tax_percentage ?? "5"),
         in_stock: item.in_stock ?? true,
@@ -647,13 +686,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         cuisine_type: editForm.cuisine_type || null,
         base_price: editForm.base_price ? Number(editForm.base_price) : 0,
         selling_price: editForm.selling_price ? Number(editForm.selling_price) : (editForm.base_price ? Number(editForm.base_price) : 0),
+        discount_percentage: 0,
+        tax_percentage: editForm.tax_percentage != null && editForm.tax_percentage !== "" ? Number(editForm.tax_percentage) : 5,
         in_stock: Boolean(editForm.in_stock),
         is_active: Boolean(editForm.is_active),
+        is_popular: Boolean(editForm.is_popular),
+        is_recommended: Boolean(editForm.is_recommended),
         preparation_time_minutes: editForm.preparation_time_minutes ?? null,
         serves: editForm.serves ?? null,
         serves_label: editForm.serves_label || null,
         item_size_value: editForm.item_size_value ? Number(editForm.item_size_value) : null,
         item_size_unit: editForm.item_size_unit || null,
+        allergens: editForm.allergens ? String(editForm.allergens).split(",").map((s) => s.trim()).filter(Boolean) : [],
       };
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${editingId}`, {
         method: "PUT",
@@ -778,6 +822,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
 
       toast("Variants and customizations saved.");
       await refreshMenu();
+      setShowEditModal(false);
     } catch (e) {
       setEditError(e instanceof Error ? e.message : "Failed to save options.");
     }
@@ -867,6 +912,40 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setIsTogglingStock(false);
   };
 
+  const openAddCategory = () => {
+    setCategoryModalMode("add");
+    setCategoryForm({ category_name: "", category_description: "", display_order: categories.length, is_active: true });
+    setParentCategoryIdInForm(null);
+    setEditingCategoryId(null);
+    setShowCategoryModal(true);
+  };
+  const openAddSubcategory = (parent: MenuCategory) => {
+    setCategoryModalMode("add");
+    const siblings = categories.filter((x) => x.parent_category_id === parent.id);
+    setCategoryForm({
+      category_name: "",
+      category_description: "",
+      display_order: siblings.length,
+      is_active: true,
+    });
+    setParentCategoryIdInForm(parent.id);
+    setEditingCategoryId(null);
+    setShowCategoryModal(true);
+  };
+  const openEditCategory = (cat: MenuCategory) => {
+    setCategoryModalMode("edit");
+    setCategoryForm({
+      category_name: cat.category_name,
+      category_description: cat.category_description ?? "",
+      display_order: cat.display_order ?? 0,
+      is_active: cat.is_active !== false,
+    });
+    setParentCategoryIdInForm(cat.parent_category_id ?? null);
+    setEditingCategoryId(cat.id);
+    setShowCategoryModal(true);
+    setShowManageCategoriesModal(false);
+  };
+
   const handleSaveCategory = async () => {
     setCategoryError(null);
     const name = (categoryForm.category_name ?? "").trim();
@@ -882,6 +961,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     try {
       const payload = {
         category_name: name,
+        category_description: (categoryForm.category_description ?? "").trim() || null,
+        parent_category_id: parentCategoryIdInForm ?? null,
+        display_order: Number(categoryForm.display_order) || 0,
         is_active: Boolean(categoryForm.is_active),
       };
       const isEdit = categoryModalMode === "edit" && editingCategoryId != null;
@@ -909,6 +991,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       setShowCategoryModal(false);
       setCategoryForm({ category_name: "", is_active: true });
       setEditingCategoryId(null);
+      setParentCategoryIdInForm(null);
+      setShowManageCategoriesModal(false);
     } catch {
       setCategoryError("Error saving category");
       trackAudit({
@@ -922,6 +1006,40 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       });
     }
     setCategoryLoading(false);
+  };
+
+  const handleDeleteCategory = async () => {
+    if (deleteCategoryId == null) return;
+    setCategoryDeleteError(null);
+    setIsDeletingCategory(true);
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/categories/${deleteCategoryId}`, { method: "DELETE" });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok || r?.success === false) {
+        if (r?.error === "category_has_items" && typeof r?.itemCount === "number") {
+          setCategoryDeleteError(`Cannot delete: ${r.itemCount} item(s) are in this category. Move or remove them first.`);
+        } else {
+          setCategoryDeleteError(r?.error ?? "Delete failed");
+        }
+        return;
+      }
+      toast("Category deleted.");
+      trackAudit({
+        actionType: "DELETE",
+        resourceType: "merchant_menu_categories",
+        resourceId: String(deleteCategoryId),
+        actionDetails: { action: "delete_category" },
+        actionStatus: "SUCCESS",
+        requestMethod: "DELETE",
+      });
+      await refreshMenu();
+      setShowDeleteCategoryModal(false);
+      setDeleteCategoryId(null);
+      setShowManageCategoriesModal(false);
+    } catch {
+      setCategoryDeleteError("Error deleting category");
+    }
+    setIsDeletingCategory(false);
   };
 
   return (
@@ -941,19 +1059,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           </div>
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <button
-              onClick={() => {
-                setCategoryModalMode("add");
-                setCategoryForm({ category_name: "", is_active: true });
-                setShowCategoryModal(true);
-              }}
-              disabled={!canAddCategory}
-              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-white text-orange-600 border border-orange-600 hover:bg-orange-50 disabled:opacity-50"
+              onClick={() => setShowManageCategoriesModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-white text-gray-700 border border-gray-300 hover:bg-gray-50"
             >
-              <Plus size={16} />
-              Add Category
-              {planLimits != null && (
-                <span className="text-xs opacity-80">({categories.length}/{(planLimits as { maxMenuCategories?: number })?.maxMenuCategories ?? "—"})</span>
-              )}
+              <Layers size={16} />
+              Manage categories
             </button>
             <button
               onClick={() => setShowAddModal(true)}
@@ -1128,16 +1238,16 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden hide-scrollbar scroll-smooth touch-pan-x py-0.5"
               >
                 <div className="flex items-center gap-1.5 flex-nowrap">
-                  {categories.map((category) => (
+                  {displayCategoriesForChips.map((category) => (
                     <button
                       key={category.id}
                       onClick={() => setSelectedCategoryId(category.id)}
                       className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap max-w-[120px] truncate ${
                         selectedCategoryId === category.id ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                       }`}
-                      title={category.category_name}
+                      title={category.parent_category_id ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} › ${category.category_name}` : category.category_name}
                     >
-                      {category.category_name}
+                      {category.parent_category_id ? `  ${category.category_name}` : category.category_name}
                     </button>
                   ))}
                 </div>
@@ -1405,7 +1515,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           )}
                           {item.food_type && (
                             <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-[10px] font-semibold rounded">
-                              {item.food_type}
+                              {getFoodTypeLabel(item.food_type)}
                             </span>
                           )}
                         </div>
@@ -1418,6 +1528,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                 : item.serves
                                   ? `${item.serves} person${item.serves > 1 ? "s" : ""}`
                                   : ""}
+                            </span>
+                          )}
+                          {item.spice_level && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-50 text-red-700 font-semibold">
+                              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                              {normalizeSpiceLevelForForm(item.spice_level)}
                             </span>
                           )}
                           {item.item_size_value && item.item_size_unit && (
@@ -1550,7 +1666,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   </span>
                   {reviewItem.food_type && (
                     <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[11px] font-semibold">
-                      {reviewItem.food_type}
+                      {getFoodTypeLabel(reviewItem.food_type)}
+                    </span>
+                  )}
+                  {reviewItem.spice_level && (
+                    <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-semibold">
+                      {normalizeSpiceLevelForForm(reviewItem.spice_level)}
                     </span>
                   )}
                   {reviewItem.has_customizations && (
@@ -2030,13 +2151,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               <div className="p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-xl font-bold text-gray-900">
-                    {categoryModalMode === "add" ? "Add New Category" : "Edit Category"}
+                    {categoryModalMode === "add"
+                      ? parentCategoryIdInForm != null
+                        ? "Add Subcategory"
+                        : "Add New Category"
+                      : "Edit Category"}
                   </h2>
                   <button
                     onClick={() => {
                       setShowCategoryModal(false);
                       setCategoryForm({ category_name: "", is_active: true });
                       setEditingCategoryId(null);
+                      setParentCategoryIdInForm(null);
                     }}
                     className="p-2 hover:bg-gray-100 rounded-lg"
                     aria-label="Close"
@@ -2045,6 +2171,36 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   </button>
                 </div>
                 <div className="space-y-4">
+                  {categoryModalMode === "add" && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Parent category (optional)</label>
+                      <select
+                        value={parentCategoryIdInForm ?? ""}
+                        onChange={(e) => setParentCategoryIdInForm(e.target.value === "" ? null : Number(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                      >
+                        <option value="">None (top-level category)</option>
+                        {parentCategories.map((p) => (
+                          <option key={p.id} value={p.id}>{p.category_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {categoryModalMode === "edit" && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Parent category (optional)</label>
+                      <select
+                        value={parentCategoryIdInForm ?? ""}
+                        onChange={(e) => setParentCategoryIdInForm(e.target.value === "" ? null : Number(e.target.value))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                      >
+                        <option value="">None (top-level)</option>
+                        {parentCategories.filter((p) => p.id !== editingCategoryId).map((p) => (
+                          <option key={p.id} value={p.id}>{p.category_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <div className="relative">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Category Name * (max 30 characters)
@@ -2112,6 +2268,26 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       </div>
                     )}
                   </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
+                    <textarea
+                      rows={2}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                      value={categoryForm.category_description ?? ""}
+                      onChange={(e) => setCategoryForm({ ...categoryForm, category_description: e.target.value })}
+                      placeholder="Short description"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Display order</label>
+                    <input
+                      type="number"
+                      min={0}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                      value={categoryForm.display_order ?? 0}
+                      onChange={(e) => setCategoryForm({ ...categoryForm, display_order: Number(e.target.value) || 0 })}
+                    />
+                  </div>
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -2132,6 +2308,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       setShowCategoryModal(false);
                       setCategoryForm({ category_name: "", is_active: true });
                       setEditingCategoryId(null);
+                      setParentCategoryIdInForm(null);
                     }}
                     className="flex-1 px-4 py-2.5 rounded-lg font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100"
                     disabled={categoryLoading}
@@ -2143,9 +2320,112 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-orange-500 hover:bg-orange-600"
                     disabled={categoryLoading}
                   >
-                    {categoryLoading ? "Saving..." : categoryModalMode === "add" ? "Add Category" : "Save Changes"}
+                    {categoryLoading ? "Saving..." : categoryModalMode === "add" ? (parentCategoryIdInForm != null ? "Add Subcategory" : "Add Category") : "Save Changes"}
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {showManageCategoriesModal && typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
+            onClick={() => setShowManageCategoriesModal(false)}
+          >
+            <div
+              className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+                <h2 className="text-lg font-bold text-gray-900">Manage categories</h2>
+                <button onClick={() => setShowManageCategoriesModal(false)} className="p-2 hover:bg-gray-100 rounded-lg" aria-label="Close">
+                  <X size={20} className="text-gray-600" />
+                </button>
+              </div>
+              <div className="p-4 flex gap-2 shrink-0">
+                <button
+                  onClick={() => { setShowManageCategoriesModal(false); openAddCategory(); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg bg-orange-500 text-white hover:bg-orange-600"
+                >
+                  <Plus size={16} />
+                  Add category
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 pt-0 space-y-1">
+                {parentCategories.length === 0 && (
+                  <p className="text-sm text-gray-500">No categories yet. Add one above.</p>
+                )}
+                {parentCategories.map((parent) => (
+                  <div key={parent.id} className="border border-gray-200 rounded-lg overflow-hidden">
+                    <div className="flex items-center justify-between gap-2 px-3 py-2 bg-gray-50">
+                      <span className="font-medium text-gray-900">{parent.category_name}</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openAddSubcategory(parent)}
+                          className="px-2 py-1 text-xs font-medium text-orange-600 hover:bg-orange-50 rounded"
+                        >
+                          Add subcategory
+                        </button>
+                        <button type="button" onClick={() => openEditCategory(parent)} className="p-1.5 text-gray-500 hover:bg-gray-200 rounded" aria-label="Edit">
+                          <Edit2 size={14} />
+                        </button>
+                        <button type="button" onClick={() => { setDeleteCategoryId(parent.id); setCategoryDeleteError(null); setShowDeleteCategoryModal(true); }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                    {(childrenByParentId.get(parent.id) ?? []).map((child) => (
+                      <div key={child.id} className="flex items-center justify-between gap-2 px-4 py-2 border-t border-gray-100 bg-white">
+                        <span className="text-gray-700">  {child.category_name}</span>
+                        <div className="flex items-center gap-1">
+                          <button type="button" onClick={() => openEditCategory(child)} className="p-1.5 text-gray-500 hover:bg-gray-200 rounded" aria-label="Edit">
+                            <Edit2 size={14} />
+                          </button>
+                          <button type="button" onClick={() => { setDeleteCategoryId(child.id); setCategoryDeleteError(null); setShowDeleteCategoryModal(true); }} className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded" aria-label="Delete">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {showDeleteCategoryModal && deleteCategoryId != null && typeof document !== "undefined" &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-6" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-lg font-bold text-gray-900 mb-2">Delete category?</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                {(() => {
+                  const cat = categories.find((c) => c.id === deleteCategoryId);
+                  return cat ? `"${cat.category_name}" will be removed. Categories with menu items cannot be deleted.` : "This category will be removed.";
+                })()}
+              </p>
+              {categoryDeleteError && <p className="text-sm text-red-600 mb-4">{categoryDeleteError}</p>}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setShowDeleteCategoryModal(false); setDeleteCategoryId(null); setCategoryDeleteError(null); }}
+                  className="flex-1 px-4 py-2 rounded-lg font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200"
+                  disabled={isDeletingCategory}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteCategory}
+                  className="flex-1 px-4 py-2 rounded-lg font-semibold text-white bg-red-500 hover:bg-red-600 disabled:opacity-50"
+                  disabled={isDeletingCategory}
+                >
+                  {isDeletingCategory ? "Deleting..." : "Delete"}
+                </button>
               </div>
             </div>
           </div>,

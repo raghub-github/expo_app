@@ -4,8 +4,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess } from "../assert-store-access";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
+
+async function getAgentIdForStore(storeId: number): Promise<number | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) return null;
+  const systemUser = await getSystemUserByEmail(user.email);
+  return systemUser?.id ?? null;
+}
 
 export async function GET(
   _request: NextRequest,
@@ -61,6 +73,21 @@ export async function POST(
       VALUES (${storeId}, ${combo_name}, ${body.description ?? null}, ${combo_price}, ${body.image_url ?? null}, ${body.display_order ?? 0})
       RETURNING id
     `;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_combos",
+        fieldName: "combo",
+        oldValue: null,
+        newValue: JSON.stringify({ combo_name, description: body.description ?? null, combo_price }),
+        actionType: "create",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "combo", action: "create", entityName: combo_name, summary: `Agent created combo "${combo_name}"`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, id: Number((row as any)?.id) }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/combos]", e);

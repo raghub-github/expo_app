@@ -1,5 +1,5 @@
 import { getDb } from "../../db/client.js";
-import { rider_documents } from "../../db/schema.js";
+import { riderDocuments } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { uploadToR2, deleteFromR2, extractKeyFromSignedUrl } from "./r2Service.js";
 
@@ -41,14 +41,12 @@ export async function saveDocumentTransactionally(
     const { ulid } = await import("ulid");
     documentId = `rdoc_${ulid()}`;
 
-    await db.insert(rider_documents).values({
-      id: documentId,
-      rider_id: riderId,
-      document_type: documentType,
-      selfie_signed_url: documentType === "selfie" ? r2Result.signedUrl : undefined,
-      rental_proof_signed_url: documentType === "rental_proof" ? r2Result.signedUrl : undefined,
-      ev_proof_signed_url: documentType === "ev_proof" ? r2Result.signedUrl : undefined,
-      meta: metadata || {},
+    await db.insert(riderDocuments).values({
+      riderId: Number(riderId),
+      docType: documentType as any,
+      fileUrl: r2Result.signedUrl,
+      r2Key: key,
+      metadata: metadata || {},
     });
 
     return { signedUrl: r2Result.signedUrl, documentId };
@@ -86,8 +84,8 @@ export async function updateDocumentTransactionally(
   // Get existing document
   const existing = await db
     .select()
-    .from(rider_documents)
-    .where(eq(rider_documents.id, documentId))
+    .from(riderDocuments)
+    .where(eq(riderDocuments.id, Number(documentId)))
     .limit(1);
 
   if (existing.length === 0) {
@@ -95,7 +93,7 @@ export async function updateDocumentTransactionally(
   }
 
   const doc = existing[0]!;
-  const oldSignedUrl = doc.selfie_signed_url || doc.rental_proof_signed_url || doc.ev_proof_signed_url;
+  const oldSignedUrl = doc.fileUrl;
   const oldKey = oldSignedUrl ? extractKeyFromSignedUrl(oldSignedUrl) : null;
 
   let newR2Uploaded = false;
@@ -109,22 +107,16 @@ export async function updateDocumentTransactionally(
 
       // Update Supabase
       const updateData: any = {
-        updated_at: new Date(),
-        meta: metadata || doc.meta,
+        updatedAt: new Date(),
+        metadata: metadata || doc.metadata,
+        fileUrl: r2Result.signedUrl,
+        r2Key: newKey,
       };
 
-      if (doc.document_type === "selfie") {
-        updateData.selfie_signed_url = r2Result.signedUrl;
-      } else if (doc.document_type === "rental_proof") {
-        updateData.rental_proof_signed_url = r2Result.signedUrl;
-      } else if (doc.document_type === "ev_proof") {
-        updateData.ev_proof_signed_url = r2Result.signedUrl;
-      }
-
       await db
-        .update(rider_documents)
+        .update(riderDocuments)
         .set(updateData)
-        .where(eq(rider_documents.id, documentId));
+        .where(eq(riderDocuments.id, Number(documentId)));
 
       // Delete old file from R2 if different key
       if (oldKey && oldKey !== newKey) {
@@ -136,12 +128,12 @@ export async function updateDocumentTransactionally(
     } else {
       // Just update metadata
       await db
-        .update(rider_documents)
+        .update(riderDocuments)
         .set({
-          updated_at: new Date(),
-          meta: metadata || doc.meta,
+          updatedAt: new Date(),
+          metadata: metadata || doc.metadata,
         })
-        .where(eq(rider_documents.id, documentId));
+        .where(eq(riderDocuments.id, Number(documentId)));
 
       return { signedUrl: oldSignedUrl || "" };
     }
@@ -170,8 +162,8 @@ export async function deleteDocumentTransactionally(documentId: string): Promise
   // Get document to find R2 key
   const existing = await db
     .select()
-    .from(rider_documents)
-    .where(eq(rider_documents.id, documentId))
+    .from(riderDocuments)
+    .where(eq(riderDocuments.id, Number(documentId)))
     .limit(1);
 
   if (existing.length === 0) {
@@ -179,14 +171,14 @@ export async function deleteDocumentTransactionally(documentId: string): Promise
   }
 
   const doc = existing[0]!;
-  const signedUrl = doc.selfie_signed_url || doc.rental_proof_signed_url || doc.ev_proof_signed_url;
+  const signedUrl = doc.fileUrl;
   const key = signedUrl ? extractKeyFromSignedUrl(signedUrl) : null;
 
   let r2Deleted = false;
 
   try {
     // Delete from Supabase first
-    await db.delete(rider_documents).where(eq(rider_documents.id, documentId));
+    await db.delete(riderDocuments).where(eq(riderDocuments.id, Number(documentId)));
 
     // Then delete from R2
     if (key) {

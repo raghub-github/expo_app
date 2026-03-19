@@ -3,7 +3,7 @@ import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../../db/client.js";
 import { riders, onboardingPayments } from "../../db/schema.js";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { createRazorpayOrder, verifyRazorpaySignature, getPaymentDetails } from "../../services/payment/razorpayService.js";
 import { getEnv } from "../../config/env.js";
@@ -114,8 +114,12 @@ export async function paymentRoutes(app: FastifyInstance) {
       const existingPayment = await db
         .select()
         .from(onboardingPayments)
-        .where(eq(onboardingPayments.riderId, riderIdInt))
-        .where(eq(onboardingPayments.status, "completed"))
+        .where(
+          and(
+            eq(onboardingPayments.riderId, riderIdInt),
+            eq(onboardingPayments.status, "completed"),
+          ),
+        )
         .limit(1);
 
       if (existingPayment.length > 0) {

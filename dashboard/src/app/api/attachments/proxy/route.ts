@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
     }
 
     const contentType = result.contentType || "application/octet-stream";
-    return new NextResponse(result.buffer, {
+    return new NextResponse(result.buffer as any, {
       status: 200,
       headers: {
         "Content-Type": contentType,

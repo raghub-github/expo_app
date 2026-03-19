@@ -4,8 +4,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
 import { assertStoreAccess, genId } from "../../../assert-store-access";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
+import { insertActivityLog } from "@/lib/db/operations/merchant-portal-activity-logs";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
+
+async function getAgentIdForStore(storeId: number): Promise<number | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user?.email) return null;
+  const systemUser = await getSystemUserByEmail(user.email);
+  return systemUser?.id ?? null;
+}
 
 export async function POST(
   request: NextRequest,
@@ -39,6 +51,21 @@ export async function POST(
       VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${body.variant_type ?? null}, ${variant_price}, ${body.is_default ?? false}, ${body.display_order ?? 0})
       RETURNING id
     `;
+    try {
+      const agentId = await getAgentIdForStore(storeId);
+      await insertActivityLog({
+        storeId,
+        agentId,
+        changedSection: "menu_item_variants",
+        fieldName: "variant",
+        oldValue: null,
+        newValue: JSON.stringify({ menu_item_id: menuItemId, variant_name, variant_price }),
+        actionType: "create",
+      });
+    } catch (_logErr) {}
+    try {
+      await logStoreActivity({ storeId, section: "variant", action: "create", entityName: variant_name, summary: `Agent added variant "${variant_name}" to item #${itemId}`, actorType: "agent", source: "dashboard" });
+    } catch (_) {}
     return NextResponse.json({ success: true, id: Number((row as any)?.id) }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/items/[itemId]/variants]", e);
