@@ -10,6 +10,7 @@ import { createMerchantStoreChild, getNextChildStoreId, getMerchantStoreByIdOnly
 import { upsertChildStoreProgress } from "@/lib/db/operations/child-store-progress";
 import { logAreaManagerActivity } from "@/lib/area-manager/activity";
 import { apiErrorResponse } from "@/lib/api-errors";
+import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
@@ -95,6 +96,16 @@ export async function POST(req: NextRequest) {
           step1: step1FormData,
         },
       });
+      // Ensure mapping exists in parent_area_managers when AM is associated.
+      const sql = getSql();
+      const effectiveAmId = updated.area_manager_id ?? areaManagerId;
+      if (effectiveAmId != null) {
+        await sql`
+          INSERT INTO parent_area_managers (parent_id, store_id, area_manager_id, assigned_by)
+          VALUES (${parentId}, ${updated.id}, ${effectiveAmId}, ${authResult.resolved.systemUserId ?? null})
+          ON CONFLICT (parent_id, store_id, area_manager_id) DO NOTHING
+        `;
+      }
       await logAreaManagerActivity({
         actorId: authResult.resolved.systemUserId,
         action: "STORE_UPDATED",
@@ -148,6 +159,16 @@ export async function POST(req: NextRequest) {
         step1: step1FormData,
       },
     });
+
+    // Also create mapping in parent_area_managers so Assign AM UI stays in sync.
+    if (areaManagerId != null) {
+      const sql = getSql();
+      await sql`
+        INSERT INTO parent_area_managers (parent_id, store_id, area_manager_id, assigned_by)
+        VALUES (${parentId}, ${row.id}, ${areaManagerId}, ${authResult.resolved.systemUserId ?? null})
+        ON CONFLICT (parent_id, store_id, area_manager_id) DO NOTHING
+      `;
+    }
 
     await logAreaManagerActivity({
       actorId: authResult.resolved.systemUserId,
