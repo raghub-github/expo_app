@@ -300,12 +300,28 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       }
     } else if (name === "gst_number" || name === "pan_number") {
       value = value.toUpperCase();
+    } else if (name === "bank_ifsc_code") {
+      value = value.toUpperCase();
     }
 
     const trimmedValue = value.trim();
 
+    // For "name" style free-text inputs, we must not aggressively `trim()` on every
+    // keystroke, otherwise the spacebar insertion disappears (e.g. "First " -> "First").
+    // Document-number fields can stay strict/trimmed.
+    const shouldPreserveInnerSpaces =
+      name === "bank_account_holder_name" ||
+      name === "bank_name" ||
+      name === "bank_branch_name" ||
+      name === "pan_holder_name" ||
+      name === "aadhar_holder_name";
+
+    const valueToStore = shouldPreserveInnerSpaces
+      ? value.replace(/\s+/g, " ").replace(/^\s+/, "")
+      : trimmedValue;
+
     setForm((prev) => {
-      return { ...prev, [name]: trimmedValue };
+      return { ...prev, [name]: valueToStore };
     });
 
     // Per-field live format validation (only for document number fields)
@@ -1531,8 +1547,8 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
       ) : (
         <>
           {/* FSSAI layout for food (matches provided design) */}
-          <div className="rounded-lg border border-rose-200 bg-rose-50/80 px-3.5 py-2">
-            <p className="text-[11px] sm:text-xs font-semibold text-rose-800">
+          <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3.5 py-2">
+            <p className="text-[11px] sm:text-xs font-semibold text-amber-800">
               FSSAI Certificate (Mandatory) – FSSAI license is mandatory for restaurant as per food safety regulations.
             </p>
           </div>
