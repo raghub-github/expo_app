@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban } from "lucide-react";
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
@@ -222,6 +222,54 @@ function ChildStoreRow({
 }
 
 type CategoryKey = "total" | "verified" | "pending" | "rejected" | "new";
+
+interface StatCardConfig {
+  key: CategoryKey;
+  label: string;
+  count: number;
+  icon: React.ReactNode;
+  bg: string;
+  border: string;
+}
+
+const CARD_MIN_HEIGHT = "min-h-[110px]";
+
+const StatCardsRow = React.memo(function StatCardsRow({
+  cards,
+  category,
+  onCategoryClick,
+}: {
+  cards: StatCardConfig[];
+  category: CategoryKey | null;
+  onCategoryClick: (key: CategoryKey) => void;
+}) {
+  if (cards.length === 0) return null;
+
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      {cards.map(({ key, label, count, icon, bg, border }) => {
+        const isActive = category === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onCategoryClick(key)}
+            className={`flex cursor-pointer flex-col gap-0.5 rounded-lg border p-2.5 text-left transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${CARD_MIN_HEIGHT} ${
+              isActive
+                ? `ring-2 ring-indigo-600 ring-offset-2 ${bg} ${border}`
+                : `${bg} ${border} hover:border-gray-300`
+            }`}
+            aria-pressed={isActive}
+          >
+            <span className={`flex items-center ${isActive ? "text-gray-800" : "text-gray-600"}`}>{icon}</span>
+            <span className="text-lg font-semibold leading-tight text-gray-900">{count}</span>
+            <span className={`text-[10px] font-medium ${isActive ? "text-gray-700" : "text-gray-500"}`}>{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+});
 
 export function MerchantsSearchClient() {
   const searchParams = useSearchParams();
@@ -464,15 +512,54 @@ export function MerchantsSearchClient() {
     }
   };
 
-  const statCards: { key: CategoryKey; label: string; count: number; icon: React.ReactNode; bg: string; border: string }[] = stats
-    ? [
-        { key: "total", label: "Total stores", count: stats.total, icon: <Store className="h-4 w-4" />, bg: "bg-slate-50", border: "border-slate-200 hover:border-slate-300" },
-        { key: "verified", label: "Verified", count: stats.verified, icon: <CheckCircle className="h-4 w-4 text-emerald-600" />, bg: "bg-emerald-50", border: "border-emerald-200 hover:border-emerald-300" },
-        { key: "pending", label: "Pending", count: stats.pending, icon: <Clock className="h-4 w-4 text-amber-600" />, bg: "bg-amber-50", border: "border-amber-200 hover:border-amber-300" },
-        { key: "new", label: "New (30d)", count: stats.new, icon: <Sparkles className="h-4 w-4 text-indigo-600" />, bg: "bg-indigo-50", border: "border-indigo-200 hover:border-indigo-300" },
-        { key: "rejected", label: "Rejected", count: stats.rejected, icon: <Ban className="h-4 w-4 text-red-600" />, bg: "bg-red-50", border: "border-red-200 hover:border-red-300" },
-      ]
-    : [];
+  const statCards: StatCardConfig[] = useMemo(
+    () =>
+      stats
+        ? [
+            {
+              key: "total",
+              label: "Total stores",
+              count: stats.total,
+              icon: <Store className="h-4 w-4" />,
+              bg: "bg-slate-50",
+              border: "border-slate-200 hover:border-slate-300",
+            },
+            {
+              key: "verified",
+              label: "Verified",
+              count: stats.verified,
+              icon: <CheckCircle className="h-4 w-4 text-emerald-600" />,
+              bg: "bg-emerald-50",
+              border: "border-emerald-200 hover:border-emerald-300",
+            },
+            {
+              key: "pending",
+              label: "Pending",
+              count: stats.pending,
+              icon: <Clock className="h-4 w-4 text-amber-600" />,
+              bg: "bg-amber-50",
+              border: "border-amber-200 hover:border-amber-300",
+            },
+            {
+              key: "new",
+              label: "New (30d)",
+              count: stats.new,
+              icon: <Sparkles className="h-4 w-4 text-indigo-600" />,
+              bg: "bg-indigo-50",
+              border: "border-indigo-200 hover:border-indigo-300",
+            },
+            {
+              key: "rejected",
+              label: "Rejected",
+              count: stats.rejected,
+              icon: <Ban className="h-4 w-4 text-red-600" />,
+              bg: "bg-red-50",
+              border: "border-red-200 hover:border-red-300",
+            },
+          ]
+        : [],
+    [stats]
+  );
 
   return (
     <div className="space-y-3">
@@ -529,31 +616,15 @@ export function MerchantsSearchClient() {
             {statsLoading ? (
               <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} className="h-14 animate-pulse rounded-lg border border-gray-200 bg-gray-100" />
+                  <div
+                    key={i}
+                    className={`animate-pulse rounded-lg border border-gray-200 bg-gray-100 ${CARD_MIN_HEIGHT}`}
+                  />
                 ))}
               </div>
-            ) : statCards.length > 0 ? (
-              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                {statCards.map(({ key, label, count, icon, bg, border }) => {
-                  const isActive = category === key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => handleCategoryClick(key)}
-                      className={`flex cursor-pointer flex-col gap-0.5 rounded-lg border p-2.5 text-left transition focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
-                        isActive ? `ring-2 ring-indigo-600 ring-offset-2 ${bg} ${border}` : `${bg} ${border} hover:border-gray-300`
-                      }`}
-                      aria-pressed={isActive}
-                    >
-                      <span className={`flex items-center ${isActive ? "text-gray-800" : "text-gray-600"}`}>{icon}</span>
-                      <span className="text-lg font-semibold leading-tight text-gray-900">{count}</span>
-                      <span className={`text-[10px] font-medium ${isActive ? "text-gray-700" : "text-gray-500"}`}>{label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
+            ) : (
+              <StatCardsRow cards={statCards} category={category} onCategoryClick={handleCategoryClick} />
+            )}
 
             {error ? (
               <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">

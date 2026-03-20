@@ -58,6 +58,8 @@ interface StoreItem {
   createdAt: string;
   isParent?: boolean;
   currentOnboardingStep?: number | null;
+  onboardingCompleted?: boolean | null;
+  onboardingCompletedAt?: string | null;
   totalSteps?: number | null;
   pendingChildStoreInternalId?: number | null;
   pendingChildOnboardingStep?: number | null;
@@ -492,6 +494,7 @@ export function AreaManagerStoresClient() {
                         <th className="px-3 py-1.5 text-left text-xs font-medium text-gray-500">Owner phone</th>
                         <th className="px-3 py-1.5 text-left text-xs font-medium text-gray-500">Status</th>
                         <th className="px-3 py-1.5 text-left text-xs font-medium text-gray-500">City</th>
+                        <th className="px-3 py-1.5 text-left text-xs font-medium text-gray-500">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100 bg-white">
@@ -534,6 +537,58 @@ export function AreaManagerStoresClient() {
                             )}
                           </td>
                           <td className="whitespace-nowrap px-3 py-1.5 text-xs text-gray-500">{s.city ?? s.localityCode ?? "-"}</td>
+                          <td className="whitespace-nowrap px-3 py-1.5 text-sm">
+                            {(() => {
+                              // Prefer backend truth: show button only when onboarding isn't completed.
+                              // If backend value is missing, fall back to step math.
+                              if (s.onboardingCompleted === false) {
+                                return (
+                                  <a
+                                    href={`/dashboard/area-managers/stores/add-child?parentId=${encodeURIComponent(
+                                      String(s.parentStoreId ?? selectedParentId ?? "")
+                                    )}&storeInternalId=${encodeURIComponent(String(s.id))}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
+                                  >
+                                    Complete onboarding
+                                  </a>
+                                );
+                              }
+
+                              if (s.onboardingCompleted === true) {
+                                return null;
+                              }
+
+                              const totalSteps = s.totalSteps ?? 9;
+                              const current = s.currentOnboardingStep ?? null;
+                              if (current == null) {
+                                return null;
+                              }
+
+                              // Fallback: current step = active step; completed steps are all before it
+                              const completed = Math.max(Math.min(current - 1, totalSteps), 0);
+                              const pending = Math.max(totalSteps - completed, 0);
+                              if (pending > 0) {
+                                return (
+                                  <a
+                                    href={`/dashboard/area-managers/stores/add-child?parentId=${encodeURIComponent(
+                                      String(s.parentStoreId ?? selectedParentId ?? "")
+                                    )}&storeInternalId=${encodeURIComponent(String(s.id))}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
+                                  >
+                                    Complete onboarding
+                                  </a>
+                                );
+                              }
+
+                              return (
+                                null
+                              );
+                            })()}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -640,22 +695,69 @@ export function AreaManagerStoresClient() {
                               Add Child
                             </a>
                           )
-                        ) : s.status === "DRAFT" ? (
-                          <a
-                            href={`/dashboard/area-managers/stores/add-child?parentId=${s.parentStoreId ?? ""}&storeInternalId=${s.id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
-                          >
-                            Complete registration
-                          </a>
                         ) : (
-                          <Link
-                            href={`/dashboard/area-managers/stores/${s.id}`}
-                            className="cursor-pointer text-sm font-medium text-blue-600 hover:underline"
-                          >
-                            Manage
-                          </Link>
+                          (() => {
+                            if (s.onboardingCompleted === false) {
+                              return (
+                                <a
+                                  href={`/dashboard/area-managers/stores/add-child?parentId=${encodeURIComponent(
+                                    String(s.parentStoreId ?? selectedParentId ?? "")
+                                  )}&storeInternalId=${encodeURIComponent(String(s.id))}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
+                                >
+                                  Complete onboarding
+                                </a>
+                              );
+                            }
+
+                            if (s.onboardingCompleted === true) {
+                              return null;
+                            }
+
+                            // Fallback when onboardingCompleted isn't present: use step math.
+                            const totalSteps = s.totalSteps ?? 9;
+                            const current = s.currentOnboardingStep ?? null;
+                            if (current != null) {
+                              const completed = Math.max(Math.min(current - 1, totalSteps), 0);
+                              const pending = Math.max(totalSteps - completed, 0);
+                              if (pending > 0) {
+                                return (
+                                  <a
+                                    href={`/dashboard/area-managers/stores/add-child?parentId=${encodeURIComponent(
+                                      String(s.parentStoreId ?? selectedParentId ?? "")
+                                    )}&storeInternalId=${encodeURIComponent(String(s.id))}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
+                                  >
+                                    Complete onboarding
+                                  </a>
+                                );
+                              }
+                            }
+
+                            // If we don't have step progress yet but status is draft, still allow continuing onboarding.
+                            if (s.status === "DRAFT") {
+                              return (
+                                <a
+                                  href={`/dashboard/area-managers/stores/add-child?parentId=${encodeURIComponent(
+                                    String(s.parentStoreId ?? selectedParentId ?? "")
+                                  )}&storeInternalId=${encodeURIComponent(String(s.id))}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center justify-center rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1"
+                                >
+                                  Complete onboarding
+                                </a>
+                              );
+                            }
+
+                            return (
+                              null
+                            );
+                          })()
                         )}
                       </td>
                     </tr>

@@ -14,6 +14,7 @@ import {
   incrementFailedLoginAttempts,
   resetFailedLoginAttempts,
   updateLastLogin,
+  insertUserSession,
 } from "../db/operations/users";
 
 /**
@@ -218,6 +219,7 @@ export async function recordLogin(
   try {
     await updateLastLogin(systemUserId);
     await resetFailedLoginAttempts(systemUserId);
+    await insertUserSession(systemUserId);
 
     await logActivity({
       system_user_id: systemUserId,

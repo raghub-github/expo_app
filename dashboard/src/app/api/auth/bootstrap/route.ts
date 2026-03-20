@@ -14,15 +14,31 @@ import {
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { toPermissionKeys } from "@/lib/permissions/constants";
 import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import { getRedisClient } from "@/lib/redis";
 
 export const runtime = "nodejs";
 
 const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
+const BOOTSTRAP_CACHE_TTL_SECONDS = 60; // Redis TTL; in‑memory cache uses a shorter window
 const BOOTSTRAP_CACHE_TTL_MS = 10_000; // 10s — avoid duplicate work when client retries or multiple tabs
 const bootstrapCache = new Map<string, { body: unknown; ts: number }>();
 
-function getCachedBootstrap(userId: string): unknown | null {
+async function getCachedBootstrap(userId: string): Promise<unknown | null> {
+  const redis = getRedisClient();
+  const cacheKey = `bootstrap_${userId}`;
+
+  if (redis) {
+    try {
+      const raw = await redis.get(cacheKey);
+      if (raw) {
+        return JSON.parse(raw) as unknown;
+      }
+    } catch {
+      // Ignore Redis errors and fall back to in-memory cache.
+    }
+  }
+
   const entry = bootstrapCache.get(userId);
   if (!entry || Date.now() - entry.ts > BOOTSTRAP_CACHE_TTL_MS) {
     if (entry) bootstrapCache.delete(userId);
@@ -31,12 +47,23 @@ function getCachedBootstrap(userId: string): unknown | null {
   return entry.body;
 }
 
-function setCachedBootstrap(userId: string, body: unknown) {
+async function setCachedBootstrap(userId: string, body: unknown): Promise<void> {
+  const redis = getRedisClient();
+  const cacheKey = `bootstrap_${userId}`;
+
   bootstrapCache.set(userId, { body, ts: Date.now() });
   if (bootstrapCache.size > 500) {
     const now = Date.now();
     for (const [k, v] of bootstrapCache.entries()) {
       if (now - v.ts > BOOTSTRAP_CACHE_TTL_MS) bootstrapCache.delete(k);
+    }
+  }
+
+  if (redis) {
+    try {
+      await redis.set(cacheKey, JSON.stringify(body), "EX", BOOTSTRAP_CACHE_TTL_SECONDS);
+    } catch {
+      // Ignore Redis write errors; in-memory cache still works.
     }
   }
 }
@@ -88,7 +115,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const cached = getCachedBootstrap(user.id);
+    const cached = await getCachedBootstrap(user.id);
     if (cached) return NextResponse.json(cached);
 
     const systemUser = await getSystemUserByEmail(user.email!);
@@ -164,9 +191,16 @@ export async function GET(request: NextRequest) {
         session: { user },
         permissions: permissionsPayload,
         dashboardAccess: { dashboards, accessPoints },
+        systemUser: {
+          id: systemUser.id,
+          systemUserId: systemUser.systemUserId,
+          fullName: systemUser.fullName,
+          email: systemUser.email,
+        },
+        status: "active" as const,
       },
     };
-    setCachedBootstrap(user.id, body);
+    await setCachedBootstrap(user.id, body);
     return NextResponse.json(body);
   } catch (error) {
     if (isInvalidRefreshToken(error)) {

@@ -3,8 +3,16 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { safeParseJson } from "@/lib/utils";
+import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
 
 export const BOOTSTRAP_QUERY_KEY = ["auth", "bootstrap"] as const;
+
+export interface BootstrapSystemUser {
+  id: number;
+  systemUserId: string;
+  fullName: string;
+  email: string;
+}
 
 interface BootstrapData {
   session: { user: Record<string, unknown> };
@@ -17,6 +25,7 @@ interface BootstrapData {
     permissionStrings?: string[];
     message?: string;
   };
+  systemUser?: BootstrapSystemUser | null;
   dashboardAccess: {
     dashboards: Array<{ dashboardType: string; accessLevel: string; isActive: boolean }>;
     accessPoints: Array<{
@@ -27,6 +36,7 @@ interface BootstrapData {
       isActive: boolean;
     }>;
   };
+  status?: string;
 }
 
 interface BootstrapResponse {
@@ -61,11 +71,25 @@ export async function fetchBootstrapAndSeedCache(
     const result = safeParseJson<BootstrapResponse>(text, "Bootstrap invalid JSON");
     if (!result.success || !result.data) return false;
 
-    const { session, permissions, dashboardAccess } = result.data;
+    const { session, permissions, dashboardAccess, systemUser } = result.data;
 
-    queryClient.setQueryData(["auth", "session"], { session, permissions: permissions as unknown });
+    // Seed React Query in-memory cache so the first dashboard paint has data.
+    queryClient.setQueryData(["auth", "session"], {
+      session,
+      permissions: permissions as unknown,
+      systemUser: systemUser ?? null,
+    });
     queryClient.setQueryData(queryKeys.permissions(), permissions);
     queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess);
+
+    // Persist a copy in localStorage for the next navigation so we can render
+    // instantly from cache and then revalidate in the background (SWR-style).
+    saveBootstrapToStorage<BootstrapData>({
+      session,
+      permissions,
+      dashboardAccess,
+      systemUser: systemUser ?? null,
+    });
 
     return true;
   } catch {

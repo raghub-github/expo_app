@@ -1,7 +1,7 @@
 "use client";
 
+import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
-import { useState, useRef, useEffect } from "react";
 import { Clock, AlertCircle, User, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
@@ -56,7 +56,7 @@ const priorityDotColors: Record<string, string> = {
   critical: "bg-red-700",
 };
 
-export function TicketListRow({
+export const TicketListRow = React.memo(function TicketListRow({
   ticket,
   selected,
   onSelect,
@@ -386,4 +386,4 @@ export function TicketListRow({
       </div>
     </div>
   );
-}
+});

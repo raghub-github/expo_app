@@ -17,17 +17,20 @@ import {
 import { Logo } from "@/components/brand/Logo";
 import { useDashboardAccess } from "@/hooks/useDashboardAccess";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useAuth } from "@/providers/AuthProvider";
 import {
   mainNavigation,
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
+  isSuperAdminNavPath,
   type MainNavItem,
   type DashboardSubRoute,
 } from "@/lib/navigation/dashboard-routes";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
-import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
+import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { getUserInitials } from "@/lib/user-avatar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { useCurrentRoute } from "@/context/CurrentRouteContext";
 
 interface HierarchicalSidebarProps {
   isOpen: boolean;
@@ -57,12 +60,17 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   /** Optimistic active state: set on mousedown so the clicked item highlights instantly before route/API. */
   const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
-  const { data: sessionData } = useSessionQuery();
+  const { user: authUser } = useAuth();
   const logoutMutation = useLogout();
-  const userEmail = sessionData?.session?.user?.email ?? null;
-  const userMetadata = sessionData?.session?.user?.user_metadata ?? {};
-  const userName = userMetadata?.full_name ?? userMetadata?.name ?? userEmail?.split("@")[0] ?? null;
+  const userEmail = authUser?.email ?? null;
+  const userMetadata = (authUser as any)?.user_metadata ?? {};
+  const userName =
+    userMetadata?.full_name ??
+    userMetadata?.name ??
+    (userEmail ? userEmail.split("@")[0] : null) ??
+    null;
   const avatarUrl = userMetadata?.avatar_url ?? userMetadata?.picture ?? null;
+  const currentRouteCtx = useCurrentRoute();
 
   // Short skeleton (0.5s) so sidebar appears fast; then show real nav
   useEffect(() => {
@@ -208,7 +216,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <div className="flex h-[52px] min-h-[52px] items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <>
-              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
                 <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
                 <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
               </Link>
@@ -217,7 +225,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
               </button>
             </>
           ) : (
-            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
               <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
               <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
             </Link>
@@ -231,7 +239,8 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
               // Exactly one active: during pending nav only that item is active; otherwise use pathname
               const isRouteActive =
                 cleanPathname === item.href ||
-                (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/"));
+                (item.href !== "/dashboard" && cleanPathname.startsWith(item.href + "/")) ||
+                (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
               const isActive =
                 pendingNavHref !== null
                   ? item.href === pendingNavHref
@@ -244,8 +253,10 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                   onMouseDown={() => {
                     onNavigationStart?.(item.href);
                     setPendingNavHref(item.href);
+                    currentRouteCtx?.setCurrentRoute(item.href);
                   }}
                   onMouseEnter={() => handleNavPrefetch(item.href)}
+                  onFocus={() => handleNavPrefetch(item.href)}
                   onClick={() => setMobileMenuOpen(false)}
                   className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
                     isOpen

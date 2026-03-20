@@ -1,7 +1,23 @@
 "use client";
 
+import { useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { queryKeys } from "@/lib/queryKeys";
+
+function stableSerialize(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  const t = typeof value;
+  if (t === "string") return JSON.stringify(value);
+  if (t === "number" || t === "boolean") return String(value);
+  if (t === "bigint") return JSON.stringify(value.toString() + "n");
+  if (t === "function") return '"[function]"';
+  if (Array.isArray(value)) return `[${value.map((v) => stableSerialize(v)).join(",")}]`;
+  if (t === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableSerialize(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(String(value));
+}
 
 export interface MerchantPlan {
   id: number;
@@ -49,9 +65,18 @@ async function fetchMerchantPlans(filters: MerchantPlansFilters): Promise<{ plan
 }
 
 export function useMerchantPlansQuery(filters: MerchantPlansFilters) {
+  const filtersKey = stableSerialize(filters);
+  const fetchPlans = useCallback(() => fetchMerchantPlans(filters), [filters]);
+
   return useQuery({
-    queryKey: ["offers", "merchant-plans", "list", filters],
-    queryFn: () => fetchMerchantPlans(filters),
+    queryKey: ["offers", "merchant-plans", "list", filtersKey],
+    queryFn: fetchPlans,
+    staleTime: 10 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    placeholderData: (previousData) => previousData,
+    retry: 1,
   });
 }
 

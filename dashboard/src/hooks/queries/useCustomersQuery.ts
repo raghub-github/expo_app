@@ -1,9 +1,11 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { CustomerWithStats } from "@/lib/db/operations/customers";
+import { useAuthOptional } from "@/providers/AuthProvider";
 
 interface CustomersResponse {
   success: boolean;
@@ -31,12 +33,15 @@ export interface CustomersQueryParams {
 }
 
 /** Exported for prefetch-on-hover (dashboard section preload). */
-export async function fetchCustomers(params: CustomersQueryParams = {}): Promise<{
+export async function fetchCustomers(
+  params: CustomersQueryParams = {},
+  signal?: AbortSignal
+): Promise<{
   customers: CustomerWithStats[];
   pagination: { page: number; limit: number; total: number; totalPages: number };
 }> {
   const searchParams = new URLSearchParams();
-  
+
   if (params.page) searchParams.set("page", params.page.toString());
   if (params.limit) searchParams.set("limit", params.limit.toString());
   if (params.search) searchParams.set("search", params.search);
@@ -47,7 +52,7 @@ export async function fetchCustomers(params: CustomersQueryParams = {}): Promise
   if (params.sortBy) searchParams.set("sortBy", params.sortBy);
   if (params.sortOrder) searchParams.set("sortOrder", params.sortOrder);
 
-  const response = await fetch(`/api/customers?${searchParams.toString()}`);
+  const response = await fetch(`/api/customers?${searchParams.toString()}`, { signal });
   const result: CustomersResponse = await response.json();
 
   if (!result.success || !result.data) {
@@ -70,10 +75,20 @@ export async function fetchCustomers(params: CustomersQueryParams = {}): Promise
  * Uses React Query for automatic caching and refetching
  */
 export function useCustomersQuery(params: CustomersQueryParams = {}) {
-  const { enabled = true, ...queryParams } = params;
+  const pathname = usePathname();
+  const auth = useAuthOptional();
+  const authReady = auth?.authReady ?? false;
+  const sessionUser = auth?.user;
+  const permissions = auth?.permissions;
+
+  const { enabled: enabledFromParams = true, ...queryParams } = params;
+
+  const isOnCustomersRoute = pathname === "/dashboard/customers";
+  const isAllowed = Boolean(authReady && sessionUser && permissions);
+  const enabled = Boolean(isOnCustomersRoute && isAllowed && enabledFromParams);
   return useQuery({
     queryKey: queryKeys.customers.list(queryParams as Record<string, unknown>),
-    queryFn: () => fetchCustomers(queryParams),
+    queryFn: ({ signal }) => fetchCustomers(queryParams, signal),
     enabled,
     ...getCacheConfig(CacheTier.MEDIUM), // Customers list is medium frequency
   });

@@ -1,26 +1,60 @@
 "use client";
 
+import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Users, CreditCard, Gift, UserCog, FolderGit2 } from "lucide-react";
-import { usePermissions } from "@/hooks/usePermissions";
-import { useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 
 interface AdminOption {
   name: string;
   href: string;
-  icon: React.ComponentType<{ className?: string }>;
   description: string;
   color: string;
   bgColor: string;
+  Icon: React.ComponentType<{ className?: string }>;
 }
+
+// Icons are dynamically imported so they don't block the main Super Admin chunk.
+const UsersIcon = dynamic(async () => {
+  const { Users } = await import("lucide-react");
+  return function UsersIcon(props: { className?: string }) {
+    return <Users {...props} />;
+  };
+});
+
+const PaymentsIcon = dynamic(async () => {
+  const { CreditCard } = await import("lucide-react");
+  return function PaymentsIcon(props: { className?: string }) {
+    return <CreditCard {...props} />;
+  };
+});
+
+const OffersIcon = dynamic(async () => {
+  const { Gift } = await import("lucide-react");
+  return function OffersIcon(props: { className?: string }) {
+    return <Gift {...props} />;
+  };
+});
+
+const AgentsIcon = dynamic(async () => {
+  const { UserCog } = await import("lucide-react");
+  return function AgentsIcon(props: { className?: string }) {
+    return <UserCog {...props} />;
+  };
+});
+
+const TicketSettingsIcon = dynamic(async () => {
+  const { FolderGit2 } = await import("lucide-react");
+  return function TicketSettingsIcon(props: { className?: string }) {
+    return <FolderGit2 {...props} />;
+  };
+});
 
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
     href: "/dashboard/users",
-    icon: Users,
+    Icon: UsersIcon,
     description: "Manage system users, create IDs, and assign roles",
     color: "text-blue-600",
     bgColor: "bg-blue-50 hover:bg-blue-100",
@@ -28,7 +62,7 @@ const adminOptions: AdminOption[] = [
   {
     name: "Payments",
     href: "/dashboard/payments",
-    icon: CreditCard,
+    Icon: PaymentsIcon,
     description: "Manage rider and merchant withdrawals and payments",
     color: "text-green-600",
     bgColor: "bg-green-50 hover:bg-green-100",
@@ -36,7 +70,7 @@ const adminOptions: AdminOption[] = [
   {
     name: "Offers",
     href: "/dashboard/offers",
-    icon: Gift,
+    Icon: OffersIcon,
     description: "Manage offers, incentives, and banners for all apps",
     color: "text-purple-600",
     bgColor: "bg-purple-50 hover:bg-purple-100",
@@ -44,7 +78,7 @@ const adminOptions: AdminOption[] = [
   {
     name: "Agents",
     href: "/dashboard/agents",
-    icon: UserCog,
+    Icon: AgentsIcon,
     description: "Track all agent actions and performance metrics",
     color: "text-orange-600",
     bgColor: "bg-orange-50 hover:bg-orange-100",
@@ -52,90 +86,62 @@ const adminOptions: AdminOption[] = [
   {
     name: "Ticket settings",
     href: "/dashboard/super-admin/ticket-settings",
-    icon: FolderGit2,
+    Icon: TicketSettingsIcon,
     description: "Manage ticket groups, tags, and reference data for the ticket dashboard",
     color: "text-indigo-600",
     bgColor: "bg-indigo-50 hover:bg-indigo-100",
   },
 ];
 
-export default function SuperAdminPage() {
-  const pathname = usePathname();
-  const { isSuperAdmin, loading, exists } = usePermissions();
-  const router = useRouter();
-  const hasCheckedRef = useRef(false);
-  const redirectAttemptedRef = useRef(false);
+interface AdminCardProps {
+  option: AdminOption;
+  isActive: boolean;
+}
 
-  useEffect(() => {
-    // Prevent multiple redirect attempts
-    if (redirectAttemptedRef.current) {
-      return;
-    }
-
-    // Wait for loading to complete and data to exist
-    if (loading || !exists) {
-      return; // Don't do anything while loading or if user doesn't exist yet
-    }
-    
-    // Mark that we've checked
-    hasCheckedRef.current = true;
-    
-    // Only redirect if we've confirmed they're not a super admin AND we have data
-    if (!isSuperAdmin) {
-      redirectAttemptedRef.current = true;
-      router.push("/dashboard");
-    }
-  }, [loading, isSuperAdmin, exists, router]);
-
-  // Show loading state while checking permissions
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <p className="mt-2 text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show nothing while redirecting (prevents flash of content)
-  if (!isSuperAdmin) {
-    return null;
-  }
+const AdminCard = React.memo(function AdminCard({ option, isActive }: AdminCardProps) {
+  const { Icon } = option;
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {adminOptions.map((option) => {
-          const Icon = option.icon;
-          const isActive = pathname === option.href;
-          
-          return (
-            <Link
-              key={option.name}
-              href={option.href}
-              className={`rounded-lg border-2 p-6 transition-all duration-200 ${
-                isActive
-                  ? "border-blue-500 shadow-lg"
-                  : "border-gray-200 hover:border-gray-300 hover:shadow-md"
-              } ${option.bgColor}`}
-            >
-              <div className="flex items-start space-x-4">
-                <div className={`p-3 rounded-lg bg-white ${option.color}`}>
-                  <Icon className="h-6 w-6" />
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-1">
-                    {option.name}
-                  </h3>
-                  <p className="text-sm text-gray-600">{option.description}</p>
-                </div>
-              </div>
-            </Link>
-          );
-        })}
+    <Link
+      href={option.href}
+      prefetch
+      className={`rounded-lg border-2 p-6 transition-all duration-200 active:scale-[0.97] ${
+        isActive
+          ? "border-blue-500 shadow-lg"
+          : "border-gray-200 hover:border-gray-300 hover:shadow-md"
+      } ${option.bgColor} min-h-[120px]`}
+    >
+      <div className="flex items-start space-x-4">
+        <div className={`p-3 rounded-lg bg-white ${option.color}`}>
+          <Icon className="h-6 w-6" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">{option.name}</h3>
+          <p className="text-sm text-gray-600">{option.description}</p>
+        </div>
       </div>
+    </Link>
+  );
+});
+
+const AdminGrid = React.memo(function AdminGrid() {
+  const pathname = usePathname();
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {adminOptions.map((option) => {
+        const isActive = pathname === option.href;
+        return <AdminCard key={option.name} option={option} isActive={isActive} />;
+      })}
+    </div>
+  );
+});
+
+export default function SuperAdminPage() {
+  // Static-first navigation hub: no API calls, no effects, just instant UI.
+  return (
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      <AdminGrid />
     </div>
   );
 }

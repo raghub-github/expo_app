@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
+import { FixedSizeList as List, ListChildComponentProps } from "react-window";
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
@@ -38,6 +39,16 @@ function getPageNumbers(totalPages: number, currentPage: number): (number | "ell
     pages.push(1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages);
   }
   return pages;
+}
+
+/** Shared debounced value hook (must be defined at module scope to avoid hook ordering issues). */
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handle);
+  }, [value, delay]);
+  return debounced;
 }
 
 export function TicketList() {
@@ -106,23 +117,26 @@ export function TicketList() {
   const limit = pageSize;
   const offset = (page - 1) * limit;
 
+  const debouncedSearchQuery = useDebouncedValue(appliedFilters.searchQuery, 400);
+
   const queryFilters = useMemo(
     () => ({
       ...appliedFilters,
+      searchQuery: debouncedSearchQuery,
       limit,
       offset,
     }),
-    [appliedFilters, limit, offset]
+    [appliedFilters, debouncedSearchQuery, limit, offset]
   );
 
   const { data, isLoading, error, refetch } = useTickets(queryFilters);
   const currentTotal = data?.total ?? 0;
   const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(currentTotal);
 
-  const handleLoadNewTickets = () => {
+  const handleLoadNewTickets = useCallback(() => {
     refetch();
     clearNewTickets();
-  };
+  }, [refetch, clearNewTickets]);
 
   // All hooks must be called before any conditional returns
   // Match filter sidebar: Unassigned + Me (current user) + all API agents
@@ -152,14 +166,19 @@ export function TicketList() {
     );
   }
 
-  if (error) {
+  const inlineErrorMessage = error instanceof Error ? error.message : "Unknown error";
+  const hasCachedData = Boolean(data);
+
+  // Non-blocking error UX: if we have cached/snapshot data, keep rendering the UI
+  // and show an inline retry banner. Only block when we have nothing to show.
+  if (error && !hasCachedData) {
     return (
       <div className="p-8 text-center">
         <p className="text-red-600 font-medium">Failed to load tickets</p>
-        <p className="text-sm text-gray-600 mt-2">{error instanceof Error ? error.message : "Unknown error"}</p>
+        <p className="text-sm text-gray-600 mt-2">{inlineErrorMessage}</p>
         <button
           type="button"
-          onClick={() => window.location.reload()}
+          onClick={() => refetch()}
           className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
         >
           Retry
@@ -168,9 +187,24 @@ export function TicketList() {
     );
   }
 
+  const showInlineError = Boolean(error && hasCachedData);
+
   if (!data || data.tickets.length === 0) {
     return (
       <div className="p-8 text-center">
+        {showInlineError && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-left">
+            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
+            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <p className="text-gray-500">No tickets found matching your filters.</p>
       </div>
     );
@@ -181,61 +215,95 @@ export function TicketList() {
   const end = Math.min(offset + limit, data.total);
   const pageNumbers = getPageNumbers(totalPages, page);
 
-  const onSelect = (ticketId: number, checked: boolean) => {
+  const onSelect = useCallback((ticketId: number, checked: boolean) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (checked) next.add(ticketId);
       else next.delete(ticketId);
       return next;
     });
-  };
-  const selectAll = (checked: boolean) => {
-    if (checked) setSelectedIds(new Set(data.tickets.map((t) => t.id)));
-    else setSelectedIds(new Set());
-  };
+  }, []);
+  const selectAll = useCallback(
+    (checked: boolean) => {
+      if (checked) setSelectedIds(new Set(data.tickets.map((t) => t.id)));
+      else setSelectedIds(new Set());
+    },
+    [data.tickets]
+  );
   const allSelected = data.tickets.length > 0 && selectedIds.size === data.tickets.length;
   const someSelected = selectedIds.size > 0;
 
-  const handleUpdatePriority = (ticketId: number, priority: string) => {
-    updateTicket.mutate({ ticketId, priority });
-  };
-  const handleUpdateGroup = (ticketId: number, groupId: number | null) => {
-    updateTicket.mutate({ ticketId, groupId });
-  };
-  const handleUpdateAssignee = (ticketId: number, userId: number | null) => {
-    updateTicket.mutate({ ticketId, currentAssigneeUserId: userId });
-  };
-  const handleUpdateStatus = (ticketId: number, status: string) => {
-    updateTicket.mutate({ ticketId, status });
-  };
+  const handleUpdatePriority = useCallback(
+    (ticketId: number, priority: string) => {
+      updateTicket.mutate({ ticketId, priority });
+    },
+    [updateTicket]
+  );
+  const handleUpdateGroup = useCallback(
+    (ticketId: number, groupId: number | null) => {
+      updateTicket.mutate({ ticketId, groupId });
+    },
+    [updateTicket]
+  );
+  const handleUpdateAssignee = useCallback(
+    (ticketId: number, userId: number | null) => {
+      updateTicket.mutate({ ticketId, currentAssigneeUserId: userId });
+    },
+    [updateTicket]
+  );
+  const handleUpdateStatus = useCallback(
+    (ticketId: number, status: string) => {
+      updateTicket.mutate({ ticketId, status });
+    },
+    [updateTicket]
+  );
 
-  const handleBulkAssign = (userId: number) => {
-    selectedIds.forEach((id) => updateTicket.mutate({ ticketId: id, currentAssigneeUserId: userId }));
+  const handleBulkAssign = useCallback(
+    (userId: number) => {
+      selectedIds.forEach((id) =>
+        updateTicket.mutate({ ticketId: id, currentAssigneeUserId: userId })
+      );
+      setSelectedIds(new Set());
+    },
+    [selectedIds, updateTicket]
+  );
+  const handleBulkUnassign = useCallback(() => {
+    selectedIds.forEach((id) =>
+      updateTicket.mutate({ ticketId: id, currentAssigneeUserId: null })
+    );
     setSelectedIds(new Set());
-  };
-  const handleBulkUnassign = () => {
-    selectedIds.forEach((id) => updateTicket.mutate({ ticketId: id, currentAssigneeUserId: null }));
-    setSelectedIds(new Set());
-  };
-  const handleBulkStatus = (status: string) => {
-    selectedIds.forEach((id) => updateTicket.mutate({ ticketId: id, status }));
-    setSelectedIds(new Set());
-  };
-  const handleBulkClose = () => handleBulkStatus("closed");
-  const handleBulkSpam = () => handleBulkStatus("rejected");
-  const handleBulkUpdateApply = (updates: { priority?: string; status?: string; groupId?: number | null; assigneeId?: number | null }) => {
-    selectedIds.forEach((id) => {
-      const payload: Parameters<typeof updateTicket.mutate>[0] = { ticketId: id };
-      if (updates.priority !== undefined) payload.priority = updates.priority;
-      if (updates.status !== undefined) payload.status = updates.status;
-      if (updates.groupId !== undefined) payload.groupId = updates.groupId;
-      if (updates.assigneeId !== undefined) payload.currentAssigneeUserId = updates.assigneeId ?? null;
-      updateTicket.mutate(payload);
-    });
-    setBulkUpdateOpen(false);
-    setSelectedIds(new Set());
-  };
-  const handleExportSelected = () => {
+  }, [selectedIds, updateTicket]);
+  const handleBulkStatus = useCallback(
+    (status: string) => {
+      selectedIds.forEach((id) => updateTicket.mutate({ ticketId: id, status }));
+      setSelectedIds(new Set());
+    },
+    [selectedIds, updateTicket]
+  );
+  const handleBulkClose = useCallback(() => handleBulkStatus("closed"), [handleBulkStatus]);
+  const handleBulkSpam = useCallback(() => handleBulkStatus("rejected"), [handleBulkStatus]);
+  const handleBulkUpdateApply = useCallback(
+    (updates: {
+      priority?: string;
+      status?: string;
+      groupId?: number | null;
+      assigneeId?: number | null;
+    }) => {
+      selectedIds.forEach((id) => {
+        const payload: Parameters<(typeof updateTicket)["mutate"]>[0] = { ticketId: id };
+        if (updates.priority !== undefined) payload.priority = updates.priority;
+        if (updates.status !== undefined) payload.status = updates.status;
+        if (updates.groupId !== undefined) payload.groupId = updates.groupId;
+        if (updates.assigneeId !== undefined)
+          payload.currentAssigneeUserId = updates.assigneeId ?? null;
+        updateTicket.mutate(payload);
+      });
+      setBulkUpdateOpen(false);
+      setSelectedIds(new Set());
+    },
+    [selectedIds, updateTicket]
+  );
+  const handleExportSelected = useCallback(() => {
     const selected = data.tickets.filter((t) => selectedIds.has(t.id));
     if (selected.length === 0) return;
     const headers = ["Ticket #", "Subject", "Status", "Priority", "Assignee", "Group", "Created"];
@@ -256,10 +324,68 @@ export function TicketList() {
     a.download = `tickets-export-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  };
+  }, [data.tickets, selectedIds]);
+
+  const ROW_HEIGHT = 72;
+
+  const VirtualRow = useCallback(
+    ({ index, style }: ListChildComponentProps) => {
+      const ticket = data.tickets[index];
+      if (!ticket) return null;
+
+      return (
+        <div style={style}>
+          <TicketListRow
+            key={ticket.id}
+            ticket={ticket}
+            selected={selectedIds.has(ticket.id)}
+            onSelect={(checked) => onSelect(ticket.id, checked)}
+            onUpdatePriority={handleUpdatePriority}
+            onUpdateGroup={handleUpdateGroup}
+            onUpdateAssignee={handleUpdateAssignee}
+            onUpdateStatus={handleUpdateStatus}
+            priorityOptions={priorityOptions}
+            groupOptions={groupOptions}
+            agentOptions={agentOptions}
+            statusOptions={statusOptions}
+            currentUserId={currentUser?.id}
+          />
+        </div>
+      );
+    },
+    [
+      data.tickets,
+      selectedIds,
+      onSelect,
+      handleUpdatePriority,
+      handleUpdateGroup,
+      handleUpdateAssignee,
+      handleUpdateStatus,
+      priorityOptions,
+      groupOptions,
+      agentOptions,
+      statusOptions,
+      currentUser?.id,
+    ]
+  );
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-white overflow-hidden">
+      {showInlineError && (
+        <div className="px-3 py-2 border-b border-red-100 bg-red-50 text-red-700 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Failed to refresh tickets</p>
+            <p className="text-xs text-red-600 truncate">{inlineErrorMessage}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="shrink-0 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {/* Toolbar: fixed 3-column layout so Sort by position never changes */}
       <div className="flex-shrink-0 flex items-center gap-2 border-b border-gray-200/90 bg-white px-3 py-2">
         {/* Left: Sort by - fixed position */}
@@ -605,23 +731,17 @@ export function TicketList() {
                 <span className="text-gray-500 text-[11px] font-medium">Priority · Group/Agent · Status</span>
               </div>
             </div>
-            {data.tickets.map((ticket) => (
-              <TicketListRow
-                key={ticket.id}
-                ticket={ticket}
-                selected={selectedIds.has(ticket.id)}
-                onSelect={(checked) => onSelect(ticket.id, checked)}
-                onUpdatePriority={handleUpdatePriority}
-                onUpdateGroup={handleUpdateGroup}
-                onUpdateAssignee={handleUpdateAssignee}
-                onUpdateStatus={handleUpdateStatus}
-                priorityOptions={priorityOptions}
-                groupOptions={groupOptions}
-                agentOptions={agentOptions}
-                statusOptions={statusOptions}
-                currentUserId={currentUser?.id}
-              />
-            ))}
+            <List
+              height={Math.min(
+                600,
+                Math.max(ROW_HEIGHT * 3, data.tickets.length * ROW_HEIGHT)
+              )}
+              itemCount={data.tickets.length}
+              itemSize={ROW_HEIGHT}
+              width="100%"
+            >
+              {VirtualRow}
+            </List>
           </div>
         ) : (
           <>

@@ -20,6 +20,20 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { TablePagination } from '@/components/riders/TablePagination';
 import { AddAmountModal } from '@/components/riders/AddAmountModal';
 
+// Simple in-memory cache for rider search results across renders/sessions.
+const riderSearchCache = new Map<string, RiderListEntry[]>();
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handle);
+  }, [value, delay]);
+
+  return debounced;
+}
+
 /** Wallet credit request row (add amount) for display on rider info */
 interface WalletCreditRequestRow {
   id: number;
@@ -508,7 +522,7 @@ export default function RidersPage() {
 
   const effectiveSummaryLoading = summaryQueryLoading;
 
-  // Single search function - MUST be called before conditional returns
+  // Single search function - debounced + cached via riderSearchCache.
   const runSearch = useCallback(async (searchValue: string) => {
     if (!searchValue.trim()) {
       clearRider();
@@ -519,9 +533,18 @@ export default function RidersPage() {
     setShowDefault(false);
     setHasSearched(true);
     setError(null);
-    setRiders([]);
-    setRiderSummary(null);
-    
+
+    // If we have cached results for this query, show them instantly and revalidate in background.
+    const cached = riderSearchCache.get(searchValue);
+    if (cached) {
+      // Use context helper so "selected rider" (currentRiderId / info) is in one place.
+      setCurrentRiderFromSearch(cached, null);
+      setLoading(false);
+    } else {
+      setRiders([]);
+      setRiderSummary(null);
+    }
+
     let spinnerTimeout: NodeJS.Timeout | null = null;
     spinnerTimeout = setTimeout(() => {
       setLoading(true);
@@ -575,11 +598,14 @@ export default function RidersPage() {
 
       if (data && data.length > 0) {
         const list = data as RiderListEntry[];
-        setRiders(list);
+        riderSearchCache.set(searchValue, list);
+        // Single source of truth: update context via helper so main UI and sidebar agree.
+        setCurrentRiderFromSearch(list, null);
         setError(null);
         router.replace(`/dashboard/riders?search=GMR${list[0].id}`, { scroll: false });
         // Summary is fetched by useRiderSummaryQuery when riderId is set
       } else {
+        riderSearchCache.set(searchValue, []);
         setRiders([]);
         setRiderSummary(null);
         setError(null);
@@ -596,16 +622,20 @@ export default function RidersPage() {
       if (spinnerTimeout) clearTimeout(spinnerTimeout);
       setLoading(false);
     }
-  }, [router]);
+  }, [router, setShowDefault, setHasSearched, setError, setRiders, setRiderSummary, setLoading, clearRider, setCurrentRiderFromSearch]);
 
-  // Track the last search we actually ran to avoid re-running when effect re-fires (e.g. after setRiders([]) changes context and triggers re-render).
+  // Track the last search we actually ran to avoid re-running when effect re-fires.
   const lastRanSearchRef = useRef<string | null>(null);
+  const debouncedSearchParam = useDebouncedValue(
+    searchParams.get('search')?.trim() ?? '',
+    400
+  );
 
   // Run search only when URL has ?search= and it's a *different* rider than already in context.
   // When returning to Rider Information from Orders/Penalties/etc., same rider in URL + context → skip search.
   // When we have a rider in context but no search in URL, sync URL so refresh and sub-route links keep the rider.
   useEffect(() => {
-    const searchValue = searchParams.get('search')?.trim() ?? '';
+    const searchValue = debouncedSearchParam;
     if (!searchValue) {
       if (riders.length > 0 && riders[0]) {
         router.replace(`/dashboard/riders?search=GMR${riders[0].id}`, { scroll: false });
@@ -631,7 +661,7 @@ export default function RidersPage() {
     if (lastRanSearchRef.current === searchValue) return;
     lastRanSearchRef.current = searchValue;
     runSearch(searchValue);
-  }, [searchParams, runSearch, riders, router]);
+  }, [debouncedSearchParam, runSearch, riders, router]);
 
 
   // When rider changes (new search), reset so section effects don’t refetch until user changes a filter

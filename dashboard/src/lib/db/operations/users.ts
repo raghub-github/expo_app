@@ -4,8 +4,9 @@
  */
 
 import { getDb } from "../client";
-import { systemUsers } from "../schema";
+import { systemUsers, userSessions } from "../schema";
 import { eq, and, or, ilike, isNull, sql, desc, asc, inArray } from "drizzle-orm";
+import { closeAllOpenUserSessions } from "./user-sessions";
 
 export interface CreateUserData {
   system_user_id: string;
@@ -387,7 +388,7 @@ export async function isUserAccountActive(id: number): Promise<boolean> {
  */
 export async function updateLastLogin(id: number) {
   const db = getDb();
-  
+
   await db
     .update(systemUsers)
     .set({
@@ -397,6 +398,25 @@ export async function updateLastLogin(id: number) {
       updatedAt: new Date(),
     })
     .where(eq(systemUsers.id, id));
+}
+
+/**
+ * Insert a new row in user_sessions for this login (login_time set, logout_time null)
+ */
+export async function insertUserSession(systemUserId: number): Promise<void> {
+  const db = getDb();
+  const now = new Date();
+  await closeAllOpenUserSessions(systemUserId, now);
+  await db.insert(userSessions).values({
+    userId: systemUserId,
+    loginTime: now,
+    logoutTime: null,
+    offlineAt: null,
+    currentStatus: "online",
+    statusChangedAt: now,
+    workSeconds: 0,
+    breakSeconds: 0,
+  });
 }
 
 /**

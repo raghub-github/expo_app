@@ -1135,16 +1135,14 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                           )}
                         </div>
                       )}
+                    </>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
+                      Select an order from the list to view details
                     </div>
+                  )}
                   </div>
                 </div>
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
-                        Select an order from the list to view details
-                      </div>
-                    )}
-              </div>
-              </div>
               </div>
 
                 {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}

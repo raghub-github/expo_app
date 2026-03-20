@@ -11,6 +11,8 @@ import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { sql } from "drizzle-orm";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { getRedisClient } from "@/lib/redis";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
 
@@ -20,7 +22,7 @@ export const runtime = "nodejs";
  */
 export async function GET(request: NextRequest) {
   try {
-    console.log("[GET /api/tickets] Request received");
+
     const supabase = await createServerSupabaseClient();
     const { data: { user }, error: userError } = await supabase.auth.getUser();
 
@@ -40,13 +42,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
+    const [userIsSuperAdmin, hasTicketAccess] = await Promise.all([
+      isSuperAdmin(user.id, user.email!),
+      hasDashboardAccessByAuth(user.id, user.email!, "TICKET"),
+    ]);
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
     }
 
-    console.log("[GET /api/tickets] Auth OK, querying unified_tickets");
+
     const { searchParams } = new URL(request.url);
 
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
@@ -163,6 +167,42 @@ export async function GET(request: NextRequest) {
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
 
+    const redis = getRedisClient();
+    const cacheKey = systemUser ? `tickets:${systemUser.id}:${request.nextUrl.searchParams.toString()}` : null;
+    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
+
+    if (cacheKey) {
+      const cached = getCached<{ tickets: unknown[]; total: number; limit: number; offset: number }>(cacheKey);
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          data: cached,
+        });
+      }
+    }
+
+    if (redis && cacheKey) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as {
+            tickets: unknown[];
+            total: number;
+            limit: number;
+            offset: number;
+          };
+          // Populate memory cache too for immediate follow-up navigations.
+          setCached(cacheKey, parsed, MEMORY_TTL_MS);
+          return NextResponse.json({
+            success: true,
+            data: parsed,
+          });
+        }
+      } catch {
+        // ignore cache read errors
+      }
+    }
+
     try {
       if (whereClause) {
         countResult = await sqlClient`
@@ -278,9 +318,23 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    const payload = { tickets, total: Number(total), limit, offset };
+
+    if (cacheKey) {
+      setCached(cacheKey, payload, MEMORY_TTL_MS);
+    }
+
+    if (redis && cacheKey) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(payload), "EX", 30);
+      } catch {
+        // ignore cache write errors
+      }
+    }
+
     return NextResponse.json({
       success: true,
-      data: { tickets, total: Number(total), limit, offset },
+      data: payload,
     });
   } catch (error) {
     console.error("[GET /api/tickets] Error:", error);

@@ -92,10 +92,12 @@ async function fetchUsers(params: UsersQueryParams = {}): Promise<{
  * Hook to fetch users with filters and pagination
  * Uses React Query for automatic caching and refetching
  */
-export function useUsersQuery(params: UsersQueryParams = {}) {
+export function useUsersQuery(params: UsersQueryParams & { enabled?: boolean } = {}) {
+  const { enabled = true, ...queryParams } = params;
   return useQuery({
-    queryKey: queryKeys.users.list(params as Record<string, unknown>),
-    queryFn: () => fetchUsers(params),
+    queryKey: queryKeys.users.list(queryParams as Record<string, unknown>),
+    queryFn: () => fetchUsers(queryParams),
+    enabled,
     ...getCacheConfig(CacheTier.MEDIUM), // Users list is medium frequency
   });
 }
