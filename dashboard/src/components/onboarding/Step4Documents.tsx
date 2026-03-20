@@ -217,6 +217,12 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
   }>({});
 
   const upperStoreType = (storeType || "RESTAURANT").toUpperCase();
+  const isFoodRelatedStoreType =
+    upperStoreType === "RESTAURANT" ||
+    upperStoreType === "CAFE" ||
+    upperStoreType === "BAKERY" ||
+    upperStoreType === "CLOUD_KITCHEN" ||
+    upperStoreType === "GROCERY";
 
   // Local previews for uploaded files (object URLs or server URLs), keyed by doc type.
   const [docPreviews, setDocPreviews] = useState<Record<string, string>>(
@@ -415,11 +421,14 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
           !!form.drug_license_number &&
           form.drug_license_number.trim().length > 0 &&
           !docFormatErrors.drug_license_number;
-      } else {
+      } else if (isFoodRelatedStoreType) {
         hasRegulatorDoc =
           !!form.fssai_number &&
           form.fssai_number.trim().length > 0 &&
           !docFormatErrors.fssai_number;
+      } else {
+        // Non-food store types don't require FSSAI in onboarding.
+        hasRegulatorDoc = true;
       }
       valid = hasRegulatorDoc;
     } else if (section === "BANK") {
@@ -1544,7 +1553,7 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
             </div>
           </div>
         </>
-      ) : (
+      ) : isFoodRelatedStoreType ? (
         <>
           {/* FSSAI layout for food (matches provided design) */}
           <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3.5 py-2">
@@ -1724,6 +1733,63 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                 <p>
                   FSSAI is mandatory for food businesses. GST may be required based on
                   turnover.
+                </p>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="rounded-lg border border-slate-200 bg-slate-50/80 px-3.5 py-2">
+            <p className="text-[11px] sm:text-xs font-semibold text-slate-700">
+              FSSAI is not required for this store type. You can upload GST details if applicable.
+            </p>
+          </div>
+
+          {/* GST optional toggle */}
+          <div className="mt-1 rounded-lg border border-purple-200 bg-purple-50/80 px-3.5 py-2 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs sm:text-sm font-semibold text-purple-800">
+                GST Certificate (Optional)
+              </p>
+            </div>
+            <div className="inline-flex items-center rounded-full bg-white px-0.5 py-[2px] text-[11px] font-medium">
+              <button
+                type="button"
+                onClick={() => setGstCertificateToggle("NO")}
+                className={`px-3 py-1 rounded-full ${
+                  gstCertificateToggle === "NO"
+                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => setGstCertificateToggle("YES")}
+                className={`px-3 py-1 rounded-full ${
+                  gstCertificateToggle === "YES"
+                    ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white shadow-sm"
+                    : "text-slate-600"
+                }`}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+
+          {renderGstOptionalBlock()}
+
+          <div className="mt-1 rounded-lg border border-indigo-100 bg-indigo-50 px-3.5 py-2 text-[11px] sm:text-xs text-indigo-800">
+            <div className="flex items-start gap-2">
+              <div className="mt-[2px] flex h-4 w-4 items-center justify-center rounded-full bg-indigo-600 text-white text-[10px]">
+                i
+              </div>
+              <div>
+                <p className="font-semibold mb-0.5">Note</p>
+                <p>
+                  For non-food businesses, GST is optional in onboarding and can be added if available.
                 </p>
               </div>
             </div>
@@ -2520,7 +2586,9 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
               <span className="block text-[10px] text-indigo-700 font-normal">
                 {upperStoreType === "PHARMA"
                   ? "Pharma documents mandatory as per regulations."
-                  : "FSSAI mandatory for food."}
+                  : isFoodRelatedStoreType
+                  ? "FSSAI mandatory for food."
+                  : "GST optional for non-food stores."}
               </span>
             </div>
           </div>
@@ -2543,7 +2611,9 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   : s === "GST"
                   ? upperStoreType === "PHARMA"
                     ? "Drug Lic. / GST"
-                    : "GST / FSSAI"
+                    : isFoodRelatedStoreType
+                    ? "GST / FSSAI"
+                    : "GST"
                   : "Bank"}
               </button>
             ))}
@@ -2573,7 +2643,9 @@ const Step4Documents: React.FC<Step4DocumentsProps> = ({
                   : section === "GST"
                   ? upperStoreType === "PHARMA"
                     ? "Drug licence mandatory for pharma businesses"
-                    : "FSSAI mandatory for food businesses"
+                    : isFoodRelatedStoreType
+                    ? "FSSAI mandatory for food businesses"
+                    : "GST optional for non-food businesses"
                   : "Bank account details for payouts"}
               </p>
             </div>

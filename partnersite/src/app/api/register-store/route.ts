@@ -17,12 +17,15 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   const { ownerName, ownerEmail, storePublicId } = args;
   if (!ownerEmail) return;
 
-  const gmailUser = process.env.EMAIL_ID || process.env.SMTP_FROM_EMAIL;
-  const gmailPass = process.env.EMAIL_APP_PASSWORD;
-  const fromEmail = process.env.SMTP_FROM_EMAIL || gmailUser;
+  const smtpUser = process.env.EMAIL_ID || process.env.SMTP_USER || process.env.SMTP_FROM_EMAIL;
+  const smtpPass = process.env.EMAIL_APP_PASSWORD || process.env.SMTP_PASS;
+  const smtpHost = process.env.SMTP_HOST || 'smtp.zoho.in';
+  const smtpPort = Number(process.env.SMTP_PORT || 465);
+  const smtpSecure = String(process.env.SMTP_SECURE || 'true').toLowerCase() !== 'false';
+  const fromEmail = process.env.SMTP_FROM_EMAIL || smtpUser;
   const fromName = process.env.SMTP_FROM_NAME || 'GatiMitra Team';
 
-  if (!gmailUser || !gmailPass || !fromEmail) {
+  if (!smtpUser || !smtpPass || !fromEmail) {
     console.warn('[register-store] Email env not configured; skipping welcome email');
     return;
   }
@@ -30,20 +33,35 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   console.log('[register-store] Welcome email queued for', ownerEmail);
 
   const { default: nodemailer } = await import('nodemailer');
-  // Gmail SMTP defaults (app password)
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    host: smtpHost,
+    port: smtpPort,
+    secure: smtpSecure,
     auth: {
-      user: gmailUser,
-      pass: gmailPass,
+      user: smtpUser,
+      pass: smtpPass,
     },
   });
 
   const safeName = (ownerName || '').toString().trim() || 'Partner';
   const safeStoreId = (storePublicId || '').toString().trim();
   const dashboardUrl = 'https://partner.gatimitra.com/auth/post-login';
+  const textBody = [
+    `Hi ${safeName},`,
+    '',
+    'Your store registration has been received on GatiMitra and is under verification.',
+    'Verification usually takes 24-48 hours.',
+    safeStoreId ? `Store ID: ${safeStoreId}` : null,
+    '',
+    `Dashboard: ${dashboardUrl}`,
+    '',
+    'Need help? support@gatimitra.com',
+    '',
+    'Regards,',
+    'Team GatiMitra',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const htmlBody = `<!DOCTYPE html>
 <html lang="en">
@@ -247,7 +265,9 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   await transporter.sendMail({
     from: fromName ? `${fromName} <${fromEmail}>` : fromEmail,
     to: ownerEmail,
-    subject: `Welcome to GatiMitra, ${safeName}`,
+    replyTo: fromEmail,
+    subject: `Store registration received - GatiMitra (${safeName})`,
+    text: textBody,
     html: htmlBody,
   });
 
@@ -976,27 +996,25 @@ export async function POST(req: NextRequest) {
       // Don't fail the entire registration if this update fails
     }
 
-    // 7. Fire-and-forget welcome email to owner email (do not block response)
-    (async () => {
-      try {
-        const ownerEmail =
-          (storeData as any)?.store_email ||
-          (typeof step1?.store_email === 'string' ? step1.store_email : null);
-        const ownerName =
-          (storeData as any)?.owner_full_name ||
-          (typeof step1?.owner_full_name === 'string' ? step1.owner_full_name : null) ||
-          (storeData as any)?.store_name ||
-          (typeof step1?.store_name === 'string' ? step1.store_name : null);
+    // 7. Send welcome email in-request so it reliably executes on serverless runtimes
+    try {
+      const ownerEmail =
+        (storeData as any)?.store_email ||
+        (typeof step1?.store_email === 'string' ? step1.store_email : null);
+      const ownerName =
+        (storeData as any)?.owner_full_name ||
+        (typeof step1?.owner_full_name === 'string' ? step1.owner_full_name : null) ||
+        (storeData as any)?.store_name ||
+        (typeof step1?.store_name === 'string' ? step1.store_name : null);
 
-        await sendWelcomeEmailToOwner({
-          ownerName,
-          ownerEmail,
-          storePublicId: storeId || null,
-        });
-      } catch (emailErr) {
-        console.warn('[register-store] Failed to send welcome email:', emailErr);
-      }
-    })();
+      await sendWelcomeEmailToOwner({
+        ownerName,
+        ownerEmail,
+        storePublicId: storeId || null,
+      });
+    } catch (emailErr) {
+      console.warn('[register-store] Failed to send welcome email:', emailErr);
+    }
 
     return NextResponse.json({ success: true, storeId });
   } catch (e: any) {
