@@ -15,6 +15,12 @@ interface SessionData {
     [key: string]: any;
   };
   permissions?: any;
+  systemUser?: {
+    id: number;
+    systemUserId: string;
+    fullName: string;
+    email: string;
+  } | null;
 }
 
 interface SessionStatus {

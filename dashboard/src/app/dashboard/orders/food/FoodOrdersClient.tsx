@@ -1,9 +1,14 @@
 "use client";
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
+import { type CSSProperties } from "react";
+import { useAuthOptional } from "@/providers/AuthProvider";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { queryKeys } from "@/lib/queryKeys";
 
 // Exact color codes from reference image
 const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
@@ -71,7 +76,98 @@ interface FilterState {
   userType: string[]; // Array for multiple selections: "Premium" | "Very Good" | "Good" | "Bad"
 }
 
+interface OrdersApiResponse {
+  success: boolean;
+  data?: OrdersCoreRow[];
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages?: number;
+  };
+  error?: string;
+}
+
+export interface OrdersFilters {
+  orderType: "food";
+  statusFilter: OrderStatusFilter | null;
+  search: string;
+  searchType: string;
+  page: number;
+  limit: number;
+}
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handle);
+  }, [value, delay]);
+
+  return debounced;
+}
+
+export async function fetchFoodOrders(
+  filters: OrdersFilters,
+  signal?: AbortSignal
+): Promise<{ orders: OrdersCoreRow[]; total: number; page: number; limit: number }> {
+  const params = new URLSearchParams();
+  params.set("orderType", filters.orderType);
+  if (filters.statusFilter) params.set("statusFilter", filters.statusFilter);
+  if (filters.search) params.set("search", filters.search);
+  if (filters.searchType) params.set("searchType", filters.searchType);
+  params.set("page", String(filters.page));
+  params.set("limit", String(filters.limit));
+
+  const res = await fetch(`/api/orders/core?${params.toString()}`, { credentials: "include", signal });
+  const body: OrdersApiResponse = await res.json().catch(() => ({ success: false }));
+
+  if (!res.ok || !body.success || !Array.isArray(body.data)) {
+    return { orders: [], total: 0, page: filters.page, limit: filters.limit };
+  }
+
+  return {
+    orders: body.data,
+    total: body.pagination?.total ?? body.data.length,
+    page: body.pagination?.page ?? filters.page,
+    limit: body.pagination?.limit ?? filters.limit,
+  };
+}
+
+function useFoodOrdersQuery(
+  filters: OrdersFilters,
+  enabled: boolean,
+  snapshotKey: string | null,
+  initialSnapshot: Awaited<ReturnType<typeof fetchFoodOrders>> | null
+) {
+  return useQuery({
+    queryKey: queryKeys.ordersCore.foodList(filters as Record<string, unknown>),
+    queryFn: ({ signal }) => fetchFoodOrders(filters, signal),
+    enabled,
+    initialData: initialSnapshot ?? undefined,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    // Keep previous data during refetch so table never goes blank.
+    placeholderData: (prev) => prev,
+    // SWR: show snapshot immediately, then refresh in background.
+    refetchOnMount: true,
+    onSuccess: (data) => {
+      if (!snapshotKey) return;
+      saveClientSnapshot(snapshotKey, data);
+    },
+  });
+}
+
 export default function FoodOrdersClient() {
+  const pathname = usePathname();
+  const auth = useAuthOptional();
+  const authReady = auth?.authReady ?? false;
+  const sessionUser = auth?.user;
+  const permissions = auth?.permissions;
+  const shouldFetch = pathname === "/dashboard/orders/food" && Boolean(authReady && sessionUser && permissions);
+
   const router = useRouter();
   const searchParams = useSearchParams();
   const urlStatus = searchParams.get("statusFilter") as OrderStatusFilter | null;
@@ -90,10 +186,9 @@ export default function FoodOrdersClient() {
   });
 
   const selectedStatus = urlStatus ?? null;
-  const [orders, setOrders] = useState<OrdersCoreRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [page] = useState(1);
+  const [limit] = useState(20);
+  const debouncedSearch = useDebouncedValue(urlSearch, 400);
   const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
@@ -118,46 +213,39 @@ export default function FoodOrdersClient() {
     },
     [router, searchParams]
   );
+  const filtersForQuery: OrdersFilters = useMemo(
+    () => ({
+      orderType: "food",
+      statusFilter: selectedStatus,
+      search: debouncedSearch,
+      searchType: urlSearchType,
+      page,
+      limit,
+    }),
+    [selectedStatus, debouncedSearch, urlSearchType, page, limit]
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-    const params = new URLSearchParams();
-    params.set("orderType", "food");
-    const status = searchParams.get("statusFilter");
-    if (status) params.set("statusFilter", status);
-    const search = searchParams.get("search");
-    if (search) params.set("search", search);
-    const searchType = searchParams.get("searchType");
-    if (searchType) params.set("searchType", searchType);
-    params.set("page", "1");
-    params.set("limit", "20");
+  const SNAPSHOT_TTL_MS = 10_000;
+  const snapshotKey = useMemo(() => {
+    if (!shouldFetch) return null;
+    return `dashboard_snapshot:orders_food:${pathname}:${JSON.stringify(filtersForQuery)}`;
+  }, [shouldFetch, pathname, filtersForQuery]);
 
-    setLoading(true);
-    fetch(`/api/orders/core?${params.toString()}`)
-      .then((res) => res.json())
-      .then((body) => {
-        if (cancelled) return;
-        if (body.success && Array.isArray(body.data)) {
-          setOrders(body.data);
-          setTotal(body.pagination?.total ?? body.data.length);
-        } else {
-          setOrders([]);
-          setTotal(0);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOrders([]);
-          setTotal(0);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [searchParams.toString(), refreshKey]);
+  const initialSnapshot = useMemo(() => {
+    if (!snapshotKey) return null;
+    return loadClientSnapshot<Awaited<ReturnType<typeof fetchFoodOrders>>>(snapshotKey, SNAPSHOT_TTL_MS);
+  }, [snapshotKey]);
+
+  const {
+    data: ordersData,
+    isFetching,
+    isLoading,
+    refetch: refetchOrders,
+  } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialSnapshot);
+
+  const orders = ordersData?.orders ?? [];
+  const total = ordersData?.total ?? 0;
+  const loading = isFetching || (isLoading && !ordersData);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -255,9 +343,104 @@ export default function FoodOrdersClient() {
     router.replace("/dashboard/orders/food", { scroll: false });
   }, [router]);
 
-  const refreshData = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const refreshData = useCallback(() => {
+    void refetchOrders();
+  }, [refetchOrders]);
 
   const orderCount = total;
+
+  const ROW_HEIGHT = 40;
+
+  const OrdersRow = useCallback(
+    ({ index, style }: { index: number; style?: CSSProperties }) => {
+      const row = orders[index];
+      if (!row) return null;
+
+      const displayId =
+        row.formattedOrderId ??
+        row.orderId ??
+        `GMF${String(row.id ?? "").padStart(6, "0")}`;
+      const publicId = String(displayId).replace(/^#/, "");
+      const routedTo = row.routedToEmail ?? "";
+      const merchantIdDisplay =
+        row.storeId != null && row.storeId !== "" ? row.storeId : null;
+      const localitySource =
+        row.dropAddressNormalized ?? row.dropAddressRaw ?? null;
+      const locality =
+        localitySource != null && localitySource.length > 0
+          ? localitySource.split(",")[0]?.trim() || localitySource
+          : null;
+      const deliverProvider =
+        !row.orderSource || row.orderSource === "internal"
+          ? "GatiMitra"
+          : row.orderSource.charAt(0).toUpperCase() + row.orderSource.slice(1);
+
+      return (
+        <tr
+          key={row.id}
+          className="hover:bg-gray-50"
+          style={style}
+        >
+          <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+            <Link
+              href={`/order/${encodeURIComponent(publicId)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center px-2 py-0.5 rounded font-medium cursor-pointer hover:underline text-[11px]"
+              style={{ backgroundColor: ORDER_TAG_BG, color: ORDER_TAG_TEXT }}
+            >
+              #{publicId}
+            </Link>
+          </td>
+          <td
+            className="px-2 py-1.5 max-w-[200px]"
+            style={{ color: TABLE_TEXT }}
+            title={stageInstructionText || undefined}
+          >
+            {stageInstructionText ? (
+              <span className="text-[11px] font-medium" style={{ color: CHECKMARK_COLOR }}>
+                {stageInstructionText}
+              </span>
+            ) : (
+              <span>—</span>
+            )}
+          </td>
+          <td className="px-2 py-1.5 truncate max-w-[160px]" style={{ color: TABLE_TEXT }}>
+            {routedTo}
+          </td>
+          <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+            {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
+          </td>
+          <td className="px-2 py-1.5" style={{ color: TABLE_TEXT }}>
+            {row.customerName ?? "—"}
+          </td>
+          <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+            {row.customerMobile ?? "—"}
+          </td>
+          <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+            {merchantIdDisplay != null ? merchantIdDisplay : "—"}
+          </td>
+          <td
+            className="px-2 py-1.5 max-w-[140px] truncate"
+            style={{ color: TABLE_TEXT }}
+            title={locality ?? undefined}
+          >
+            {locality ?? "—"}
+          </td>
+          <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
+            {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "—"}
+          </td>
+          <td
+            className="px-2 py-1.5 whitespace-nowrap"
+            style={{ color: TABLE_TEXT }}
+          >
+            {deliverProvider}
+          </td>
+        </tr>
+      );
+    },
+    [orders, stageInstructionText]
+  );
 
   // Helper function to get button styles - prevents hydration mismatch
   const getButtonStyles = (isActive: boolean) => {
@@ -547,7 +730,10 @@ export default function FoodOrdersClient() {
       </div>
 
       {/* Orders Table - compact layout */}
-      <div className="overflow-x-auto" style={{ backgroundColor: CONTENT_BG }}>
+      <div
+        className="overflow-x-auto"
+        style={{ backgroundColor: CONTENT_BG, maxHeight: 400, overflowY: "auto" }}
+      >
         <table className="min-w-full divide-y divide-gray-200 text-[11px]">
           <thead className="bg-gray-100">
             <tr>
@@ -597,88 +783,11 @@ export default function FoodOrdersClient() {
                 </td>
               </tr>
             ) : (
-              orders.map((row) => {
-                const displayId =
-                  row.formattedOrderId ??
-                  row.orderId ??
-                  `GMF${String(row.id ?? "").padStart(6, "0")}`;
-                const publicId = String(displayId).replace(/^#/, "");
-                const routedTo = row.routedToEmail ?? "";
-                const merchantIdDisplay =
-                  row.storeId != null && row.storeId !== ""
-                    ? row.storeId
-                    : null;
-                const localitySource =
-                  row.dropAddressNormalized ?? row.dropAddressRaw ?? null;
-                const locality =
-                  localitySource != null && localitySource.length > 0
-                    ? localitySource.split(",")[0]?.trim() || localitySource
-                    : null;
-                const deliverProvider =
-                  !row.orderSource || row.orderSource === "internal"
-                    ? "GatiMitra"
-                    : row.orderSource.charAt(0).toUpperCase() + row.orderSource.slice(1);
-
-                return (
-                  <tr key={row.id} className="hover:bg-gray-50">
-                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-                      <Link
-                        href={`/order/${encodeURIComponent(publicId)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center px-2 py-0.5 rounded font-medium cursor-pointer hover:underline text-[11px]"
-                        style={{ backgroundColor: ORDER_TAG_BG, color: ORDER_TAG_TEXT }}
-                      >
-                        #{publicId}
-                      </Link>
-                    </td>
-                    <td
-                      className="px-2 py-1.5 max-w-[200px]"
-                      style={{ color: TABLE_TEXT }}
-                      title={stageInstructionText || undefined}
-                    >
-                      {stageInstructionText ? (
-                        <span className="text-[11px] font-medium" style={{ color: CHECKMARK_COLOR }}>
-                          {stageInstructionText}
-                        </span>
-                      ) : (
-                        <span>—</span>
-                      )}
-                    </td>
-                    <td className="px-2 py-1.5 truncate max-w-[160px]" style={{ color: TABLE_TEXT }}>
-                      {routedTo}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-                      {row.createdAt ? new Date(row.createdAt).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-2 py-1.5" style={{ color: TABLE_TEXT }}>
-                      {row.customerName ?? "—"}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-                      {row.customerMobile ?? "—"}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-                      {merchantIdDisplay != null ? merchantIdDisplay : "—"}
-                    </td>
-                    <td
-                      className="px-2 py-1.5 max-w-[140px] truncate"
-                      style={{ color: TABLE_TEXT }}
-                      title={locality ?? undefined}
-                    >
-                      {locality ?? "—"}
-                    </td>
-                    <td className="px-2 py-1.5 whitespace-nowrap" style={{ color: TABLE_TEXT }}>
-                      {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "—"}
-                    </td>
-                    <td
-                      className="px-2 py-1.5 whitespace-nowrap"
-                      style={{ color: TABLE_TEXT }}
-                    >
-                      {deliverProvider}
-                    </td>
-                  </tr>
-                );
-              })
+              <>
+                {orders.map((r, i) => (
+                  <OrdersRow key={r.id ?? i} index={i} />
+                ))}
+              </>
             )}
           </tbody>
         </table>

@@ -1,17 +1,71 @@
 "use client";
 
 import { useState, useEffect, Suspense, useRef } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams, useRouter } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { SummaryCards } from "@/components/customers/SummaryCards";
 import { UserCategoryCards } from "@/components/customers/UserCategoryCards";
-import { AnalyticsCharts } from "@/components/customers/AnalyticsCharts";
-import { ActivityGraphs } from "@/components/customers/ActivityGraphs";
 import { HorizontalFilters } from "@/components/customers/HorizontalFilters";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { useCustomerDashboardStats, DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { Search, AlertCircle } from "lucide-react";
+
+// Lazily load heavy chart components so they don't block initial paint.
+const AnalyticsCharts = dynamic(
+  () => import("@/components/customers/AnalyticsCharts").then((m) => m.AnalyticsCharts),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="space-y-6">
+        <div className="h-6 w-48 bg-gray-200 rounded animate-pulse" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {[1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm min-h-[260px]"
+            >
+              <div className="h-6 w-32 bg-gray-200 rounded animate-pulse mb-4" />
+              <div className="h-40 bg-gray-100 rounded animate-pulse" />
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+  }
+);
+
+const ActivityGraphs = dynamic(
+  () => import("@/components/customers/ActivityGraphs").then((m) => m.ActivityGraphs),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {[1, 2].map((i) => (
+          <div
+            key={i}
+            className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm min-h-[260px]"
+          >
+            <div className="h-6 w-32 bg-gray-200 rounded animate-pulse mb-4" />
+            <div className="h-40 bg-gray-100 rounded animate-pulse" />
+          </div>
+        ))}
+      </div>
+    ),
+  }
+);
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handle);
+  }, [value, delay]);
+
+  return debounced;
+}
 
 function CustomersPageContent() {
   const searchParams = useSearchParams();
@@ -21,10 +75,11 @@ function CustomersPageContent() {
   const [page, setPage] = useState(1);
   const [dashboardFilters, setDashboardFilters] = useState<DashboardStatsFilters>({});
   const prevSearchParamRef = useRef<string | null>(null);
+  const debouncedSearch = useDebouncedValue(search, 500);
 
   // Load filters from localStorage and listen for updates from header
   useEffect(() => {
-    const savedFilters = localStorage.getItem('customerDashboardFilters');
+    const savedFilters = localStorage.getItem("customerDashboardFilters");
     if (savedFilters) {
       try {
         setDashboardFilters(JSON.parse(savedFilters));
@@ -36,9 +91,9 @@ function CustomersPageContent() {
     const handleFilterUpdate = (event: CustomEvent) => {
       setDashboardFilters(event.detail);
     };
-    window.addEventListener('customerFiltersUpdated', handleFilterUpdate as EventListener);
+    window.addEventListener("customerFiltersUpdated", handleFilterUpdate as EventListener);
     return () => {
-      window.removeEventListener('customerFiltersUpdated', handleFilterUpdate as EventListener);
+      window.removeEventListener("customerFiltersUpdated", handleFilterUpdate as EventListener);
     };
   }, []);
 
@@ -63,11 +118,11 @@ function CustomersPageContent() {
   }, [searchParams]);
 
   // Only fetch if super admin OR if there's a search query
-  const shouldFetch = isSuperAdmin || !!search;
+  const shouldFetch = isSuperAdmin || !!debouncedSearch;
   const { data, isLoading, error } = useCustomersQuery({
     page,
     limit: 20,
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     enabled: shouldFetch && !permissionsLoading,
   });
 
@@ -76,10 +131,11 @@ function CustomersPageContent() {
   const {
     data: stats,
     isLoading: statsLoading,
-  } = useCustomerDashboardStats(
-    shouldFetchStats ? dashboardFilters : {},
-    { enabled: shouldFetchStats }
-  );
+  } = useCustomerDashboardStats(shouldFetchStats ? dashboardFilters : {}, {
+    enabled: shouldFetchStats,
+    // Keep previous data for smoothness when filters change.
+    placeholderData: (prev) => prev,
+  });
 
   const handleApplyFilters = () => {
     setFiltersApplied(true);
@@ -87,11 +143,17 @@ function CustomersPageContent() {
 
   // Handle redirect to detail page if search returns single customer (ID/mobile search)
   useEffect(() => {
-    if (search && isCustomerIdOrMobile(search) && data?.customers && data.customers.length === 1 && !isLoading) {
+    if (
+      debouncedSearch &&
+      isCustomerIdOrMobile(debouncedSearch) &&
+      data?.customers &&
+      data.customers.length === 1 &&
+      !isLoading
+    ) {
       const customer = data.customers[0];
       router.replace(`/dashboard/customers/${customer.id}`);
     }
-  }, [search, data, isLoading, router]);
+  }, [debouncedSearch, data, isLoading, router]);
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);

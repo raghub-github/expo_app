@@ -37,6 +37,7 @@ import {
   useLazyGetPayoutQuoteQuery,
   useCreatePayoutRequestMutation,
 } from "@/store/api/merchantStoreApi";
+import { useMerchantWalletRequestsSummaryQuery } from "@/hooks/queries/useMerchantWalletRequestsSummaryQuery";
 
 const LEDGER_CATEGORIES = [
   "ORDER_EARNING",
@@ -198,6 +199,8 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   } = useGetStoreWalletQuery(storeId, {
     skip: !storeId,
   });
+
+  const { data: walletRequestsSummaryData } = useMerchantWalletRequestsSummaryQuery(storeId);
 
   const {
     data: ledgerQueryData,
@@ -844,7 +847,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
         </div>
 
         {/* Wallet adjustment requests */}
-        <WalletRequestsSection storeId={storeId} />
+        <WalletRequestsSection storeId={storeId} summaryCounts={walletRequestsSummaryData?.counts ?? null} />
 
         {/* Filters + Ledger */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">

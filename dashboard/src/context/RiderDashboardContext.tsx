@@ -129,7 +129,12 @@ export function RiderDashboardProvider({ children }: { children: React.ReactNode
     });
   }, []);
 
-  const currentRiderId = state.riders[0]?.id ?? null;
+  // Single source of truth for "selected rider"
+  // Prefer summary.rider.id (used by main rider card), fall back to first rider in list.
+  const currentRiderId =
+    (state.riderSummary?.rider as { id?: number } | null | undefined)?.id ??
+    state.riders[0]?.id ??
+    null;
   const currentRiderInfo = useMemo((): RiderSummaryInfo | null => {
     if (state.riderSummary) return riderSummaryToInfo(state.riderSummary);
     if (state.riders[0]) return riderListEntryToInfo(state.riders[0]);

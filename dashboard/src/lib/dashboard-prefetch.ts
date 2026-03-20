@@ -6,18 +6,30 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { fetchCustomers } from "@/hooks/queries/useCustomersQuery";
+import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
+import { fetchFoodOrders, type OrdersFilters } from "@/app/dashboard/orders/food/FoodOrdersClient";
 
-const defaultTicketsParams = "ticketSection=all&ticketCategory=all&limit=30&offset=0&sortBy=created_at&sortOrder=desc";
+const defaultTicketFilters: TicketFilters = {
+  ticketSection: "all",
+  ticketCategory: "all",
+  sortBy: "created_at",
+  sortOrder: "desc",
+  limit: 30,
+  offset: 0,
+};
 
-async function fetchTicketsList() {
-  const response = await fetch(`/api/tickets?${defaultTicketsParams}`, { credentials: "include" });
-  const data = await response.json();
-  if (!response.ok || !data.success) throw new Error(data.error || "Failed to fetch tickets");
-  return data.data;
-}
+const defaultFoodOrdersFilters: OrdersFilters = {
+  orderType: "food",
+  statusFilter: null,
+  search: "",
+  searchType: "Order Id",
+  page: 1,
+  limit: 20,
+};
 
 export function prefetchDashboardSection(queryClient: QueryClient, href: string): void {
   const path = href.split("?")[0];
+
   if (path === "/dashboard/customers" || path.startsWith("/dashboard/customers")) {
     queryClient.prefetchQuery({
       queryKey: queryKeys.customers.list({}),
@@ -25,10 +37,19 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
     });
     return;
   }
+
   if (path === "/dashboard/tickets" || path.startsWith("/dashboard/tickets")) {
     queryClient.prefetchQuery({
-      queryKey: queryKeys.tickets.list({}),
-      queryFn: fetchTicketsList,
+      queryKey: queryKeys.tickets.list(defaultTicketFilters),
+      queryFn: () => fetchTickets(defaultTicketFilters),
+    });
+    return;
+  }
+
+  if (path === "/dashboard/orders" || path.startsWith("/dashboard/orders")) {
+    queryClient.prefetchQuery({
+      queryKey: queryKeys.ordersCore.foodList(defaultFoodOrdersFilters as Record<string, unknown>),
+      queryFn: () => fetchFoodOrders(defaultFoodOrdersFilters),
     });
     return;
   }

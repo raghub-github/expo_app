@@ -1,19 +1,22 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { memo, useState, useEffect, useMemo, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight } from "lucide-react";
+import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight, User } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { useSessionQuery, useLogout } from "@/hooks/queries/useAuthQuery";
+import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
 import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
+import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
+import { useCurrentRoute } from "@/context/CurrentRouteContext";
+import { useAuth } from "@/providers/AuthProvider";
 
 // Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
@@ -146,15 +149,39 @@ function OrderSearchBar() {
   );
 }
 
-export function Header() {
+const ROUTE_TITLES: Record<string, string> = {
+  "/dashboard": "Home",
+  "/dashboard/customers": "Customers",
+  "/dashboard/riders": "Riders",
+  "/dashboard/merchants": "Merchants",
+  "/dashboard/orders": "Orders",
+  "/dashboard/tickets": "Tickets",
+  "/dashboard/area-managers": "Area Managers",
+  "/dashboard/system": "System",
+  "/dashboard/analytics": "Analytics",
+  "/dashboard/super-admin": "Super Admin",
+};
+
+function HeaderComponent() {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const pageName = useMemo(() => getCurrentPageName(pathname), [pathname]);
-  const isMerchantsArea = pathname.startsWith("/dashboard/merchants");
-  const portal = searchParams.get("portal") || (pathname.startsWith("/dashboard/merchants/stores/") ? "merchant" : "admin");
+  const currentRouteCtx = useCurrentRoute();
+  const effectivePathname = useMemo(() => {
+    const optimistic = currentRouteCtx?.currentRoute;
+    if (!optimistic) return pathname;
+    return optimistic;
+  }, [currentRouteCtx?.currentRoute, pathname]);
+
+  const pageName = useMemo(() => {
+    const clean = effectivePathname.split("?")[0].split("#")[0];
+    if (ROUTE_TITLES[clean]) return ROUTE_TITLES[clean];
+    return getCurrentPageName(clean);
+  }, [effectivePathname]);
+  const isMerchantsArea = effectivePathname.startsWith("/dashboard/merchants");
+  const portal = searchParams.get("portal") || (effectivePathname.startsWith("/dashboard/merchants/stores/") ? "merchant" : "admin");
   const setPortal = (value: "admin" | "merchant") => {
-    if (pathname.startsWith("/dashboard/merchants/stores/")) {
+    if (effectivePathname.startsWith("/dashboard/merchants/stores/")) {
       if (value === "admin") router.push("/dashboard/merchants?portal=admin");
       else {
         const next = new URLSearchParams(searchParams.toString());
@@ -176,15 +203,17 @@ export function Header() {
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNewDropdown, setShowNewDropdown] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showProfileCard, setShowProfileCard] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
-  const { data: sessionData, isLoading } = useSessionQuery();
+  const { user: authUser, authReady } = useAuth();
+  const isLoading = !authReady && !authUser;
   const logoutMutation = useLogout();
   const leftSidebarMobile = useLeftSidebarMobile();
   const rightSidebar = useRightSidebar();
-  const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
+  const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
   const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
@@ -219,11 +248,11 @@ export function Header() {
   }, [showNewDropdown]);
 
   // Extract user info from session
-  const userEmail = sessionData?.session?.user?.email || null;
-  const userMetadata = sessionData?.session?.user?.user_metadata || {};
+  const userEmail = authUser?.email ?? null;
+  const userMetadata = (authUser as any)?.user_metadata || {};
   const userName = userMetadata?.full_name || 
                    userMetadata?.name || 
-                   userEmail?.split('@')[0] || 
+                   (userEmail ? userEmail.split("@")[0] : null) ||
                    null;
 
   // Get avatar URL - check multiple sources
@@ -245,7 +274,7 @@ export function Header() {
 
     if (userEmail) {
       // Check Supabase session user data for avatar (from Google OAuth)
-      const sessionUser = sessionData?.session?.user;
+      const sessionUser = authUser;
       
       if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
         console.log("[Header] User metadata:", userMetadata);
@@ -411,7 +440,7 @@ export function Header() {
     }
 
     return cleanup;
-  }, [userEmail, userMetadata, sessionData]);
+  }, [userEmail, userMetadata, authUser]);
 
   const openLogoutConfirm = () => {
     setShowDropdown(false);
@@ -453,19 +482,19 @@ export function Header() {
         </Link>
         <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate flex-shrink min-w-0">{pageName}</h2>
         {/* Online/Offline/Break toggle + Settings - only on Tickets, always visible when on route */}
-        {pathname.startsWith("/dashboard/tickets") && (
+        {effectivePathname.startsWith("/dashboard/tickets") && (
           <AgentStatusToggle />
         )}
       </div>
 
       {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
-      {pathname.startsWith("/dashboard/orders") ? (
+      {effectivePathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4">
           <OrderSearchBar />
         </div>
-      ) : !pathname.startsWith("/dashboard/tickets") &&
-        pathname !== "/dashboard/area-managers" &&
-        !pathname.startsWith("/dashboard/merchants/verifications") ? (
+      ) : !effectivePathname.startsWith("/dashboard/tickets") &&
+        effectivePathname !== "/dashboard/area-managers" &&
+        !effectivePathname.startsWith("/dashboard/merchants/verifications") ? (
         <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
           <DashboardSearch compact={true} />
         </div>
@@ -494,7 +523,7 @@ export function Header() {
           </div>
         )}
         {/* Global search and + New: only on Tickets dashboard */}
-        {pathname.startsWith("/dashboard/tickets") && (
+        {effectivePathname.startsWith("/dashboard/tickets") && (
           <>
             <div className="w-full min-w-0 max-w-[160px] sm:max-w-[220px] md:max-w-[280px]">
               <GlobalSearch />
@@ -585,10 +614,8 @@ export function Header() {
         <div ref={userMenuRef} className="relative hidden lg:block">
           <button
             type="button"
-            onClick={() => setShowDropdown((prev) => !prev)}
+            onClick={() => setShowProfileCard(true)}
             className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 min-w-0"
-            aria-expanded={showDropdown}
-            aria-haspopup="true"
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
               {userName ? (
@@ -618,25 +645,6 @@ export function Header() {
               </div>
             )}
           </button>
-
-          {showDropdown && (
-            <div
-              className="absolute right-0 top-full mt-1 w-48 rounded-lg border border-gray-200 bg-white shadow-lg ring-1 ring-gray-900/5 py-1 z-[100]"
-              role="menu"
-            >
-              <div className="py-1">
-                <button
-                  type="button"
-                  onClick={openLogoutConfirm}
-                  disabled={logoutMutation.isPending}
-                  className="flex w-full items-center space-x-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <LogOut className="h-4 w-4" />
-                  <span>Sign out</span>
-                </button>
-              </div>
-            </div>
-          )}
 
         </div>
       </div>
@@ -696,6 +704,15 @@ export function Header() {
           </div>
         </div>
       )}
+
+      {/* Floating profile status card */}
+      <ProfileStatusCard
+        open={showProfileCard}
+        onClose={() => setShowProfileCard(false)}
+        onSignOut={openLogoutConfirm}
+      />
     </header>
   );
 }
+
+export const Header = memo(HeaderComponent);

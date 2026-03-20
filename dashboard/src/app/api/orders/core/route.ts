@@ -21,6 +21,8 @@ import {
 } from "@/lib/db/operations/merchant-stores";
 import { getOrderRemarksCount } from "@/lib/db/operations/order-remarks";
 import { getOrderReconsCount } from "@/lib/db/operations/order-recons";
+import { getRedisClient } from "@/lib/redis";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
 
@@ -61,9 +63,12 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const allowed =
-      (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+    const [userIsSuperAdmin, hasOrderAccess] = await Promise.all([
+      isSuperAdmin(user.id, user.email ?? ""),
+      hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"),
+    ]);
+
+    const allowed = userIsSuperAdmin || hasOrderAccess;
 
     if (!allowed) {
       return NextResponse.json(
@@ -99,7 +104,7 @@ export async function GET(request: NextRequest) {
       Math.max(1, parseInt(searchParams.get("limit") || "20", 10))
     );
 
-    const result = await listOrdersCore({
+    const listParams = {
       page,
       limit,
       id: id != null && Number.isFinite(id) ? id : undefined,
@@ -107,9 +112,77 @@ export async function GET(request: NextRequest) {
       searchType,
       statusFilter,
       orderType,
-      sortBy: "created_at",
-      sortOrder: "desc",
-    });
+      sortBy: "created_at" as const,
+      sortOrder: "desc" as const,
+    };
+
+    const redis = getRedisClient();
+    const cacheKey = user?.id ? `orders_core:${user.id}:${JSON.stringify(listParams)}` : null;
+    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
+
+    if (cacheKey) {
+      const cached = getCached<Awaited<ReturnType<typeof listOrdersCore>>>(cacheKey);
+      if (cached) {
+        const storeIds = await getStoreIdsByInternalIds(
+          cached.orders
+            .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
+            .filter((id): id is number => id != null && Number.isFinite(id))
+        );
+
+        const data = cached.orders.map((order) => {
+          const o = order as { merchantStoreId?: number | null };
+          const storeIdDisplay = o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
+          return { ...order, storeId: storeIdDisplay };
+        });
+
+        return NextResponse.json({
+          success: true,
+          data,
+          pagination: {
+            page: cached.page,
+            limit: cached.limit,
+            total: cached.total,
+          },
+        });
+      }
+    }
+
+    if (redis && cacheKey) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as Awaited<ReturnType<typeof listOrdersCore>>;
+          // Populate memory cache too for immediate follow-up navigations.
+          setCached(cacheKey, parsed, MEMORY_TTL_MS);
+
+          const storeIds = await getStoreIdsByInternalIds(
+            parsed.orders
+              .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
+              .filter((id): id is number => id != null && Number.isFinite(id))
+          );
+          const data = parsed.orders.map((order) => {
+            const o = order as { merchantStoreId?: number | null };
+            const storeIdDisplay =
+              o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
+            return { ...order, storeId: storeIdDisplay };
+          });
+
+          return NextResponse.json({
+            success: true,
+            data,
+            pagination: {
+              page: parsed.page,
+              limit: parsed.limit,
+              total: parsed.total,
+            },
+          });
+        }
+      } catch {
+        // ignore cache read errors
+      }
+    }
+
+    const result = await listOrdersCore(listParams);
 
     const storeIds = await getStoreIdsByInternalIds(
       result.orders
@@ -161,6 +234,18 @@ export async function GET(request: NextRequest) {
         if (etaBreach != null) {
           data = [{ ...data[0], etaBreachedAt: etaBreach.etaBreachedAt, etaBreachedTimelineId: etaBreach.etaBreachedTimelineId }];
         }
+      }
+    }
+
+    if (cacheKey) {
+      setCached(cacheKey, result, MEMORY_TTL_MS);
+    }
+
+    if (redis && cacheKey) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(result), "EX", 30);
+      } catch {
+        // ignore cache write errors
       }
     }
 

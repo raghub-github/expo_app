@@ -1,11 +1,30 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, MapPin } from "lucide-react";
-import { ServicePointsMap } from "@/components/map/ServicePointsMap";
+import dynamic from "next/dynamic";
 import { ServicePointForm } from "@/components/map/ServicePointForm";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
 import { queryKeys } from "@/lib/queryKeys";
+
+const ServicePointsMap = dynamic(
+  () => import("@/components/map/ServicePointsMap").then((m) => m.ServicePointsMap),
+  {
+    // Map is heavy and below the fold; show a lightweight placeholder while it loads.
+    loading: () => (
+      <div className="relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm h-full w-full">
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
+          <div className="text-center">
+            <p className="text-gray-500">Loading map…</p>
+            <p className="text-gray-400 text-xs mt-2">Preparing service points</p>
+          </div>
+        </div>
+      </div>
+    ),
+    ssr: false,
+  }
+);
 
 /**
  * Home page: only this page's APIs run when user opens Home from sidebar.
@@ -14,7 +33,13 @@ import { queryKeys } from "@/lib/queryKeys";
 export default function DashboardHome() {
   const queryClient = useQueryClient();
   const { data: userPerms, error, isError } = usePermissionsQuery();
-  const isSuperAdmin = userPerms?.isSuperAdmin ?? false;
+  const [hasMounted, setHasMounted] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  const isSuperAdmin = hasMounted && (userPerms?.isSuperAdmin ?? false);
 
   const handleRetry = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });

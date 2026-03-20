@@ -61,6 +61,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
     errorMessage?: string;
   }) => {
     try {
+      if (process.env.NODE_ENV === "development") return;
       if (typeof window === "undefined") return;
       void fetch("/api/audit/track", {
         method: "POST",

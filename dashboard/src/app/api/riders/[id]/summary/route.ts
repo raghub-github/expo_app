@@ -10,6 +10,8 @@ import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHisto
 import { eq, and, or, desc, gte, lte, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getRedisClient } from "@/lib/redis";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = 'nodejs';
 
@@ -108,6 +110,42 @@ export async function GET(
     };
 
     const db = getDb();
+    const redis = getRedisClient();
+
+    // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
+    // recalculating heavy aggregates on quick tab switches.
+    const riderIdParam = await params;
+    const riderIdRaw = riderIdParam.id;
+    const riderId = parseInt(riderIdRaw);
+    if (isNaN(riderId)) {
+      return NextResponse.json(
+        { success: false, error: "Invalid rider ID" },
+        { status: 400 }
+      );
+    }
+
+    const cacheKey = riderId ? `rider_summary:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
+
+    if (cacheKey) {
+      const cached = getCached<unknown>(cacheKey);
+      if (cached) {
+        return NextResponse.json(cached);
+      }
+    }
+
+    if (redis && cacheKey) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as unknown;
+          setCached(cacheKey, parsed, MEMORY_TTL_MS);
+          return NextResponse.json(parsed);
+        }
+      } catch {
+        // ignore cache read errors
+      }
+    }
 
     // Get rider basic info
     const [rider] = await db
@@ -576,7 +614,7 @@ export async function GET(
       }
     });
 
-    return NextResponse.json({
+    const payload = {
       success: true,
       data: {
         rider: {
@@ -705,7 +743,21 @@ export async function GET(
         orderMetrics,
         onboardingFees,
       },
-    });
+    } as const;
+
+    if (cacheKey) {
+      setCached(cacheKey, payload, MEMORY_TTL_MS);
+    }
+
+    if (redis && cacheKey) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(payload), "EX", 30);
+      } catch {
+        // ignore cache write errors
+      }
+    }
+
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("[GET /api/riders/[id]/summary] Error:", error);
     return NextResponse.json(

@@ -11,7 +11,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isSuperAdmin, hasDashboardAccessByAuth, getSystemUserIdFromAuthUser } from "@/lib/permissions/engine";
-import { assignAreaManagersToParent, listAssignedAreaManagers, removeAreaManagerAssignment } from "@/lib/db/operations/parent-area-managers";
+import {
+  assignAreaManagersToParent,
+  countDistinctAssignedAreaManagersForParent,
+  listAssignedAreaManagers,
+  removeAreaManagerAssignment,
+} from "@/lib/db/operations/parent-area-managers";
 
 export const runtime = "nodejs";
 
@@ -55,7 +60,8 @@ export async function GET(request: NextRequest) {
     }
 
     const items = await listAssignedAreaManagers(parentId, storeInternalId);
-    return NextResponse.json({ success: true, items, count: items.length });
+    const parentDistinctAmCount = await countDistinctAssignedAreaManagersForParent(parentId);
+    return NextResponse.json({ success: true, items, count: items.length, parentAssignedAmsCount: parentDistinctAmCount });
   } catch (e) {
     console.error("[GET /api/admin/parent-area-managers]", e);
     return NextResponse.json({ success: false, error: "Failed to load assigned area managers" }, { status: 500 });

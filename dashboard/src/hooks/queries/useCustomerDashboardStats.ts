@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { DashboardStats } from "@/lib/db/operations/customer-stats";
+import { useAuthOptional } from "@/providers/AuthProvider";
 
 interface DashboardStatsResponse {
   success: boolean;
@@ -50,11 +51,21 @@ export function useCustomerDashboardStats(
   filters: DashboardStatsFilters = {},
   options?: { enabled?: boolean }
 ) {
+  const auth = useAuthOptional();
+  const sessionUser = auth?.user;
+  const permissions = auth?.permissions;
+  const authReady = auth?.authReady ?? false;
+  const isAllowed = Boolean(authReady && sessionUser && permissions);
+
   return useQuery({
     queryKey: queryKeys.customers.stats(filters),
     queryFn: () => fetchDashboardStats(filters),
-    enabled: options?.enabled !== false,
+    enabled: isAllowed && options?.enabled !== false,
     ...getCacheConfig(CacheTier.LOW), // Stats are low frequency, can cache longer
     staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    // Keep previous data during refetch to avoid UI flicker on filter changes.
+    placeholderData: (prev) => prev,
   });
 }

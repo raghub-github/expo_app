@@ -162,15 +162,31 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
 
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
 
-  // Don't show right sidebar if not in a specific dashboard
-  if (!isInSpecificDashboard || !currentSubRoutes.length) {
+  const isRiderDashboard =
+    cleanPathname === "/dashboard/riders" ||
+    cleanPathname.startsWith("/dashboard/riders/");
+
+  const selectedRiderSearch = (searchParams.get("search") || "").trim();
+
+  // Debug: verify when selected rider is available for sidebar decisions.
+  if (isRiderDashboard) {
+    // eslint-disable-next-line no-console
+    console.log("RightSidebar - selectedRiderSearch:", selectedRiderSearch);
+  }
+
+  // Don't show right sidebar if not in a specific dashboard.
+  // For rider dashboard, allow sidebar even when there are no sub-routes,
+  // but only after a rider search value is present.
+  if (
+    !isInSpecificDashboard ||
+    (!isRiderDashboard && !currentSubRoutes.length) ||
+    (isRiderDashboard && !selectedRiderSearch)
+  ) {
     return null;
   }
 
-  // Keep selected rider across rider dashboard sub-routes (use GMR{id} so URL is stable and refresh restores)
-  const isRiderDashboard = cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
-  const selectedRiderSearch = (searchParams.get("search") || "").trim();
-  const selectedRiderId = selectedRiderSearch || (riderCtx?.currentRiderId != null ? `GMR${riderCtx.currentRiderId}` : "");
+  // Keep selected rider across rider dashboard sub-routes (use GMR{id} from URL so refresh restores)
+  const selectedRiderId = selectedRiderSearch;
   const appendRiderSearch = (href: string) => {
     if (!isRiderDashboard) return href;
     if (!selectedRiderId) return href;
@@ -196,7 +212,8 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
         />
       )}
       <aside
-        className={`fixed inset-y-0 z-40 flex h-screen flex-col shadow-xl transition-[transform,width] duration-300 ease-out
+        className={`fixed top-0 bottom-0 z-40 flex flex-col shadow-xl transition-[transform,width] duration-300 ease-out
+          lg:top-14
           ${isOpen ? "w-56" : "w-14"}
           max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}
           lg:translate-x-0`}

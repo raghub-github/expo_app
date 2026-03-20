@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
+import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
 
 const OTP_LENGTH = 8;
 
@@ -143,6 +144,32 @@ export default function LoginPage() {
           setError(errorMessage);
           setLoading(false);
           return;
+        }
+
+        // Preload dashboard bootstrap payload before we navigate so the dashboard
+        // can render from cache instantly on first paint, then revalidate in the background.
+        try {
+          const bootstrapResponse = await fetch("/api/auth/bootstrap", {
+            credentials: "include",
+            cache: "no-store",
+          });
+          const text = await bootstrapResponse.text();
+          const isJson = (bootstrapResponse.headers.get("content-type") ?? "").includes("application/json");
+          if (bootstrapResponse.ok && isJson && text.trim()) {
+            const parsed = safeParseJson<{
+              success: boolean;
+              data?: {
+                session: { user: Record<string, unknown> };
+                permissions: unknown;
+                dashboardAccess: unknown;
+              };
+            }>(text, "");
+            if (parsed?.success && parsed.data) {
+              saveBootstrapToStorage(parsed.data);
+            }
+          }
+        } catch {
+          // Ignore bootstrap preload errors; dashboard will fall back to network.
         }
 
         // Full navigation so the next request has cookies and middleware sees the session

@@ -263,6 +263,8 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       }
       const items = (json.items as AssignedAreaManagerInfo[]) ?? [];
       setAssignedForSelected(items);
+      const overallCount =
+        typeof json.parentAssignedAmsCount === "number" ? json.parentAssignedAmsCount : items.length;
 
       // Keep "Assigned AMs" count in the search results in sync with latest assignments.
       setSearchResults((prev) =>
@@ -270,12 +272,8 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
           r.parent_id === parentId
             ? {
                 ...r,
-                // Use the current assigned list length as the canonical count for UI.
-                assigned_ams_count: items.length,
-                // Direct AM flags are no longer needed for the selected row once we have the full list.
-                ...(r.kind === "parent"
-                  ? { parent_direct_am_id: null }
-                        : { store_direct_am_id: null }),
+                // Always update the parent-level distinct AM count, not the store-scoped count.
+                assigned_ams_count: overallCount,
               }
             : r
         )
@@ -521,16 +519,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       ? r.city || r.registered_phone
                       : r.city || r.parent_merchant_id;
                   const typeLabel = r.kind === "parent" ? "Parent" : "Child Store";
-                  const fromParentTable = r.assigned_ams_count ?? 0;
-                  const directAm =
-                    r.kind === "parent"
-                      ? r.parent_direct_am_id
-                        ? 1
-                        : 0
-                      : r.store_direct_am_id
-                      ? 1
-                      : 0;
-                  const assignedCount = fromParentTable + directAm;
+                  const assignedCount = r.assigned_ams_count ?? 0;
                   return (
                     <div
                       key={`${r.kind}-${r.kind === "parent" ? r.parent_id : r.store_internal_id}`}

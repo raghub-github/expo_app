@@ -320,6 +320,17 @@ export async function listAssignedAreaManagers(
   }));
 }
 
+export async function countDistinctAssignedAreaManagersForParent(parentId: number): Promise<number> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT COUNT(DISTINCT area_manager_id)::integer AS assigned_ams_count
+    FROM parent_area_managers
+    WHERE parent_id = ${parentId}
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return Number(row?.assigned_ams_count ?? 0);
+}
+
 export async function searchParentsAndStores(termRaw: string, limit = 20): Promise<ParentOrChildSearchResult[]> {
   const sql = getSql();
   const term = termRaw.trim();

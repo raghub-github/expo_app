@@ -206,6 +206,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     requestMethod?: string;
   }) => {
     try {
+      if (process.env.NODE_ENV === "development") return;
       if (typeof window === "undefined") return;
       void fetch("/api/audit/track", {
         method: "POST",
@@ -1894,11 +1895,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         createPortal(
           <div
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
-            onClick={() => {
-              setShowAddModal(false);
-              setAddForm(defaultItemFormData);
-              setImagePreview("");
-            }}
           >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
@@ -1934,7 +1930,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         createPortal(
           <div
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
-            onClick={() => setShowEditModal(false)}
           >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm

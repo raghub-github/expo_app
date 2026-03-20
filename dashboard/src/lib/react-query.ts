@@ -5,16 +5,17 @@ import { createPersister } from "./query-persistence";
  * QueryClient configuration with optimal defaults for smooth loading and updates:
  * - Keep previous data visible while refetching (no flash of empty state)
  * - Smart caching and persistence (see cache-strategies.ts)
- * - Refetch on reconnect so data stays fresh after network restore
+ * - 10 minute stale window so cached dashboard data is reused on navigation
+ * - 30 minute cache window so inactive tabs can resume instantly
  */
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 5 * 60 * 1000, // 5 minutes default
-      gcTime: 10 * 60 * 1000, // 10 minutes default (formerly cacheTime)
+      staleTime: 10 * 60 * 1000, // 10 minutes default
+      gcTime: 30 * 60 * 1000, // 30 minutes default (formerly cacheTime)
       refetchOnWindowFocus: false,
       refetchOnMount: false,
-      refetchOnReconnect: true,
+      refetchOnReconnect: false,
       // Keep previous data visible during refetch for smooth, non-jarring updates
       placeholderData: (previousData) => previousData,
       retry: 1,
