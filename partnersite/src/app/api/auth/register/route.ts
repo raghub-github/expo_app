@@ -15,15 +15,15 @@ function getSupabaseAdmin() {
 
 const MERCHANT_TYPE_VALUES = ["LOCAL", "BRAND", "CHAIN", "FRANCHISE"] as const;
 
-/** Upload parent logo to R2 under docs/merchants/{parent_code}/logo and return storable URL (proxy format) for merchant_parents.store_logo. */
+/** Upload parent logo to R2 under `docs/merchants/{merchant_parents.id}/logo`. */
 async function uploadParentLogoToR2(
   file: File,
-  parentMerchantId: string
+  parentPrimaryKey: number
 ): Promise<string | null> {
   const ext = (file.name.split(".").pop() || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
   const baseName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9.-]/g, "_").slice(0, 80) || "logo";
   const fileName = `${Date.now()}_${baseName}.${ext}`;
-  const key = getParentLogoKey(parentMerchantId, fileName);
+  const key = getParentLogoKey(parentPrimaryKey, fileName);
   await uploadToR2(file, key);
   return toStoredDocumentUrl(key) ?? key;
 }
@@ -194,11 +194,6 @@ export async function POST(request: NextRequest) {
     }
     const parent_merchant_id = `GMMP${nextNum}`;
 
-    let store_logo_url: string | null = null;
-    if (store_logo_file) {
-      store_logo_url = await uploadParentLogoToR2(store_logo_file, parent_merchant_id) ?? null;
-    }
-
     const { data: insertData, error: insertError } = await db
       .from("merchant_parents")
       .insert({
@@ -219,7 +214,7 @@ export async function POST(request: NextRequest) {
         city: city && String(city).trim() ? String(city).trim() : null,
         state: state && String(state).trim() ? String(state).trim() : null,
         pincode: pincode && String(pincode).trim() ? String(pincode).trim() : null,
-        store_logo: store_logo_url,
+        store_logo: null,
         created_by_name: String(owner_name).trim(),
         supabase_user_id: email_user_id,
       })
@@ -232,6 +227,20 @@ export async function POST(request: NextRequest) {
         { success: false, error: "Registration failed. Please try again." },
         { status: 500 }
       );
+    }
+
+    let store_logo_url: string | null = null;
+    if (store_logo_file && insertData?.id != null) {
+      store_logo_url = await uploadParentLogoToR2(store_logo_file, insertData.id) ?? null;
+      if (store_logo_url) {
+        const { error: logoErr } = await db
+          .from("merchant_parents")
+          .update({ store_logo: store_logo_url })
+          .eq("id", insertData.id);
+        if (logoErr) {
+          console.warn("[auth/register] store_logo update failed:", logoErr);
+        }
+      }
     }
 
     return NextResponse.json({

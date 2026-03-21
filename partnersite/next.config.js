@@ -4,9 +4,9 @@ const path = require("path");
 const nextConfig = {
   output: 'standalone',
   reactCompiler: true,
-  turbopack: {
-    // Explicitly set root to current directory to avoid resolving from parent
-    root: __dirname,
+  // Default 10MB truncates large JSON bodies (e.g. progress saves); register-store-progress needs headroom.
+  experimental: {
+    proxyClientMaxBodySize: '32mb',
   },
   images: {
     remotePatterns: [

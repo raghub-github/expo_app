@@ -1,4 +1,4 @@
-import { getR2SignedUrl, extractR2KeyFromUrl } from "@/lib/r2";
+import { getR2SignedUrl, extractR2KeyFromUrl, deleteFromR2, normalizeMerchantStoreMediaUrl } from "@/lib/r2";
 
 /** Deep merge patch into target (for form_data). Ensures edits to one step don't wipe others; arrays and primitives from patch replace. */
 export function deepMergeFormData(
@@ -343,13 +343,23 @@ export async function upsertStoreDraft(
     return null;
   }
 
+  // Compose: Flat/Unit No + Floor/Tower + Building/Complex Name + Full Address
+  const composedFullAddress = [
+    step2?.unit_number,
+    step2?.floor_number,
+    step2?.building_name,
+    step2?.full_address,
+  ]
+    .filter((part: unknown) => typeof part === "string" && (part as string).trim().length > 0)
+    .join(", ") || step2.full_address;
+
   const draftPayload = {
     store_name: step1.store_name,
     store_display_name: step1.store_display_name || null,
     store_description: step1.store_description || null,
     store_email: step1.store_email || null,
     store_phones: step1.store_phones || [],
-    full_address: step2.full_address,
+    full_address: composedFullAddress,
     landmark: step2.landmark || null,
     city: step2.city,
     state: step2.state,
@@ -432,5 +442,176 @@ export async function upsertStoreDraft(
     storeDbId: data.id as number,
     storePublicId: data.store_id as string,
   };
+}
+
+type Step5Supabase = {
+  from: (table: string) => {
+    select: (columns: string) => {
+      eq: (col: string, val: unknown) => { maybeSingle: () => Promise<{ data: unknown; error: unknown }> };
+    };
+    update: (row: Record<string, unknown>) => {
+      eq: (col: string, val: unknown) => Promise<{ error: { message?: string; code?: string } | null }>;
+    };
+  };
+};
+
+/**
+ * Writes onboarding step 5 fields to merchant_stores.
+ * Schema-aligned: banner_url, gallery_images, cuisine_types, delivery_radius_km, prep/min order, payment toggles, current_onboarding_step.
+ * Omits logo_url / food_categories (dropped from DB). Logo stays in registration progress JSON only.
+ */
+export async function syncMerchantStoreFromStep5(
+  db: Step5Supabase,
+  storeDbId: number,
+  s5: Record<string, unknown>,
+  normalizedNextStep: number
+): Promise<void> {
+  const MIN_DELIVERY_RADIUS_KM = 1;
+  const MAX_DELIVERY_RADIUS_KM = 8;
+
+  const parseFiniteNumber = (v: unknown): number | null => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "") {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+
+  const isSerializedUploadFile = (v: unknown) =>
+    v != null &&
+    typeof v === "object" &&
+    !Array.isArray(v) &&
+    typeof (v as { name?: unknown }).name === "string" &&
+    typeof (v as { size?: unknown }).size === "number";
+
+  const { data: prevRaw } = await db
+    .from("merchant_stores")
+    .select("banner_url, gallery_images")
+    .eq("id", storeDbId)
+    .maybeSingle();
+
+  const prevStoreRow = prevRaw as { banner_url?: string | null; gallery_images?: string[] | null } | null;
+
+  const pickMedia = (urlKey: string, previewKey: string): string | null => {
+    const u = s5[urlKey];
+    const p = s5[previewKey];
+    const raw =
+      (typeof u === "string" && u.trim() ? u : null) ||
+      (typeof p === "string" && p.trim() ? p : null) ||
+      "";
+    const t = raw.trim();
+    if (!t || t.startsWith("data:") || t.startsWith("blob:")) return null;
+    return normalizeMerchantStoreMediaUrl(t);
+  };
+
+  let bannerUrlStored = pickMedia("banner_url", "banner_preview");
+  const fromGalleryUrls = Array.isArray(s5.gallery_image_urls) ? (s5.gallery_image_urls as unknown[]) : [];
+  const fromGalleryPreviews = Array.isArray(s5.gallery_previews) ? (s5.gallery_previews as unknown[]) : [];
+  const rawGalleryList: unknown[] =
+    fromGalleryUrls.length > 0 ? fromGalleryUrls : fromGalleryPreviews.length > 0 ? fromGalleryPreviews : [];
+  let galleryUrlsForStore: string[] = rawGalleryList
+    .filter((x): x is string => typeof x === "string" && !!x.trim() && !x.startsWith("data:") && !x.startsWith("blob:"))
+    .map((u) => normalizeMerchantStoreMediaUrl(u.trim()))
+    .filter((u): u is string => !!u);
+
+  if (!bannerUrlStored && prevStoreRow?.banner_url && !isSerializedUploadFile(s5.banner)) {
+    bannerUrlStored = normalizeMerchantStoreMediaUrl(String(prevStoreRow.banner_url));
+  }
+
+  const galleryHadPayload =
+    (Array.isArray(s5.gallery_image_urls) && (s5.gallery_image_urls as unknown[]).length > 0) ||
+    (Array.isArray(s5.gallery_previews) && (s5.gallery_previews as unknown[]).length > 0);
+  const galleryHasPendingFile =
+    Array.isArray(s5.gallery_images) &&
+    (s5.gallery_images as unknown[]).some((x) => isSerializedUploadFile(x));
+
+  if (
+    galleryUrlsForStore.length === 0 &&
+    galleryHadPayload &&
+    !galleryHasPendingFile &&
+    Array.isArray(prevStoreRow?.gallery_images) &&
+    prevStoreRow.gallery_images.length > 0
+  ) {
+    galleryUrlsForStore = prevStoreRow.gallery_images
+      .map((u) => normalizeMerchantStoreMediaUrl(String(u).trim()))
+      .filter((u): u is string => !!u);
+  }
+
+  const mediaKeysToDelete: string[] = [];
+  const diffMedia = (oldVal: unknown, newVal: string | null | undefined) => {
+    if (!oldVal || typeof oldVal !== "string") return;
+    const oldUrl = oldVal.trim();
+    if (!oldUrl) return;
+    const oldKey = extractR2KeyFromUrl(oldUrl);
+    if (!oldKey) return;
+    const newUrl = typeof newVal === "string" ? newVal.trim() : "";
+    const newKey =
+      typeof newVal === "string"
+        ? extractR2KeyFromUrl(newVal) || (newVal.includes("://") ? null : newVal.replace(/^\/+/, ""))
+        : null;
+    const nowEmpty = !newUrl;
+    const replaced = !!newUrl && (!newKey || newKey !== oldKey);
+    if (nowEmpty || replaced) mediaKeysToDelete.push(oldKey);
+  };
+
+  if (prevStoreRow) {
+    diffMedia(prevStoreRow.banner_url, bannerUrlStored);
+    const prevGallery: string[] = Array.isArray(prevStoreRow.gallery_images) ? prevStoreRow.gallery_images : [];
+    const newKeys = new Set(
+      galleryUrlsForStore
+        .map((u) => extractR2KeyFromUrl(u) || (u.includes("://") ? null : u.replace(/^\/+/, "")))
+        .filter((k): k is string => !!k)
+    );
+    for (const url of prevGallery) {
+      if (!url || typeof url !== "string") continue;
+      const key = extractR2KeyFromUrl(url) || (url.includes("://") ? null : url.replace(/^\/+/, ""));
+      if (key && !newKeys.has(key)) mediaKeysToDelete.push(key);
+    }
+  }
+
+  const cuisineRaw = s5.cuisine_types;
+  const cuisine_types = Array.isArray(cuisineRaw)
+    ? cuisineRaw.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    : [];
+
+  let prepMin = parseFiniteNumber(s5.avg_preparation_time_minutes);
+  if (prepMin == null || prepMin <= 0) prepMin = 30;
+  let minOrder = parseFiniteNumber(s5.min_order_amount);
+  if (minOrder == null || minOrder < 0) minOrder = 0;
+  const drParsed = parseFiniteNumber(s5.delivery_radius_km);
+  const delivery_radius_km =
+    drParsed != null
+      ? Math.min(MAX_DELIVERY_RADIUS_KM, Math.max(MIN_DELIVERY_RADIUS_KM, drParsed))
+      : null;
+
+  const row: Record<string, unknown> = {
+    cuisine_types,
+    avg_preparation_time_minutes: prepMin,
+    min_order_amount: minOrder,
+    delivery_radius_km,
+    is_pure_veg: !!s5.is_pure_veg,
+    accepts_online_payment: s5.accepts_online_payment !== false,
+    accepts_cash: s5.accepts_cash !== false,
+    banner_url: bannerUrlStored,
+    current_onboarding_step: normalizedNextStep,
+  };
+  if (galleryUrlsForStore.length > 0 || !galleryHasPendingFile) {
+    row.gallery_images = galleryUrlsForStore;
+  }
+
+  const { error } = await db.from("merchant_stores").update(row).eq("id", storeDbId);
+  if (error) {
+    console.error("[register-store-progress] merchant_stores step5 sync failed:", error);
+    return;
+  }
+
+  for (const key of mediaKeysToDelete) {
+    try {
+      await deleteFromR2(key);
+    } catch (e) {
+      console.warn("[register-store-progress] R2 delete store media failed:", key, e);
+    }
+  }
 }
 

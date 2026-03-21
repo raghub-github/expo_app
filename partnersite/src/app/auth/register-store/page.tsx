@@ -2,6 +2,12 @@
 // Utility to safely display numeric values in input fields
 const safeNumberInput = (val: number | null | undefined) => (typeof val === 'number' && !isNaN(val) ? val : '');
 
+const MIN_STORE_DELIVERY_RADIUS_KM = 1;
+const MAX_STORE_DELIVERY_RADIUS_KM = 8;
+function clampStoreDeliveryRadiusKm(v: number): number {
+  return Math.min(MAX_STORE_DELIVERY_RADIUS_KM, Math.max(MIN_STORE_DELIVERY_RADIUS_KM, v));
+}
+
 import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import axios from 'axios';
@@ -17,7 +23,102 @@ import OnboardingPlansPage from './plans';
 import AgreementContractPage from './agreement';
 import SignatureStepPage from './signature';
 import { MERCHANT_PARTNERSHIP_TERMS } from './terms-and-conditions';
-import { getOnboardingR2Path } from '@/lib/r2-paths';
+import {
+  getOnboardingR2Path,
+  getOnboardingDocumentPath,
+  getOnboardingDocumentsPath,
+  getOnboardingBankPath,
+  getOnboardingAssetsBannerPath,
+  getOnboardingAssetsGalleryPath,
+  type R2OnboardingDocType,
+} from '@/lib/r2-paths';
+
+function onboardingDocTypeForUploadKey(fieldKey: string): R2OnboardingDocType {
+  switch (fieldKey) {
+    case 'pan_image':
+      return 'PAN';
+    case 'aadhar_front':
+    case 'aadhar_back':
+      return 'AADHAAR';
+    case 'fssai_image':
+      return 'FSSAI';
+    case 'gst_image':
+      return 'GST';
+    case 'drug_license_image':
+    case 'pharmacist_certificate':
+    case 'pharmacy_council_registration':
+      return 'PHARMA';
+    default:
+      return 'OTHER';
+  }
+}
+
+/** Preserve file extension in R2 object names (Content-Type + UI preview heuristics). */
+function extensionFromUploadFile(file: File): string {
+  const n = file.name || '';
+  const dot = n.lastIndexOf('.');
+  if (dot >= 0 && dot < n.length - 1) {
+    const ext = n.slice(dot + 1).toLowerCase();
+    if (/^[a-z0-9]{1,8}$/.test(ext)) return `.${ext}`;
+  }
+  const t = (file.type || '').toLowerCase();
+  if (t === 'image/jpeg' || t === 'image/jpg') return '.jpg';
+  if (t === 'image/png') return '.png';
+  if (t === 'image/webp') return '.webp';
+  if (t === 'image/gif') return '.gif';
+  if (t === 'application/pdf') return '.pdf';
+  return '';
+}
+
+/**
+ * Single canonical stored URL for onboarding docs: `/api/attachments/proxy?key=<object key>`.
+ * Never double-wrap when `uploadToR2` already returned a proxy URL or a presigned https URL.
+ */
+function proxyUrlForDocumentUploadResult(uploadResult: string): string {
+  const s = String(uploadResult || '').trim();
+  if (!s) return s;
+  if (s.startsWith('/api/attachments/proxy')) return s;
+  if (!s.includes('://')) {
+    return `/api/attachments/proxy?key=${encodeURIComponent(s.replace(/^\/+/, ''))}`;
+  }
+  try {
+    const u = new URL(s);
+    const path = u.pathname.replace(/^\/+/, '');
+    if (!path) return s;
+    const h = u.hostname.toLowerCase();
+    if (h.endsWith('.r2.dev') || h.endsWith('.r2.cloudflarestorage.com')) {
+      const pl = path.toLowerCase();
+      const docIdx = pl.indexOf('docs/merchants/');
+      if (docIdx >= 0) return `/api/attachments/proxy?key=${encodeURIComponent(path.slice(docIdx))}`;
+      const merMatch = path.match(/(^|\/)(merchants\/[^/]+\/(?:stores|draft)\/.+)/i);
+      if (merMatch?.[2]) return `/api/attachments/proxy?key=${encodeURIComponent(merMatch[2])}`;
+      const slash = path.indexOf('/');
+      if (slash > 0) {
+        const rest = path.slice(slash + 1);
+        if (rest.toLowerCase().startsWith('docs/merchants/') || /^merchants\/[^/]+\//i.test(rest)) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(rest)}`;
+        }
+      }
+      return `/api/attachments/proxy?key=${encodeURIComponent(path)}`;
+    }
+  } catch {
+    /* ignore */
+  }
+  return s;
+}
+
+/** R2 uses `merchant_parents.id` (PK), not `parent_merchant_id` (GMMP…). */
+function resolveR2ParentPrimaryKey(
+  parentInfo: { id: number | null } | null,
+  searchParams: { get: (k: string) => string | null } | null | undefined
+): number {
+  if (parentInfo?.id != null) return parentInfo.id;
+  const q = searchParams?.get('parent_id')?.trim();
+  if (q && /^\d+$/.test(q)) return Number(q);
+  throw new Error(
+    'Parent account id is missing for file upload. Wait for profile to load or open your registration link again.'
+  );
+}
 
 const StoreLocationMapboxGL = dynamic(() => import('@/components/StoreLocationMapboxGL'), { ssr: false });
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || '';
@@ -86,7 +187,7 @@ interface StoreSetupData {
   food_categories: string[];
   avg_preparation_time_minutes: number;
   min_order_amount: number;
-  delivery_radius_km: number;
+  delivery_radius_km: number | '';
   is_pure_veg: boolean;
   accepts_online_payment: boolean;
   accepts_cash: boolean;
@@ -113,13 +214,7 @@ const StoreRegistrationForm = () => {
   const setStep = useCallback((newStep: number | ((prev: number) => number)) => {
     setStepState((prev) => {
       const next = typeof newStep === 'function' ? newStep(prev) : newStep;
-      const clamped = Math.min(Math.max(next, 1), 9);
-      // Only save to localStorage if step was manually changed (not during hydration)
-      // This prevents localStorage from overriding DB step on refresh
-      if (typeof window !== 'undefined' && stepRestoredRef.current) {
-        localStorage.setItem('registerStoreCurrentStep', String(clamped));
-      }
-      return clamped;
+      return Math.min(Math.max(next, 1), 9);
     });
   }, []);
   const [isClient, setIsClient] = useState(false);
@@ -233,8 +328,9 @@ const StoreRegistrationForm = () => {
   const [menuUploadedPdfUrl, setMenuUploadedPdfUrl] = useState<string | null>(null);
   const [menuUploadedPdfFileName, setMenuUploadedPdfFileName] = useState<string | null>(null);
   const [menuUploadIds, setMenuUploadIds] = useState<number[]>([]);
+  const [menuImageEntryIds, setMenuImageEntryIds] = useState<string[]>([]);
+  const [menuImageUploading, setMenuImageUploading] = useState(false);
   const [menuUploadError, setMenuUploadError] = useState('');
-  const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
   const [confirmModal, setConfirmModal] = useState<{
     title: string;
     message: string;
@@ -316,6 +412,11 @@ const StoreRegistrationForm = () => {
       setMenuUploadedPdfUrl(saved.step3.menuPdfUrl ?? null);
       setMenuUploadedPdfFileName(saved.step3.menuPdfFileName ?? null);
       setMenuUploadIds(Array.isArray(saved.step3.menuUploadIds) ? saved.step3.menuUploadIds : []);
+      setMenuImageEntryIds(
+        Array.isArray(saved.step3.menuImageEntryIds)
+          ? saved.step3.menuImageEntryIds.map((x: unknown) => String(x))
+          : []
+      );
     }
 
     // Step 4 data — always set from saved so UI matches DB (clear URLs when null after remove or manual DB delete)
@@ -382,6 +483,11 @@ const StoreRegistrationForm = () => {
 
     // Step 5 data
     if (saved.step5) {
+      const rawGallery = saved.step5.gallery_image_urls;
+      const hasGalleryKey = Array.isArray(rawGallery);
+      const galleryUrls = hasGalleryKey
+        ? rawGallery.filter((u): u is string => typeof u === 'string' && u.trim())
+        : [];
       setStoreSetup((prev) => ({
         ...prev,
         cuisine_types: Array.isArray(saved.step5.cuisine_types) ? saved.step5.cuisine_types : prev.cuisine_types,
@@ -389,15 +495,34 @@ const StoreRegistrationForm = () => {
         avg_preparation_time_minutes: typeof saved.step5.avg_preparation_time_minutes === 'number'
           ? saved.step5.avg_preparation_time_minutes : prev.avg_preparation_time_minutes,
         min_order_amount: typeof saved.step5.min_order_amount === 'number' ? saved.step5.min_order_amount : prev.min_order_amount,
-        delivery_radius_km: typeof saved.step5.delivery_radius_km === 'number' ? saved.step5.delivery_radius_km : prev.delivery_radius_km,
+        delivery_radius_km:
+          typeof saved.step5.delivery_radius_km === 'number' && Number.isFinite(saved.step5.delivery_radius_km)
+            ? clampStoreDeliveryRadiusKm(saved.step5.delivery_radius_km)
+            : prev.delivery_radius_km,
         is_pure_veg: typeof saved.step5.is_pure_veg === 'boolean' ? saved.step5.is_pure_veg : prev.is_pure_veg,
         accepts_online_payment: typeof saved.step5.accepts_online_payment === 'boolean'
           ? saved.step5.accepts_online_payment : prev.accepts_online_payment,
         accepts_cash: typeof saved.step5.accepts_cash === 'boolean' ? saved.step5.accepts_cash : prev.accepts_cash,
         store_hours: normalizeStoreHours(saved.step5.store_hours, prev.store_hours),
-        logo_preview: typeof saved.step5.logo_url === 'string' ? saved.step5.logo_url : prev.logo_preview,
-        banner_preview: typeof saved.step5.banner_url === 'string' ? saved.step5.banner_url : prev.banner_preview,
-        gallery_previews: Array.isArray(saved.step5.gallery_image_urls) ? saved.step5.gallery_image_urls : prev.gallery_previews,
+        logo_preview:
+          typeof saved.step5.logo_url === 'string'
+            ? saved.step5.logo_url
+            : typeof (saved.step5 as { logo_preview?: string }).logo_preview === 'string'
+              ? (saved.step5 as { logo_preview?: string }).logo_preview!
+              : prev.logo_preview,
+        banner_preview:
+          typeof saved.step5.banner_url === 'string'
+            ? saved.step5.banner_url
+            : typeof (saved.step5 as { banner_preview?: string }).banner_preview === 'string'
+              ? (saved.step5 as { banner_preview?: string }).banner_preview!
+              : prev.banner_preview,
+        ...(hasGalleryKey
+          ? {
+              gallery_image_urls: galleryUrls,
+              gallery_previews: [...galleryUrls],
+              gallery_images: galleryUrls.map(() => null) as StoreSetupData['gallery_images'],
+            }
+          : {}),
       }));
     }
 
@@ -413,14 +538,6 @@ const StoreRegistrationForm = () => {
   useEffect(() => {
     setIsClient(true);
   }, []);
-
-  useEffect(() => {
-    const urls = menuImageFiles.map((f) => URL.createObjectURL(f));
-    setImagePreviewUrls(urls);
-    return () => {
-      urls.forEach((u) => URL.revokeObjectURL(u));
-    };
-  }, [menuImageFiles]);
 
   const parentIdParam = searchParams?.get('parent_id');
   useEffect(() => {
@@ -460,17 +577,108 @@ const StoreRegistrationForm = () => {
     fetchParentInfo();
   }, [parentIdParam]);
 
+  // Signature step: align menu state with DB (same priority as register-store-progress GET: PDF → sheet → images).
+  useEffect(() => {
+    if (step !== 9 || draftStoreDbId == null || !Number.isFinite(draftStoreDbId)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/auth/store-menu-media-signed?storeDbId=${draftStoreDbId}`, { credentials: "include" });
+        const j = (await res.json()) as {
+          success?: boolean;
+          menuPdfUrls?: string[];
+          menuPdfFileNames?: string[];
+          menuPdfIds?: number[];
+          menuSpreadsheetUrl?: string | null;
+          menuSpreadsheetFileName?: string | null;
+          menuSpreadsheetId?: number | null;
+          menuImageUrls?: string[];
+          menuImageItems?: { rowId: number; entryId: string; url: string; fileName: string }[];
+          menuImageFileNames?: string[];
+          menuImageIds?: number[];
+        };
+        if (!res.ok || !j.success || cancelled) return;
+
+        const hasPdf = Array.isArray(j.menuPdfUrls) && j.menuPdfUrls.length > 0;
+        const hasSheet = !!j.menuSpreadsheetUrl;
+        const hasImages =
+          (Array.isArray(j.menuImageItems) && j.menuImageItems.length > 0) ||
+          (Array.isArray(j.menuImageUrls) && j.menuImageUrls.length > 0);
+
+        setMenuImageFiles([]);
+        setMenuSpreadsheetFile(null);
+        setMenuPdfFile(null);
+
+        if (hasPdf) {
+          setMenuUploadMode("PDF");
+          setMenuUploadedPdfUrl(j.menuPdfUrls![0]);
+          setMenuUploadedPdfFileName(j.menuPdfFileNames?.[0] ?? null);
+          setMenuUploadedSpreadsheetUrl(null);
+          setMenuUploadedSpreadsheetFileName(null);
+          setMenuUploadedImageUrls([]);
+          setMenuUploadedImageNames([]);
+          setMenuUploadIds(Array.isArray(j.menuPdfIds) && j.menuPdfIds.length > 0 ? [j.menuPdfIds[0]] : []);
+          setMenuImageEntryIds([]);
+          return;
+        }
+        if (hasSheet) {
+          setMenuUploadMode("CSV");
+          setMenuUploadedSpreadsheetUrl(j.menuSpreadsheetUrl ?? null);
+          setMenuUploadedSpreadsheetFileName(j.menuSpreadsheetFileName ?? null);
+          setMenuUploadedPdfUrl(null);
+          setMenuUploadedPdfFileName(null);
+          setMenuUploadedImageUrls([]);
+          setMenuUploadedImageNames([]);
+          setMenuUploadIds(j.menuSpreadsheetId != null ? [j.menuSpreadsheetId] : []);
+          setMenuImageEntryIds([]);
+          return;
+        }
+        if (hasImages) {
+          const items = Array.isArray(j.menuImageItems) ? j.menuImageItems : [];
+          const urls =
+            items.length > 0
+              ? items.map((i) => i.url).filter(Boolean)
+              : (j.menuImageUrls || []).filter(Boolean);
+          const names =
+            items.length > 0
+              ? items.map((i) => i.fileName)
+              : Array.isArray(j.menuImageFileNames)
+                ? j.menuImageFileNames
+                : [];
+          setMenuUploadMode("IMAGE");
+          setMenuUploadedImageUrls(urls);
+          setMenuUploadedImageNames(names);
+          setMenuUploadedSpreadsheetUrl(null);
+          setMenuUploadedSpreadsheetFileName(null);
+          setMenuUploadedPdfUrl(null);
+          setMenuUploadedPdfFileName(null);
+          setMenuUploadIds(items.length > 0 ? items.map((i) => i.rowId) : j.menuImageIds || []);
+          setMenuImageEntryIds(items.length > 0 ? items.map((i) => i.entryId) : []);
+          return;
+        }
+
+        setMenuUploadMode("IMAGE");
+        setMenuUploadedImageUrls([]);
+        setMenuUploadedImageNames([]);
+        setMenuUploadedSpreadsheetUrl(null);
+        setMenuUploadedSpreadsheetFileName(null);
+        setMenuUploadedPdfUrl(null);
+        setMenuUploadedPdfFileName(null);
+        setMenuUploadIds([]);
+        setMenuImageEntryIds([]);
+      } catch {
+        // keep existing state on fetch errors
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, draftStoreDbId]);
+
   useEffect(() => {
     const hydrateProgress = async () => {
       try {
-        if (forceNewOnboarding && typeof window !== 'undefined') {
-          localStorage.removeItem('registerStoreCurrentStepStoreId');
-          localStorage.removeItem('registerStoreCurrentStep');
-          localStorage.removeItem('registerStoreStep');
-          localStorage.removeItem('registerStoreSection');
-          localStorage.removeItem('registerStoreCuisineSelection');
-        }
-        const storeId = forceNewOnboarding ? '' : (selectedStorePublicId || (typeof window !== 'undefined' ? localStorage.getItem('registerStoreCurrentStepStoreId') : null) || '');
+        const storeId = forceNewOnboarding ? '' : (selectedStorePublicId || '');
         const progressParams = new URLSearchParams();
         if (forceNewOnboarding) progressParams.set('forceNew', '1');
         else if (storeId) progressParams.set('storePublicId', storeId);
@@ -487,7 +695,6 @@ const StoreRegistrationForm = () => {
             return;
           }
           console.error('Failed to load progress:', payload.error);
-          // Mark as restored even on error to prevent localStorage issues
           stepRestoredRef.current = true;
           setProgressHydrated(true);
           return;
@@ -505,15 +712,10 @@ const StoreRegistrationForm = () => {
           }
           
           hydrateFormFromProgress(progress);
-          const storePublicId = (progress.form_data as any)?.step_store?.storePublicId;
-          if (storePublicId && typeof window !== 'undefined') {
-            localStorage.setItem('registerStoreCurrentStepStoreId', storePublicId);
-          }
           setProgressHydrated(true);
           return;
         }
         
-        // If no progress found, mark as restored anyway to allow localStorage updates
         stepRestoredRef.current = true;
 
         if (selectedStorePublicId) {
@@ -540,14 +742,12 @@ const StoreRegistrationForm = () => {
               landmark,
               current_onboarding_step,
               cuisine_types,
-              food_categories,
               avg_preparation_time_minutes,
               min_order_amount,
               delivery_radius_km,
               is_pure_veg,
               accepts_online_payment,
               accepts_cash,
-              logo_url,
               banner_url,
               gallery_images
             `)
@@ -591,18 +791,25 @@ const StoreRegistrationForm = () => {
             setStoreSetup((prev) => ({
               ...prev,
               cuisine_types: Array.isArray(existingStore.cuisine_types) ? existingStore.cuisine_types : prev.cuisine_types,
-              food_categories: Array.isArray(existingStore.food_categories) ? existingStore.food_categories : prev.food_categories,
               avg_preparation_time_minutes: typeof existingStore.avg_preparation_time_minutes === 'number'
                 ? existingStore.avg_preparation_time_minutes : prev.avg_preparation_time_minutes,
               min_order_amount: typeof existingStore.min_order_amount === 'number' ? existingStore.min_order_amount : prev.min_order_amount,
-              delivery_radius_km: typeof existingStore.delivery_radius_km === 'number' ? existingStore.delivery_radius_km : prev.delivery_radius_km,
+              delivery_radius_km:
+                typeof existingStore.delivery_radius_km === 'number' && Number.isFinite(existingStore.delivery_radius_km)
+                  ? clampStoreDeliveryRadiusKm(existingStore.delivery_radius_km)
+                  : prev.delivery_radius_km,
               is_pure_veg: typeof existingStore.is_pure_veg === 'boolean' ? existingStore.is_pure_veg : prev.is_pure_veg,
               accepts_online_payment: typeof existingStore.accepts_online_payment === 'boolean'
                 ? existingStore.accepts_online_payment : prev.accepts_online_payment,
               accepts_cash: typeof existingStore.accepts_cash === 'boolean' ? existingStore.accepts_cash : prev.accepts_cash,
-              logo_preview: existingStore.logo_url ?? prev.logo_preview,
               banner_preview: existingStore.banner_url ?? prev.banner_preview,
-              gallery_previews: Array.isArray(existingStore.gallery_images) ? existingStore.gallery_images : prev.gallery_previews,
+              ...(Array.isArray(existingStore.gallery_images) && existingStore.gallery_images.length > 0
+                ? {
+                    gallery_image_urls: existingStore.gallery_images as string[],
+                    gallery_previews: existingStore.gallery_images as string[],
+                    gallery_images: (existingStore.gallery_images as string[]).map(() => null as File | null),
+                  }
+                : {}),
             }));
             
             // Load Step 4 data (documents)
@@ -718,9 +925,17 @@ const StoreRegistrationForm = () => {
               const menuRes = await fetch(`/api/auth/store-menu-media-signed?storeDbId=${existingStore.id}`);
               const menuData = menuRes.ok ? await menuRes.json() : null;
               if (menuData?.success) {
-                if (Array.isArray(menuData.menuImageUrls) && menuData.menuImageUrls.length > 0) {
+                const items = (menuData as { menuImageItems?: { rowId: number; entryId: string; url: string; fileName: string }[] })
+                  .menuImageItems;
+                if (Array.isArray(items) && items.length > 0) {
+                  setMenuUploadedImageUrls(items.map((i) => i.url));
+                  setMenuUploadedImageNames(items.map((i) => i.fileName));
+                  setMenuUploadIds(items.map((i) => i.rowId));
+                  setMenuImageEntryIds(items.map((i) => i.entryId));
+                  setMenuUploadMode("IMAGE");
+                } else if (Array.isArray(menuData.menuImageUrls) && menuData.menuImageUrls.length > 0) {
                   setMenuUploadedImageUrls(menuData.menuImageUrls);
-                  setMenuUploadMode('IMAGE');
+                  setMenuUploadMode("IMAGE");
                 }
                 if (menuData.menuSpreadsheetUrl) {
                   setMenuUploadedSpreadsheetUrl(menuData.menuSpreadsheetUrl);
@@ -731,20 +946,38 @@ const StoreRegistrationForm = () => {
               // Fallback: load from Supabase (raw URLs may not open for private R2)
               const { data: menuMedia } = await supabase
                 .from('merchant_store_media_files')
-                .select('public_url, r2_key, source_entity')
+                .select('menu_url, public_url, r2_key, source_entity')
                 .eq('store_id', existingStore.id)
                 .eq('media_scope', 'MENU_REFERENCE')
                 .eq('is_active', true);
               if (menuMedia && menuMedia.length > 0) {
-                const menuImages = menuMedia.filter(m => m.source_entity === 'ONBOARDING_MENU_IMAGE').map(m => m.public_url).filter(Boolean);
-                const menuSheet = menuMedia.find(m => m.source_entity === 'ONBOARDING_MENU_SHEET')?.public_url;
+                const rowUrl = (m: { menu_url?: string | null; public_url?: string | null; r2_key?: string | null }) =>
+                  (m.menu_url && String(m.menu_url).trim()) ||
+                  (m.public_url && String(m.public_url).trim()) ||
+                  (m.r2_key ? `/api/attachments/proxy?key=${encodeURIComponent(String(m.r2_key).replace(/^\/+/, ''))}` : '');
+                const menuImages = menuMedia
+                  .filter(m => m.source_entity === 'ONBOARDING_MENU_IMAGE')
+                  .map(m => rowUrl(m))
+                  .filter(Boolean);
+                const menuSheet = menuMedia.find(m => m.source_entity === 'ONBOARDING_MENU_SHEET');
+                const menuPdf = menuMedia.find(m => m.source_entity === 'ONBOARDING_MENU_PDF');
                 if (menuImages.length > 0) {
                   setMenuUploadedImageUrls(menuImages as string[]);
                   setMenuUploadMode('IMAGE');
                 }
                 if (menuSheet) {
-                  setMenuUploadedSpreadsheetUrl(menuSheet);
-                  setMenuUploadMode('CSV');
+                  const u = rowUrl(menuSheet);
+                  if (u) {
+                    setMenuUploadedSpreadsheetUrl(u);
+                    setMenuUploadMode('CSV');
+                  }
+                }
+                if (menuPdf) {
+                  const u = rowUrl(menuPdf);
+                  if (u) {
+                    setMenuUploadedPdfUrl(u);
+                    setMenuUploadMode('PDF');
+                  }
                 }
               }
             }
@@ -758,7 +991,7 @@ const StoreRegistrationForm = () => {
       } catch (err) {
         console.error('Failed to hydrate onboarding progress:', err);
       } finally {
-        // Mark as restored even if hydration failed, to prevent localStorage from overriding
+        // Mark as restored even if hydration failed so the UI can still advance steps
         if (!stepRestoredRef.current) {
           stepRestoredRef.current = true;
         }
@@ -790,6 +1023,51 @@ const StoreRegistrationForm = () => {
     fetchTemplate();
     return () => { cancelled = true; };
   }, [step, formData?.store_type, formData?.city]);
+
+  // Step 3: fetch menu from API when store is available (validates store resolution, syncs DB state)
+  useEffect(() => {
+    if (step !== 3) return;
+    const hasStore = (draftStoreDbId != null && draftStoreDbId > 0) || !!(currentStoreId || draftStorePublicId || '').trim();
+    if (!hasStore) return;
+    let cancelled = false;
+    const fetchMenu = async () => {
+      try {
+        const params = new URLSearchParams();
+        if (draftStoreDbId) params.set('store_id', String(draftStoreDbId));
+        const pub = (currentStoreId || draftStorePublicId || '').trim();
+        if (pub) params.set('store_public_id', pub);
+        const res = await fetch(`/api/auth/register-store-menu-uploads?${params.toString()}`, { credentials: 'include' });
+        const data = await res.json();
+        if (cancelled || !res.ok) return;
+        if (data?.success && Array.isArray(data?.files) && data.files.length > 0) {
+          const urls = data.files.map((f: { file_url?: string }) => f.file_url).filter(Boolean);
+          const names = data.files.map((f: { file_name?: string | null }) => f.file_name ?? '').filter(Boolean);
+          const ids = data.files.map((f: { id?: number }) => f.id).filter((n: number) => Number.isFinite(n));
+          const at = data.attachment_type;
+          if (at === 'images') {
+            setMenuUploadedImageUrls(urls);
+            setMenuUploadedImageNames(names);
+            setMenuUploadIds(ids);
+            setMenuUploadMode('IMAGE');
+          } else if (at === 'pdf') {
+            setMenuUploadedPdfUrl(urls[0] ?? null);
+            setMenuUploadedPdfFileName(names[0] ?? null);
+            setMenuUploadIds(ids);
+            setMenuUploadMode('PDF');
+          } else if (at === 'csv') {
+            setMenuUploadedSpreadsheetUrl(urls[0] ?? null);
+            setMenuUploadedSpreadsheetFileName(names[0] ?? null);
+            setMenuUploadIds(ids);
+            setMenuUploadMode('CSV');
+          }
+        }
+      } catch {
+        // Non-blocking; progress GET may have already hydrated
+      }
+    };
+    fetchMenu();
+    return () => { cancelled = true; };
+  }, [step, draftStoreDbId, currentStoreId, draftStorePublicId]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1152,7 +1430,128 @@ const StoreRegistrationForm = () => {
     }
   };
 
+  /** PDF/CSV: upload to R2 as soon as a file is chosen (if store id exists). Skips until Steps 1–2 created the draft store. */
+  const syncPdfOrCsvMenuToR2 = useCallback(
+    async (
+      kind: "pdf" | "csv",
+      file: File
+    ): Promise<{ skipped: true } | { ok: true } | { ok: false; error: string }> => {
+      const storePublicForMenu = (currentStoreId || draftStorePublicId || "").trim();
+      const dbId = draftStoreDbId;
+      if (!(dbId && dbId > 0) && !storePublicForMenu) {
+        return { skipped: true };
+      }
+      const form = new FormData();
+      if (dbId) form.append("store_id", String(dbId));
+      if (storePublicForMenu) form.append("store_public_id", storePublicForMenu);
+      form.append("attachment_type", kind);
+      form.append("file", file);
+      try {
+        const res = await fetch("/api/auth/register-store-menu-uploads", {
+          method: "POST",
+          credentials: "include",
+          body: form,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          files?: { id: number; file_url: string; file_name: string | null; entry_id?: string }[];
+          r2_bucket?: string | null;
+          r2_objects_prefix?: string | null;
+        };
+        if (!res.ok) {
+          return { ok: false, error: data?.error || "Upload failed" };
+        }
+        const rows = data.files || [];
+        const rb = data.r2_bucket;
+        const prefix = data.r2_objects_prefix;
+        if (rb) {
+          console.info("[register-store] Menu stored in R2 | bucket:", rb, "| prefix:", prefix ?? "(n/a)");
+        }
+        const ids = rows.map((r) => r.id);
+        const urls = rows.map((r) => r.file_url);
+        const names = rows.map((r) => r.file_name ?? "");
+        if (kind === "pdf") {
+          setMenuUploadedPdfUrl(urls[0] ?? null);
+          setMenuUploadedPdfFileName(names[0] ?? null);
+          setMenuUploadIds(ids);
+          setMenuImageEntryIds([]);
+          setMenuPdfFile(null);
+        } else {
+          setMenuUploadedSpreadsheetUrl(urls[0] ?? null);
+          setMenuUploadedSpreadsheetFileName(names[0] ?? null);
+          setMenuUploadIds(ids);
+          setMenuImageEntryIds([]);
+          setMenuSpreadsheetFile(null);
+        }
+        setMenuUploadError("");
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : "Upload failed" };
+      }
+    },
+    [currentStoreId, draftStorePublicId, draftStoreDbId]
+  );
+
+  /** Menu images: upload to R2 immediately when store exists (same API as Save & Continue). */
+  const syncImagesMenuToR2 = useCallback(
+    async (
+      files: File[]
+    ): Promise<{ skipped: true } | { ok: true } | { ok: false; error: string }> => {
+      if (!files.length) return { skipped: true };
+      const storePublicForMenu = (currentStoreId || draftStorePublicId || "").trim();
+      const dbId = draftStoreDbId;
+      if (!(dbId && dbId > 0) && !storePublicForMenu) {
+        return { skipped: true };
+      }
+      const form = new FormData();
+      if (dbId) form.append("store_id", String(dbId));
+      if (storePublicForMenu) form.append("store_public_id", storePublicForMenu);
+      form.append("attachment_type", "images");
+      files.forEach((f) => form.append("files", f));
+      try {
+        const res = await fetch("/api/auth/register-store-menu-uploads", {
+          method: "POST",
+          credentials: "include",
+          body: form,
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          files?: { id: number; file_url: string; file_name: string | null; entry_id?: string }[];
+          r2_bucket?: string | null;
+          r2_objects_prefix?: string | null;
+        };
+        if (!res.ok) {
+          return { ok: false, error: data?.error || "Upload failed" };
+        }
+        const rows = data.files || [];
+        const b = data.r2_bucket;
+        if (b) {
+          console.info(
+            "[register-store] Menu images stored | bucket:",
+            b,
+            "| prefix:",
+            data.r2_objects_prefix ?? "(n/a)"
+          );
+        }
+        const ids = rows.map((r) => r.id);
+        const urls = rows.map((r) => r.file_url).filter(Boolean) as string[];
+        const names = rows.map((r) => r.file_name ?? "");
+        const eids = rows.map((r) => (typeof r.entry_id === "string" ? r.entry_id : ""));
+        setMenuUploadedImageUrls(urls);
+        setMenuUploadedImageNames(names);
+        setMenuUploadIds(ids);
+        setMenuImageEntryIds(eids);
+        setMenuUploadError("");
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : "Upload failed" };
+      }
+    },
+    [currentStoreId, draftStorePublicId, draftStoreDbId]
+  );
+
   const handleMenuImageUpload = (files: File[]) => {
+    if (menuImageUploading) return;
     const validImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
     const validFiles: File[] = [];
     const rejected: string[] = [];
@@ -1182,9 +1581,30 @@ const StoreRegistrationForm = () => {
       return;
     }
     if (validFiles.length > 0) {
-      // Append new images; never replace when adding more of the same type (replace only on tab switch)
-      setMenuImageFiles((prev) => [...prev, ...validFiles]);
-      setMenuUploadMode('IMAGE');
+      setMenuUploadMode("IMAGE");
+      const storePublicForMenu = (currentStoreId || draftStorePublicId || "").trim();
+      const dbId = draftStoreDbId;
+      if ((dbId && dbId > 0) || storePublicForMenu) {
+        setMenuImageUploading(true);
+        void syncImagesMenuToR2(validFiles)
+          .then((r) => {
+            if ("skipped" in r) {
+              setMenuImageFiles((prev) => [...prev, ...validFiles]);
+              return;
+            }
+            if (!r.ok) {
+              setMenuUploadError(r.error);
+              setMenuImageFiles((prev) => [...prev, ...validFiles]);
+              return;
+            }
+          })
+          .finally(() => {
+            setMenuImageUploading(false);
+            if (imageUploadInputRef.current) imageUploadInputRef.current.value = "";
+          });
+      } else {
+        setMenuImageFiles((prev) => [...prev, ...validFiles]);
+      }
     }
   };
 
@@ -1212,6 +1632,10 @@ const StoreRegistrationForm = () => {
           setMenuUploadedImageUrls([]);
           setMenuUploadedImageNames([]);
           setConfirmModal(null);
+          void syncPdfOrCsvMenuToR2("csv", file).then((r) => {
+            if ("skipped" in r) return;
+            if (!r.ok) setMenuUploadError(r.error);
+          });
         },
         onCancel: () => setConfirmModal(null),
       });
@@ -1224,6 +1648,10 @@ const StoreRegistrationForm = () => {
     setMenuImageFiles([]);
     setMenuUploadedImageUrls([]);
     setMenuUploadedImageNames([]);
+    void syncPdfOrCsvMenuToR2("csv", file).then((r) => {
+      if ("skipped" in r) return;
+      if (!r.ok) setMenuUploadError(r.error);
+    });
   };
 
   const handleMenuPdfUpload = (file: File | null) => {
@@ -1247,6 +1675,10 @@ const StoreRegistrationForm = () => {
     setMenuSpreadsheetFile(null);
     setMenuUploadedSpreadsheetUrl(null);
     setMenuUploadedSpreadsheetFileName(null);
+    void syncPdfOrCsvMenuToR2("pdf", file).then((r) => {
+      if ("skipped" in r) return;
+      if (!r.ok) setMenuUploadError(r.error);
+    });
   };
 
   const handleRemovePendingImage = (idx: number) => {
@@ -1264,26 +1696,66 @@ const StoreRegistrationForm = () => {
 
   const handleRemoveUploadedImage = async (idx: number) => {
     const id = menuUploadIds[idx];
+    const entryId = menuImageEntryIds[idx];
     if (draftStoreDbId && id) {
       try {
-        await fetch('/api/auth/register-store-menu-uploads?id=' + String(id), { method: 'DELETE', credentials: 'include' });
+        const q =
+          menuUploadMode === "IMAGE" && entryId
+            ? `id=${String(id)}&entry_id=${encodeURIComponent(entryId)}`
+            : `id=${String(id)}`;
+        await fetch("/api/auth/register-store-menu-uploads?" + q, { method: "DELETE", credentials: "include" });
       } catch (e) {
-        console.warn('Delete menu upload failed:', e);
+        console.warn("Delete menu upload failed:", e);
       }
     }
     const newUrls = menuUploadedImageUrls.filter((_, i) => i !== idx);
     const newNames = menuUploadedImageNames.filter((_, i) => i !== idx);
     const newIds = menuUploadIds.filter((_, i) => i !== idx);
+    const newEntryIds = menuImageEntryIds.filter((_, i) => i !== idx);
     setMenuUploadedImageUrls(newUrls);
     setMenuUploadedImageNames(newNames);
     setMenuUploadIds(newIds);
-    setConfirmModal(null);
+    setMenuImageEntryIds(newEntryIds);
     await saveStepData(3, false, {
       step3: {
         menuUploadMode,
         menuImageNames: newNames,
         menuImageUrls: newUrls,
         menuUploadIds: newIds,
+        menuImageEntryIds: newEntryIds,
+        menuSpreadsheetName: menuUploadedSpreadsheetFileName ?? null,
+        menuSpreadsheetUrl: menuUploadedSpreadsheetUrl ?? null,
+        menuPdfUrl: menuUploadedPdfUrl ?? null,
+        menuPdfFileName: menuUploadedPdfFileName ?? null,
+      },
+    }, true);
+  };
+
+  const handleRemoveAllMenuImages = async () => {
+    const uniqueRowIds = [...new Set(menuUploadIds)];
+    if (draftStoreDbId && uniqueRowIds.length > 0) {
+      await Promise.all(
+        uniqueRowIds.map((id) =>
+          fetch("/api/auth/register-store-menu-uploads?id=" + String(id), {
+            method: "DELETE",
+            credentials: "include",
+          }).catch((e) => console.warn("Delete menu upload failed:", e))
+        )
+      );
+    }
+    setMenuImageFiles([]);
+    setMenuUploadedImageUrls([]);
+    setMenuUploadedImageNames([]);
+    setMenuUploadIds([]);
+    setMenuImageEntryIds([]);
+    setMenuUploadError("");
+    await saveStepData(3, false, {
+      step3: {
+        menuUploadMode,
+        menuImageNames: [],
+        menuImageUrls: [],
+        menuUploadIds: [],
+        menuImageEntryIds: [],
         menuSpreadsheetName: menuUploadedSpreadsheetFileName ?? null,
         menuSpreadsheetUrl: menuUploadedSpreadsheetUrl ?? null,
         menuPdfUrl: menuUploadedPdfUrl ?? null,
@@ -1305,7 +1777,6 @@ const StoreRegistrationForm = () => {
     setMenuUploadedSpreadsheetUrl(null);
     setMenuUploadedSpreadsheetFileName(null);
     setMenuUploadIds([]);
-    setConfirmModal(null);
     await saveStepData(3, false, {
       step3: {
         menuUploadMode,
@@ -1314,6 +1785,7 @@ const StoreRegistrationForm = () => {
         menuSpreadsheetName: null,
         menuSpreadsheetUrl: null,
         menuUploadIds: [],
+        menuImageEntryIds,
         menuPdfUrl: menuUploadedPdfUrl ?? null,
         menuPdfFileName: menuUploadedPdfFileName ?? null,
       },
@@ -1333,13 +1805,13 @@ const StoreRegistrationForm = () => {
     setMenuUploadedPdfUrl(null);
     setMenuUploadedPdfFileName(null);
     setMenuUploadIds([]);
-    setConfirmModal(null);
     await saveStepData(3, false, {
       step3: {
         menuUploadMode,
         menuPdfUrl: null,
         menuPdfFileName: null,
         menuUploadIds: [],
+        menuImageEntryIds,
         menuImageNames: menuUploadedImageNames,
         menuImageUrls: menuUploadedImageUrls,
         menuSpreadsheetName: menuUploadedSpreadsheetFileName ?? null,
@@ -1359,12 +1831,13 @@ const StoreRegistrationForm = () => {
         confirmLabel: 'Yes, switch',
         isLoading: false,
         onConfirm: async () => {
-          setConfirmModal((prev) => (prev ? { ...prev, isLoading: true } : prev));
           try {
-            if (draftStoreDbId) {
+            const pub = (currentStoreId || draftStorePublicId || '').trim();
+            if (draftStoreDbId || pub) {
               const form = new FormData();
               form.append('action', 'switch_type');
-              form.append('store_id', String(draftStoreDbId));
+              if (draftStoreDbId) form.append('store_id', String(draftStoreDbId));
+              if (pub) form.append('store_public_id', pub);
               form.append(
                 'new_attachment_type',
                 mode === 'IMAGE' ? 'images' : mode === 'PDF' ? 'pdf' : 'csv'
@@ -1386,10 +1859,9 @@ const StoreRegistrationForm = () => {
             setMenuUploadedPdfUrl(null);
             setMenuUploadedPdfFileName(null);
             setMenuUploadIds([]);
+            setMenuImageEntryIds([]);
           } catch (e) {
             console.warn('Switch-type API failed:', e);
-          } finally {
-            setConfirmModal(null);
           }
         },
         onCancel: () => setConfirmModal(null),
@@ -1407,8 +1879,12 @@ const StoreRegistrationForm = () => {
     const res = await fetch('/api/upload/r2', { method: 'POST', body: form });
     const data = await res.json();
     if (!res.ok || !data?.url) throw new Error(data?.error || 'R2 upload failed');
-    // Return the R2 key (path) instead of signed URL so we can generate fresh signed URLs when needed
-    return (data.key || data.path || data.url) as string;
+    const raw = String((data.key || data.path || data.url) as string).trim();
+    if (raw.startsWith('/api/attachments/proxy')) return raw;
+    if (raw && !raw.includes('://')) {
+      return `/api/attachments/proxy?key=${encodeURIComponent(raw.replace(/^\/+/, ''))}`;
+    }
+    return raw;
   };
 
   /** Delete existing R2 object when merchant replaces attachment (discard + new file). */
@@ -1426,6 +1902,14 @@ const StoreRegistrationForm = () => {
   };
 
   const sanitizeForProgress = (value: any): any => {
+    // Base64 data URLs (step 5 logo/banner/gallery previews) can exceed the Next.js ~10MB
+    // request body limit and break JSON.parse. Persist R2/proxy URLs only; previews are rehydrated from URLs/files.
+    if (typeof value === 'string') {
+      if (value.startsWith('data:') && value.length > 512) {
+        return '';
+      }
+      return value;
+    }
     if (typeof File !== 'undefined' && value instanceof File) {
       return {
         name: value.name,
@@ -1437,10 +1921,63 @@ const StoreRegistrationForm = () => {
     if (Array.isArray(value)) return value.map(sanitizeForProgress);
     if (value && typeof value === 'object') {
       return Object.fromEntries(
-        Object.entries(value).map(([k, v]) => [k, sanitizeForProgress(v)])
+        Object.entries(value).map(([k, v]) => {
+          if (k === 'delivery_radius_km' && typeof v === 'number' && Number.isFinite(v)) {
+            return [k, clampStoreDeliveryRadiusKm(v)];
+          }
+          return [k, sanitizeForProgress(v)];
+        })
       );
     }
     return value;
+  };
+
+  /** Persistable step5 JSON: strips huge data URLs, forces proxy URLs for R2 / presigned links. */
+  const buildStep5ProgressPatch = (setup: StoreSetupData): Record<string, unknown> => {
+    const s = sanitizeForProgress(setup) as Record<string, unknown>;
+    const su = setup as StoreSetupData & { gallery_image_urls?: string[]; logo_url?: string; banner_url?: string };
+    const gUrls = Array.isArray(su.gallery_image_urls) ? su.gallery_image_urls : [];
+    const gPreviews = Array.isArray(setup.gallery_previews) ? setup.gallery_previews : [];
+    const gSlots = Array.isArray(setup.gallery_images) ? setup.gallery_images : [];
+    const gLen = Math.max(gUrls.length, gPreviews.length, gSlots.length);
+    const galleryPersist: string[] = [];
+    for (let i = 0; i < gLen; i++) {
+      const u = gUrls[i];
+      const p = gPreviews[i];
+      const cand =
+        typeof u === 'string' && u.trim() && !u.startsWith('data:') && !u.startsWith('blob:')
+          ? u.trim()
+          : typeof p === 'string' && p.trim() && !p.startsWith('data:') && !p.startsWith('blob:')
+            ? p.trim()
+            : null;
+      if (cand) galleryPersist.push(proxyUrlForDocumentUploadResult(cand));
+    }
+    if (galleryPersist.length > 0) {
+      s.gallery_image_urls = galleryPersist;
+      s.gallery_previews = [...galleryPersist];
+    } else {
+      delete s.gallery_image_urls;
+      delete s.gallery_previews;
+    }
+    const lU = typeof su.logo_url === 'string' ? su.logo_url.trim() : '';
+    const lP = typeof setup.logo_preview === 'string' ? setup.logo_preview.trim() : '';
+    const logoCand =
+      lU && !lU.startsWith('data:') && !lU.startsWith('blob:')
+        ? lU
+        : lP && !lP.startsWith('data:') && !lP.startsWith('blob:')
+          ? lP
+          : '';
+    if (logoCand) s.logo_url = proxyUrlForDocumentUploadResult(logoCand);
+    const bU = typeof su.banner_url === 'string' ? su.banner_url.trim() : '';
+    const bP = typeof setup.banner_preview === 'string' ? setup.banner_preview.trim() : '';
+    const bannerCand =
+      bU && !bU.startsWith('data:') && !bU.startsWith('blob:')
+        ? bU
+        : bP && !bP.startsWith('data:') && !bP.startsWith('blob:')
+          ? bP
+          : '';
+    if (bannerCand) s.banner_url = proxyUrlForDocumentUploadResult(bannerCand);
+    return s;
   };
 
   const getStepPatch = (stepNumber: number) => {
@@ -1488,14 +2025,25 @@ const StoreRegistrationForm = () => {
           menuPdfFileName: menuPdfFile?.name ?? menuUploadedPdfFileName ?? null,
           menuPdfUrl: menuUploadedPdfUrl,
           menuUploadIds,
+          menuImageEntryIds,
         },
       };
     }
     if (stepNumber === 4) return { step4: sanitizeForProgress(documents) };
-    if (stepNumber === 5) return { step5: sanitizeForProgress(storeSetup) };
+    if (stepNumber === 5) return { step5: buildStep5ProgressPatch(storeSetup) };
     if (stepNumber === 6) return { step6: { completed: true, completedAt: new Date().toISOString() } };
     return {};
   };
+
+  /** Full snapshot of steps 1–5 for progress `form_data` (avoids stale step3–5 when advancing with an empty patch). */
+  const buildFullFormDataSnapshotPatch = () =>
+    ({
+      ...getStepPatch(1),
+      ...getStepPatch(2),
+      ...getStepPatch(3),
+      ...getStepPatch(4),
+      ...getStepPatch(5),
+    }) as Record<string, unknown>;
 
   // Save progress with proper UPSERT logic. Optional formDataPatchOverride used for step 3 so uploaded URLs are saved before state updates.
   // Non-blocking by default: returns immediately, saves in background. Set blocking=true to wait for completion.
@@ -1544,9 +2092,6 @@ const StoreRegistrationForm = () => {
           if (stepStore?.storePublicId && stepStore.storePublicId !== currentStoreId) {
             setCurrentStoreId(stepStore.storePublicId);
             setDraftStorePublicId(stepStore.storePublicId);
-            if (typeof window !== 'undefined') {
-              localStorage.setItem('registerStoreCurrentStepStoreId', stepStore.storePublicId);
-            }
           }
           if (stepStore?.storeDbId && stepStore.storeDbId !== draftStoreDbId) {
             setDraftStoreDbId(stepStore.storeDbId);
@@ -1685,16 +2230,27 @@ const StoreRegistrationForm = () => {
       if (step === 3) {
         setUploadLoading(true);
         try {
-          const storeId = draftStoreDbId;
+          const storePublicForMenu = (currentStoreId || draftStorePublicId || '').trim();
+          const canResolveStoreForMenu =
+            (draftStoreDbId != null && draftStoreDbId > 0) || !!storePublicForMenu;
           const hasNewFiles =
             menuImageFiles.length > 0 ||
             menuSpreadsheetFile !== null ||
             menuPdfFile !== null;
           let step3Patch: Record<string, unknown> | undefined;
 
-          if (storeId && hasNewFiles) {
+          if (hasNewFiles && !canResolveStoreForMenu) {
+            alert(
+              "Store is not ready for upload. Complete Steps 1–2 and wait for your Store ID, then try again."
+            );
+            setUploadLoading(false);
+            return;
+          }
+
+          if (hasNewFiles && canResolveStoreForMenu) {
             const form = new FormData();
-            form.append("store_id", String(storeId));
+            if (draftStoreDbId) form.append("store_id", String(draftStoreDbId));
+            if (storePublicForMenu) form.append("store_public_id", storePublicForMenu);
             const at =
               menuUploadMode === "IMAGE"
                 ? "images"
@@ -1720,6 +2276,8 @@ const StoreRegistrationForm = () => {
               ok: res.ok,
               attachmentType: at,
               fileCount: (data.files || []).length,
+              r2_bucket: (data as { r2_bucket?: string }).r2_bucket,
+              r2_objects_prefix: (data as { r2_objects_prefix?: string }).r2_objects_prefix,
               error: data?.error,
             });
             if (!res.ok) {
@@ -1731,14 +2289,17 @@ const StoreRegistrationForm = () => {
               file_url: string;
               file_name: string | null;
               file_size: number | null;
+              entry_id?: string;
             }[];
             const ids = files.map((f) => f.id);
-            const urls = files.map((f) => f.file_url);
+            const urls = files.map((f) => f.file_url).filter(Boolean) as string[];
             const names = files.map((f) => f.file_name ?? "");
+            const entryIds = files.map((f) => (typeof f.entry_id === "string" ? f.entry_id : ""));
             if (menuUploadMode === "IMAGE") {
               setMenuUploadedImageUrls(urls);
               setMenuUploadedImageNames(names);
               setMenuUploadIds(ids);
+              setMenuImageEntryIds(entryIds);
               setMenuImageFiles([]);
               step3Patch = {
                 step3: {
@@ -1746,6 +2307,7 @@ const StoreRegistrationForm = () => {
                   menuImageUrls: urls,
                   menuImageNames: names,
                   menuUploadIds: ids,
+                  menuImageEntryIds: entryIds,
                   menuSpreadsheetUrl: null,
                   menuSpreadsheetName: null,
                   menuPdfUrl: null,
@@ -1756,6 +2318,7 @@ const StoreRegistrationForm = () => {
               setMenuUploadedSpreadsheetUrl(urls[0] ?? null);
               setMenuUploadedSpreadsheetFileName(names[0] ?? null);
               setMenuUploadIds(ids);
+              setMenuImageEntryIds([]);
               setMenuSpreadsheetFile(null);
               step3Patch = {
                 step3: {
@@ -1763,6 +2326,7 @@ const StoreRegistrationForm = () => {
                   menuSpreadsheetUrl: urls[0] ?? null,
                   menuSpreadsheetName: names[0] ?? null,
                   menuUploadIds: ids,
+                  menuImageEntryIds: [],
                   menuImageUrls: [],
                   menuImageNames: [],
                   menuPdfUrl: null,
@@ -1773,6 +2337,7 @@ const StoreRegistrationForm = () => {
               setMenuUploadedPdfUrl(urls[0] ?? null);
               setMenuUploadedPdfFileName(names[0] ?? null);
               setMenuUploadIds(ids);
+              setMenuImageEntryIds([]);
               setMenuPdfFile(null);
               step3Patch = {
                 step3: {
@@ -1780,6 +2345,7 @@ const StoreRegistrationForm = () => {
                   menuPdfUrl: urls[0] ?? null,
                   menuPdfFileName: names[0] ?? null,
                   menuUploadIds: ids,
+                  menuImageEntryIds: [],
                   menuImageUrls: [],
                   menuImageNames: [],
                   menuSpreadsheetUrl: null,
@@ -1896,11 +2462,12 @@ const StoreRegistrationForm = () => {
   /** Build step4 patch from current documents: upload files to R2 and include all names/numbers/URLs. */
   const buildDocumentStep4Patch = useCallback(
     async (docs: DocumentData): Promise<Record<string, unknown>> => {
-      const parentId = (parentInfo?.parent_merchant_id || searchParams?.get('parent_id') || 'merchant') as string;
+      const r2ParentPk = resolveR2ParentPrimaryKey(parentInfo, searchParams);
       const childStoreId = currentStoreId || draftStorePublicId;
-      const documentsPath = getOnboardingR2Path(parentId, childStoreId, 'DOCUMENTS');
-      const bankPath = getOnboardingR2Path(parentId, childStoreId, 'BANK');
+      const documentsPath = getOnboardingDocumentsPath(r2ParentPk, childStoreId);
+      const bankOnboardingPath = getOnboardingBankPath(r2ParentPk, childStoreId);
       const docsPatch: any = { ...sanitizeForProgress(docs) };
+      const uploadTasks: Promise<void>[] = [];
       const uploadableDocKeys = [
         'pan_image',
         'aadhar_front',
@@ -1919,13 +2486,22 @@ const StoreRegistrationForm = () => {
         const value = (docs as any)[key];
         const urlKey = key === 'other_document_file' ? 'other_document_file_url' : `${key}_url`;
         if (typeof File !== 'undefined' && value instanceof File) {
-          const existingUrl = (docs as any)[urlKey];
-          if (existingUrl && typeof existingUrl === 'string') {
-            await deleteR2ObjectIfExists(existingUrl);
-          }
-          const url = await uploadToR2(value, documentsPath, `${key}_${Date.now()}`);
-          // Store as proxy URL so "View certificate" always works consistently
-          docsPatch[urlKey] = `/api/attachments/proxy?key=${encodeURIComponent(String(url).replace(/^\/+/, ''))}`;
+          uploadTasks.push(
+            (async () => {
+              const existingUrl = (docs as any)[urlKey];
+              if (existingUrl && typeof existingUrl === 'string') {
+                await deleteR2ObjectIfExists(existingUrl);
+              }
+              const docFolder = getOnboardingDocumentPath(
+                r2ParentPk,
+                childStoreId,
+                onboardingDocTypeForUploadKey(key)
+              );
+              const baseName = `${key}_${Date.now()}${extensionFromUploadFile(value)}`;
+              const url = await uploadToR2(value, docFolder, baseName);
+              docsPatch[urlKey] = proxyUrlForDocumentUploadResult(String(url));
+            })()
+          );
         } else {
           docsPatch[urlKey] = (docs as any)[urlKey] ?? null;
         }
@@ -1934,27 +2510,44 @@ const StoreRegistrationForm = () => {
         const bank = (docs as any).bank;
         docsPatch.bank = { ...bank };
         if (typeof File !== 'undefined' && bank.bank_proof_file instanceof File) {
-          if (bank.bank_proof_file_url && typeof bank.bank_proof_file_url === 'string') {
-            await deleteR2ObjectIfExists(bank.bank_proof_file_url);
-          }
-          const url = await uploadToR2(bank.bank_proof_file, bankPath, `bank_proof_${Date.now()}`);
-          docsPatch.bank.bank_proof_file_url = `/api/attachments/proxy?key=${encodeURIComponent(String(url).replace(/^\/+/, ''))}`;
+          uploadTasks.push(
+            (async () => {
+              if (bank.bank_proof_file_url && typeof bank.bank_proof_file_url === 'string') {
+                await deleteR2ObjectIfExists(bank.bank_proof_file_url);
+              }
+              const url = await uploadToR2(
+                bank.bank_proof_file,
+                bankOnboardingPath,
+                `bank_proof_${Date.now()}${extensionFromUploadFile(bank.bank_proof_file)}`
+              );
+              docsPatch.bank.bank_proof_file_url = proxyUrlForDocumentUploadResult(String(url));
+            })()
+          );
         } else {
           docsPatch.bank.bank_proof_file_url = bank.bank_proof_file_url ?? null;
         }
         if (typeof File !== 'undefined' && bank.upi_qr_file instanceof File) {
-          if (bank.upi_qr_screenshot_url && typeof bank.upi_qr_screenshot_url === 'string') {
-            await deleteR2ObjectIfExists(bank.upi_qr_screenshot_url);
-          }
-          const url = await uploadToR2(bank.upi_qr_file, bankPath, `upi_qr_${Date.now()}`);
-          docsPatch.bank.upi_qr_screenshot_url = `/api/attachments/proxy?key=${encodeURIComponent(String(url).replace(/^\/+/, ''))}`;
+          uploadTasks.push(
+            (async () => {
+              if (bank.upi_qr_screenshot_url && typeof bank.upi_qr_screenshot_url === 'string') {
+                await deleteR2ObjectIfExists(bank.upi_qr_screenshot_url);
+              }
+              const url = await uploadToR2(
+                bank.upi_qr_file,
+                bankOnboardingPath,
+                `upi_qr_${Date.now()}${extensionFromUploadFile(bank.upi_qr_file)}`
+              );
+              docsPatch.bank.upi_qr_screenshot_url = proxyUrlForDocumentUploadResult(String(url));
+            })()
+          );
         } else {
           docsPatch.bank.upi_qr_screenshot_url = bank.upi_qr_screenshot_url ?? null;
         }
       }
+      await Promise.all(uploadTasks);
       return docsPatch;
     },
-    [parentInfo?.parent_merchant_id, searchParams, currentStoreId, draftStorePublicId]
+    [parentInfo?.id, searchParams, currentStoreId, draftStorePublicId]
   );
 
   /** Save current document data to DB on every "Save & Continue" (without moving to step 5). Returns the built patch so completion can reuse it and avoid duplicate uploads. */
@@ -1998,7 +2591,8 @@ const StoreRegistrationForm = () => {
     async (hours: StoreSetupData['store_hours']) => {
       setStoreSetup(prev => ({ ...prev, store_hours: hours }));
       try {
-        const currentStep5 = sanitizeForProgress(storeSetup);
+        const merged = { ...storeSetup, store_hours: hours };
+        const currentStep5 = buildStep5ProgressPatch(merged);
         const step5Patch = { step5: { ...currentStep5, store_hours: hours } };
         saveStepData(5, false, step5Patch, false).catch(err => {
           console.error('Store hours save failed:', err);
@@ -2015,7 +2609,8 @@ const StoreRegistrationForm = () => {
     (patch: { is_pure_veg?: boolean; accepts_online_payment?: boolean; accepts_cash?: boolean }) => {
       setStoreSetup(prev => ({ ...prev, ...patch }));
       try {
-        const currentStep5 = sanitizeForProgress(storeSetup);
+        const merged = { ...storeSetup, ...patch };
+        const currentStep5 = buildStep5ProgressPatch(merged);
         const step5Patch = { step5: { ...currentStep5, ...patch } };
         saveStepData(5, false, step5Patch, false).catch(err => {
           console.error('Store features save failed:', err);
@@ -2040,45 +2635,70 @@ const StoreRegistrationForm = () => {
     if (hasFilesToUpload) {
       setUploadLoading(true);
       try {
-        const parentId = (parentInfo?.parent_merchant_id || searchParams?.get('parent_id') || 'merchant') as string;
+        const r2ParentPk = resolveR2ParentPrimaryKey(parentInfo, searchParams);
         const childStoreId = currentStoreId || draftStorePublicId;
-        const storeMediaPath = getOnboardingR2Path(parentId, childStoreId, 'STORE_MEDIA');
-        const storeMediaGalleryPath = getOnboardingR2Path(parentId, childStoreId, 'STORE_MEDIA_GALLERY');
-        step5Patch = { ...sanitizeForProgress(setup) } as Record<string, unknown>;
+        const storeMediaPath = getOnboardingR2Path(r2ParentPk, childStoreId, 'STORE_MEDIA');
+        const storeAssetsBannerPath = getOnboardingAssetsBannerPath(r2ParentPk, childStoreId);
+        const storeAssetsGalleryPath = getOnboardingAssetsGalleryPath(r2ParentPk, childStoreId);
+        step5Patch = { ...buildStep5ProgressPatch(setup) } as Record<string, unknown>;
         let uploadedLogoUrl: string | undefined;
         let uploadedBannerUrl: string | undefined;
         let uploadedGalleryUrls: string[] = [];
         const existingLogoUrl = (storeSetup as any).logo_url || (storeSetup as any).logo_preview;
         const existingBannerUrl = (storeSetup as any).banner_url || (storeSetup as any).banner_preview;
-        const existingGalleryUrls = Array.isArray((storeSetup as any).gallery_previews) ? (storeSetup as any).gallery_previews : (Array.isArray((storeSetup as any).gallery_image_urls) ? (storeSetup as any).gallery_image_urls : []);
+        const setupSavedGallery = Array.isArray((setup as any).gallery_image_urls)
+          ? ((setup as any).gallery_image_urls as string[])
+          : [];
         if (typeof File !== 'undefined' && setup.logo instanceof File) {
           if (existingLogoUrl && typeof existingLogoUrl === 'string') await deleteR2ObjectIfExists(existingLogoUrl);
-          uploadedLogoUrl = await uploadToR2(setup.logo, storeMediaPath, `logo_${Date.now()}`);
+          uploadedLogoUrl = proxyUrlForDocumentUploadResult(
+            String(await uploadToR2(setup.logo, storeMediaPath, `logo_${Date.now()}`))
+          );
           (step5Patch as any).logo_url = uploadedLogoUrl;
         }
         if (typeof File !== 'undefined' && setup.banner instanceof File) {
           if (existingBannerUrl && typeof existingBannerUrl === 'string') await deleteR2ObjectIfExists(existingBannerUrl);
-          uploadedBannerUrl = await uploadToR2(setup.banner, storeMediaPath, `banner_${Date.now()}`);
+          uploadedBannerUrl = proxyUrlForDocumentUploadResult(
+            String(await uploadToR2(setup.banner, storeAssetsBannerPath, `banner_${Date.now()}`))
+          );
           (step5Patch as any).banner_url = uploadedBannerUrl;
         }
-        for (let i = 0; i < (setup.gallery_images || []).length; i++) {
-          const file = setup.gallery_images[i];
+        const previews = Array.isArray(setup.gallery_previews) ? setup.gallery_previews : [];
+        const slotFiles = Array.isArray(setup.gallery_images) ? setup.gallery_images : [];
+        const mergedGallery: string[] = [];
+        for (let i = 0; i < previews.length; i++) {
+          const file = i < slotFiles.length ? slotFiles[i] : null;
+          const savedU = typeof setupSavedGallery[i] === 'string' ? setupSavedGallery[i].trim() : '';
+          const pv = previews[i];
+          const previewAsUrl =
+            typeof pv === 'string' && !pv.startsWith('data:') && pv.trim() ? pv.trim() : '';
           if (typeof File !== 'undefined' && file instanceof File) {
-            const existingUrl = existingGalleryUrls[i] && typeof existingGalleryUrls[i] === 'string' ? existingGalleryUrls[i] : null;
-            if (existingUrl) await deleteR2ObjectIfExists(existingUrl);
-            const url = await uploadToR2(file, storeMediaGalleryPath, `gallery_${Date.now()}_${i + 1}`);
-            uploadedGalleryUrls.push(url);
+            const oldU = savedU || previewAsUrl;
+            if (oldU) await deleteR2ObjectIfExists(oldU);
+            const url = await uploadToR2(
+              file,
+              storeAssetsGalleryPath,
+              `gallery_${Date.now()}_${i + 1}${extensionFromUploadFile(file)}`
+            );
+            mergedGallery.push(proxyUrlForDocumentUploadResult(String(url)));
+          } else if (savedU) {
+            mergedGallery.push(proxyUrlForDocumentUploadResult(savedU));
+          } else if (previewAsUrl) {
+            mergedGallery.push(proxyUrlForDocumentUploadResult(previewAsUrl));
           }
         }
-        if (uploadedGalleryUrls.length > 0) {
-          (step5Patch as any).gallery_image_urls = uploadedGalleryUrls;
-        }
+        (step5Patch as any).gallery_image_urls = mergedGallery;
+        uploadedGalleryUrls = mergedGallery;
         // Update storeSetup with uploaded URLs so preview can display them
         setStoreSetup((prev) => ({
           ...prev,
           ...(uploadedLogoUrl && { logo_url: uploadedLogoUrl, logo_preview: prev.logo_preview || uploadedLogoUrl }),
           ...(uploadedBannerUrl && { banner_url: uploadedBannerUrl, banner_preview: prev.banner_preview || uploadedBannerUrl }),
-          ...(uploadedGalleryUrls.length > 0 && { gallery_image_urls: uploadedGalleryUrls, gallery_previews: prev.gallery_previews?.length ? prev.gallery_previews : uploadedGalleryUrls }),
+          ...(uploadedGalleryUrls.length > 0 && {
+            gallery_image_urls: uploadedGalleryUrls,
+            gallery_previews: uploadedGalleryUrls,
+            gallery_images: uploadedGalleryUrls.map(() => null),
+          }),
         }));
       } catch (err: any) {
         setUploadLoading(false);
@@ -2089,7 +2709,7 @@ const StoreRegistrationForm = () => {
         setUploadLoading(false);
       }
     } else {
-      step5Patch = sanitizeForProgress(setup) as Record<string, unknown>;
+      step5Patch = buildStep5ProgressPatch(setup);
     }
 
     try {
@@ -2100,7 +2720,6 @@ const StoreRegistrationForm = () => {
         return;
       }
       setStep(6);
-      if (typeof window !== 'undefined') window.localStorage.removeItem('registerStoreCuisineSelection');
     } catch (err: any) {
       console.error('Store setup save failed:', err);
       alert(err?.message || 'Failed to save Store Configuration. Please try again.');
@@ -2312,10 +2931,18 @@ const StoreRegistrationForm = () => {
                         i
                       </span>
                     </div>
-                    <p className="text-[11px] sm:text-xs text-slate-700 leading-relaxed">
-                      You’ll shortly receive a confirmation email with your store details and next steps.
-                      Use your Store ID whenever you talk to the GatiMitra team.
-                    </p>
+                    <div className="text-[11px] sm:text-xs text-slate-700 leading-relaxed space-y-2">
+                      <p>
+                        Your store registration has been completed successfully. A confirmation email with
+                        the details has been sent to your registered email address. Please keep an eye on your
+                        inbox for further updates.
+                      </p>
+                      <p>
+                        The verification process may take up to 24–48 hours. If you encounter any issues or
+                        have any questions during this period, feel free to reply to the same email with your
+                        query.
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -2366,6 +2993,7 @@ const StoreRegistrationForm = () => {
     menuUploadedImageUrls,
     menuUploadedImageNames,
     menuUploadIds,
+    menuImageEntryIds,
     menuSpreadsheetFile,
     menuUploadedSpreadsheetUrl,
     menuUploadedSpreadsheetFileName,
@@ -2374,6 +3002,7 @@ const StoreRegistrationForm = () => {
     menuUploadedPdfFileName,
     setConfirmModal,
     menuUploadError,
+    menuImageUploading,
     isImageDragActive,
     setIsImageDragActive,
     isPdfDragActive,
@@ -2386,9 +3015,9 @@ const StoreRegistrationForm = () => {
     imageUploadInputRef,
     pdfUploadInputRef,
     csvUploadInputRef,
-    imagePreviewUrls,
     onRemovePendingImage: handleRemovePendingImage,
     onRemoveUploadedImage: handleRemoveUploadedImage,
+    onRemoveAllMenuImages: handleRemoveAllMenuImages,
     onRemoveCsvFile: handleRemoveCsvFile,
     onRemovePdfFile: handleRemovePdfFile,
   };
@@ -2543,9 +3172,6 @@ const StoreRegistrationForm = () => {
                   onClick={() => {
                     if (canGoTo && stepNum !== step) {
                       setStep(stepNum);
-                      if (typeof window !== 'undefined') {
-                        localStorage.setItem('registerStoreCurrentStep', String(stepNum));
-                      }
                     }
                   }}
                   className={`w-full flex items-center gap-2 py-1 sm:py-1.5 px-2 rounded-lg text-left transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset disabled:opacity-60 disabled:cursor-not-allowed disabled:pointer-events-none ${
@@ -2641,27 +3267,39 @@ const StoreRegistrationForm = () => {
             <div className="flex gap-3 justify-center">
               <button
                 type="button"
-                onClick={() => { confirmModal.onCancel?.(); setConfirmModal(null); }}
-                className="px-4 py-2.5 rounded-lg border-2 border-indigo-500 bg-white text-indigo-600 font-medium hover:bg-indigo-50"
+                disabled={!!confirmModal.isLoading}
+                onClick={() => {
+                  if (confirmModal.isLoading) return;
+                  confirmModal.onCancel?.();
+                  setConfirmModal(null);
+                }}
+                className="px-4 py-2.5 rounded-lg border-2 border-indigo-500 bg-white text-indigo-600 font-medium hover:bg-indigo-50 disabled:opacity-50 disabled:pointer-events-none"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 disabled={!!confirmModal.isLoading}
-                onClick={() => {
-                  if (!confirmModal.isLoading) {
-                    confirmModal.onConfirm();
+                onClick={async () => {
+                  if (confirmModal.isLoading) return;
+                  setConfirmModal((prev) => (prev ? { ...prev, isLoading: true } : prev));
+                  try {
+                    await Promise.resolve(confirmModal.onConfirm());
+                  } finally {
+                    setConfirmModal(null);
                   }
                 }}
-                className={`px-4 py-2.5 rounded-lg font-medium text-white inline-flex items-center justify-center gap-2 ${
+                className={`px-4 py-2.5 rounded-lg font-medium text-white inline-flex items-center justify-center gap-2 min-w-[7.5rem] ${
                   confirmModal.variant === 'error'
                     ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-400'
                     : 'bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400'
                 }`}
               >
                 {confirmModal.isLoading && (
-                  <span className="h-4 w-4 border-2 border-white/60 border-t-transparent rounded-full animate-spin" />
+                  <span
+                    className="h-4 w-4 shrink-0 border-2 border-white/60 border-t-transparent rounded-full animate-spin"
+                    aria-hidden
+                  />
                 )}
                 <span>{confirmModal.confirmLabel ?? 'Confirm'}</span>
               </button>
@@ -3281,7 +3919,9 @@ const StoreRegistrationForm = () => {
             <CombinedDocumentStoreSetup
               key={`step-4-docs-${selectedStorePublicId || draftStorePublicId || 'new'}`}
               initialDocuments={documents}
-              onDocumentComplete={(docs) => void handleDocumentUploadComplete(docs as unknown as DocumentData)}
+              onDocumentComplete={(docs, savedPatch) =>
+                void handleDocumentUploadComplete(docs as unknown as DocumentData, savedPatch)
+              }
               onDocumentSave={(docs) => saveDocumentProgress(docs as unknown as DocumentData)}
               onBack={prevStep}
               actionLoading={actionLoading}
@@ -3305,7 +3945,8 @@ const StoreRegistrationForm = () => {
                 try {
                   await saveProgress({ currentStep: 5, nextStep: 4, markStepComplete: false, formDataPatch: getStepPatch(5) });
                   setStep(4);
-                  const storeId = selectedStorePublicId || (typeof window !== 'undefined' ? localStorage.getItem('registerStoreCurrentStepStoreId') : null) || '';
+                  const storeId =
+                    (selectedStorePublicId || currentStoreId || draftStorePublicId || '').trim();
                   const url = storeId ? `/api/auth/register-store-progress?storePublicId=${encodeURIComponent(storeId)}` : '/api/auth/register-store-progress';
                   fetch(url)
                     .then((res) => res.json())
@@ -3404,11 +4045,14 @@ const StoreRegistrationForm = () => {
               menuData={{
                 menuUploadMode,
                 menuImageFiles: [],
-                menuSpreadsheetFile: null,
+                menuSpreadsheetFile,
                 menuImageUrls: menuUploadedImageUrls,
+                menuImageNames: menuUploadedImageNames,
                 menuSpreadsheetUrl: menuUploadedSpreadsheetUrl,
+                menuSpreadsheetFileName: menuUploadedSpreadsheetFileName,
                 menuPdfUrl: menuUploadedPdfUrl,
                 menuPdfFileName: menuUploadedPdfFileName,
+                menuPdfFile,
               }}
               parentInfo={parentInfo}
               onBack={async () => {
@@ -3502,7 +4146,12 @@ const StoreRegistrationForm = () => {
               onContinue={async ({ contractText, agreedToRead }) => {
                 setActionLoading(true);
                 try {
-                  await saveProgress({ currentStep: 8, nextStep: 9, markStepComplete: true, formDataPatch: {} });
+                  await saveProgress({
+                    currentStep: 8,
+                    nextStep: 9,
+                    markStepComplete: true,
+                    formDataPatch: buildFullFormDataSnapshotPatch(),
+                  });
                   setContractTextForSignature(contractText);
                   setAgreementReadConfirmed(!!agreedToRead);
                   setStep(9);
@@ -3534,11 +4183,14 @@ const StoreRegistrationForm = () => {
               menuData={{
                 menuUploadMode,
                 menuImageFiles: [],
-                menuSpreadsheetFile: null,
+                menuSpreadsheetFile,
                 menuImageUrls: menuUploadedImageUrls,
+                menuImageNames: menuUploadedImageNames,
                 menuSpreadsheetUrl: menuUploadedSpreadsheetUrl,
+                menuSpreadsheetFileName: menuUploadedSpreadsheetFileName,
                 menuPdfUrl: menuUploadedPdfUrl,
                 menuPdfFileName: menuUploadedPdfFileName,
+                menuPdfFile,
               }}
               parentInfo={parentInfo}
               agreementTemplate={agreementTemplate}

@@ -2,8 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
-import { getMerchantMenuPath, getOnboardingR2Path } from "@/lib/r2-paths";
-import { uploadToR2, deleteFromR2, deleteFromR2ByPrefix, toStoredDocumentUrl } from "@/lib/r2";
+import {
+  getMerchantMenuPath,
+  getMerchantMenuCanonicalPdfKey,
+  getMerchantMenuCanonicalSheetKey,
+  getOnboardingR2Path,
+} from "@/lib/r2-paths";
+import {
+  uploadToR2,
+  deleteFromR2,
+  deleteFromR2ByPrefix,
+  signedPublicUrlForMenuR2Key,
+} from "@/lib/r2";
+import { randomUUID } from "crypto";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -70,8 +81,8 @@ async function authenticateAndGetStore(req: NextRequest, storeIdValue: string) {
     return { error: "Store not accessible", status: 403 } as const;
   }
 
-  const parentMerchantCode = (parent as { parent_merchant_id?: string }).parent_merchant_id || String(store.parent_id);
-  return { user, store, parent, parentMerchantCode, db } as const;
+  const parentPrimaryKeySegment = String(store.parent_id);
+  return { user, store, parent, parentPrimaryKeySegment, db } as const;
 }
 
 /**
@@ -99,9 +110,9 @@ export async function POST(req: NextRequest) {
 
     const auth = await authenticateAndGetStore(req, storeId);
     if ("error" in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
-    const { user, store, parentMerchantCode, db } = auth;
+    const { user, store, parentPrimaryKeySegment, db } = auth;
 
-    const menuPath = getMerchantMenuPath(store.store_id, parentMerchantCode);
+    const menuPath = getMerchantMenuPath(store.store_id, parentPrimaryKeySegment);
     const isImage = menuUploadMode === "IMAGE";
     const isPdf = menuUploadMode === "PDF";
 
@@ -123,12 +134,24 @@ export async function POST(req: NextRequest) {
       }
 
       const uploadedKeys: string[] = [];
+      const uploadedPublicUrls: string[] = [];
       for (const file of files) {
         const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-        const safeName = `menu_card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+        const safeName = `menu_card_${Date.now()}_${randomUUID().slice(0, 8)}.${ext}`;
         const r2Key = `${menuPath}/${safeName}`;
-        await uploadToR2(file, r2Key);
-        const publicUrl = toStoredDocumentUrl(r2Key);
+        const imgMime =
+          (file.type && file.type.trim()) ||
+          (ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg");
+        try {
+          await uploadToR2(file, r2Key, imgMime);
+        } catch (e) {
+          console.error("[merchant/menu-upload] R2 image upload failed:", e);
+          return NextResponse.json(
+            { error: e instanceof Error ? e.message : "Could not store file in cloud storage (R2)." },
+            { status: 502 }
+          );
+        }
+        const publicUrl = await signedPublicUrlForMenuR2Key(r2Key);
 
         const { error: insertError } = await db.from("merchant_store_media_files").insert({
           store_id: store.id,
@@ -137,8 +160,8 @@ export async function POST(req: NextRequest) {
           source_entity_id: null,
           original_file_name: file.name || safeName,
           r2_key: r2Key,
-          public_url: publicUrl ?? `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`,
-          mime_type: file.type || "image/*",
+          public_url: publicUrl,
+          mime_type: imgMime,
           file_size_bytes: file.size,
           version_no: 1,
           is_active: true,
@@ -148,6 +171,11 @@ export async function POST(req: NextRequest) {
 
         if (insertError) {
           console.error("[merchant/menu-upload] image insert failed:", insertError);
+          try {
+            await deleteFromR2(r2Key);
+          } catch {
+            /* ignore */
+          }
           return NextResponse.json(
             { error: insertError.message || "Failed to save menu image in database" },
             { status: 500 }
@@ -155,6 +183,7 @@ export async function POST(req: NextRequest) {
         }
 
         uploadedKeys.push(r2Key);
+        uploadedPublicUrls.push(publicUrl);
       }
 
       await db.from("merchant_store_activity_log").insert({
@@ -169,15 +198,26 @@ export async function POST(req: NextRequest) {
         actioned_by_email: user.email ?? null,
       });
 
-      return NextResponse.json({ success: true, keys: uploadedKeys });
+      return NextResponse.json({
+        success: true,
+        keys: uploadedKeys,
+        publicUrls: uploadedPublicUrls,
+      });
     }
 
     // CSV or PDF — single file, replaces existing of same type
     const file = files[0];
+    // Read once: file.text() consumes the stream in some runtimes and would upload 0 bytes to R2 afterwards.
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const lowerName = (file.name || "").toLowerCase();
+    const sheetExt = lowerName.endsWith(".xlsx")
+      ? "xlsx"
+      : lowerName.endsWith(".xls")
+        ? "xls"
+        : "csv";
 
-    if (menuUploadMode === "CSV") {
-      const text = await file.text();
-      const parsed = parseCsvRowCountAndHeaders(text);
+    if (menuUploadMode === "CSV" && sheetExt === "csv") {
+      const parsed = parseCsvRowCountAndHeaders(fileBuffer.toString("utf8"));
       if (parsed.error) {
         return NextResponse.json({ error: parsed.error }, { status: 400 });
       }
@@ -209,32 +249,65 @@ export async function POST(req: NextRequest) {
     // Clean up old onboarding prefixes
     try {
       if (isPdf) {
-        const pdfPrefix = getOnboardingR2Path(parentMerchantCode, store.store_id, "MENU_PDF");
+        const pdfPrefix = getOnboardingR2Path(parentPrimaryKeySegment, store.store_id, "MENU_PDF");
         await deleteFromR2ByPrefix(pdfPrefix);
       } else {
-        const csvPrefix = getOnboardingR2Path(parentMerchantCode, store.store_id, "MENU_CSV");
+        const csvPrefix = getOnboardingR2Path(parentPrimaryKeySegment, store.store_id, "MENU_CSV");
         await deleteFromR2ByPrefix(csvPrefix);
       }
     } catch {}
 
-    const ext = isPdf ? "pdf" : "csv";
-    const safeName = isPdf ? `menu_pdf_${Date.now()}.${ext}` : `menu_sheet_${Date.now()}.${ext}`;
-    const r2Key = `${menuPath}/${safeName}`;
-    await uploadToR2(file, r2Key);
+    if (isPdf) {
+      try {
+        await deleteFromR2(getMerchantMenuCanonicalPdfKey(store.store_id, parentPrimaryKeySegment));
+      } catch {
+        /* ignore */
+      }
+    } else {
+      for (const ext of ["csv", "xlsx", "xls"] as const) {
+        try {
+          await deleteFromR2(getMerchantMenuCanonicalSheetKey(store.store_id, ext, parentPrimaryKeySegment));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
 
-    const publicUrl = toStoredDocumentUrl(r2Key);
-    const mimeType = isPdf ? "application/pdf" : "text/csv";
+    const r2Key = isPdf
+      ? getMerchantMenuCanonicalPdfKey(store.store_id, parentPrimaryKeySegment)
+      : getMerchantMenuCanonicalSheetKey(store.store_id, sheetExt, parentPrimaryKeySegment);
+    const mimeType = isPdf
+      ? "application/pdf"
+      : sheetExt === "xlsx"
+        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : sheetExt === "xls"
+          ? "application/vnd.ms-excel"
+          : "text/csv";
+
+    const fallbackName = isPdf ? "menu-reference.pdf" : `menu-reference-sheet.${sheetExt}`;
+    const fileForUpload = new File([fileBuffer], file.name || fallbackName, { type: mimeType });
+    try {
+      await uploadToR2(fileForUpload, r2Key, mimeType);
+    } catch (e) {
+      console.error("[merchant/menu-upload] R2 CSV/PDF upload failed:", e);
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : "Could not store file in cloud storage (R2)." },
+        { status: 502 }
+      );
+    }
+
+    const publicUrl = await signedPublicUrlForMenuR2Key(r2Key);
 
     const { error: insertError } = await db.from("merchant_store_media_files").insert({
       store_id: store.id,
       media_scope: "MENU_REFERENCE",
       source_entity: sourceEntity,
       source_entity_id: null,
-      original_file_name: file.name || safeName,
+      original_file_name: file.name || fallbackName,
       r2_key: r2Key,
-      public_url: publicUrl ?? `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`,
-      mime_type: mimeType,
-      file_size_bytes: file.size,
+      public_url: publicUrl,
+      mime_type: (file.type && file.type.trim()) || mimeType,
+      file_size_bytes: fileBuffer.length,
       version_no: 1,
       is_active: true,
       verification_status: "PENDING",
@@ -243,6 +316,11 @@ export async function POST(req: NextRequest) {
 
     if (insertError) {
       console.error("[merchant/menu-upload] CSV/PDF insert failed:", insertError);
+      try {
+        await deleteFromR2(r2Key);
+      } catch {
+        /* ignore */
+      }
       return NextResponse.json(
         { error: insertError.message || "Failed to save menu file in database" },
         { status: 500 }
@@ -254,14 +332,14 @@ export async function POST(req: NextRequest) {
       activity_type: "MENU_FILE_UPLOADED",
       activity_reason: isPdf ? "Menu PDF uploaded; pending verification." : "Menu CSV uploaded; pending verification.",
       activity_reason_code: isPdf ? "MENU_PDF_UPLOAD" : "MENU_CSV_UPLOAD",
-      activity_notes: JSON.stringify({ fileName: file.name || safeName, r2_key: r2Key }),
+      activity_notes: JSON.stringify({ fileName: file.name || fallbackName, r2_key: r2Key }),
       actioned_by: "MERCHANT",
       actioned_by_id: null,
       actioned_by_name: user.email?.split("@")[0] ?? user.user_metadata?.name ?? "Merchant",
       actioned_by_email: user.email ?? null,
     });
 
-    return NextResponse.json({ success: true, key: r2Key });
+    return NextResponse.json({ success: true, key: r2Key, r2Key, publicUrl });
   } catch (err: any) {
     console.error("[merchant/menu-upload]", err);
     return NextResponse.json({ error: err?.message || "Upload failed" }, { status: 500 });
