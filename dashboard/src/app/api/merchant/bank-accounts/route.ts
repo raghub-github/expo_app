@@ -117,7 +117,9 @@ export async function POST(req: NextRequest) {
 
     const rawHolder = String(body.account_holder_name ?? "").trim();
     const rawAccount = String(body.account_number ?? "").trim();
-    const ifscCode = body.ifsc_code ? String(body.ifsc_code).trim() : "";
+    const ifscCode = body.ifsc_code
+      ? String(body.ifsc_code).trim().toUpperCase()
+      : "";
     const bankName = body.bank_name ? String(body.bank_name).trim() : "";
 
     if (payoutMethod === "bank") {

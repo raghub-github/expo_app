@@ -186,6 +186,7 @@ export function AddChildStoreClient() {
 
   // Step 5: Operational details (store configuration / hours / cuisines)
   const [step5StoreSetup, setStep5StoreSetup] = useState<Step5StoreSetupData | null>(null);
+  const [mediaUploading, setMediaUploading] = useState(false);
 
   const legalBusinessName = storeDisplayName;
   const currentStoreId = createdStoreId;
@@ -1113,7 +1114,7 @@ export function AddChildStoreClient() {
   const saveProgress = useCallback(
     async (currentStep: number, formDataPatch: Record<string, unknown>) => {
       if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) return;
-      await fetch("/api/area-manager/child-store-progress", {
+      const res = await fetch("/api/area-manager/child-store-progress", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -1124,9 +1125,45 @@ export function AddChildStoreClient() {
           formDataPatch,
         }),
       });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({} as any));
+        throw new Error(json?.error ?? "Failed to save progress");
+      }
     },
     [storeInternalId, parentId]
   );
+
+  const toProxyAttachmentUrl = useCallback((value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    // Never persist local preview URLs in DB.
+    if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null;
+
+    if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
+    if (trimmed.startsWith("/v1/attachments/proxy")) {
+      return trimmed.replace("/v1/attachments/proxy", "/api/attachments/proxy");
+    }
+
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      try {
+        const u = new URL(trimmed);
+        if (u.pathname.startsWith("/api/attachments/proxy") || u.pathname.startsWith("/v1/attachments/proxy")) {
+          const key = u.searchParams.get("key");
+          if (key && key.trim()) {
+            return `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+          }
+        }
+      } catch {
+        return null;
+      }
+      return null;
+    }
+
+    // Treat as raw R2 key and normalize to proxy URL.
+    return `/api/attachments/proxy?key=${encodeURIComponent(trimmed.replace(/^\/+/, ""))}`;
+  }, []);
 
   const getStep2Patch = useCallback((): Record<string, unknown> => ({
     step2: {
@@ -1410,15 +1447,11 @@ export function AddChildStoreClient() {
         setErr("Please select at least one cuisine before continuing.");
         return;
       }
-      const bannerValue =
-        typeof step5StoreSetup.banner_preview === "string" &&
-        step5StoreSetup.banner_preview.trim()
-          ? step5StoreSetup.banner_preview.trim()
-          : null;
-      const galleryUrls =
-        step5StoreSetup.gallery_previews?.filter(
-          (u) => typeof u === "string" && u.trim()
-        ) ?? [];
+      const bannerValue = toProxyAttachmentUrl(step5StoreSetup.banner_preview);
+      const galleryUrls = (step5StoreSetup.gallery_previews ?? [])
+        .map((u) => toProxyAttachmentUrl(u))
+        .filter((u): u is string => typeof u === "string" && u.length > 0)
+        .slice(0, 5);
 
       const step5Patch: Record<string, unknown> = {
         step5: {
@@ -1439,6 +1472,8 @@ export function AddChildStoreClient() {
       try {
         await saveProgress(5, step5Patch);
         setStep(6);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Failed to save store configuration");
       } finally {
         setActionLoading(false);
       }
@@ -1679,8 +1714,14 @@ export function AddChildStoreClient() {
                   ? step4Patch.upi_id?.trim() || undefined
                   : undefined,
               bank_proof_type: step4Patch.bank_proof_type || undefined,
-              // TODO: When you wire bank proof uploads to R2 from this AM flow,
-              // pass bank_proof_file_url / upi_qr_screenshot_url here as well.
+              bank_proof_file_url:
+                payoutMethod === "bank"
+                  ? step4Patch.bank_proof_file_url?.trim() || undefined
+                  : undefined,
+              upi_qr_screenshot_url:
+                payoutMethod === "upi"
+                  ? step4Patch.upi_qr_screenshot_url?.trim() || undefined
+                  : undefined,
             }),
           });
         }
@@ -2497,6 +2538,8 @@ export function AddChildStoreClient() {
               {step === 5 && (
                 <Step5StoreSetup
                   initialStoreSetup={step5StoreSetup ?? undefined}
+                  storeInternalId={storeInternalId}
+                  onMediaUploadingChange={setMediaUploading}
                   onChange={(next) => setStep5StoreSetup(next)}
                   onDeleteBanner={async (currentBannerUrl) => {
                     if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) return;
@@ -2511,7 +2554,8 @@ export function AddChildStoreClient() {
                     if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) return;
                     const remaining =
                       step5StoreSetup?.gallery_previews
-                        ?.filter((u) => typeof u === "string" && u.trim())
+                        ?.map((u) => toProxyAttachmentUrl(u))
+                        .filter((u): u is string => typeof u === "string" && u.length > 0)
                         .slice(0, 5) ?? [];
                     await saveProgress(5, {
                       step5: {
@@ -3218,7 +3262,7 @@ export function AddChildStoreClient() {
                           void nextStep();
                         }
                       }}
-                      disabled={actionLoading || (step === 4 && !step4RequiredValid)}
+                      disabled={actionLoading || mediaUploading || (step === 4 && !step4RequiredValid)}
                       className="px-4 py-2 sm:px-5 sm:py-2.5 text-xs sm:text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50 inline-flex items-center gap-1.5 sm:gap-2 shrink-0 cursor-pointer disabled:cursor-not-allowed"
                     >
                       {actionLoading ? (
@@ -3244,6 +3288,8 @@ export function AddChildStoreClient() {
                         ? "Continue to plans"
                         : step === 9
                         ? "Complete registration"
+                        : step === 4 && step4Section === "AADHAAR"
+                        ? "Skip / Save & Continue"
                         : "Save & Continue"}
                     </button>
                   ) : null}

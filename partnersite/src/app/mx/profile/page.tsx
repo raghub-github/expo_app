@@ -687,7 +687,7 @@ export default function ProfilePage() {
     const formData = new FormData();
     formData.append("file", file);
     const ext = file.name.split(".").pop() || "jpg";
-    formData.append("parent", `${getMerchantAssetsPath(storeId, store?.parent_merchant_id ?? undefined)}/${parentFolder}`);
+    formData.append("parent", `${getMerchantAssetsPath(storeId, store?.parent_id != null ? String(store.parent_id) : undefined)}/${parentFolder}`);
     formData.append("filename", filename || `${parentFolder}_${Date.now()}.${ext}`);
     const res = await fetch("/api/upload/r2", { method: "POST", body: formData });
     if (!res.ok) {

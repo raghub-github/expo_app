@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
-import { getOnboardingR2Path, getOnboardingDocumentPath, type R2OnboardingDocType } from '@/lib/r2-paths';
+import {
+  getOnboardingAgreementPath,
+  getOnboardingDocumentPath,
+  menuSpreadsheetMimeFromFileName,
+  type R2OnboardingDocType,
+} from '@/lib/r2-paths';
 import { upsertStoreCuisines } from '@/lib/cuisines';
+import { parseMenuReferenceImageUrls, stableEntryIdForUrl } from '@/lib/menu-reference-image-bundle';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -17,12 +23,15 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   const { ownerName, ownerEmail, storePublicId } = args;
   if (!ownerEmail) return;
 
-  const gmailUser = process.env.EMAIL_ID || process.env.SMTP_FROM_EMAIL;
-  const gmailPass = process.env.EMAIL_APP_PASSWORD;
-  const fromEmail = process.env.SMTP_FROM_EMAIL || gmailUser;
+  const smtpUser = process.env.EMAIL_ID || process.env.SMTP_USER || process.env.SMTP_FROM_EMAIL;
+  const smtpPass = process.env.EMAIL_APP_PASSWORD || process.env.SMTP_PASS;
+  const smtpHost = process.env.SMTP_HOST || 'smtp.zoho.in';
+  const smtpPort = Number(process.env.SMTP_PORT || 465);
+  const smtpSecure = String(process.env.SMTP_SECURE || 'true').toLowerCase() !== 'false';
+  const fromEmail = process.env.SMTP_FROM_EMAIL || smtpUser;
   const fromName = process.env.SMTP_FROM_NAME || 'GatiMitra Team';
 
-  if (!gmailUser || !gmailPass || !fromEmail) {
+  if (!smtpUser || !smtpPass || !fromEmail) {
     console.warn('[register-store] Email env not configured; skipping welcome email');
     return;
   }
@@ -30,20 +39,35 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   console.log('[register-store] Welcome email queued for', ownerEmail);
 
   const { default: nodemailer } = await import('nodemailer');
-  // Gmail SMTP defaults (app password)
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    host: smtpHost,
+    port: smtpPort,
+    secure: smtpSecure,
     auth: {
-      user: gmailUser,
-      pass: gmailPass,
+      user: smtpUser,
+      pass: smtpPass,
     },
   });
 
   const safeName = (ownerName || '').toString().trim() || 'Partner';
   const safeStoreId = (storePublicId || '').toString().trim();
   const dashboardUrl = 'https://partner.gatimitra.com/auth/post-login';
+  const textBody = [
+    `Hi ${safeName},`,
+    '',
+    'Your store registration has been received on GatiMitra and is under verification.',
+    'Verification usually takes 24-48 hours.',
+    safeStoreId ? `Store ID: ${safeStoreId}` : null,
+    '',
+    `Dashboard: ${dashboardUrl}`,
+    '',
+    'Need help? support@gatimitra.com',
+    '',
+    'Regards,',
+    'Team GatiMitra',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const htmlBody = `<!DOCTYPE html>
 <html lang="en">
@@ -247,7 +271,9 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   await transporter.sendMail({
     from: fromName ? `${fromName} <${fromEmail}>` : fromEmail,
     to: ownerEmail,
-    subject: `Welcome to GatiMitra, ${safeName}`,
+    replyTo: fromEmail,
+    subject: `Store registration received - GatiMitra (${safeName})`,
+    text: textBody,
     html: htmlBody,
   });
 
@@ -285,7 +311,14 @@ export async function POST(req: NextRequest) {
           return { valid: Object.keys(errors).length === 0, errors };
         }
   // Import R2 helpers
-  const { uploadToR2, deleteFromR2, extractR2KeyFromUrl, toStoredDocumentUrl, toStoredDocumentUrlSigned } = await import('@/lib/r2');
+  const {
+    uploadToR2,
+    deleteFromR2,
+    extractR2KeyFromUrl,
+    toStoredDocumentUrl,
+    toStoredDocumentUrlSigned,
+    r2KeyFromMenuMediaRow,
+  } = await import('@/lib/r2');
   // Store proxy URLs (not signed URLs) for banner/gallery so they load in profile regardless of when uploaded
   const toStoredMediaUrl = (value: string | null | undefined): string | null => {
     if (!value || typeof value !== 'string') return null;
@@ -310,11 +343,12 @@ export async function POST(req: NextRequest) {
     }
     const body = await req.json();
     const { step1, step2, storeSetup, documents, logoUrl, bannerUrl, galleryUrls, menuAssets, documentUrls, parentInfo, agreementAcceptance } = body;
+    // Full address = Flat/Unit No + Floor/Tower + Building/Complex Name + Full Address
+    // e.g. "266/16c1b, Ground floor, Building, Old Mahabalipuram Road 11، 603110 Tiruporur، India"
     const composedFullAddress = [
       step2?.unit_number,
       step2?.floor_number,
       step2?.building_name,
-      step2?.address_line1,
       step2?.full_address,
     ]
       .filter((part: unknown) => typeof part === 'string' && part.trim().length > 0)
@@ -402,12 +436,12 @@ export async function POST(req: NextRequest) {
       OTHER: 'OTHER',
       // Add more mappings as needed
     };
-    // --- R2 Document Upload Logic: each document type under onboarding/documents/{pan|aadhaar|fssai|gst|bank|pharma|other} ---
+    // --- R2 Document Upload Logic: each file under onboarding/{pan|aadhaar|fssai|gst|bank|pharma|other}/ ---
     if (documentUrls && documentUrls.length > 0) {
       for (const doc of documentUrls) {
         const docType: string = typeMap[doc.type] || doc.type;
         const r2DocType = toR2DocType(docType);
-        const documentPath = getOnboardingDocumentPath(String(parentMerchantId), storeId ?? undefined, r2DocType);
+        const documentPath = getOnboardingDocumentPath(parentId, storeId ?? undefined, r2DocType);
         const fileName = `${Date.now()}_${doc.name}`;
         const r2Key = `${documentPath}/${fileName}`;
         if (doc.file) {
@@ -420,7 +454,6 @@ export async function POST(req: NextRequest) {
     // 2. Insert or update draft store (one row per child store)
     const draftStoreDbId = step1?.__draftStoreDbId ? Number(step1.__draftStoreDbId) : null;
     // Store proxy URLs (stable, no expiry) so banner/gallery load in merchant profile from onboarding or dashboard
-    const logoUrlStored = toStoredMediaUrl(logoUrl) || logoUrl || null;
     const bannerUrlStored = toStoredMediaUrl(bannerUrl) || bannerUrl || null;
     const galleryUrlsStored = Array.isArray(galleryUrls)
       ? galleryUrls.map((u: string) => toStoredMediaUrl(u)).filter((u): u is string => !!u)
@@ -440,14 +473,15 @@ export async function POST(req: NextRequest) {
       country: step2.country,
       latitude: step2.latitude,
       longitude: step2.longitude,
-      logo_url: logoUrlStored,
       banner_url: bannerUrlStored,
       gallery_images: galleryUrlsStored,
       cuisine_types: storeSetup.cuisine_types,
-      food_categories: storeSetup.food_categories,
       avg_preparation_time_minutes: storeSetup.avg_preparation_time_minutes,
       min_order_amount: storeSetup.min_order_amount,
-      delivery_radius_km: storeSetup.delivery_radius_km,
+      delivery_radius_km:
+        typeof storeSetup.delivery_radius_km === "number" && Number.isFinite(storeSetup.delivery_radius_km)
+          ? storeSetup.delivery_radius_km
+          : null,
       is_pure_veg: storeSetup.is_pure_veg,
       accepts_online_payment: storeSetup.accepts_online_payment,
       accepts_cash: storeSetup.accepts_cash,
@@ -494,55 +528,149 @@ export async function POST(req: NextRequest) {
 
     // 2.a Persist menu upload references for frequent updates (if media table exists)
     const menuImageUrls: string[] = Array.isArray(menuAssets?.imageUrls) ? menuAssets.imageUrls.filter(Boolean) : [];
+    const menuImageNames: string[] = Array.isArray(menuAssets?.imageNames) ? menuAssets.imageNames.filter(Boolean) : [];
     const menuSpreadsheetUrl: string | null = menuAssets?.spreadsheetUrl || null;
-    if (menuImageUrls.length > 0 || menuSpreadsheetUrl) {
+    const menuPdfUrl: string | null = menuAssets?.pdfUrl || null;
+    const sheetDisplayName =
+      typeof menuAssets?.spreadsheetFileName === 'string' && menuAssets.spreadsheetFileName.trim()
+        ? menuAssets.spreadsheetFileName.trim()
+        : 'menu_spreadsheet';
+    if (menuImageUrls.length > 0 || menuSpreadsheetUrl || menuPdfUrl) {
       const mediaRows: any[] = [];
-      menuImageUrls.forEach((url, idx) => {
-        const key = typeof url === 'string' ? (extractR2KeyFromUrl(url) || (url.includes('://') ? null : url.replace(/^\/+/, '')) || url) : null;
-        const publicUrl = key ? (toStoredDocumentUrl(key) ?? url) : url;
+
+      if (menuImageUrls.length > 0) {
+        const bundle = menuImageUrls.map((url, idx) => {
+          const key =
+            typeof url === 'string'
+              ? extractR2KeyFromUrl(url) || (url.includes('://') ? null : url.replace(/^\/+/, '')) || url
+              : null;
+          const proxyUrl = (key ? toStoredDocumentUrl(key) : null) || (typeof url === 'string' ? url : '');
+          const imgName =
+            typeof menuImageNames[idx] === 'string' && menuImageNames[idx].trim()
+              ? menuImageNames[idx].trim()
+              : `menu_image_${idx + 1}`;
+          return {
+            id: stableEntryIdForUrl(proxyUrl),
+            url: proxyUrl,
+            file_name: imgName,
+          };
+        });
+        const firstUrl = bundle[0]?.url ?? '';
         mediaRows.push({
           store_id: storeData.id,
           media_scope: 'MENU_REFERENCE',
           source_entity: 'ONBOARDING_MENU_IMAGE',
           source_entity_id: null,
-          original_file_name: `menu_image_${idx + 1}`,
-          r2_key: key,
-          public_url: publicUrl,
+          original_file_name: bundle.map((b) => b.file_name).filter(Boolean).join(', ') || 'menu_images',
+          r2_key: firstUrl,
+          public_url: firstUrl,
+          menu_url: firstUrl,
+          menu_reference_image_urls: bundle,
           mime_type: 'image/*',
           is_active: true,
           verification_status: 'PENDING',
         });
-      });
+      }
       if (menuSpreadsheetUrl) {
-        const sheetKey = typeof menuSpreadsheetUrl === 'string' ? (extractR2KeyFromUrl(menuSpreadsheetUrl) || (menuSpreadsheetUrl.includes('://') ? null : menuSpreadsheetUrl.replace(/^\/+/, '')) || menuSpreadsheetUrl) : null;
-        const sheetPublicUrl = sheetKey ? (toStoredDocumentUrl(sheetKey) ?? menuSpreadsheetUrl) : menuSpreadsheetUrl;
+        const sheetKey =
+          typeof menuSpreadsheetUrl === 'string'
+            ? extractR2KeyFromUrl(menuSpreadsheetUrl) ||
+              (menuSpreadsheetUrl.includes('://') ? null : menuSpreadsheetUrl.replace(/^\/+/, '')) ||
+              menuSpreadsheetUrl
+            : null;
+        const sheetProxy = (sheetKey ? toStoredDocumentUrl(sheetKey) : null) || menuSpreadsheetUrl || '';
         mediaRows.push({
           store_id: storeData.id,
           media_scope: 'MENU_REFERENCE',
           source_entity: 'ONBOARDING_MENU_SHEET',
           source_entity_id: null,
-          original_file_name: 'menu_spreadsheet',
-          r2_key: sheetKey,
-          public_url: sheetPublicUrl,
-          mime_type: 'application/octet-stream',
+          original_file_name: sheetDisplayName,
+          r2_key: sheetProxy,
+          public_url: sheetProxy,
+          menu_url: sheetProxy,
+          mime_type: menuSpreadsheetMimeFromFileName(sheetDisplayName),
+          is_active: true,
+          verification_status: 'PENDING',
+        });
+      }
+      if (menuPdfUrl) {
+        const pdfKey =
+          typeof menuPdfUrl === 'string'
+            ? extractR2KeyFromUrl(menuPdfUrl) ||
+              (menuPdfUrl.includes('://') ? null : menuPdfUrl.replace(/^\/+/, '')) ||
+              menuPdfUrl
+            : null;
+        const pdfProxy = (pdfKey ? toStoredDocumentUrl(pdfKey) : null) || menuPdfUrl || '';
+        const pdfName =
+          typeof menuAssets?.pdfFileName === 'string' && menuAssets.pdfFileName.trim()
+            ? menuAssets.pdfFileName.trim()
+            : 'menu.pdf';
+        mediaRows.push({
+          store_id: storeData.id,
+          media_scope: 'MENU_REFERENCE',
+          source_entity: 'ONBOARDING_MENU_PDF',
+          source_entity_id: null,
+          original_file_name: pdfName,
+          r2_key: pdfProxy,
+          public_url: pdfProxy,
+          menu_url: pdfProxy,
+          mime_type: 'application/pdf',
           is_active: true,
           verification_status: 'PENDING',
         });
       }
       if (mediaRows.length > 0) {
         try {
+          // R2 keys we are about to keep referencing — do NOT delete these objects (final submit does not re-upload menu).
+          const retainMenuR2Keys = new Set<string>();
+          for (const u of menuImageUrls) {
+            if (typeof u !== 'string' || !u.trim()) continue;
+            const k = r2KeyFromMenuMediaRow({ menu_url: u, public_url: u, r2_key: u });
+            if (k) retainMenuR2Keys.add(k);
+          }
+          if (menuSpreadsheetUrl && typeof menuSpreadsheetUrl === 'string') {
+            const k = r2KeyFromMenuMediaRow({
+              menu_url: menuSpreadsheetUrl,
+              public_url: menuSpreadsheetUrl,
+              r2_key: menuSpreadsheetUrl,
+            });
+            if (k) retainMenuR2Keys.add(k);
+          }
+          if (menuPdfUrl && typeof menuPdfUrl === 'string') {
+            const k = r2KeyFromMenuMediaRow({
+              menu_url: menuPdfUrl,
+              public_url: menuPdfUrl,
+              r2_key: menuPdfUrl,
+            });
+            if (k) retainMenuR2Keys.add(k);
+          }
+
           const { data: existingRows } = await db
             .from('merchant_store_media_files')
-            .select('id, r2_key, public_url')
+            .select('id, r2_key, public_url, menu_url, menu_reference_image_urls')
             .eq('store_id', storeData.id)
             .eq('media_scope', 'MENU_REFERENCE');
           for (const row of existingRows || []) {
-            const key = row.r2_key || extractR2KeyFromUrl(row.public_url || '');
-            if (key && typeof key === 'string') {
-              try {
-                await deleteFromR2(key);
-              } catch (e) {
-                console.warn('merchant_store_media_files R2 delete failed for key:', key, e);
+            const r = row as {
+              r2_key?: string | null;
+              public_url?: string | null;
+              menu_url?: string | null;
+              menu_reference_image_urls?: unknown;
+            };
+            const bundleUrls = parseMenuReferenceImageUrls(r.menu_reference_image_urls).map((e) => e.url);
+            const urlsToPurge =
+              bundleUrls.length > 0
+                ? bundleUrls
+                : [r.menu_url, r.public_url, r.r2_key].filter((u): u is string => typeof u === 'string' && !!u.trim());
+            for (const u of urlsToPurge) {
+              const key = r2KeyFromMenuMediaRow({ menu_url: u, public_url: u, r2_key: u });
+              if (key && typeof key === 'string') {
+                if (retainMenuR2Keys.has(key)) continue;
+                try {
+                  await deleteFromR2(key);
+                } catch (e) {
+                  console.warn('merchant_store_media_files R2 delete failed for key:', key, e);
+                }
               }
             }
           }
@@ -856,7 +984,7 @@ export async function POST(req: NextRequest) {
         let originalKey = extractR2KeyFromUrl(rawValue) || (rawValue.includes('://') ? null : rawValue.replace(/^\/+/, ''));
 
         if (originalKey) {
-          const correctAgreementsPath = getOnboardingR2Path(String(parentMerchantId), storeId, 'AGREEMENTS');
+          const correctAgreementsPath = getOnboardingAgreementPath(parentId, storeId);
           const fileName = originalKey.split('/').pop() || `contract_${Date.now()}.pdf`;
           const correctKey = `${correctAgreementsPath}/${fileName}`;
 
@@ -976,27 +1104,25 @@ export async function POST(req: NextRequest) {
       // Don't fail the entire registration if this update fails
     }
 
-    // 7. Fire-and-forget welcome email to owner email (do not block response)
-    (async () => {
-      try {
-        const ownerEmail =
-          (storeData as any)?.store_email ||
-          (typeof step1?.store_email === 'string' ? step1.store_email : null);
-        const ownerName =
-          (storeData as any)?.owner_full_name ||
-          (typeof step1?.owner_full_name === 'string' ? step1.owner_full_name : null) ||
-          (storeData as any)?.store_name ||
-          (typeof step1?.store_name === 'string' ? step1.store_name : null);
+    // 7. Send welcome email in-request so it reliably executes on serverless runtimes
+    try {
+      const ownerEmail =
+        (storeData as any)?.store_email ||
+        (typeof step1?.store_email === 'string' ? step1.store_email : null);
+      const ownerName =
+        (storeData as any)?.owner_full_name ||
+        (typeof step1?.owner_full_name === 'string' ? step1.owner_full_name : null) ||
+        (storeData as any)?.store_name ||
+        (typeof step1?.store_name === 'string' ? step1.store_name : null);
 
-        await sendWelcomeEmailToOwner({
-          ownerName,
-          ownerEmail,
-          storePublicId: storeId || null,
-        });
-      } catch (emailErr) {
-        console.warn('[register-store] Failed to send welcome email:', emailErr);
-      }
-    })();
+      await sendWelcomeEmailToOwner({
+        ownerName,
+        ownerEmail,
+        storePublicId: storeId || null,
+      });
+    } catch (emailErr) {
+      console.warn('[register-store] Failed to send welcome email:', emailErr);
+    }
 
     return NextResponse.json({ success: true, storeId });
   } catch (e: any) {

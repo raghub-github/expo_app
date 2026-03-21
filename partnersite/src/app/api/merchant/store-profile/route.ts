@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { toStoredDocumentUrl } from '@/lib/r2';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -31,10 +32,17 @@ export async function PATCH(req: NextRequest) {
       if (Object.prototype.hasOwnProperty.call(body, key)) {
         const val = body[key];
         if (key === 'banner_url' || key === 'logo_url') {
-          if (val === null || val === undefined || typeof val === 'string') updates[key] = val ?? null;
+          if (val === null || val === undefined) updates[key] = null;
+          else if (typeof val === 'string') {
+            updates[key] = toStoredDocumentUrl(val) ?? val;
+          }
         } else {
-          if (Array.isArray(val)) updates[key] = val.slice(0, 10);
-          else if (val === null || val === undefined) updates[key] = null;
+          if (Array.isArray(val)) {
+            updates[key] = val
+              .slice(0, 10)
+              .map((u: unknown) => (typeof u === 'string' ? toStoredDocumentUrl(u) ?? u : u))
+              .filter((u): u is string => typeof u === 'string' && u.length > 0);
+          } else if (val === null || val === undefined) updates[key] = null;
         }
       }
     }

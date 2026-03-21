@@ -53,11 +53,20 @@ export async function POST(
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
     const type = (formData.get("type") as string) || "gallery";
+    const indexRaw = formData.get("index");
+    const index =
+      typeof indexRaw === "string" && indexRaw.trim() !== "" && Number.isFinite(Number(indexRaw))
+        ? Number(indexRaw)
+        : 0;
     if (!file || !(file instanceof File)) {
       return NextResponse.json({ success: false, error: "No file" }, { status: 400 });
     }
-    const storeRow = access.store as { store_id?: string };
+    const storeRow = access.store as {
+      store_id?: string;
+      parent?: { parent_merchant_id?: string | null } | null;
+    };
     const storeCode = storeRow.store_id ?? `GMMC${storeId}`;
+    const parentCode = storeRow.parent?.parent_merchant_id ?? null;
     const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
     const timestamp = Date.now();
     const folder = type === "banner" ? "banners" : "gallery";
@@ -65,8 +74,12 @@ export async function POST(
     const fileName =
       type === "banner"
         ? `${baseName}_${timestamp}.${ext}`
-        : `${baseName}_${timestamp}_0.${ext}`;
-    const key = `merchant-assets/${storeCode}/${folder}/${fileName}`;
+        : `${baseName}_${timestamp}_${index}.${ext}`;
+    // Keep attachment keys consistent with the shared R2 folder structure:
+    // docs/merchants/{parent_code}/stores/{store_code}/assets/{banners|gallery}/{fileName}
+    const key = parentCode
+      ? `docs/merchants/${parentCode}/stores/${storeCode}/assets/${folder}/${fileName}`
+      : `docs/merchants/${storeCode}/assets/${folder}/${fileName}`;
     await uploadWithKey(file, key);
     const signedUrl = await getSignedUrlFromKey(key, 604800);
     return NextResponse.json({ success: true, url: signedUrl, key });
