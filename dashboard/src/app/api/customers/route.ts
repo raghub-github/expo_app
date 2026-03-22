@@ -9,6 +9,8 @@ import { listCustomers, getCustomerByCustomerId } from "@/lib/db/operations/cust
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { getRedisClient } from "@/lib/redis";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = 'nodejs';
 
@@ -28,13 +30,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Check if user is super admin or has CUSTOMER dashboard access
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
-    const hasDashboardAccess = await hasDashboardAccessByAuth(
-      user.id,
-      user.email ?? "",
-      "CUSTOMER"
-    );
+    // Check if user is super admin or has CUSTOMER dashboard access (in parallel)
+    const [userIsSuperAdmin, hasDashboardAccess] = await Promise.all([
+      isSuperAdmin(user.id, user.email ?? ""),
+      hasDashboardAccessByAuth(user.id, user.email ?? "", "CUSTOMER"),
+    ]);
 
     if (!userIsSuperAdmin && !hasDashboardAccess) {
       return NextResponse.json(
@@ -66,6 +66,43 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Server-side cache (per user + filters) for 30s to offload DB on repeated queries
+    const redis = getRedisClient();
+    const cacheKey = systemUser ? `customers:${systemUser.id}:${JSON.stringify(filters)}` : null;
+
+    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
+    if (cacheKey) {
+      const cached = getCached<{ customers: unknown[]; pagination: unknown }>(cacheKey);
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          data: cached.customers,
+          pagination: cached.pagination,
+        });
+      }
+    }
+
+    if (redis && cacheKey) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as {
+            customers: unknown[];
+            pagination: unknown;
+          };
+          // Populate memory cache too for immediate follow-up navigations.
+          setCached(cacheKey, parsed, MEMORY_TTL_MS);
+          return NextResponse.json({
+            success: true,
+            data: parsed.customers,
+            pagination: parsed.pagination,
+          });
+        }
+      } catch {
+        // ignore cache read errors
+      }
+    }
+
     // Fetch customers
     const result = await listCustomers(filters);
 
@@ -80,6 +117,23 @@ export async function GET(request: NextRequest) {
       { count: result.customers.length },
       ipAddress
     );
+
+    const toCache = {
+      customers: result.customers,
+      pagination: result.pagination,
+    };
+
+    if (cacheKey) {
+      setCached(cacheKey, toCache, MEMORY_TTL_MS);
+    }
+
+    if (redis && cacheKey) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(toCache), "EX", 30);
+      } catch {
+        // ignore cache write errors
+      }
+    }
 
     return NextResponse.json({
       success: true,

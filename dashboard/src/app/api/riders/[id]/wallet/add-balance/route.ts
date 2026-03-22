@@ -156,7 +156,7 @@ export async function POST(
       user.id,
       user.email ?? "",
       "RIDER",
-      "RIDER_WALLET_ADD_BALANCE",
+      "RIDER_WALLET_ADJUSTED",
       {
         resourceType: "rider_wallet",
         resourceId: String(riderId),

@@ -5,8 +5,20 @@
 
 import { getDb } from "../client";
 import { customers, ordersCore } from "../schema";
-import { eq, and, or, ilike, isNull, sql, desc, asc, gte, lte, inArray, countDistinct } from "drizzle-orm";
-
+import {
+  eq,
+  and,
+  or,
+  ilike,
+  isNull,
+  sql,
+  desc,
+  asc,
+  gte,
+  lte,
+  inArray,
+  type SQL,
+} from "drizzle-orm";
 export interface CustomerFilters {
   page?: number;
   limit?: number;
@@ -135,13 +147,14 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     walletBalance: customers.walletBalance,
     createdAt: customers.createdAt,
     lastOrderAt: customers.lastOrderAt,
-  };
+  }).from(customers).$dynamic();
 
-  const baseFrom = db.select(customerSelect).from(customers);
-  const filteredCustomers =
-    conditions.length > 0 ? baseFrom.where(and(...conditions)) : baseFrom;
-
-  const sortBy = filters.sortBy || "createdAt";
+  // Apply where conditions
+  if (conditions.length > 0) {
+    query = query.where(and(...conditions));
+  }
+  
+  // Sorting  const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
 
   const query =
@@ -154,22 +167,31 @@ export async function listCustomers(filters: CustomerFilters = {}) {
           : filteredCustomers.orderBy(desc(customers.createdAt));
 
   const countConditions = [...conditions];
-  const countSelect = { count: countDistinct(customers.id) };
-
-  const countQuery = orderTypeFilter
-    ? db
-        .select(countSelect)
-        .from(customers)
-        .innerJoin(ordersCore, eq(customers.id, ordersCore.customerId))
-        .where(and(...countConditions, eq(ordersCore.orderType, orderTypeFilter)))
-    : countConditions.length > 0
-      ? db.select(countSelect).from(customers).where(and(...countConditions))
-      : db.select(countSelect).from(customers);
-  
-  const [countResult] = await countQuery;
-  const total = Number(countResult?.count ?? 0);
-  
-  // Apply pagination
+  let total: number;
+  if (orderTypeFilter) {
+    const [countRow] = await db
+      .select({ count: sql<number>`count(distinct ${customers.id})` })
+      .from(customers)
+      .innerJoin(ordersCore, eq(customers.id, ordersCore.customerId))
+      .where(
+        and(
+          ...countConditions,
+          eq(ordersCore.orderType, orderTypeFilter)
+        )!
+      );
+    total = Number(countRow?.count || 0);
+  } else {
+    let countQuery = db
+      .select({ count: sql<number>`count(distinct ${customers.id})` })
+      .from(customers)
+      .$dynamic();
+    if (countConditions.length > 0) {
+      countQuery = countQuery.where(and(...countConditions));
+    }
+    const [countResult] = await countQuery;
+    total = Number(countResult?.count || 0);
+  }
+    // Apply pagination
   const customerList = await query.limit(limit).offset(offset);
   
   // Get order statistics for each customer (firstName/lastName omitted from select if not in DB)
@@ -192,9 +214,10 @@ export async function listCustomers(filters: CustomerFilters = {}) {
             : Number(wbRaw);
       return {
         ...customer,
-        trustScore: Number.isFinite(trustScore as number) ? (trustScore as number) : null,
-        walletBalance: Number.isFinite(walletBalance as number) ? (walletBalance as number) : null,
-        firstName: null,
+        trustScore:
+          customer.trustScore == null ? null : Number(customer.trustScore),
+        walletBalance:
+          customer.walletBalance == null ? null : Number(customer.walletBalance),        firstName: null,
         lastName: null,
         orderStats: stats,
       };
@@ -220,11 +243,11 @@ export async function getCustomerOrderStats(
   orderType?: "food" | "parcel" | "person_ride"
 ): Promise<CustomerOrderStats[]> {
   const db = getDb();
-  
-  const statsWhere = orderType
-    ? and(eq(ordersCore.customerId, customerId), eq(ordersCore.orderType, orderType))
-    : eq(ordersCore.customerId, customerId);
 
+  const statsConditions: SQL[] = [eq(ordersCore.customerId, customerId)];
+  if (orderType) {
+    statsConditions.push(eq(ordersCore.orderType, orderType));
+  }
   const stats = await db
     .select({
       orderType: ordersCore.orderType,
@@ -233,8 +256,7 @@ export async function getCustomerOrderStats(
       lastOrderAt: sql<Date | null>`max(${ordersCore.createdAt})`,
     })
     .from(ordersCore)
-    .where(statsWhere)
-    .groupBy(ordersCore.orderType);
+    .where(and(...statsConditions)!)    .groupBy(ordersCore.orderType);
   
   return stats.map((stat) => ({
     orderType: stat.orderType as "food" | "parcel" | "person_ride" | null,

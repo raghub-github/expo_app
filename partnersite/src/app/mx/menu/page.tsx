@@ -1789,9 +1789,17 @@ function MenuContent() {
     try {
       const formData = new FormData();
       for (const f of menuPendingFiles) formData.append('file', f);
-      formData.append('storeId', storeId);
-      formData.append('menuUploadMode', menuUploadMode === 'csv' ? 'CSV' : menuUploadMode === 'pdf' ? 'PDF' : 'IMAGE');
-      const res = await fetch('/api/merchant/menu-upload', { method: 'POST', body: formData });
+      const sourceEntity =
+        menuUploadMode === 'csv'
+          ? 'ONBOARDING_MENU_SHEET'
+          : menuUploadMode === 'pdf'
+            ? 'ONBOARDING_MENU_PDF'
+            : 'ONBOARDING_MENU_IMAGE';
+      formData.append('source_entity', sourceEntity);
+      const res = await fetch(
+        `/api/merchant/stores/${encodeURIComponent(storeId)}/media/upload`,
+        { method: 'POST', body: formData }
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setMenuReplaceError(data?.error || 'Upload failed.');

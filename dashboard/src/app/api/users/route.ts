@@ -12,7 +12,7 @@ import { logAPICall, logUserAction } from "@/lib/auth/activity-tracker";
 import { logUserCreation } from "@/lib/audit/audit-logger";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints, areaManagers } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, areaManagers, type DashboardType } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 
@@ -172,6 +172,11 @@ export async function POST(request: NextRequest) {
       city,
     } = body;
 
+    // Normalize strings
+    if (primary_role) {
+      primary_role = primary_role.trim();
+    }
+
     // Normalize mobile numbers
     const { normalizeMobileNumber } = await import("@/lib/utils/mobile-normalizer");
     if (mobile) {
@@ -293,7 +298,7 @@ export async function POST(request: NextRequest) {
       const db = getDb();
       for (const access of dashboardAccessData) {
         // Determine orderType for order, customer, and ticket dashboards
-        let orderType: string | undefined = undefined;
+        let orderType: string | null | undefined = undefined;
         if (access.dashboardType === "ORDER_FOOD" || access.dashboardType === "CUSTOMER_FOOD" || 
             access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("FOOD")) {
           orderType = "food";
@@ -359,14 +364,10 @@ export async function POST(request: NextRequest) {
         let allowedActions: string[] = [];
         let context: Record<string, any> = {};
 
-        const dashDefs = DASHBOARD_DEFINITIONS as Record<
-          string,
-          { accessPoints: { group: string; label: string; description: string; allowedActions: string[] }[] }
-        >;
-        if (DASHBOARD_DEFINITIONS && dashDefs[accessPoint.dashboardType]) {
-          const def = dashDefs[accessPoint.dashboardType].accessPoints.find(
-            (ap) => ap.group === accessPoint.accessPointGroup
-          );
+        const dashType = accessPoint.dashboardType as DashboardType;
+        if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
+          const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
+            (ap: any) => ap.group === accessPoint.accessPointGroup          );
           if (def) {
             accessPointName = def.label;
             accessPointDescription = def.description;

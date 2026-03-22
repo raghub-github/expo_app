@@ -11,7 +11,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isSuperAdmin, hasDashboardAccessByAuth, getSystemUserIdFromAuthUser } from "@/lib/permissions/engine";
-import { assignAreaManagersToParent, listAssignedAreaManagers, removeAreaManagerAssignment } from "@/lib/db/operations/parent-area-managers";
+import {
+  assignAreaManagersToParent,
+  countDistinctAssignedAreaManagersForParent,
+  listAssignedAreaManagers,
+  removeAreaManagerAssignment,
+} from "@/lib/db/operations/parent-area-managers";
 
 export const runtime = "nodejs";
 
@@ -44,13 +49,19 @@ export async function GET(request: NextRequest) {
     }
 
     const parentIdParam = request.nextUrl.searchParams.get("parentId");
+    const storeInternalParam = request.nextUrl.searchParams.get("storeInternalId");
     const parentId = parentIdParam != null ? Number(parentIdParam) : null;
+    const storeInternalId =
+      storeInternalParam != null && storeInternalParam !== ""
+        ? Number(storeInternalParam)
+        : null;
     if (!parentId || !Number.isFinite(parentId)) {
       return NextResponse.json({ success: false, error: "parentId is required" }, { status: 400 });
     }
 
-    const items = await listAssignedAreaManagers(parentId);
-    return NextResponse.json({ success: true, items, count: items.length });
+    const items = await listAssignedAreaManagers(parentId, storeInternalId);
+    const parentDistinctAmCount = await countDistinctAssignedAreaManagersForParent(parentId);
+    return NextResponse.json({ success: true, items, count: items.length, parentAssignedAmsCount: parentDistinctAmCount });
   } catch (e) {
     console.error("[GET /api/admin/parent-area-managers]", e);
     return NextResponse.json({ success: false, error: "Failed to load assigned area managers" }, { status: 500 });
@@ -67,11 +78,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
     const parentId = body.parentId != null ? Number(body.parentId) : null;
     const areaManagerIds = Array.isArray(body.areaManagerIds)
-      ? body.areaManagerIds
-          .map((id: unknown) => Number(id))
-          .filter((n: number) => Number.isFinite(n))
+      ? body.areaManagerIds.map((id: unknown) => Number(id)).filter((n: number) => Number.isFinite(n))
       : [];
-
+    const storeInternalId =
+      body.storeInternalId != null && body.storeInternalId !== ""
+        ? Number(body.storeInternalId)
+        : null;
     if (!parentId || !Number.isFinite(parentId)) {
       return NextResponse.json({ success: false, error: "parentId is required" }, { status: 400 });
     }
@@ -83,6 +95,7 @@ export async function POST(request: NextRequest) {
       parentId,
       areaManagerIds,
       assignedBy: auth.systemUserId ?? null,
+      storeInternalId,
     });
 
     return NextResponse.json({ success: true });
@@ -102,12 +115,26 @@ export async function DELETE(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
     const parentId = body.parentId != null ? Number(body.parentId) : null;
     const areaManagerId = body.areaManagerId != null ? Number(body.areaManagerId) : null;
+    const storeInternalId =
+      body.storeInternalId != null && body.storeInternalId !== ""
+        ? Number(body.storeInternalId)
+        : null;
+    const reason =
+      typeof body.reason === "string" && body.reason.trim()
+        ? (body.reason as string).trim()
+        : null;
 
     if (!parentId || !Number.isFinite(parentId) || !areaManagerId || !Number.isFinite(areaManagerId)) {
       return NextResponse.json({ success: false, error: "parentId and areaManagerId are required" }, { status: 400 });
     }
 
-    await removeAreaManagerAssignment({ parentId, areaManagerId });
+    await removeAreaManagerAssignment({
+      parentId,
+      areaManagerId,
+      storeInternalId,
+      removedBy: auth.systemUserId ?? null,
+      reason,
+    });
     return NextResponse.json({ success: true });
   } catch (e) {
     console.error("[DELETE /api/admin/parent-area-managers]", e);

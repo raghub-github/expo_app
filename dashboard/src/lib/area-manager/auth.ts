@@ -128,7 +128,7 @@ export async function getAreaManagerFromAuth(
   const systemUser = await getSystemUserByEmail(email ?? undefined);
   if (!systemUser) return null;
 
-  const superAdmin = await isSuperAdmin(supabaseAuthId, email ?? undefined);
+  const superAdmin = await isSuperAdmin(supabaseAuthId, email ?? "");
   if (superAdmin) {
     // Super admin can access area-manager APIs; no area scope (list all). Use managerType from role or default MERCHANT for UI.
     const roleType = getManagerTypeFromRole(systemUser.primary_role) ?? "MERCHANT";

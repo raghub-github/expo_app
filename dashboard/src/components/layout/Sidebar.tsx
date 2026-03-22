@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   UserCircle,
@@ -42,8 +42,9 @@ const navigation: NavItem[] = [
   { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3, dashboardType: "ANALYTICS" },
 ];
 
-export function Sidebar() {
+function SidebarComponent() {
   const pathname = usePathname();
+  const router = useRouter();
   const { dashboards, loading: accessLoading } = useDashboardAccess();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
 
@@ -68,25 +69,21 @@ export function Sidebar() {
       }
 
       // Check dashboard access
-      const dashType = item.dashboardType;
-      if (dashType) {
-        // Super admin has access to all dashboards
+      if (item.dashboardType) {
+        const dt = item.dashboardType;        // Super admin has access to all dashboards
         if (isSuperAdmin) {
           return true;
         }
 
         // Special handling for Orders - show if user has access to any order type
-        if (dashType === "ORDER_FOOD") {
-          return (
+        if (dt === "ORDER_FOOD") {          return (
             accessibleDashboards.has("ORDER_FOOD") ||
             accessibleDashboards.has("ORDER_PERSON_RIDE") ||
             accessibleDashboards.has("ORDER_PARCEL")
           );
         }
 
-        // Check dashboard access directly (CUSTOMER and TICKET are now consolidated)
-        return accessibleDashboards.has(dashType);
-      }
+        return accessibleDashboards.has(dt);      }
 
       // Default: show if no specific requirements
       return true;
@@ -135,7 +132,9 @@ export function Sidebar() {
             <Link
               key={item.name}
               href={item.href}
-              className={`flex items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 ${
+              onMouseEnter={() => router.prefetch(item.href)}
+              prefetch={item.href === "/dashboard/super-admin" ? true : undefined}
+              className={`flex items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 transform active:scale-95 ${
                 isActive
                   ? "bg-white/20 text-white shadow-md"
                   : "text-white/90 hover:bg-white/10 hover:text-white"
@@ -150,3 +149,5 @@ export function Sidebar() {
     </div>
   );
 }
+
+export const Sidebar = memo(SidebarComponent);

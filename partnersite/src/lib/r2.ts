@@ -63,6 +63,11 @@ function getS3Client(): S3Client {
     throw new Error('R2 endpoint is missing');
   }
   
+  const ep = config.endpoint || '';
+  const forcePathStyle =
+    String(process.env.R2_S3_FORCE_PATH_STYLE || '').toLowerCase() === 'true' ||
+    /\.r2\.cloudflarestorage\.com/i.test(ep);
+
   s3Client = new S3Client({
     region: config.region,
     endpoint: config.endpoint,
@@ -70,7 +75,7 @@ function getS3Client(): S3Client {
       accessKeyId: config.accessKey,
       secretAccessKey: config.secretKey,
     },
-    forcePathStyle: false, // Cloudflare R2 uses virtual-hosted-style by default
+    forcePathStyle,
   });
 
   return s3Client;
@@ -85,6 +90,64 @@ function getBucketName(): string {
   const config = getR2Config();
   cachedBucketName = config.bucketName;
   return cachedBucketName;
+}
+
+/**
+ * Fix object keys that accidentally contain `docs/docs/` (bad URL extraction, double prefix).
+ * Does not strip a single `docs/` — existing objects may legitimately use `docs/merchants/...` as the key.
+ */
+export function normalizeR2ObjectKey(key: string): string {
+  let k = (key || "").trim().replace(/^\/+/, "");
+  while (k.toLowerCase().startsWith("docs/docs/")) {
+    k = k.slice(5);
+  }
+  return k;
+}
+
+/**
+ * Unwraps accidentally nested `/api/attachments/proxy?key=...` values (single URL-encoded `key` param
+ * that itself was a full proxy URL). Returns the innermost R2 object key.
+ */
+function unwrapProxyQueryKeyParam(initial: string): string {
+  let k = initial.trim();
+  for (let depth = 0; depth < 8; depth++) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(k);
+    } catch {
+      decoded = k;
+    }
+    const lower = decoded.toLowerCase();
+    if (!lower.includes("attachments/proxy")) {
+      return normalizeR2ObjectKey(decoded);
+    }
+    try {
+      const u = new URL(
+        decoded.startsWith("http://") || decoded.startsWith("https://")
+          ? decoded
+          : decoded.startsWith("/")
+            ? `http://dummy.local${decoded}`
+            : `http://dummy.local/${decoded}`
+      );
+      const inner = u.searchParams.get("key");
+      if (inner && inner !== decoded) {
+        k = inner;
+        continue;
+      }
+    } catch {
+      /* fall through */
+    }
+    const m = decoded.match(/[?&]key=([^&]+)/);
+    if (!m) return normalizeR2ObjectKey(decoded);
+    try {
+      const next = decodeURIComponent(m[1].replace(/\+/g, "%20"));
+      if (!next || next === k || next === decoded) return normalizeR2ObjectKey(decoded);
+      k = next;
+    } catch {
+      return normalizeR2ObjectKey(decoded);
+    }
+  }
+  return normalizeR2ObjectKey(k);
 }
 
 /**
@@ -106,7 +169,7 @@ export function extractR2KeyFromUrl(imageUrl: string): string | null {
       try {
         const u = new URL(normalizedImageUrl, 'http://dummy');
         const k = u.searchParams.get('key');
-        return (k && decodeURIComponent(k)) || null;
+        return (k && unwrapProxyQueryKeyParam(k)) || null;
       } catch {
         return null;
       }
@@ -153,19 +216,155 @@ export function extractR2KeyFromUrl(imageUrl: string): string | null {
   }
 }
 
+/** R2 object key for deletes — `r2_key` / `public_url` / `menu_url` may be proxy (`/api/attachments/proxy?key=...`) or raw key. */
+export function r2KeyFromMenuMediaRow(row: {
+  menu_url?: string | null;
+  public_url?: string | null;
+  r2_key?: string | null;
+}): string | null {
+  const rk = row.r2_key?.trim();
+  if (rk) {
+    const fromRk = extractR2KeyFromUrl(rk);
+    if (fromRk) return normalizeR2ObjectKey(fromRk);
+    if (!/^https?:\/\//i.test(rk) && !rk.startsWith("/api/")) {
+      return normalizeR2ObjectKey(rk);
+    }
+  }
+  const fromMenu = row.menu_url ? extractR2KeyFromUrl(row.menu_url) : null;
+  const fromPub = row.public_url ? extractR2KeyFromUrl(row.public_url) : null;
+  if (fromMenu) return normalizeR2ObjectKey(fromMenu);
+  if (fromPub) return normalizeR2ObjectKey(fromPub);
+  return null;
+}
+
+/** True when pathname (after optional `{bucket}/` prefix) is our merchant object layout. */
+function isMerchantR2ObjectPath(pathNoLeadingSlash: string): boolean {
+  let path = pathNoLeadingSlash.replace(/^\/+/, "");
+  const bucket = process.env.R2_BUCKET_NAME?.trim();
+  if (bucket && path.length >= bucket.length + 1) {
+    const prefix = `${bucket}/`;
+    if (path.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+      path = path.slice(prefix.length);
+    }
+  }
+  if (path.startsWith("docs/merchants/")) return true;
+  if (/^merchants\/[^/]+\/(stores|draft|logo)\b/i.test(path)) return true;
+  if (path.includes("docs/merchants/")) return true;
+  return false;
+}
+
+/** R2 public / S3-style URLs whose object key we can derive for stable proxy storage. */
+export function isR2HostedHttpUrl(trimmed: string): boolean {
+  try {
+    const u = new URL(trimmed);
+    const h = u.hostname.toLowerCase();
+    if (h.endsWith(".r2.dev")) return true;
+    if (h.endsWith(".r2.cloudflarestorage.com")) return true;
+    const base = process.env.R2_PUBLIC_BASE_URL?.trim();
+    if (base) {
+      try {
+        const bu = new URL(base);
+        if (bu.hostname === h) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+    const path = u.pathname.replace(/^\/+/, "");
+    return isMerchantR2ObjectPath(path);
+  } catch {
+    return false;
+  }
+}
+
+/** Pathname → object key for PutObject/GetObject (strip optional bucket prefix from path-style R2 URLs). */
+function objectKeyForProxyFromHttpUrl(trimmed: string): string | null {
+  if (!isR2HostedHttpUrl(trimmed)) return null;
+  const extracted = extractR2KeyFromUrl(trimmed);
+  if (!extracted) return null;
+  const bucket = process.env.R2_BUCKET_NAME?.trim();
+  let k = normalizeR2ObjectKey(extracted);
+  if (bucket) {
+    const prefix = `${bucket}/`;
+    if (k.startsWith(prefix)) k = normalizeR2ObjectKey(k.slice(prefix.length));
+  }
+  return k || null;
+}
+
 /**
- * Converts an R2 key or proxy URL into a storable document URL.
- * - If value is already a full URL (https://...), returns as-is.
- * - If value is a key or proxy URL, returns /api/attachments/proxy?key=... (fallback for non-async paths).
+ * Converts an R2 key, proxy URL, or R2 HTTPS URL (incl. presigned) into a storable URL.
+ * Prefers `/api/attachments/proxy?key=...` so DB rows do not expire (unlike presigned URLs).
+ * Non-R2 https URLs (e.g. third-party) are left unchanged.
  */
 export function toStoredDocumentUrl(value: string | null | undefined): string | null {
   if (!value || typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (trimmed.includes("://")) return trimmed;
+  // Same-origin or absolute app URL: normalize to relative proxy (stable in DB).
+  if (trimmed.includes("/api/attachments/proxy") && trimmed.includes("key=")) {
+    const k = extractR2KeyFromUrl(trimmed);
+    if (k) return `/api/attachments/proxy?key=${encodeURIComponent(normalizeR2ObjectKey(k))}`;
+  }
   if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
-  const key = trimmed.replace(/^\/+/, "");
+  if (trimmed.includes("://")) {
+    const key = objectKeyForProxyFromHttpUrl(trimmed);
+    if (key) {
+      return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
+    }
+    return trimmed;
+  }
+  const key = normalizeR2ObjectKey(trimmed.replace(/^\/+/, ""));
   return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
+}
+
+/**
+ * Normalize onboarding/store media (banner, gallery, logo) to `/api/attachments/proxy?key=...`.
+ * Handles presigned HTTPS URLs, path-style `bucket/docs/...` paths, and raw keys.
+ * Drops transient client URLs (blob, data).
+ */
+export function normalizeMerchantStoreMediaUrl(value: string | null | undefined): string | null {
+  if (!value || typeof value !== "string") return null;
+  const t = value.trim();
+  if (!t || t.startsWith("data:") || t.startsWith("blob:")) return null;
+  if (t.includes("/api/attachments/proxy") && t.includes("key=")) {
+    const k = extractR2KeyFromUrl(t);
+    if (k) return `/api/attachments/proxy?key=${encodeURIComponent(normalizeR2ObjectKey(k))}`;
+  }
+  if (t.startsWith("/api/attachments/proxy")) return t;
+  const viaToStored = toStoredDocumentUrl(t) ?? t;
+  if (viaToStored.startsWith("/api/attachments/proxy")) return viaToStored;
+  let k =
+    extractR2KeyFromUrl(t) ||
+    (!t.includes("://") ? normalizeR2ObjectKey(t.replace(/^\/+/, "")) : null);
+  if (!k) return viaToStored.includes("://") ? viaToStored : null;
+  k = normalizeR2ObjectKey(k);
+  const bucket = process.env.R2_BUCKET_NAME?.trim();
+  if (bucket) {
+    const prefix = `${bucket}/`;
+    if (k.length >= prefix.length && k.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+      k = normalizeR2ObjectKey(k.slice(prefix.length));
+    }
+  }
+  if (isMerchantR2ObjectPath(k)) {
+    return `/api/attachments/proxy?key=${encodeURIComponent(k)}`;
+  }
+  if (!t.includes("://")) {
+    return `/api/attachments/proxy?key=${encodeURIComponent(k)}`;
+  }
+  return viaToStored;
+}
+
+/**
+ * URL stored as `public_url` for R2 objects: full CDN/custom domain when `R2_PUBLIC_BASE_URL`
+ * is set (e.g. https://pub-xxx.r2.dev), otherwise the app proxy (works when the bucket is private).
+ */
+export function publicUrlForR2Key(key: string): string {
+  const trimmed = normalizeR2ObjectKey((key || "").trim().replace(/^\/+/, ""));
+  if (!trimmed) return `/api/attachments/proxy?key=`;
+  const base = process.env.R2_PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  if (base) {
+    return `${base}/${trimmed}`;
+  }
+  return `/api/attachments/proxy?key=${encodeURIComponent(trimmed)}`;
 }
 
 /** Default expiry for stored document signed URLs (7 days). */
@@ -197,11 +396,12 @@ export async function deleteFromR2(key: string): Promise<void> {
   if (!key) {
     throw new Error('Key is required for deletion');
   }
+  const objectKey = normalizeR2ObjectKey(key);
   const s3 = getS3Client();
   const bucketName = getBucketName();
   const command = new DeleteObjectCommand({
     Bucket: bucketName,
-    Key: key,
+    Key: objectKey,
   });
   try {
     await s3.send(command);
@@ -217,7 +417,9 @@ export async function deleteFromR2(key: string): Promise<void> {
 export async function listR2KeysByPrefix(prefix: string, maxKeys = 1000): Promise<string[]> {
   const s3 = getS3Client();
   const bucketName = getBucketName();
-  const normalizedPrefix = prefix.trim() ? (prefix.endsWith('/') ? prefix : `${prefix}/`) : prefix;
+  const raw = prefix.trim();
+  const basePrefix = raw ? normalizeR2ObjectKey(raw) : "";
+  const normalizedPrefix = basePrefix ? (basePrefix.endsWith("/") ? basePrefix : `${basePrefix}/`) : "";
   const keys: string[] = [];
   let continuationToken: string | undefined;
   do {
@@ -260,17 +462,42 @@ export async function deleteFromR2ByPrefix(prefix: string): Promise<number> {
 }
 
 export async function getR2SignedUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+  const objectKey = normalizeR2ObjectKey(key);
   const s3 = getS3Client();
   const bucketName = getBucketName();
   const command = new GetObjectCommand({
     Bucket: bucketName,
-    Key: key,
+    Key: objectKey,
   });
   return getSignedUrl(s3, command, { expiresIn: expiresInSeconds });
 }
 
+const DEFAULT_MENU_SIGNED_URL_TTL_SEC = 86400 * 7;
 
-export async function uploadToR2(file: File, key: string): Promise<string> {
+/**
+ * After a successful menu PutObject: presigned GET URL for `public_url` in DB.
+ * Falls back to {@link publicUrlForR2Key} if signing fails.
+ */
+export async function signedPublicUrlForMenuR2Key(r2Key: string): Promise<string> {
+  const trimmed = normalizeR2ObjectKey((r2Key || "").trim().replace(/^\/+/, ""));
+  if (!trimmed) return publicUrlForR2Key(r2Key);
+  const raw = process.env.R2_MENU_SIGNED_URL_TTL_SEC;
+  const parsed = raw != null && String(raw).trim() !== "" ? Number(raw) : DEFAULT_MENU_SIGNED_URL_TTL_SEC;
+  const ttl = Number.isFinite(parsed) && parsed >= 60 ? parsed : DEFAULT_MENU_SIGNED_URL_TTL_SEC;
+  try {
+    return await getR2SignedUrl(trimmed, ttl);
+  } catch (e) {
+    console.warn("[R2] Menu signed URL failed, using proxy/public base URL:", e);
+    return publicUrlForR2Key(trimmed);
+  }
+}
+
+export async function uploadToR2(
+  file: File,
+  key: string,
+  contentTypeOverride?: string | null
+): Promise<string> {
+  const objectKey = normalizeR2ObjectKey(key);
   // Convert File/Blob to Buffer/Uint8Array for Node.js AWS SDK
   let body: Buffer | Uint8Array;
   if (typeof file.arrayBuffer === 'function') {
@@ -283,12 +510,25 @@ export async function uploadToR2(file: File, key: string): Promise<string> {
   }
   const s3 = getS3Client();
   const bucketName = getBucketName();
+  const contentType =
+    (contentTypeOverride && String(contentTypeOverride).trim()) ||
+    ((file as any).type && String((file as any).type).trim()) ||
+    'application/octet-stream';
   const command = new PutObjectCommand({
     Bucket: bucketName,
-    Key: key,
+    Key: objectKey,
     Body: body,
-    ContentType: (file as any).type || 'application/octet-stream',
+    ContentType: contentType,
   });
   await s3.send(command);
-  return `${key}`;
+  return objectKey;
+}
+
+/** S3 PutObject via R2 — same as `uploadToR2` (buffer from file/blob). */
+export async function uploadWithKey(
+  file: File,
+  r2Key: string,
+  contentTypeOverride?: string | null
+): Promise<string> {
+  return uploadToR2(file, r2Key, contentTypeOverride);
 }

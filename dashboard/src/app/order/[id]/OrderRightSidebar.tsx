@@ -738,18 +738,18 @@ export default function OrderRightSidebar({
 
       setRecons((prev) => [mapped, ...prev.filter((r) => r.id !== mapped.id)]);
       // Add new rider to dropdown if not already present
+      const newAssignedRiderId = saved.riderId;
       if (
-        saved.riderId != null &&
+        newAssignedRiderId != null &&
         !assignedRiders.some(
-          (a) => a.riderId === saved.riderId || a.id === String(saved.riderId)
+          (a) => a.riderId === newAssignedRiderId || a.id === String(newAssignedRiderId)
         )
       ) {
         setAssignedRiders((prev) => [
           ...prev,
           {
-            id: String(saved.riderId),
-            riderId: saved.riderId ?? null,
-            riderName: saved.riderName ?? null,
+            id: String(newAssignedRiderId),
+            riderId: newAssignedRiderId,            riderName: saved.riderName ?? null,
             riderMobile: saved.riderMobile ?? null,
             providerName: normalizeProviderName(saved.providerName) ?? saved.providerName ?? null,
           },

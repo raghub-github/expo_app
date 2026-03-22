@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight, Clock, ShieldPlus } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { useUsersQuery, useUpdateUser, type SystemUser } from "@/hooks/queries/useUsersQuery";
 import { StatusChangeModal } from "./StatusChangeModal";
+import { SystemRolesListPanel } from "./SystemRolesListPanel";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -23,8 +24,11 @@ const STATUS_OPTIONS = [
   { value: "LOCKED", label: "Locked", color: "bg-orange-100 text-orange-800" },
 ];
 
+type ManagementListTab = "users" | "roles";
+
 export function UserList({ onUserSelect, showActions = true }: UserListProps) {
   const { isSuperAdmin, systemUserId, loading: permissionsLoading } = usePermissions();
+  const [listTab, setListTab] = useState<ManagementListTab>("users");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [filters, setFilters] = useState({
@@ -63,6 +67,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
   // Fetch unique roles using React Query
   const { data: rolesData, isLoading: rolesLoading, error: rolesError } = useQuery({
     queryKey: ["users", "roles"],
+    enabled: listTab === "users",
     queryFn: async () => {
       try {
         const response = await fetch("/api/users/roles");
@@ -119,6 +124,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     role: filters.role || undefined,
     status: filters.status || undefined,
     department: filters.department || undefined,
+    enabled: listTab === "users",
   });
 
   // Memoize users and pagination data to prevent unnecessary re-renders
@@ -313,7 +319,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     }
   };
 
-  const getStatusBadge = (status: string, suspensionExpiresAt?: string | null) => {
+  const getStatusBadge = (status: string | undefined, suspensionExpiresAt?: string | null) => {
     const statusColors: Record<string, { bg: string; text: string; label: string }> = {
       ACTIVE: { bg: "bg-green-100", text: "text-green-800", label: "Active" },
       SUSPENDED: { bg: "bg-yellow-100", text: "text-yellow-800", label: "Suspend" },
@@ -322,8 +328,9 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       LOCKED: { bg: "bg-orange-100", text: "text-orange-800", label: "Locked" },
     };
 
-    const statusConfig = statusColors[status] || statusColors.PENDING_ACTIVATION;
-    const timeRemaining = status === "SUSPENDED" ? formatTimeRemaining(suspensionExpiresAt) : null;
+    const s = status ?? "PENDING_ACTIVATION";
+    const statusConfig = statusColors[s] || statusColors.PENDING_ACTIVATION;
+    const timeRemaining = s === "SUSPENDED" ? formatTimeRemaining(suspensionExpiresAt) : null;
 
     return (
       <div className="flex items-center gap-2">
@@ -342,7 +349,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     );
   };
 
-  const getStatusButtonColor = (status: string) => {
+  const getStatusButtonColor = (status: string | undefined) => {
     const colors: Record<string, string> = {
       ACTIVE: "bg-green-50 text-green-700 hover:bg-green-100 border-green-200",
       PENDING_ACTIVATION: "bg-gray-50 text-gray-700 hover:bg-gray-100 border-gray-200",
@@ -350,7 +357,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       DISABLED: "bg-red-50 text-red-700 hover:bg-red-100 border-red-200",
       LOCKED: "bg-orange-50 text-orange-700 hover:bg-orange-100 border-orange-200",
     };
-    return colors[status] || colors.PENDING_ACTIVATION;
+    const s = status ?? "PENDING_ACTIVATION";
+    return colors[s] || colors.PENDING_ACTIVATION;
   };
 
   const generatePageNumbers = () => {
@@ -390,7 +398,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     return pages;
   };
 
-  if (isLoading && users.length === 0) {
+  if (listTab === "users" && isLoading && users.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
         <LoadingSpinner size="lg" text="Loading users..." />
@@ -398,92 +406,152 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     );
   }
 
+  const usersRolesTabToggle = isSuperAdmin ? (
+    <div
+      className="inline-flex shrink-0 rounded-lg border border-gray-200 bg-gray-100 p-0.5 shadow-sm"
+      role="tablist"
+      aria-label="Users or roles list"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={listTab === "users"}
+        onClick={() => setListTab("users")}
+        className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:px-4 sm:py-2 ${
+          listTab === "users"
+            ? "bg-blue-600 text-white shadow-sm"
+            : "text-gray-600 hover:bg-gray-200/80 hover:text-gray-900"
+        }`}
+      >
+        Users
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={listTab === "roles"}
+        onClick={() => setListTab("roles")}
+        className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:px-4 sm:py-2 ${
+          listTab === "roles"
+            ? "bg-blue-600 text-white shadow-sm"
+            : "text-gray-600 hover:bg-gray-200/80 hover:text-gray-900"
+        }`}
+      >
+        Roles
+      </button>
+    </div>
+  ) : null;
+
   return (
     <div className="space-y-4 sm:space-y-6 px-2 sm:px-0">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
-        <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Users</h2>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
+          <h2 className="text-xl sm:text-2xl font-bold text-gray-900">
+            {listTab === "users" ? "Users" : "Roles"}
+          </h2>
+        </div>
         {showActions && (
-          <Link
-            href="/dashboard/users/new"
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md w-full sm:w-auto text-sm sm:text-base"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Add User</span>
-          </Link>
+          <div className="flex flex-row flex-wrap items-center gap-2 lg:justify-end">
+            {isSuperAdmin && (
+              <Link
+                href="/dashboard/users/roles/new"
+                prefetch
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md text-sm sm:text-base shrink-0"
+              >
+                <ShieldPlus className="h-4 w-4 shrink-0" aria-hidden />
+                <span>Add Role</span>
+              </Link>
+            )}
+            <Link
+              href="/dashboard/users/new"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md text-sm sm:text-base shrink-0"
+            >
+              <Plus className="h-4 w-4 shrink-0" aria-hidden />
+              <span>Add User</span>
+            </Link>
+          </div>
         )}
       </div>
 
-      {/* Search and Filters */}
-      <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-        <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center">
-          {/* Search Input */}
-          <div className="relative flex-1 min-w-0">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400 pointer-events-none" />
-            <input
-              type="text"
-              placeholder="Search users..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder-gray-400 bg-white transition-all text-sm sm:text-base"
-            />
-          </div>
+      {/* Users: search, filters, and tab toggle */}
+      {listTab === "users" && (
+        <div className="rounded-lg border border-gray-200 bg-white p-2.5 shadow-sm sm:p-3">
+          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin]">
+            <div className="relative w-[10rem] shrink-0 sm:w-52 md:w-64">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search users..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
 
-          {/* Status Filter */}
-          <div className="relative flex-shrink-0 lg:w-48">
-            <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none z-10" />
-            <select
-              value={filters.status}
-              onChange={(e) => {
-                setFilters({ ...filters, status: e.target.value });
-                setPagination(prev => ({ ...prev, page: 1 }));
-              }}
-              className="w-full pl-10 pr-8 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white appearance-none cursor-pointer transition-all text-sm sm:text-base hover:border-gray-400"
-            >
-              <option value="">All Status</option>
-              <option value="ACTIVE">Active</option>
-              <option value="SUSPENDED">Suspended</option>
-              <option value="DISABLED">Disabled</option>
-              <option value="PENDING_ACTIVATION">Pending</option>
-              <option value="LOCKED">Locked</option>
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-          </div>
+            <div className="relative w-[7.5rem] shrink-0 sm:w-40">
+              <Filter className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <select
+                value={filters.status}
+                onChange={(e) => {
+                  setFilters({ ...filters, status: e.target.value });
+                  setPagination((prev) => ({ ...prev, page: 1 }));
+                }}
+                className="w-full cursor-pointer appearance-none rounded-md border border-gray-300 bg-white py-2 pl-9 pr-7 text-sm text-gray-900 hover:border-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">All Status</option>
+                <option value="ACTIVE">Active</option>
+                <option value="SUSPENDED">Suspended</option>
+                <option value="DISABLED">Disabled</option>
+                <option value="PENDING_ACTIVATION">Pending</option>
+                <option value="LOCKED">Locked</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+            </div>
 
-          {/* Role Filter */}
-          <div className="relative flex-shrink-0 lg:w-48">
-            <User className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none z-10" />
-            <select
-              value={filters.role}
-              onChange={(e) => {
-                setFilters({ ...filters, role: e.target.value });
-                setPagination(prev => ({ ...prev, page: 1 }));
-              }}
-              disabled={rolesLoading}
-              className="w-full pl-10 pr-8 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white appearance-none cursor-pointer transition-all text-sm sm:text-base hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <option value="">All Roles</option>
-              {Array.isArray(availableRoles) && availableRoles.length > 0 ? (
-                availableRoles.map((role) => (
-                  <option key={role} value={role}>
-                    {formatRoleName(role)}
-                  </option>
-                ))
-              ) : null}
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+            <div className="relative w-[7.5rem] shrink-0 sm:w-40">
+              <User className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <select
+                value={filters.role}
+                onChange={(e) => {
+                  setFilters({ ...filters, role: e.target.value });
+                  setPagination((prev) => ({ ...prev, page: 1 }));
+                }}
+                disabled={rolesLoading}
+                className="w-full cursor-pointer appearance-none rounded-md border border-gray-300 bg-white py-2 pl-9 pr-7 text-sm text-gray-900 hover:border-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">All Roles</option>
+                {Array.isArray(availableRoles) && availableRoles.length > 0 ? (
+                  availableRoles.map((role) => (
+                    <option key={role} value={role}>
+                      {formatRoleName(role)}
+                    </option>
+                  ))
+                ) : null}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+            </div>
+
+            {usersRolesTabToggle ? (
+              <div className="ml-auto shrink-0 pl-1">{usersRolesTabToggle}</div>
+            ) : null}
           </div>
         </div>
-      </div>
+      )}
+
+      {/* Roles: filters + tab toggle + table (from system_roles) */}
+      {listTab === "roles" && isSuperAdmin && (
+        <SystemRolesListPanel enabled toolbarTrailing={usersRolesTabToggle} />
+      )}
 
       {/* Error Message */}
-      {error && (
+      {listTab === "users" && error && (
         <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
           {error instanceof Error ? error.message : "Failed to load users"}
         </div>
       )}
 
       {/* Users Table */}
+      {listTab === "users" && (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
@@ -529,7 +597,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                 const isSuperAdminUser = user.primaryRole === "SUPER_ADMIN";
                 const canEdit = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
                 const canChangeStatus = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
-                  const isDropdownOpen = openDropdownId === user.id;
+                const userStatus = user.status ?? "PENDING_ACTIVATION";
+                const isDropdownOpen = openDropdownId === user.id;
 
                   return (
                     <tr key={user.id} className="hover:bg-gray-50 transition-colors">
@@ -608,8 +677,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   }
                                 }}
                                 disabled={permissionsLoading || !canChangeStatus}
-                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(st)} ${
-                                  permissionsLoading || !canChangeStatus 
+                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(userStatus)} ${                                  permissionsLoading || !canChangeStatus 
                                     ? "opacity-50 cursor-not-allowed" 
                                     : ""
                                 } ${isDropdownOpen ? "ring-2 ring-blue-500 ring-offset-1" : ""}`}
@@ -626,11 +694,11 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                 }
                               >
                                 <span className="capitalize hidden sm:inline">
-                                  {STATUS_OPTIONS.find(s => s.value === st)?.label || st.replace(/_/g, " ").toLowerCase()}
+                                  {STATUS_OPTIONS.find((s) => s.value === userStatus)?.label ||
+                                    userStatus.replace(/_/g, " ").toLowerCase()}
                                 </span>
                                 <span className="capitalize sm:hidden text-[10px]">
-                                  {STATUS_OPTIONS.find(s => s.value === st)?.label.substring(0, 4) || st.substring(0, 4)}
-                                </span>
+                                  {(STATUS_OPTIONS.find((s) => s.value === userStatus)?.label ?? userStatus).substring(0, 4)}                                </span>
                                 <ChevronDown 
                                   className={`h-3 w-3 sm:h-3.5 sm:w-3.5 transition-transform duration-200 flex-shrink-0 ${
                                     isDropdownOpen ? 'rotate-180' : ''
@@ -641,15 +709,13 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                 <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
                                   <div className="py-1">
                                     {STATUS_OPTIONS.map((status) => {
-                                      const isCurrentStatus = st === status.value;
-                                      const isUpdating = updateUser.isPending && updateUser.variables?.id === user.id && updateUser.variables?.status === status.value;
+                                      const isCurrentStatus = userStatus === status.value;                                      const isUpdating = updateUser.isPending && updateUser.variables?.id === user.id && updateUser.variables?.status === status.value;
                                       return (
                                         <button
                                           key={status.value}
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            handleStatusChangeClick(user.id, status.value, st, user.fullName);
-                                          }}
+                                            handleStatusChangeClick(user.id, status.value, userStatus, user.fullName);                                          }}
                                           disabled={isCurrentStatus || isUpdating}
                                           className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${
                                             isCurrentStatus
@@ -688,9 +754,16 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
           </table>
         </div>
       </div>
+      )}
+
+      {listTab === "roles" && !isSuperAdmin && (
+        <div className="rounded-lg border border-gray-200 bg-white p-8 text-center text-sm text-gray-600">
+          You do not have access to manage system roles.
+        </div>
+      )}
 
       {/* Pagination */}
-      {pagination.totalPages > 0 && (
+      {listTab === "users" && pagination.totalPages > 0 && (
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white px-4 sm:px-6 py-4 rounded-lg border border-gray-200 shadow-sm">
           <div className="text-xs sm:text-sm text-gray-700 text-center sm:text-left">
             Showing <span className="font-semibold text-gray-900">{((pagination.page - 1) * pagination.limit) + 1}</span> to{" "}

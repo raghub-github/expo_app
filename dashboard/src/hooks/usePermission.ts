@@ -43,10 +43,10 @@ export function usePermission() {
   }, [dashboardAccessData?.dashboards]);
 
   const accessPointsByDashboard = useMemo(() => {
-    if (!dashboardAccessData?.accessPoints?.length) return new Map<string, AccessPoint[]>();
-    const map = new Map<string, AccessPoint[]>();
-    for (const ap of dashboardAccessData.accessPoints) {
-      if (!ap.isActive) continue;
+    const points = dashboardAccessData?.accessPoints;
+    if (!points?.length) return new Map<string, NonNullable<typeof points>>();
+    const map = new Map<string, typeof points>();
+    for (const ap of points) {      if (!ap.isActive) continue;
       const key = ap.dashboardType;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(ap);

@@ -1,13 +1,18 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys, type RiderSummaryParams } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import type { RiderSummary } from "@/types/rider-dashboard";
+import { usePathname } from "next/navigation";
+import { useAuthOptional } from "@/providers/AuthProvider";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 async function fetchRiderSummary(
   riderId: number,
-  params: RiderSummaryParams
+  params: RiderSummaryParams,
+  signal?: AbortSignal
 ): Promise<RiderSummary> {
   const searchParams = new URLSearchParams();
   searchParams.set("ordersLimit", String(params.ordersLimit));
@@ -34,7 +39,7 @@ async function fetchRiderSummary(
 
   const response = await fetch(
     `/api/riders/${riderId}/summary?${searchParams.toString()}`,
-    { credentials: "include", cache: "no-store" }
+    { credentials: "include", cache: "no-store", signal }
   );
   const result = await response.json();
 
@@ -57,11 +62,31 @@ export function useRiderSummaryQuery(
   params: RiderSummaryParams
 ) {
   const cacheConfig = getCacheConfig(CacheTier.MEDIUM);
+  const pathname = usePathname();
+  const auth = useAuthOptional();
+  const authReady = auth?.authReady ?? false;
+  const sessionUser = auth?.user;
+  const permissions = auth?.permissions;
 
-  return useQuery({
+  const isOnRidersRoute = pathname === "/dashboard/riders";
+  const enabled = isOnRidersRoute && riderId != null && riderId > 0 && Boolean(authReady && sessionUser && permissions);
+
+  const SNAPSHOT_TTL_MS = 10_000;
+  const snapshotKey = useMemo(() => {
+    if (!enabled) return null;
+    return `dashboard_snapshot:rider_summary:${pathname}:${riderId}:${JSON.stringify(params)}`;
+  }, [enabled, pathname, riderId, params]);
+
+  const initialSnapshot = useMemo(() => {
+    if (!snapshotKey) return null;
+    return loadClientSnapshot<RiderSummary>(snapshotKey, SNAPSHOT_TTL_MS);
+  }, [snapshotKey]);
+
+  const query = useQuery({
     queryKey: queryKeys.rider.summary(riderId, params),
-    queryFn: () => fetchRiderSummary(riderId!, params),
-    enabled: riderId != null && riderId > 0,
+    queryFn: ({ signal }) => fetchRiderSummary(riderId!, params, signal),
+    enabled,
+    ...(initialSnapshot !== null ? { initialData: initialSnapshot } : {}),
     ...cacheConfig,
     // Refetch when mounting so invalidated cache (e.g. after penalty/revert on another route) updates UI
     refetchOnMount: true,
@@ -75,4 +100,11 @@ export function useRiderSummaryQuery(
     },
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
   });
+
+  useEffect(() => {
+    if (!snapshotKey || !query.data) return;
+    saveClientSnapshot(snapshotKey, query.data);
+  }, [snapshotKey, query.data]);
+
+  return query;
 }

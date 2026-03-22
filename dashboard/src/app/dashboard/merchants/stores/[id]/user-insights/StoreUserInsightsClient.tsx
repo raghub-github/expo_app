@@ -107,12 +107,11 @@ export function StoreUserInsightsClient({ storeId }: { storeId: string }) {
           setReviews(data.reviews || []);
           setStats(data.stats || defaultStats);
         } else {
-          toast?.("Failed to load feedback");
+          toast("Failed to load feedback");
         }
       } catch (e) {
         console.error("Error fetching reviews:", e);
-        toast?.("Failed to load feedback");
-      } finally {
+        toast("Failed to load feedback");      } finally {
         setLoading(false);
       }
     };

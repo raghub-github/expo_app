@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import {
   UserPlus,
   UserMinus,
@@ -21,7 +22,9 @@ interface UserCategoryCardsProps {
   loading?: boolean;
 }
 
-export function UserCategoryCards({
+const CARD_MIN_HEIGHT = "min-h-[140px]";
+
+export const UserCategoryCards = React.memo(function UserCategoryCards({
   newUsers,
   oldUsers,
   repeatedUsers,
@@ -104,9 +107,9 @@ export function UserCategoryCards({
         return (
           <div
             key={category.title}
-            className={`${category.bgColor} rounded-lg border border-gray-200 p-5 shadow-sm hover:shadow-md transition-shadow`}
+            className={`${category.bgColor} rounded-lg border border-gray-200 p-5 shadow-sm hover:shadow-md transition-all duration-200 ${CARD_MIN_HEIGHT}`}
           >
-            <div className="flex items-start justify-between mb-3">
+            <div className="flex items-start justify-between h-full">
               <div className="flex-1">
                 <p className="text-sm font-semibold text-gray-900 mb-1">
                   {category.title}
@@ -131,4 +134,4 @@ export function UserCategoryCards({
       })}
     </div>
   );
-}
+});

@@ -82,8 +82,7 @@ export async function DELETE(
 
     const isRequester = row.requestedBySystemUserId === systemUserId;
     const hasApproveReject =
-      (await isSuperAdmin(user.id, user.email ?? "")) ||
-      ((await hasDashboardAccess(systemUserId, "RIDER")) &&
+      (await isSuperAdmin(user.id, user.email)) ||      ((await hasDashboardAccess(systemUserId, "RIDER")) &&
         ((await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "APPROVE")) ||
           (await hasAccessPointAction(systemUserId, "RIDER", "RIDER_WALLET_CREDITS", "REJECT"))));
 

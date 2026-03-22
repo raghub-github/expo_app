@@ -35,7 +35,7 @@ import {
 import type { TicketMessage } from "@/hooks/tickets/useTicketDetail";
 import { useSignedAttachmentUrl } from "@/hooks/tickets/useSignedAttachmentUrl";
 import { AttachmentModal, isImageUrl } from "./AttachmentModal";
-import { useSessionQuery } from "@/hooks/queries/useAuthQuery";
+import { useAuth } from "@/providers/AuthProvider";
 import { useToast } from "@/context/ToastContext";
 
 const SEND_STATUS_OPTIONS = [
@@ -260,8 +260,8 @@ interface ConversationPanelProps {
 
 /** Sender display name and email from session (Supabase) — no hardcoded data. */
 function useSenderFromSession(): { senderName: string; senderEmail: string; fromLetter: string } {
-  const { data: sessionData } = useSessionQuery();
-  const user = sessionData?.session?.user;
+  const { user: authUser } = useAuth();
+  const user = authUser;
   const email = (user?.email ?? "") || "";
   const meta = (user as { user_metadata?: { full_name?: string; name?: string } })?.user_metadata;
   const name =

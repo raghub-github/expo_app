@@ -37,9 +37,12 @@ interface PreviewPageProps {
     menuImageFiles?: File[];
     menuSpreadsheetFile?: File | null;
     menuImageUrls?: string[];
+    menuImageNames?: string[];
     menuSpreadsheetUrl?: string | null;
+    menuSpreadsheetFileName?: string | null;
     menuPdfUrl?: string | null;
     menuPdfFileName?: string | null;
+    menuPdfFile?: File | null;
   };
   parentInfo: any;
   onBack: () => void;
@@ -302,7 +305,11 @@ const PreviewPage = ({ step1, step2, documents, storeSetup, menuData, parentInfo
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-2.5">
                         <div className="bg-slate-50 rounded-lg p-2 sm:p-2.5">
                           <label className="text-[10px] sm:text-xs font-medium text-slate-500">Delivery Radius</label>
-                          <p className="text-slate-900 font-semibold mt-0.5 text-xs sm:text-sm">{storeSetup.delivery_radius_km || 0} km</p>
+                          <p className="text-slate-900 font-semibold mt-0.5 text-xs sm:text-sm">
+                            {typeof storeSetup.delivery_radius_km === "number" && !Number.isNaN(storeSetup.delivery_radius_km)
+                              ? `${storeSetup.delivery_radius_km} km`
+                              : "—"}
+                          </p>
                         </div>
                         <div className="bg-slate-50 rounded-lg p-2 sm:p-2.5">
                           <label className="text-[10px] sm:text-xs font-medium text-slate-500">Pure Veg</label>

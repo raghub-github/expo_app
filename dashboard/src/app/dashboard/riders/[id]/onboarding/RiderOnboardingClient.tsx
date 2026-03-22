@@ -136,8 +136,7 @@ export default function RiderOnboardingClient() {
   ) ?? false;
 
   // Use ref to store the latest sync function to avoid dependency issues
-  const syncDashboardStateFromRiderRef = useRef<((r: Rider | null) => void) | undefined>(undefined);
-  
+  const syncDashboardStateFromRiderRef = useRef<((r: Rider | null) => void) | null>(null);  
   const syncDashboardStateFromRider = useCallback(
     (r: Rider | null) => {
       if (!riderDashboard || !r) return;
@@ -336,12 +335,11 @@ export default function RiderOnboardingClient() {
       }
 
       // Apply updated document from API so new image and doc number show immediately (normalize camelCase/snake_case)
-      const dataPayload =
-        result.data != null && typeof result.data === "object"
-          ? (result.data as Record<string, unknown>)
-          : null;
-      const rawDoc = dataPayload?.document ?? result.data;
-      const raw = rawDoc && typeof rawDoc === "object" ? (rawDoc as Record<string, unknown>) : null;
+      const payload = result.data;
+      const rawDoc =
+        payload != null && typeof payload === "object" && "document" in payload
+          ? (payload as { document?: unknown }).document ?? payload
+          : payload;      const raw = rawDoc && typeof rawDoc === "object" ? (rawDoc as Record<string, unknown>) : null;
       const updatedDoc =
         raw
           ? {

@@ -43,6 +43,22 @@ async function setCookieAndRedirect(
   return { ok: false, error: errorMessage };
 }
 
+function AuthCallbackLoading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-white to-gray-50 px-4">
+      <div className="text-center space-y-6">
+        <div className="flex justify-center">
+          <Logo variant="full" size="md" className="w-full max-w-[160px] sm:max-w-[200px]" />
+        </div>
+        <div className="space-y-4">
+          <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent" />
+          <p className="text-sm font-medium text-gray-700 sm:text-base">Completing authentication...</p>
+          <p className="text-xs text-gray-500 sm:text-sm">Please wait while we sign you in</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -157,19 +173,14 @@ function AuthCallbackContent() {
     handleCallback();
   }, [router, searchParams]);
 
+  return <AuthCallbackLoading />;
+}
+
+export default function AuthCallbackPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-white to-gray-50 px-4">
-      <div className="text-center space-y-6">
-        <div className="flex justify-center">
-          <Logo variant="full" size="md" className="w-full max-w-[160px] sm:max-w-[200px]" />
-        </div>
-        <div className="space-y-4">
-          <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent" />
-          <p className="text-sm font-medium text-gray-700 sm:text-base">Completing authentication...</p>
-          <p className="text-xs text-gray-500 sm:text-sm">Please wait while we sign you in</p>
-        </div>
-      </div>
-    </div>
+    <Suspense fallback={<AuthCallbackLoading />}>
+      <AuthCallbackContent />
+    </Suspense>
   );
 }
 

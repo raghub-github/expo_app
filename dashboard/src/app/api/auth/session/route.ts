@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserPermissions } from "@/lib/permissions/engine";
+import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isInvalidRefreshToken, isNetworkOrTransientError, isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 
 const maxGetUserAttempts = 3;
@@ -53,12 +54,22 @@ export async function GET(request: NextRequest) {
     // when multiple requests run in parallel (getSession() can refresh the token; only one use is allowed).
     // Auth is cookie-based; the client does not need session tokens in the response.
     const permissions = await getUserPermissions(user.id, user.email || "");
+    const su = user.email ? await getSystemUserByEmail(user.email) : null;
+    const systemUser = su
+      ? {
+          id: su.id,
+          systemUserId: su.systemUserId,
+          fullName: su.fullName,
+          email: su.email,
+        }
+      : null;
 
     return NextResponse.json({
       success: true,
       data: {
         session: { user },
         permissions,
+        systemUser,
       },
     });
   } catch (error) {

@@ -32,8 +32,8 @@ export async function GET(request: NextRequest) {
       ORDER BY table_name;
     `);
 
-    const tableNames = (tables as any[]).map((row: any) => row.table_name);
-    
+    const tableRows = tables as unknown as Array<{ table_name: string }>;
+    const tableNames = tableRows.map((row) => row.table_name);    
     checks.dashboard_access_table = tableNames.includes('dashboard_access');
     checks.dashboard_access_points_table = tableNames.includes('dashboard_access_points');
     checks.action_audit_log_table = tableNames.includes('action_audit_log');
@@ -47,8 +47,8 @@ export async function GET(request: NextRequest) {
       ORDER BY indexname;
     `);
 
-    checks.indexes_count = (indexes as any[]).length;
-
+    const indexRows = indexes as unknown as unknown[];
+    checks.indexes_count = indexRows.length;
     // Overall status
     const allTablesExist = 
       checks.dashboard_access_table === true &&

@@ -20,42 +20,6 @@ interface UserFormProps {
   currentUserId?: number | null;
 }
 
-const ROLES = [
-  "SUPER_ADMIN",
-  "ADMIN",
-  "AGENT",
-  "AREA_MANAGER_MERCHANT",
-  "AREA_MANAGER_RIDER",
-  "SALES_TEAM",
-  "ADVERTISEMENT_TEAM",
-  "AUDIT_TEAM",
-  "COMPLIANCE_TEAM",
-  "SUPPORT_L1",
-  "SUPPORT_L2",
-  "SUPPORT_L3",
-  "FINANCE_TEAM",
-  "OPERATIONS_TEAM",
-  "DEVELOPER",
-  "READ_ONLY",
-  "MANAGER",
-  "SUPERVISOR",
-  "TEAM_LEAD",
-  "COORDINATOR",
-  "ANALYST",
-  "SPECIALIST",
-  "CONSULTANT",
-  "INTERN",
-  "TRAINEE",
-  "QA_ENGINEER",
-  "PRODUCT_MANAGER",
-  "PROJECT_MANAGER",
-  "HR_TEAM",
-  "MARKETING_TEAM",
-  "CUSTOMER_SUCCESS",
-  "DATA_ANALYST",
-  "BUSINESS_ANALYST",
-];
-
 export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = false, currentUserId = null }: UserFormProps) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -81,6 +45,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
     locality_code: "",
     city: "",
   });
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
   const [selectedDashboards, setSelectedDashboards] = useState<string[]>([]);
   const [selectedAccessPoints, setSelectedAccessPoints] = useState<Record<string, string[]>>({});
 
@@ -89,6 +54,23 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
       fetchUser();
     }
   }, [mode, userId]);
+
+  // Load available roles from backend (system_roles)
+  useEffect(() => {
+    const loadRoles = async () => {
+      try {
+        const response = await fetch("/api/users/roles");
+        const result = await response.json();
+        if (response.ok && result.success && Array.isArray(result.data)) {
+          setAvailableRoles(result.data);
+        }
+      } catch (err) {
+        console.error("Error fetching roles:", err);
+      }
+    };
+
+    loadRoles();
+  }, []);
 
   // Auto-generate system_user_id when role is selected in create mode
   useEffect(() => {
@@ -500,7 +482,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white disabled:bg-gray-100 disabled:cursor-not-allowed"
           >
             <option value="">Select Role</option>
-            {ROLES.map((role) => (
+            {(availableRoles.length > 0 ? availableRoles : []).map((role) => (
               <option key={role} value={role}>
                 {role.replace(/_/g, " ")}
               </option>
@@ -518,7 +500,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           )}
         </div>
 
-        {/* Area Manager scope (area_code, locality_code, city) - saved in area_managers */}
+        {/* Area Manager scope (area_code, city, state) - saved in area_managers */}
         {(formData.primary_role === "AREA_MANAGER_MERCHANT" ||
           formData.primary_role === "AREA_MANAGER_RIDER") && (
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
@@ -535,23 +517,27 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Locality code</label>
+                <label className="block text-xs font-medium text-gray-600 mb-1">City</label>
                 <input
                   type="text"
                   value={formData.locality_code}
                   onChange={(e) => setFormData({ ...formData, locality_code: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder:text-gray-500 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="e.g. LOC_A"
+                  placeholder="e.g. Mumbai"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">City (Rider AM scope)</label>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  {formData.primary_role === "AREA_MANAGER_RIDER"
+                    ? "State (Rider AM scope)"
+                    : "State (Merchant AM scope)"}
+                </label>
                 <input
                   type="text"
                   value={formData.city}
                   onChange={(e) => setFormData({ ...formData, city: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder:text-gray-500 bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="e.g. Mumbai"
+                  placeholder="e.g. Maharashtra"
                 />
               </div>
             </div>

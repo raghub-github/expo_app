@@ -3,6 +3,33 @@
  * All query keys should be created using these factory functions
  */
 
+function stableSerialize(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+
+  const t = typeof value;
+  if (t === "string") return JSON.stringify(value);
+  if (t === "number" || t === "boolean") return String(value);
+  if (t === "bigint") return JSON.stringify(value.toString() + "n");
+  if (t === "function") return '"[function]"';
+
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableSerialize(v)).join(",")}]`;
+  }
+
+  if (t === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b)
+    );
+    return `{${entries
+      .map(([k, v]) => `${JSON.stringify(k)}:${stableSerialize(v)}`)
+      .join(",")}}`;
+  }
+
+  // Fallback (symbols, etc.)
+  return JSON.stringify(String(value));
+}
+
 export const queryKeys = {
   // Auth & Permissions
   auth: {
@@ -16,7 +43,7 @@ export const queryKeys = {
   users: {
     all: () => ["users"] as const,
     lists: () => ["users", "list"] as const,
-    list: (filters: Record<string, unknown>) => ["users", "list", filters] as const,
+    list: (filters: Record<string, unknown>) => ["users", "list", stableSerialize(filters)] as const,
     details: () => ["users", "detail"] as const,
     detail: (id: number | string) => ["users", "detail", id] as const,
   },
@@ -25,10 +52,10 @@ export const queryKeys = {
   customers: {
     all: () => ["customers"] as const,
     lists: () => ["customers", "list"] as const,
-    list: (filters: Record<string, unknown>) => ["customers", "list", filters] as const,
+    list: (filters: Record<string, unknown>) => ["customers", "list", stableSerialize(filters)] as const,
     details: () => ["customers", "detail"] as const,
     detail: (id: number | string) => ["customers", "detail", id] as const,
-    stats: (filters: Record<string, unknown>) => ["customers", "stats", filters] as const,
+    stats: (filters: Record<string, unknown>) => ["customers", "stats", stableSerialize(filters)] as const,
   },
   
   // Service Points
@@ -44,16 +71,22 @@ export const queryKeys = {
   orders: {
     all: () => ["orders"] as const,
     lists: () => ["orders", "list"] as const,
-    list: (filters: Record<string, unknown>) => ["orders", "list", filters] as const,
+    list: (filters: Record<string, unknown>) => ["orders", "list", stableSerialize(filters)] as const,
     details: () => ["orders", "detail"] as const,
     detail: (id: number | string) => ["orders", "detail", id] as const,
+  },
+
+  // Orders core list endpoints (dashboard/orders/*)
+  ordersCore: {
+    foodList: (filters: Record<string, unknown>) =>
+      ["orders", "core", "food", stableSerialize(filters)] as const,
   },
   
   // Tickets
   tickets: {
     all: () => ["tickets"] as const,
     lists: () => ["tickets", "list"] as const,
-    list: (filters: Record<string, unknown>) => ["tickets", "list", filters] as const,
+    list: (filters: Record<string, unknown>) => ["tickets", "list", stableSerialize(filters)] as const,
     details: () => ["tickets", "detail"] as const,
     detail: (id: number | string) => ["tickets", "detail", id] as const,
     activities: (id: number | string) => ["tickets", "activities", id] as const,
@@ -64,7 +97,7 @@ export const queryKeys = {
   // Unified tickets (public.unified_tickets)
   unifiedTickets: {
     all: () => ["unified-tickets"] as const,
-    list: (filters: Record<string, unknown>) => ["unified-tickets", "list", filters] as const,
+    list: (filters: Record<string, unknown>) => ["unified-tickets", "list", stableSerialize(filters)] as const,
   },
   
   // Analytics
@@ -79,7 +112,7 @@ export const queryKeys = {
     stats: (fromDate?: string, toDate?: string) =>
       ["merchant-stores", "stats", fromDate ?? "", toDate ?? ""] as const,
     list: (params: { filter: string; search?: string; category?: string; fromDate?: string; toDate?: string }) =>
-      ["merchant-stores", "list", params] as const,
+      ["merchant-stores", "list", stableSerialize(params)] as const,
   },
 
   // Merchant store dashboard (stats, wallet, store-operations, menu) – shared cache to avoid duplicate calls
@@ -92,11 +125,16 @@ export const queryKeys = {
     menu: (storeId: string) => ["merchant-store", storeId, "menu"] as const,
   },
 
-  // Merchant offers (dashboard)
+  // Merchant wallet-requests summary (global + store-scoped)
+  merchantWalletRequests: {
+    summary: (storeId: string | null) =>
+      ["merchant-wallet-requests-summary", storeId ?? "global"] as const,
+  },
+
   offers: {
     merchant: {
-      list: (filters: Record<string, unknown>) => ["offers", "merchant", "list", filters] as const,
-    },
+      list: (filters: Record<string, unknown>) =>
+        ["offers", "merchant", "list", stableSerialize(filters)] as const,    },
     stores: () => ["offers", "stores"] as const,
   },
 

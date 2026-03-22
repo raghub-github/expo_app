@@ -3,7 +3,16 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { ChevronLeft, Upload, Trash2, Loader2 } from "lucide-react";
 import { buildContractText, buildStructuredContract, escapePdfText, sanitizeTextForPdf, type ContractData } from "./agreement";
-import { getOnboardingR2Path, getOnboardingDocumentPath, type R2OnboardingDocType } from "@/lib/r2-paths";
+import {
+  getOnboardingR2Path,
+  getOnboardingDocumentPath,
+  getOnboardingAgreementPath,
+  getOnboardingAssetsBannerPath,
+  getOnboardingAssetsGalleryPath,
+  getOnboardingMenuReferenceFlatPath,
+  safeMenuSpreadsheetObjectName,
+  type R2OnboardingDocType,
+} from "@/lib/r2-paths";
 
 interface SignatureStepPageProps {
   step1: any;
@@ -573,12 +582,10 @@ export default function SignatureStepPage({
     setSubmitting(true);
     setError("");
     try {
-      const parentMerchantId =
-        step1?.parent_merchant_id ||
-        (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("parent_id") : null);
-      if (!parentMerchantId) throw new Error("Parent merchant ID missing");
-
-      const parentId = parentMerchantId;
+      const r2ParentPk = parentInfo?.id;
+      if (r2ParentPk == null) {
+        throw new Error("Parent account id missing for uploads. Please refresh the page.");
+      }
       const childStoreId = step1?.store_public_id ?? null;
 
       async function uploadToR2(file: File, parent: string, filename: string): Promise<string | null> {
@@ -590,26 +597,173 @@ export default function SignatureStepPage({
         const res = await fetch("/api/upload/r2", { method: "POST", body: form });
         const data = await res.json();
         if (!data.url && !data.path && !data.key) throw new Error("Image upload failed");
-        return data.key || data.path || data.url;
+        const raw = String((data.key || data.path || data.url) as string).trim();
+        if (raw.startsWith("/api/attachments/proxy")) return raw;
+        if (raw && !raw.includes("://")) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(raw.replace(/^\/+/, ""))}`;
+        }
+        return raw;
       }
 
-      const logoUrl = await uploadToR2(storeSetup.logo, getOnboardingR2Path(parentId, childStoreId, "STORE_MEDIA"), "logo");
-      const bannerUrl = await uploadToR2(storeSetup.banner, getOnboardingR2Path(parentId, childStoreId, "STORE_MEDIA"), "banner");
+      const logoUrl = await uploadToR2(storeSetup.logo, getOnboardingR2Path(r2ParentPk, childStoreId, "STORE_MEDIA"), "logo");
+      const bannerUrl = await uploadToR2(
+        storeSetup.banner,
+        getOnboardingAssetsBannerPath(r2ParentPk, childStoreId),
+        "banner"
+      );
       const galleryUrls = await Promise.all(
         (storeSetup.gallery_images || []).map((file: File, idx: number) =>
-          uploadToR2(file, getOnboardingR2Path(parentId, childStoreId, "STORE_MEDIA_GALLERY"), `gallery_${idx + 1}`)
+          uploadToR2(file, getOnboardingAssetsGalleryPath(r2ParentPk, childStoreId), `gallery_${idx + 1}`)
         )
       );
+      const menuFlat = getOnboardingMenuReferenceFlatPath(r2ParentPk, childStoreId);
       const uploadedMenuImageUrls = await Promise.all(
         (menuData?.menuImageFiles || []).map((file: File, idx: number) =>
-          uploadToR2(file, getOnboardingR2Path(parentId, childStoreId, "MENU_IMAGES"), `menu_image_${idx + 1}_${Date.now()}`)
+          uploadToR2(file, menuFlat, `menu_image_${idx + 1}_${Date.now()}`)
         )
       );
       const uploadedMenuSpreadsheetUrl = menuData?.menuSpreadsheetFile
-        ? await uploadToR2(menuData.menuSpreadsheetFile, getOnboardingR2Path(parentId, childStoreId, "MENU_CSV"), `menu_sheet_${Date.now()}.csv`)
+        ? await uploadToR2(
+            menuData.menuSpreadsheetFile,
+            menuFlat,
+            `${Date.now()}_${safeMenuSpreadsheetObjectName(menuData.menuSpreadsheetFile)}`
+          )
         : null;
-      const menuImageUrls = [...(menuData?.menuImageUrls || []), ...uploadedMenuImageUrls.filter(Boolean)];
-      const menuSpreadsheetUrl = menuData?.menuSpreadsheetUrl || uploadedMenuSpreadsheetUrl;
+      const uploadedMenuPdfUrl = menuData?.menuPdfFile
+        ? await uploadToR2(
+            menuData.menuPdfFile,
+            menuFlat,
+            menuData.menuPdfFile.name?.replace(/[^a-zA-Z0-9._-]/g, "_") || `menu_${Date.now()}.pdf`
+          )
+        : null;
+
+      const hasNewMenuFiles =
+        ((menuData?.menuImageFiles || []).length ?? 0) > 0 ||
+        !!menuData?.menuSpreadsheetFile ||
+        !!menuData?.menuPdfFile;
+
+      const rawDraftDbId = (step1 as { __draftStoreDbId?: unknown } | undefined)?.__draftStoreDbId;
+      const draftStoreDbId =
+        typeof rawDraftDbId === "number" && Number.isFinite(rawDraftDbId)
+          ? rawDraftDbId
+          : typeof rawDraftDbId === "string" && /^\d+$/.test(rawDraftDbId)
+            ? Number(rawDraftDbId)
+            : NaN;
+
+      type DbMenuResolved = {
+        mode: "IMAGE" | "CSV" | "PDF";
+        imageUrls: string[];
+        imageNames?: string[];
+        spreadsheetUrl: string | null;
+        spreadsheetFileName: string | null;
+        pdfUrl: string | null;
+        pdfFileName: string | null;
+      };
+
+      let dbMenu: DbMenuResolved | null = null;
+      if (!hasNewMenuFiles && Number.isFinite(draftStoreDbId) && draftStoreDbId > 0) {
+        try {
+          const menuRes = await fetch(`/api/auth/store-menu-media-signed?storeDbId=${draftStoreDbId}`, {
+            credentials: "include",
+          });
+          const mj = await menuRes.json();
+          if (menuRes.ok && mj?.success) {
+            if (Array.isArray(mj.menuPdfUrls) && mj.menuPdfUrls.length > 0) {
+              dbMenu = {
+                mode: "PDF",
+                imageUrls: [],
+                spreadsheetUrl: null,
+                spreadsheetFileName: null,
+                pdfUrl: mj.menuPdfUrls[0],
+                pdfFileName: mj.menuPdfFileNames?.[0] ?? null,
+              };
+            } else if (mj.menuSpreadsheetUrl) {
+              dbMenu = {
+                mode: "CSV",
+                imageUrls: [],
+                spreadsheetUrl: mj.menuSpreadsheetUrl,
+                spreadsheetFileName: mj.menuSpreadsheetFileName ?? null,
+                pdfUrl: null,
+                pdfFileName: null,
+              };
+            } else {
+              const items = Array.isArray(mj.menuImageItems) ? mj.menuImageItems : [];
+              const urls =
+                items.length > 0
+                  ? items.map((i: { url: string }) => i.url).filter(Boolean)
+                  : Array.isArray(mj.menuImageUrls)
+                    ? mj.menuImageUrls.filter(Boolean)
+                    : [];
+              if (urls.length > 0) {
+                dbMenu = {
+                  mode: "IMAGE",
+                  imageUrls: urls,
+                  imageNames:
+                    items.length > 0
+                      ? items.map((i: { fileName: string }) => i.fileName)
+                      : Array.isArray(mj.menuImageFileNames)
+                        ? mj.menuImageFileNames
+                        : undefined,
+                  spreadsheetUrl: null,
+                  spreadsheetFileName: null,
+                  pdfUrl: null,
+                  pdfFileName: null,
+                };
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("[signature] Could not refresh menu from DB:", e);
+        }
+      }
+
+      let menuMode = (menuData?.menuUploadMode as "IMAGE" | "CSV" | "PDF" | undefined) ?? "IMAGE";
+      let menuImageUrls = [...(menuData?.menuImageUrls || []), ...uploadedMenuImageUrls.filter(Boolean)].filter(Boolean);
+      let menuSpreadsheetUrl: string | null | undefined = menuData?.menuSpreadsheetUrl || uploadedMenuSpreadsheetUrl;
+      let menuPdfUrl: string | null | undefined = menuData?.menuPdfUrl || uploadedMenuPdfUrl;
+      let resolvedMenuImageNames: string[] | undefined =
+        menuMode === "IMAGE" && Array.isArray(menuData?.menuImageNames) ? [...menuData.menuImageNames] : undefined;
+
+      if (dbMenu) {
+        menuMode = dbMenu.mode;
+        if (menuMode === "IMAGE") {
+          menuImageUrls = dbMenu.imageUrls;
+          menuSpreadsheetUrl = null;
+          menuPdfUrl = null;
+          resolvedMenuImageNames = dbMenu.imageNames;
+        } else if (menuMode === "CSV") {
+          menuImageUrls = [];
+          menuSpreadsheetUrl = dbMenu.spreadsheetUrl;
+          menuPdfUrl = null;
+        } else if (menuMode === "PDF") {
+          menuImageUrls = [];
+          menuSpreadsheetUrl = null;
+          menuPdfUrl = dbMenu.pdfUrl;
+        }
+      } else {
+        if (menuMode === "IMAGE") {
+          menuSpreadsheetUrl = null;
+          menuPdfUrl = null;
+        } else if (menuMode === "CSV") {
+          menuImageUrls = [];
+          menuPdfUrl = null;
+        } else if (menuMode === "PDF") {
+          menuImageUrls = [];
+          menuSpreadsheetUrl = null;
+        }
+      }
+
+      const spreadsheetFileName =
+        menuMode === "CSV"
+          ? dbMenu?.spreadsheetFileName ||
+            menuData?.menuSpreadsheetFileName ||
+            menuData?.menuSpreadsheetFile?.name ||
+            null
+          : null;
+      const pdfFileNameForPayload =
+        menuMode === "PDF"
+          ? dbMenu?.pdfFileName || menuData?.menuPdfFileName || menuData?.menuPdfFile?.name || null
+          : null;
 
       const docTypeFromKey = (k: string): R2OnboardingDocType => {
         const u = k.toUpperCase();
@@ -624,7 +778,7 @@ export default function SignatureStepPage({
       const documentUrls: { type: string; url: string; name: string }[] = [];
       for (const [key, value] of Object.entries(documents)) {
         if (value instanceof File) {
-          const docPath = getOnboardingDocumentPath(parentId, childStoreId, docTypeFromKey(key));
+          const docPath = getOnboardingDocumentPath(r2ParentPk, childStoreId, docTypeFromKey(key));
           const url = await uploadToR2(value, docPath, key);
           if (url) documentUrls.push({ type: key.toUpperCase(), url, name: value.name });
         }
@@ -636,7 +790,11 @@ export default function SignatureStepPage({
         const pdfData = await generatePdfBlob();
         if (pdfData) {
           const pdfFile = new File([pdfData.blob], pdfData.filename, { type: "application/pdf" });
-          const pdfR2Key = await uploadToR2(pdfFile, getOnboardingR2Path(parentId, childStoreId, "AGREEMENTS"), pdfData.filename);
+          const pdfR2Key = await uploadToR2(
+            pdfFile,
+            getOnboardingAgreementPath(r2ParentPk, childStoreId),
+            pdfData.filename
+          );
           if (pdfR2Key) {
             // Store key (or proxy URL) so backend saves /api/attachments/proxy?key=... — always accessible, no expiry
             signedPdfUrl = pdfR2Key;
@@ -662,9 +820,13 @@ export default function SignatureStepPage({
           bannerUrl,
           galleryUrls,
           menuAssets: {
-            uploadMode: menuData?.menuUploadMode || "IMAGE",
+            uploadMode: menuMode,
             imageUrls: menuImageUrls.filter(Boolean),
-            spreadsheetUrl: menuSpreadsheetUrl,
+            imageNames: menuMode === "IMAGE" && Array.isArray(resolvedMenuImageNames) ? resolvedMenuImageNames : undefined,
+            spreadsheetUrl: menuSpreadsheetUrl ?? null,
+            spreadsheetFileName: spreadsheetFileName,
+            pdfUrl: menuPdfUrl ?? null,
+            pdfFileName: pdfFileNameForPayload,
           },
           agreementAcceptance: {
             templateId: agreementTemplate?.id || null,

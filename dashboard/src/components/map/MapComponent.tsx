@@ -7,7 +7,11 @@ import { mapCache } from "@/lib/map-cache";
 
 // #region agent log
 const LOG_ENDPOINT = 'http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f';
+const ENABLE_AGENT_LOGS =
+  process.env.NODE_ENV !== "production" &&
+  process.env.NEXT_PUBLIC_ENABLE_AGENT_LOGS === "true";
 const log = (location: string, message: string, data: any, hypothesisId: string) => {
+  if (!ENABLE_AGENT_LOGS) return;
   fetch(LOG_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -47,6 +51,24 @@ interface MapComponentProps {
   deleteStartTime?: number | null;
 }
 
+const PERSISTENT_MAP_CONTAINER_ID = "gm-persistent-mapbox-container";
+
+function getOrCreatePersistentMapContainer(): HTMLDivElement {
+  let el = document.getElementById(PERSISTENT_MAP_CONTAINER_ID) as HTMLDivElement | null;
+  if (!el) {
+    el = document.createElement("div");
+    el.id = PERSISTENT_MAP_CONTAINER_ID;
+    el.style.width = "100%";
+    el.style.height = "100%";
+    el.style.position = "relative";
+  }
+  return el;
+}
+
+function getMapStashEl(): HTMLElement | null {
+  return document.getElementById("gm-map-stash");
+}
+
 function MapComponentInner({
   servicePoints,
   onPointClick,
@@ -62,12 +84,19 @@ function MapComponentInner({
   const [deleteElapsed, setDeleteElapsed] = useState(0);
   // #region agent log
   const componentMountTime = Date.now();
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:47',message:'MapComponent mounted',data:{componentMountTime,servicePointsCount:servicePoints.length,hasToken:!!mapboxToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  if (ENABLE_AGENT_LOGS) {
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:47',message:'MapComponent mounted',data:{componentMountTime,servicePointsCount:servicePoints.length,hasToken:!!mapboxToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+  }
   // #endregion
   
+  const hostContainerRef = useRef<HTMLDivElement>(null);
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const cached = mapCache.getCachedMap(mapboxToken);
+    return Boolean(cached && typeof cached.loaded === "function" && cached.loaded());
+  });
   const [error, setError] = useState<string | null>(null);
   const markersRef = useRef<any[]>([]);
   const popupRef = useRef<any>(null);
@@ -96,7 +125,14 @@ function MapComponentInner({
     // #endregion
     
     if (node) {
-      mapContainer.current = node;
+      hostContainerRef.current = node;
+      // Mount / re-mount the persistent map container into this host so Mapbox never
+      // loses its container across route navigations.
+      const persistent = getOrCreatePersistentMapContainer();
+      if (persistent.parentElement !== node) {
+        node.replaceChildren(persistent);
+      }
+      mapContainer.current = persistent;
       setContainerReady(true);
       // #region agent log
       log('MapComponent.tsx:83', 'Container ref set, containerReady=true', {
@@ -106,6 +142,7 @@ function MapComponentInner({
       }, 'A');
       // #endregion
     } else {
+      hostContainerRef.current = null;
       mapContainer.current = null;
       setContainerReady(false);
     }
@@ -115,7 +152,9 @@ function MapComponentInner({
     // #region agent log
     const effectStartTime = Date.now();
     const timeSinceMount = effectStartTime - componentMountTime;
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:103',message:'Map init useEffect started',data:{timeSinceMount,hasContainer:!!mapContainer.current,hasToken:!!mapboxToken,initAttempted:initAttemptedRef.current,mapboxAlreadyLoaded:!!(window as any).mapboxgl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    if (ENABLE_AGENT_LOGS) {
+      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:103',message:'Map init useEffect started',data:{timeSinceMount,hasContainer:!!mapContainer.current,hasToken:!!mapboxToken,initAttempted:initAttemptedRef.current,mapboxAlreadyLoaded:!!(window as any).mapboxgl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    }
     // #endregion
 
     if (!mapboxToken) {
@@ -128,7 +167,9 @@ function MapComponentInner({
 
     if (initAttemptedRef.current) {
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:122',message:'Init already attempted, skipping',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      if (ENABLE_AGENT_LOGS) {
+        fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:122',message:'Init already attempted, skipping',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      }
       // #endregion
       return;
     }
@@ -181,7 +222,9 @@ function MapComponentInner({
         if (mapCache.isScriptLoaded()) {
           // #region agent log
           const scriptReuseTime = Date.now();
-          fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:174',message:'Mapbox script reused (not reloaded)',data:{timeSinceMount:scriptReuseTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          if (ENABLE_AGENT_LOGS) {
+            fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:174',message:'Mapbox script reused (not reloaded)',data:{timeSinceMount:scriptReuseTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+          }
           // #endregion
           await initializeMap();
           return;
@@ -304,7 +347,9 @@ function MapComponentInner({
           // #region agent log
           const mapLoadTime = Date.now();
           const totalInitTime = mapLoadTime - componentMountTime;
-          fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:331',message:'Map loaded successfully',data:{totalInitTime,timeSinceMount:totalInitTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          if (ENABLE_AGENT_LOGS) {
+            fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:331',message:'Map loaded successfully',data:{totalInitTime,timeSinceMount:totalInitTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+          }
           const container = mapContainer.current;
           const parent = container?.parentElement;
           const grandParent = parent?.parentElement;
@@ -512,16 +557,29 @@ function MapComponentInner({
       // #region agent log
       const cleanupTime = Date.now();
       const componentLifetime = cleanupTime - componentMountTime;
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:498',message:'MapComponent cleanup (unmounting)',data:{componentLifetime,wasLoaded:isLoaded,initAttempted:initAttemptedRef.current},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      if (ENABLE_AGENT_LOGS) {
+        fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:498',message:'MapComponent cleanup (unmounting)',data:{componentLifetime,wasLoaded:isLoaded,initAttempted:initAttemptedRef.current},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      }
       // #endregion
       
       if (timer) clearTimeout(timer);
-      // Don't remove map instance - let it be cached for reuse
-      // Only clear markers and refs
-      markersRef.current.forEach(marker => marker.remove());
-      markersRef.current = [];
+
+      // Keep the Mapbox map + container alive across navigations.
+      // Move the persistent container back into the dashboard stash so it stays mounted.
+      try {
+        const stash = getMapStashEl();
+        const persistent = document.getElementById(PERSISTENT_MAP_CONTAINER_ID);
+        if (stash && persistent && persistent.parentElement !== stash) {
+          stash.replaceChildren(persistent);
+        }
+      } catch {
+        // ignore
+      }
+
+      // Do not remove the map instance. Also do not clear markers here to preserve
+      // perceived instant return (map + state remain visible). Marker updates are
+      // handled by servicePoints effects.
       mapRef.current = null;
-      initAttemptedRef.current = false;
     };
   }, [mapboxToken, containerReady]);
 
@@ -744,7 +802,7 @@ function MapComponentInner({
 
   return (
     <div className={`relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm ${className}`} style={{ height: '100%', width: '100%', maxHeight: '500px', maxWidth: '500px' }}>
-      {/* Always render container div so ref can attach */}
+      {/* Host remains mounted; persistent Mapbox container is attached inside it */}
       <div ref={containerRefCallback} style={{ width: '100%', height: '100%', position: 'relative' }} />
       
       {/* Show loading overlay */}

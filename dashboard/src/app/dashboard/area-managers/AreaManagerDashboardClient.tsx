@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import React, { useState, useEffect, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";import Link from "next/link";
 import {
   Store,
   Package,
@@ -22,6 +22,8 @@ import {
   useGetAreaManagersQuery,
   type AreaManagerListItem,
 } from "@/store/api/areaManagerApi";
+
+const CARD_MIN_HEIGHT = "min-h-[110px]";
 
 interface MerchantMetrics {
   managerType: "MERCHANT";
@@ -50,23 +52,137 @@ interface RiderMetrics {
 
 type MetricsData = MerchantMetrics | RiderMetrics;
 
+interface AreaManagerListItem {
+  id: number;
+  userId: number;
+  managerType: string;
+  areaCode: string | null;
+  localityCode: string | null;
+  city: string | null;
+  status: string;
+  fullName: string | null;
+  email: string | null;
+}
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(handle);
+  }, [value, delay]);
+  return debounced;
+}
+
+const AreaManagerRow = React.memo(function AreaManagerRow({ am }: { am: AreaManagerListItem }) {
+  return (
+    <tr>
+      <td className="px-3 py-2 text-sm text-gray-900 whitespace-nowrap">
+        {am.fullName ?? "—"}
+      </td>
+      <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
+        {am.email ?? "—"}
+      </td>
+      <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
+        {am.city ?? "—"}
+      </td>
+      <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
+        {[am.areaCode, am.localityCode].filter(Boolean).join(" / ") || "—"}
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <span
+          className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${
+            am.status === "ACTIVE"
+              ? "bg-green-100 text-green-800"
+              : "bg-gray-100 text-gray-800"
+          }`}
+        >
+          {am.status}
+        </span>
+      </td>
+    </tr>
+  );
+});
+
 function SuperAdminAreaManagerList() {
   const [type, setType] = useState<"MERCHANT" | "RIDER">("MERCHANT");
   const [search, setSearch] = useState("");
-  const { data: counts } = useGetAreaManagerCountsQuery();
-  const { data: list = [], isLoading: listLoading } = useGetAreaManagersQuery(type);
+  const debouncedSearch = useDebouncedValue(search, 400);
 
-  const searchLower = search.trim().toLowerCase();
-  const filteredList = searchLower
-    ? list.filter(
-        (am) =>
-          (am.fullName ?? "").toLowerCase().includes(searchLower) ||
-          (am.email ?? "").toLowerCase().includes(searchLower) ||
-          (am.city ?? "").toLowerCase().includes(searchLower) ||
-          (am.areaCode ?? "").toLowerCase().includes(searchLower) ||
-          (am.localityCode ?? "").toLowerCase().includes(searchLower)
-      )
-    : list;
+  const { data: counts } = useQuery<{
+    success: boolean;
+    data?: { merchant: number; rider: number };
+  }>({
+    queryKey: ["area-managers", "counts"],
+    queryFn: async () => {
+      const res = await fetch("/api/area-manager/list/counts", { credentials: "include" });
+      const json = await res.json();
+      return json;
+    },
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
+
+  const { data: merchantListData, isFetching: merchantLoading } = useQuery<{
+    success: boolean;
+    data?: { items: AreaManagerListItem[] };
+  }>({
+    queryKey: ["area-managers", "merchant"],
+    queryFn: async () => {
+      const res = await fetch("/api/area-manager/list?type=MERCHANT", {
+        credentials: "include",
+      });
+      const json = await res.json();
+      return json;
+    },
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
+  const { data: riderListData, isFetching: riderLoading } = useQuery<{
+    success: boolean;
+    data?: { items: AreaManagerListItem[] };
+  }>({
+    queryKey: ["area-managers", "rider"],
+    queryFn: async () => {
+      const res = await fetch("/api/area-manager/list?type=RIDER", {
+        credentials: "include",
+      });
+      const json = await res.json();
+      return json;
+    },
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
+
+  const list: AreaManagerListItem[] = useMemo(() => {
+    if (type === "MERCHANT") {
+      return merchantListData?.data?.items ?? [];
+    }
+    return riderListData?.data?.items ?? [];
+  }, [type, merchantListData, riderListData]);
+
+  const listLoading = type === "MERCHANT" ? merchantLoading : riderLoading;
+
+  const searchLower = debouncedSearch.trim().toLowerCase();
+  const filteredList = useMemo(
+    () =>
+      searchLower
+        ? list.filter(
+            (am) =>
+              (am.fullName ?? "").toLowerCase().includes(searchLower) ||
+              (am.email ?? "").toLowerCase().includes(searchLower) ||
+              (am.city ?? "").toLowerCase().includes(searchLower) ||
+              (am.areaCode ?? "").toLowerCase().includes(searchLower) ||
+              (am.localityCode ?? "").toLowerCase().includes(searchLower)
+          )
+        : list,
+    [list, searchLower]
+  );
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
@@ -97,11 +213,11 @@ function SuperAdminAreaManagerList() {
               Rider
             </button>
           </div>
-          {counts != null && (
+          {counts?.data && (
             <span className="text-sm text-gray-500">
               {type === "MERCHANT" ? "Merchant" : "Rider"}:{" "}
               <span className="font-medium text-gray-700">
-                {type === "MERCHANT" ? counts.merchant : counts.rider}
+                {type === "MERCHANT" ? counts.data.merchant : counts.data.rider}
               </span>
             </span>
           )}
@@ -118,15 +234,17 @@ function SuperAdminAreaManagerList() {
         </div>
       </div>
       {listLoading ? (
-        <div className="flex justify-center py-8">
+        <div className="flex justify-center py-8 table-container min-h-[250px]">
           <LoadingSpinner />
         </div>
       ) : list.length === 0 ? (
         <p className="text-sm text-gray-500 py-4">No area managers found.</p>
       ) : filteredList.length === 0 ? (
-        <p className="text-sm text-gray-500 py-4">No matches for &quot;{search.trim()}&quot;.</p>
+        <p className="text-sm text-gray-500 py-4">
+          No matches for &quot;{debouncedSearch.trim()}&quot;.
+        </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto table-container min-h-[250px]">
           <table className="min-w-full divide-y divide-gray-200">
             <thead>
               <tr>
@@ -149,31 +267,7 @@ function SuperAdminAreaManagerList() {
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
               {filteredList.map((am) => (
-                <tr key={am.id}>
-                  <td className="px-3 py-2 text-sm text-gray-900 whitespace-nowrap">
-                    {am.fullName ?? "—"}
-                  </td>
-                  <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
-                    {am.email ?? "—"}
-                  </td>
-                  <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
-                    {am.city ?? "—"}
-                  </td>
-                  <td className="px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
-                    {[am.areaCode, am.localityCode].filter(Boolean).join(" / ") || "—"}
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap">
-                    <span
-                      className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${
-                        am.status === "ACTIVE"
-                          ? "bg-green-100 text-green-800"
-                          : "bg-gray-100 text-gray-800"
-                      }`}
-                    >
-                      {am.status}
-                    </span>
-                  </td>
-                </tr>
+                <AreaManagerRow key={am.id} am={am} />
               ))}
             </tbody>
           </table>
@@ -210,7 +304,7 @@ function StatCard({
     <div
       className={`rounded-lg border border-gray-200 ${bgColor} h-full flex flex-col ${
         compact ? "p-3" : "p-6"
-      }`}
+      } ${CARD_MIN_HEIGHT} transition-all duration-200`}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex-1 min-w-0">
@@ -243,10 +337,55 @@ function StatCard({
 }
 
 export function AreaManagerDashboardClient() {
-  const { data, isLoading, error } = useGetAreaManagerMetricsQuery();
+  const queryClient = useQueryClient();
 
-  if (isLoading) {
-    return (
+  const {
+    data,
+    isLoading,
+    isFetching,
+    error,
+  } = useQuery<{
+    success: boolean;
+    data?: MetricsData;
+  }>({
+    queryKey: ["area-managers", "metrics"],
+    queryFn: async () => {
+      const res = await fetch("/api/area-manager/metrics", { credentials: "include" });
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error ?? "Failed to load metrics");
+      }
+      return json;
+    },
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
+
+  // Preload both merchant and rider lists so tab switching feels instant.
+  useEffect(() => {
+    queryClient.prefetchQuery({
+      queryKey: ["area-managers", "merchant"],
+      queryFn: async () => {
+        const res = await fetch("/api/area-manager/list?type=MERCHANT", {
+          credentials: "include",
+        });
+        return res.json();
+      },
+    });
+    queryClient.prefetchQuery({
+      queryKey: ["area-managers", "rider"],
+      queryFn: async () => {
+        const res = await fetch("/api/area-manager/list?type=RIDER", {
+          credentials: "include",
+        });
+        return res.json();
+      },
+    });
+  }, [queryClient]);
+
+  if (isLoading && !data) {    return (
       <div className="flex items-center justify-center py-12">
         <LoadingSpinner />
       </div>
@@ -256,12 +395,13 @@ export function AreaManagerDashboardClient() {
   if (error) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-medium text-red-800">{error instanceof Error ? error.message : "Something went wrong"}</p>
-      </div>
+        <p className="text-sm font-medium text-red-800">
+          {error instanceof Error ? error.message : String(error)}
+        </p>      </div>
     );
   }
 
-  if (!data) {
+  if (!data?.data) {
     return (
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         <p className="text-gray-500">No metrics available.</p>
@@ -269,8 +409,10 @@ export function AreaManagerDashboardClient() {
     );
   }
 
-  if (data.managerType === "MERCHANT") {
-    const merchantData = data as MerchantMetrics;
+  const metrics = data.data;
+
+  if (metrics.managerType === "MERCHANT") {
+    const merchantData = metrics as MerchantMetrics;
     const isSuperAdmin = !!merchantData.isSuperAdmin;
 
     const cardsGrid = (
@@ -283,7 +425,7 @@ export function AreaManagerDashboardClient() {
       >
         <StatCard
           title="Parent Stores"
-          value={data.parents.total}
+          value={merchantData.parents.total}
           icon={Building2}
           href="/dashboard/area-managers/stores?filter=parent"
           compact={isSuperAdmin}
@@ -294,7 +436,7 @@ export function AreaManagerDashboardClient() {
         />
         <StatCard
           title="Child Stores"
-          value={data.children.total}
+          value={merchantData.children.total}
           icon={Building}
           href="/dashboard/area-managers/stores?filter=child"
           compact={isSuperAdmin}
@@ -305,7 +447,7 @@ export function AreaManagerDashboardClient() {
         />
         <StatCard
           title="Verified Stores"
-          value={data.stores.verified}
+          value={merchantData.stores.verified}
           icon={UserCheck}
           href="/dashboard/area-managers/stores?status=VERIFIED"
           compact={isSuperAdmin}
@@ -316,7 +458,7 @@ export function AreaManagerDashboardClient() {
         />
         <StatCard
           title="Rejected Stores"
-          value={data.stores.rejected}
+          value={merchantData.stores.rejected}
           icon={UserX}
           href="/dashboard/area-managers/stores?status=REJECTED"
           compact={isSuperAdmin}
@@ -327,7 +469,7 @@ export function AreaManagerDashboardClient() {
         />
         <StatCard
           title="Pending Stores"
-          value={data.stores.pending}
+          value={merchantData.stores.pending}
           icon={Clock}
           href="/dashboard/area-managers/stores?status=PENDING"
           compact={isSuperAdmin}
@@ -338,7 +480,7 @@ export function AreaManagerDashboardClient() {
         />
         <StatCard
           title="Active Stores"
-          value={data.stores.active}
+          value={merchantData.stores.active}
           icon={Activity}
           href="/dashboard/area-managers/stores"
           compact={isSuperAdmin}
@@ -363,7 +505,7 @@ export function AreaManagerDashboardClient() {
     );
   }
 
-  const riderData = data as RiderMetrics;
+  const riderData = data.data as RiderMetrics;
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">

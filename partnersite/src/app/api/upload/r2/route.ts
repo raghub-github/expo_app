@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { supabase } from '@/lib/supabase';
+import { normalizeR2ObjectKey } from '@/lib/r2';
 
 // ---------- R2 Client ----------
 const s3Client = new S3Client({
@@ -45,8 +46,10 @@ export async function POST(request: NextRequest) {
     }
 
     // -------- Build Path --------
-    const safeFileName = filename || file.name;
-    const fullPath = parent ? `${parent}/${safeFileName}` : safeFileName;
+    const safeFileName = String(filename || file.name || 'upload').replace(/^\/+/, '');
+    const parentTrim = typeof parent === 'string' ? parent.replace(/\/+$/, '') : '';
+    const joined = parentTrim ? `${parentTrim}/${safeFileName}` : safeFileName;
+    const fullPath = normalizeR2ObjectKey(joined);
 
     // -------- Convert File --------
     const buffer = Buffer.from(await file.arrayBuffer());

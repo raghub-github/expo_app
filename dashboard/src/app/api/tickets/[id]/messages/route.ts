@@ -152,9 +152,7 @@ export async function POST(
       `;
     }
 
-    const sqlUnsafe = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
-    await insertTicketActivityAudit(sqlUnsafe, {
-      ticket_id: ticketId,
+    await insertTicketActivityAudit(sqlClient, {      ticket_id: ticketId,
       activity_type: isInternalNote ? "internal_note" : "response",
       activity_category: isInternalNote ? "note" : "response",
       activity_description: isInternalNote ? "Internal note added" : (isFirstResponse ? "First response sent" : "Response sent"),

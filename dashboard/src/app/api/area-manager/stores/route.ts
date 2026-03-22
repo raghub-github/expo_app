@@ -195,6 +195,8 @@ export async function GET(request: NextRequest) {
       createdAt: s.created_at instanceof Date ? s.created_at.toISOString() : String(s.created_at),
       isParent: false,
       currentOnboardingStep: s.current_onboarding_step,
+      onboardingCompleted: s.onboarding_completed,
+      onboardingCompletedAt: s.onboarding_completed_at,
       totalSteps: 9 as number | null,
     }));
 

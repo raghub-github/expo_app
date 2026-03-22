@@ -418,6 +418,24 @@ export interface MainNavItem {
   subRoutes?: DashboardSubRoute[];
 }
 
+/**
+ * Paths under the Super Admin hub — keep in sync with `adminOptions` on the super-admin page.
+ * Sidebar "Super Admin" stays active on these routes (e.g. /dashboard/users).
+ */
+export const SUPER_ADMIN_NAV_PATH_PREFIXES = [
+  "/dashboard/super-admin",
+  "/dashboard/users",
+  "/dashboard/payments",
+  "/dashboard/offers",
+  "/dashboard/agents",
+] as const;
+
+export function isSuperAdminNavPath(cleanPath: string): boolean {
+  return SUPER_ADMIN_NAV_PATH_PREFIXES.some(
+    (prefix) => cleanPath === prefix || cleanPath.startsWith(prefix + "/")
+  );
+}
+
 export const mainNavigation: MainNavItem[] = [
   {
     name: "Home",
@@ -492,6 +510,11 @@ export const mainNavigation: MainNavItem[] = [
 export function getCurrentDashboard(pathname: string): MainNavItem | null {
   // Remove query parameters and hash from pathname
   const cleanPath = pathname.split('?')[0].split('#')[0];
+
+  const superAdminItem = mainNavigation.find((n) => n.href === "/dashboard/super-admin");
+  if (superAdminItem && isSuperAdminNavPath(cleanPath)) {
+    return superAdminItem;
+  }
   
   // Sort navigation items by href length (longest first) to match more specific routes first
   // This prevents "/dashboard" from matching before "/dashboard/riders"
@@ -577,6 +600,8 @@ export function getCurrentPageName(pathname: string): string {
   const pageNameMap: Record<string, string> = {
     "/dashboard/users": "User Management",
     "/dashboard/users/new": "Add User",
+    "/dashboard/users/roles": "System roles",
+    "/dashboard/users/roles/new": "Add Role",
     "/dashboard/agents": "Agents",
     "/dashboard/offers": "Offers",
     "/dashboard/payments": "Payments",
@@ -596,8 +621,17 @@ export function getCurrentPageName(pathname: string): string {
     return pageNameMap[cleanPath];
   }
   
+  if (/^\/dashboard\/users\/roles\/\d+\/edit$/.test(cleanPath)) {
+    return "Edit Role";
+  }
+
   // Check for dynamic routes (e.g., /dashboard/users/[id])
-  if (cleanPath.startsWith("/dashboard/users/") && !cleanPath.includes("/new") && !cleanPath.includes("/access")) {
+  if (
+    cleanPath.startsWith("/dashboard/users/") &&
+    !cleanPath.includes("/new") &&
+    !cleanPath.includes("/access") &&
+    !cleanPath.startsWith("/dashboard/users/roles")
+  ) {
     return "User Details";
   }
   

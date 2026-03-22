@@ -58,7 +58,7 @@ export async function GET(
       country: s.country,
       latitude: s.latitude,
       longitude: s.longitude,
-      bannerUrl: s.banner_url,
+      logoUrl: null,      bannerUrl: s.banner_url,
       galleryImages: s.gallery_images,
       cuisineTypes: s.cuisine_types,
       foodCategories: null,

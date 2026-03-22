@@ -50,6 +50,17 @@ type ChildStoreSummary = {
   area_manager_email: string | null;
 };
 
+type ActivityItem = {
+  id: number;
+  action: "ASSIGN" | "REMOVE";
+  acted_at: string;
+  reason: string | null;
+  area_manager_name: string | null;
+  area_manager_email: string | null;
+  actor_name: string | null;
+  actor_email: string | null;
+};
+
 interface AssignAreaManagerPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -85,9 +96,14 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     null
   );
   const [removing, setRemoving] = useState(false);
+  const [removeReason, setRemoveReason] = useState("");
   const [childStores, setChildStores] = useState<ChildStoreSummary[]>([]);
   const [childStoresLoading, setChildStoresLoading] = useState(false);
   const [childStoresError, setChildStoresError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<ActivityItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const canAssign = useMemo(() => {
     // Only super admins for now; regular admins with MERCHANT dashboard access are also allowed via API
@@ -116,6 +132,10 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       setChildStoresError(null);
       setChildStoresLoading(false);
       merchantsSearch?.setAssignAmSearchLoading(false);
+      setHistoryOpen(false);
+      setHistoryItems([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
     }
   }, [isOpen, merchantsSearch]);
 
@@ -226,11 +246,14 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     );
   };
 
-  const loadAssignedForParent = async (parentId: number) => {
+  const loadAssignedForParent = async (parentId: number, storeInternalId?: number | null) => {
     setAssignedLoading(true);
     setAssignedError(null);
     try {
       const params = new URLSearchParams({ parentId: String(parentId) });
+      if (storeInternalId != null) {
+        params.set("storeInternalId", String(storeInternalId));
+      }
       const res = await fetch(`/api/admin/parent-area-managers?${params.toString()}`);
       const json = await res.json();
       if (!res.ok || !json?.success) {
@@ -240,6 +263,8 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       }
       const items = (json.items as AssignedAreaManagerInfo[]) ?? [];
       setAssignedForSelected(items);
+      const overallCount =
+        typeof json.parentAssignedAmsCount === "number" ? json.parentAssignedAmsCount : items.length;
 
       // Keep "Assigned AMs" count in the search results in sync with latest assignments.
       setSearchResults((prev) =>
@@ -247,16 +272,15 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
           r.parent_id === parentId
             ? {
                 ...r,
-                // Use the current assigned list length as the canonical count for UI.
-                assigned_ams_count: items.length,
-                // Direct AM flags are no longer needed for the selected row once we have the full list.
-                ...(r.kind === "parent"
-                  ? { parent_direct_am_id: null }
-                  : { store_direct_am_id: null }),
+                // Always update the parent-level distinct AM count, not the store-scoped count.
+                assigned_ams_count: overallCount,
               }
             : r
         )
       );
+
+      // Preload history so the Overall History modal opens instantly.
+      loadHistory(parentId, storeInternalId);
     } catch {
       setAssignedError("Failed to load assigned Area Managers");
       setAssignedForSelected([]);
@@ -286,17 +310,49 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     }
   };
 
+  const loadHistory = async (parentId: number, storeInternalId?: number | null) => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const params = new URLSearchParams({
+        parentId: String(parentId),
+        limit: "50",
+      });
+      if (storeInternalId != null) {
+        params.set("storeInternalId", String(storeInternalId));
+      }
+      const res = await fetch(
+        `/api/admin/parent-area-managers/history?${params.toString()}`
+      );
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        setHistoryError(json?.error || "Failed to load history");
+        setHistoryItems([]);
+        return;
+      }
+      setHistoryItems((json.items as ActivityItem[]) ?? []);
+    } catch {
+      setHistoryError("Failed to load history");
+      setHistoryItems([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   const doAssign = async () => {
     if (!selectedParentId || !selectedAreaManagerIds.length) return;
     setAssigning(true);
     setAssignMessage(null);
     try {
+      const storeInternalId =
+        selectedTarget?.kind === "child" ? selectedTarget.store_internal_id : null;
       const res = await fetch("/api/admin/parent-area-managers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           parentId: selectedParentId,
           areaManagerIds: selectedAreaManagerIds,
+          storeInternalId,
         }),
       });
       const json = await res.json();
@@ -306,7 +362,10 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       }
       setAssignMessage("Area Managers assigned successfully.");
       setConfirmingOverwrite(false);
-      await loadAssignedForParent(selectedParentId);
+      await Promise.all([
+        loadAssignedForParent(selectedParentId, storeInternalId),
+        loadChildStores(selectedParentId),
+      ]);
     } catch {
       setAssignMessage("Failed to assign Area Managers");
     } finally {
@@ -339,12 +398,16 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     setRemoving(true);
     setAssignMessage(null);
     try {
+      const storeInternalId =
+        selectedTarget?.kind === "child" ? selectedTarget.store_internal_id : null;
       const res = await fetch("/api/admin/parent-area-managers", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           parentId: selectedParentId,
           areaManagerId: removeTargetAm.id,
+          storeInternalId,
+          reason: removeReason || null,
         }),
       });
       const json = await res.json();
@@ -354,9 +417,13 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       }
       setAssignMessage("Area Manager removed successfully.");
       setRemoveTargetAm(null);
+      setRemoveReason("");
       setConfirmModalMode(null);
       setConfirmModalOpen(false);
-      await loadAssignedForParent(selectedParentId);
+      await Promise.all([
+        loadAssignedForParent(selectedParentId, storeInternalId),
+        loadChildStores(selectedParentId),
+      ]);
     } catch {
       setAssignMessage("Failed to remove Area Manager");
     } finally {
@@ -409,7 +476,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-slate-100 text-slate-500"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-slate-100 text-slate-500 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -452,16 +519,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       ? r.city || r.registered_phone
                       : r.city || r.parent_merchant_id;
                   const typeLabel = r.kind === "parent" ? "Parent" : "Child Store";
-                  const fromParentTable = r.assigned_ams_count ?? 0;
-                  const directAm =
-                    r.kind === "parent"
-                      ? r.parent_direct_am_id
-                        ? 1
-                        : 0
-                      : r.store_direct_am_id
-                      ? 1
-                      : 0;
-                  const assignedCount = fromParentTable + directAm;
+                  const assignedCount = r.assigned_ams_count ?? 0;
                   return (
                     <div
                       key={`${r.kind}-${r.kind === "parent" ? r.parent_id : r.store_internal_id}`}
@@ -497,34 +555,38 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                         <button
                           type="button"
                           onClick={async () => {
+                            const storeInternalId =
+                              r.kind === "child" ? r.store_internal_id : null;
                             setSelectedParentId(r.parent_id);
                             setSelectedTarget(r);
                             setSelectedAreaManagerIds([]);
                             setAssignMessage(null);
                             setConfirmingOverwrite(false);
                             await Promise.all([
-                              loadAssignedForParent(r.parent_id),
+                              loadAssignedForParent(r.parent_id, storeInternalId),
                               loadChildStores(r.parent_id),
                             ]);
                           }}
-                          className="inline-flex items-center justify-center rounded-md border border-slate-300 px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
+                          className="inline-flex items-center justify-center rounded-md border border-slate-300 px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
                         >
                           View AMs
                         </button>
                         <button
                           type="button"
                           onClick={async () => {
+                            const storeInternalId =
+                              r.kind === "child" ? r.store_internal_id : null;
                             setSelectedParentId(r.parent_id);
                             setSelectedTarget(r);
                             setSelectedAreaManagerIds([]);
                             setAssignMessage(null);
                             setConfirmingOverwrite(false);
                             await Promise.all([
-                              loadAssignedForParent(r.parent_id),
+                              loadAssignedForParent(r.parent_id, storeInternalId),
                               loadChildStores(r.parent_id),
                             ]);
                           }}
-                          className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-700"
+                          className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-700 cursor-pointer"
                         >
                           Assign AM
                         </button>
@@ -580,9 +642,9 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                               ? "bg-indigo-100 ring-1 ring-indigo-300 font-medium"
                               : "hover:bg-indigo-50/70"
                           }`}
-                          onClick={() => {
+                          onClick={async () => {
                             if (!selectedTarget) return;
-                            setSelectedTarget({
+                            const nextTarget: SearchResult = {
                               kind: "child",
                               parent_id: selectedTarget.parent_id,
                               store_internal_id: cs.store_internal_id,
@@ -592,7 +654,16 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                               city: cs.city,
                               assigned_ams_count: selectedTarget.assigned_ams_count ?? 0,
                               store_direct_am_id: cs.area_manager_id,
-                            });
+                            };
+                            setSelectedTarget(nextTarget);
+                            setSelectedParentId(nextTarget.parent_id);
+                            setSelectedAreaManagerIds([]);
+                            setAssignMessage(null);
+                            setConfirmingOverwrite(false);
+                            await Promise.all([
+                              loadAssignedForParent(nextTarget.parent_id, nextTarget.store_internal_id),
+                              loadHistory(nextTarget.parent_id, nextTarget.store_internal_id),
+                            ]);
                           }}
                         >
                           <div className="min-w-0 flex-1">
@@ -661,13 +732,25 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
 
             {/* Selection + warning + AM list */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <div>
                   <h3 className="text-xs font-semibold text-slate-800">Select Area Managers</h3>
                   <p className="text-[11px] text-slate-500">
                     Search and select one or more Area Managers to assign to this store.
                   </p>
                 </div>
+                {selectedParentId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedParentId) return;
+                      setHistoryOpen(true);
+                    }}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-300 px-2.5 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
+                  >
+                    Overall History
+                  </button>
+                )}
               </div>
 
               {/* Existing assignments */}
@@ -710,10 +793,11 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                                   type="button"
                                   onClick={() => {
                                     setRemoveTargetAm(am);
+                                    setRemoveReason("");
                                     setConfirmModalMode("remove");
                                     setConfirmModalOpen(true);
                                   }}
-                                  className="inline-flex items-center justify-center rounded-full border border-amber-400 px-2 py-0.5 text-[10px] font-medium text-amber-800 hover:bg-amber-500 hover:text-white"
+                                  className="inline-flex items-center justify-center rounded-full border border-red-400 px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-600 hover:text-white cursor-pointer"
                                 >
                                   Remove
                                 </button>
@@ -810,7 +894,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       setAssignMessage(null);
                       setConfirmingOverwrite(false);
                     }}
-                    className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
                   >
                     Close Selection
                   </button>
@@ -820,7 +904,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       !selectedParentId || !selectedAreaManagerIds.length || assigning || assignedLoading
                     }
                     onClick={handleAssign}
-                    className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+                    className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60 cursor-pointer"
                   >
                     {assigning
                       ? "Assigning…"
@@ -839,10 +923,176 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     </div>
   );
 
+  const confirmationModal = !confirmModalOpen ? null : (
+    <div className="fixed inset-0 z-[2600] flex items-center justify-center bg-black/50">
+      <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl border border-slate-200 p-4 space-y-3">
+        <div className="flex items-start gap-2">
+          <div className="mt-0.5 h-2 w-2 rounded-full bg-amber-500" />
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-slate-900">
+              {confirmModalMode === "remove"
+                ? "Remove Area Manager?"
+                : "Replace existing Area Managers?"}
+            </h3>
+            <p className="mt-1 text-xs text-slate-600">
+              {confirmModalMode === "remove"
+                ? "This will unassign the selected Area Manager from this parent/store. Store access and reports will update immediately."
+                : "Assigning new Area Managers will replace the existing assignments for this parent/store. Store access and reports will update immediately."}
+            </p>
+            <p className="mt-1 text-[11px] text-amber-800">
+              Please review carefully before confirming. This action can impact which Area
+              Manager is responsible for this merchant&apos;s stores.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-3 pt-1">
+          {confirmModalMode === "remove" ? (
+            <>
+              <label className="text-[11px] text-slate-700">
+                Removal reason (optional)
+              </label>
+              <textarea
+                value={removeReason}
+                onChange={(e) => setRemoveReason(e.target.value)}
+                rows={3}
+                className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                placeholder="Why are you removing this Area Manager from this store?"
+              />
+              <div className="flex justify-end gap-2">
+                    <button
+                  type="button"
+                  onClick={() => {
+                    if (removing) return;
+                    setConfirmModalOpen(false);
+                    setConfirmModalMode(null);
+                    setRemoveTargetAm(null);
+                    setRemoveReason("");
+                  }}
+                      className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                    <button
+                  type="button"
+                  onClick={handleRemoveAreaManager}
+                  disabled={removing}
+                      className="inline-flex items-center justify-center rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60 cursor-pointer"
+                >
+                  {removing ? "Removing…" : "Confirm Remove"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (assigning) return;
+                  setConfirmModalOpen(false);
+                  setConfirmModalMode(null);
+                }}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmOverwrite}
+                disabled={assigning}
+                className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60 cursor-pointer"
+              >
+                {assigning ? "Assigning…" : "Confirm & Assign"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   if (!asModal) {
     return (
-      <div className="w-full py-2">
+      <div className="w-full py-2 relative">
         {content}
+        {confirmationModal}
+        {historyOpen && (
+          <div className="fixed inset-0 z-[2550] flex items-center justify-center bg-black/50">
+            <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Area Manager History
+                  </h3>
+                  <p className="mt-0.5 text-[11px] text-slate-600">
+                    Recent assignments and removals for this store/parent.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen(false)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="border border-slate-200 rounded-lg max-h-72 overflow-y-auto px-3 py-2 bg-slate-50/60">
+                {historyLoading && (
+                  <p className="text-[11px] text-slate-500">Loading history…</p>
+                )}
+                {!historyLoading && historyError && (
+                  <p className="text-[11px] text-red-600">{historyError}</p>
+                )}
+                {!historyLoading && !historyError && historyItems.length === 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    No history recorded for this store/parent yet.
+                  </p>
+                )}
+                {!historyLoading && !historyError && historyItems.length > 0 && (
+                  <ul className="space-y-1.5 text-[11px] text-slate-700">
+                    {historyItems.map((item) => (
+                      <li
+                        key={item.id}
+                        className="rounded-md bg-white px-2 py-1.5 border border-slate-200"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={
+                              item.action === "ASSIGN"
+                                ? "text-emerald-700 font-semibold"
+                                : "text-red-700 font-semibold"
+                            }
+                          >
+                            {item.action === "ASSIGN" ? "Assigned" : "Removed"}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {new Date(item.acted_at).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-700">
+                          AM:{" "}
+                          <span className="font-medium">
+                            {item.area_manager_name ||
+                              item.area_manager_email ||
+                              "Unknown AM"}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 text-[10px] text-slate-500">
+                          By:{" "}
+                          {item.actor_name || item.actor_email || "System / Unknown"}
+                        </div>
+                        {item.reason && (
+                          <div className="mt-0.5 text-[10px] text-slate-600">
+                            Reason: {item.reason}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -850,61 +1100,80 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
   return (
     <div className="fixed inset-0 z-[2500] flex items-center justify-center bg-black/40">
       {content}
-
-      {/* Centralized confirmation modal for overwrite/remove actions */}
-      {confirmModalOpen && (
-        <div className="fixed inset-0 z-[2600] flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl border border-slate-200 p-4 space-y-3">
-            <div className="flex items-start gap-2">
-              <div className="mt-0.5 h-2 w-2 rounded-full bg-amber-500" />
-              <div className="flex-1">
+      {confirmationModal}
+      {historyOpen && (
+        <div className="fixed inset-0 z-[2550] flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
                 <h3 className="text-sm font-semibold text-slate-900">
-                  {confirmModalMode === "remove"
-                    ? "Remove Area Manager?"
-                    : "Replace existing Area Managers?"}
+                  Area Manager History
                 </h3>
-                <p className="mt-1 text-xs text-slate-600">
-                  {confirmModalMode === "remove"
-                    ? "This will unassign the selected Area Manager from this parent/store. Store access and reports will update immediately."
-                    : "Assigning new Area Managers will replace the existing assignments for this parent/store. Store access and reports will update immediately."}
-                </p>
-                <p className="mt-1 text-[11px] text-amber-800">
-                  Please review carefully before confirming. This action can impact which Area
-                  Manager is responsible for this merchant&apos;s stores.
+                <p className="mt-0.5 text-[11px] text-slate-600">
+                  Recent assignments and removals for this store/parent.
                 </p>
               </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  if (removing) return;
-                  setConfirmModalOpen(false);
-                  setConfirmModalMode(null);
-                  setRemoveTargetAm(null);
-                }}
-                className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => setHistoryOpen(false)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100 cursor-pointer"
               >
-                Cancel
+                <X className="w-3.5 h-3.5" />
               </button>
-              {confirmModalMode === "remove" ? (
-                <button
-                  type="button"
-                  onClick={handleRemoveAreaManager}
-                  disabled={removing}
-                  className="inline-flex items-center justify-center rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60"
-                >
-                  {removing ? "Removing…" : "Remove Area Manager"}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleConfirmOverwrite}
-                  disabled={assigning}
-                  className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
-                >
-                  {assigning ? "Assigning…" : "Confirm & Assign"}
-                </button>
+            </div>
+            <div className="border border-slate-200 rounded-lg max-h-72 overflow-y-auto px-3 py-2 bg-slate-50/60">
+              {historyLoading && (
+                <p className="text-[11px] text-slate-500">Loading history…</p>
+              )}
+              {!historyLoading && historyError && (
+                <p className="text-[11px] text-red-600">{historyError}</p>
+              )}
+              {!historyLoading && !historyError && historyItems.length === 0 && (
+                <p className="text-[11px] text-slate-500">
+                  No history recorded for this store/parent yet.
+                </p>
+              )}
+              {!historyLoading && !historyError && historyItems.length > 0 && (
+                <ul className="space-y-1.5 text-[11px] text-slate-700">
+                  {historyItems.map((item) => (
+                    <li
+                      key={item.id}
+                      className="rounded-md bg-white px-2 py-1.5 border border-slate-200"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={
+                            item.action === "ASSIGN"
+                              ? "text-emerald-700 font-semibold"
+                              : "text-red-700 font-semibold"
+                          }
+                        >
+                          {item.action === "ASSIGN" ? "Assigned" : "Removed"}
+                        </span>
+                        <span className="text-[10px] text-slate-500">
+                          {new Date(item.acted_at).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-slate-700">
+                        AM:{" "}
+                        <span className="font-medium">
+                          {item.area_manager_name ||
+                            item.area_manager_email ||
+                            "Unknown AM"}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500">
+                        By:{" "}
+                        {item.actor_name || item.actor_email || "System / Unknown"}
+                      </div>
+                      {item.reason && (
+                        <div className="mt-0.5 text-[10px] text-slate-600">
+                          Reason: {item.reason}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           </div>

@@ -86,13 +86,12 @@ export async function GET() {
     // Also include agents who are currently assigned to tickets
     // This ensures agents working on tickets appear in the dropdown even if they don't have explicit access records
     const sqlClient = getSql();
-    const assignedAgentsResult = await sqlClient`
+    const assignedAgentsResult = (await sqlClient`
       SELECT DISTINCT current_assignee_user_id
       FROM tickets
       WHERE current_assignee_user_id IS NOT NULL
-    `;
-    const assignedAgentIds = (assignedAgentsResult as unknown as { current_assignee_user_id: unknown }[])
-      .map((r) => r.current_assignee_user_id)
+    `) as unknown as { current_assignee_user_id: unknown }[];
+    const assignedAgentIds = assignedAgentsResult      .map((r) => r.current_assignee_user_id)
       .filter((id): id is number => id != null && (typeof id === "number" || typeof id === "bigint"))
       .map((id) => Number(id));
     

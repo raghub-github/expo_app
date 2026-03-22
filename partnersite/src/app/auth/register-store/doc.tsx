@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react';
+import { Loader2, ChevronDown } from 'lucide-react';
 import { R2Image } from "@/components/R2Image";
 
 interface DocumentData {
@@ -69,10 +69,99 @@ interface DocumentData {
 
 const IMAGE_EXT_REGEX = /\.(png|jpe?g|webp|gif|bmp)$/i;
 
+/** Non-empty admin rejection reason from merchant_store_documents.*_rejection_reason */
+function adminRejectionText(d: Record<string, unknown>, key: string): string | null {
+  const v = d[key];
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
+function SectionRejectedBadge({ active }: { active: boolean }) {
+  return (
+    <span
+      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        active ? 'bg-rose-400/95 text-white' : 'bg-rose-100 text-rose-800'
+      }`}
+    >
+      Rejected
+    </span>
+  );
+}
+
+function AdminRejectionBanner({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 shadow-sm">
+      <p className="text-sm font-semibold text-rose-900">{title}</p>
+      <div className="mt-1.5 text-xs text-rose-800 whitespace-pre-wrap break-words">{children}</div>
+    </div>
+  );
+}
+
+/** Mirrors merchant_store_documents.*_rejection_reason — hydrated from GET progress / parent. */
+const DOC_REJECTION_FIELDS = [
+  'pan_rejection_reason',
+  'gst_rejection_reason',
+  'aadhaar_rejection_reason',
+  'fssai_rejection_reason',
+  'drug_license_rejection_reason',
+  'pharmacist_certificate_rejection_reason',
+  'pharmacy_council_registration_rejection_reason',
+  'trade_license_rejection_reason',
+  'shop_establishment_rejection_reason',
+  'udyam_rejection_reason',
+  'other_rejection_reason',
+  'bank_proof_rejection_reason',
+] as const;
+
+const MIN_STORE_DELIVERY_RADIUS_KM = 1;
+const MAX_STORE_DELIVERY_RADIUS_KM = 8;
+
+/** Client-side: turn R2 public / S3-style URLs into same-origin proxy (private buckets break raw https in <img>). */
+function httpR2UrlToProxyIfNeeded(s: string): string | null {
+  try {
+    const u = new URL(s);
+    const h = u.hostname.toLowerCase();
+    if (!h.endsWith('.r2.dev') && !h.endsWith('.r2.cloudflarestorage.com')) return null;
+    let path = u.pathname.replace(/^\/+/, '');
+    if (!path) return null;
+    const pl = path.toLowerCase();
+    if (pl.startsWith('docs/merchants/') || /^merchants\/[^/]+\/(stores|draft)\b/i.test(path)) {
+      return `/api/attachments/proxy?key=${encodeURIComponent(path)}`;
+    }
+    const docIdx = path.toLowerCase().indexOf('docs/merchants/');
+    if (docIdx >= 0) return `/api/attachments/proxy?key=${encodeURIComponent(path.slice(docIdx))}`;
+    const merMatch = path.match(/(^|\/)(merchants\/[^/]+\/(?:stores|draft)\/.+)/i);
+    if (merMatch?.[2]) return `/api/attachments/proxy?key=${encodeURIComponent(merMatch[2])}`;
+    const slash = path.indexOf('/');
+    if (slash > 0 && !path.startsWith('docs/')) {
+      const rest = path.slice(slash + 1);
+      if (rest.startsWith('docs/') || /^merchants\/[^/]+\//i.test(rest)) {
+        return `/api/attachments/proxy?key=${encodeURIComponent(rest)}`;
+      }
+    }
+    return `/api/attachments/proxy?key=${encodeURIComponent(path)}`;
+  } catch {
+    return null;
+  }
+}
+
 const isImageUrlForPreview = (url?: string) => {
   if (!url || typeof url !== 'string') return false;
   const clean = url.split('?')[0];
-  return IMAGE_EXT_REGEX.test(clean);
+  if (IMAGE_EXT_REGEX.test(clean)) return true;
+  try {
+    const u = new URL(url, 'http://localhost');
+    if (!u.pathname.includes('attachments/proxy')) return false;
+    const key = u.searchParams.get('key');
+    if (!key) return false;
+    try {
+      const decoded = decodeURIComponent(key);
+      return IMAGE_EXT_REGEX.test(decoded);
+    } catch {
+      return IMAGE_EXT_REGEX.test(key);
+    }
+  } catch {
+    return false;
+  }
 };
 
 function useImagePreview(file: File | null, existingUrl?: string) {
@@ -94,10 +183,145 @@ function useImagePreview(file: File | null, existingUrl?: string) {
   if (file && (file as any).type && (file as any).type.startsWith('image/') && objectUrl) {
     return objectUrl;
   }
-  if (isImageUrlForPreview(existingUrl)) {
-    return existingUrl;
+  if (!existingUrl || typeof existingUrl !== 'string') return undefined;
+  const trimmed = existingUrl.trim();
+  if (!trimmed || isLikelyPdf(null, trimmed)) return undefined;
+  if (isImageUrlForPreview(trimmed)) {
+    return normalizeDocumentThumbSrc(trimmed) ?? trimmed;
   }
+  const normalized = normalizeDocumentThumbSrc(trimmed);
+  if (normalized?.includes('/api/attachments/proxy?')) return normalized;
   return undefined;
+}
+
+function isLikelyPdf(file: File | null, url?: string): boolean {
+  if (file?.type === 'application/pdf') return true;
+  if (!url) return false;
+  const pathOnly = url.split('?')[0].toLowerCase();
+  if (pathOnly.endsWith('.pdf')) return true;
+  try {
+    const u = new URL(url, 'http://localhost');
+    const k = u.searchParams.get('key');
+    if (k && decodeURIComponent(k).toLowerCase().endsWith('.pdf')) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/**
+ * Turns stored step4 / DB values into a same-origin URL the browser can load in <img> or <iframe>.
+ * Handles: /api/attachments/proxy?key=…, missing leading slash, and bare R2 object keys.
+ */
+function normalizeDocumentThumbSrc(raw: string | null | undefined): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (s.startsWith('blob:') || s.startsWith('data:')) return s;
+  if (s.startsWith('http://') || s.startsWith('https://')) {
+    const proxied = httpR2UrlToProxyIfNeeded(s);
+    if (proxied) return proxied;
+    return s;
+  }
+  let t = s;
+  if (/^api\/attachments\/proxy/i.test(t)) t = `/${t}`;
+  if (t.startsWith('/api/attachments/proxy')) return t;
+  if (/^(?:docs\/)?merchants\//i.test(t) || t.includes('/onboarding/')) {
+    return `/api/attachments/proxy?key=${encodeURIComponent(t)}`;
+  }
+  return t.startsWith('/') ? t : null;
+}
+
+type DocPreviewPayload = {
+  title: string;
+  file: File | null;
+  url?: string;
+  imagePreviewUrl?: string;
+};
+
+function DocPreviewOverlay({
+  payload,
+  onClose,
+}: {
+  payload: DocPreviewPayload;
+  onClose: () => void;
+}) {
+  const { title, file, url, imagePreviewUrl } = payload;
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (file) {
+      const u = URL.createObjectURL(file);
+      setBlobUrl(u);
+      return () => URL.revokeObjectURL(u);
+    }
+    setBlobUrl(null);
+    return;
+  }, [file]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const pdf = isLikelyPdf(file, url);
+  const resolvedRemote = url ? normalizeDocumentThumbSrc(url) : null;
+  const pdfSrc = pdf ? blobUrl || resolvedRemote || url || '' : '';
+  const remoteImgSrc =
+    !pdf && !imagePreviewUrl && !(blobUrl && file?.type?.startsWith('image/')) && url
+      ? resolvedRemote
+      : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-sm"
+      aria-modal="true"
+      role="dialog"
+      aria-labelledby="doc-preview-title"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <h3 id="doc-preview-title" className="text-sm font-semibold text-slate-800">
+            {title}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+            aria-label="Close preview"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto bg-slate-50 p-4">
+          {pdf ? (
+            pdfSrc ? (
+              <iframe title={title} src={pdfSrc} className="h-[min(75vh,720px)] w-full rounded-lg border border-slate-200 bg-white" />
+            ) : (
+              <p className="py-8 text-center text-sm text-slate-600">PDF preview is not available.</p>
+            )
+          ) : imagePreviewUrl ? (
+            <img src={imagePreviewUrl} alt={title} className="mx-auto max-h-[min(75vh,720px)] w-full object-contain" />
+          ) : blobUrl && file?.type?.startsWith('image/') ? (
+            <img src={blobUrl} alt={title} className="mx-auto max-h-[min(75vh,720px)] w-full object-contain" />
+          ) : remoteImgSrc ? (
+            <img src={remoteImgSrc} alt={title} className="mx-auto max-h-[min(75vh,720px)] w-full object-contain" />
+          ) : (
+            <p className="py-8 text-center text-sm text-slate-600">Preview is not available for this file type.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 interface StoreSetupData {
@@ -111,7 +335,8 @@ interface StoreSetupData {
   food_categories: string[];
   avg_preparation_time_minutes: number;
   min_order_amount: number;
-  delivery_radius_km: number;
+  /** Default 5; `''` while the field is cleared (e.g. backspace). */
+  delivery_radius_km: number | '';
   is_pure_veg: boolean;
   accepts_online_payment: boolean;
   accepts_cash: boolean;
@@ -129,8 +354,10 @@ interface StoreSetupData {
 
 interface CombinedComponentProps {
   initialDocuments?: Partial<DocumentData> | null;
+  /** Active dashboard verification step 6 (bank) rejection text when not yet on `bank_proof_rejection_reason`. */
+  verificationBankRejectionReason?: string | null;
   initialStoreSetup?: Partial<StoreSetupData> | null;
-  onDocumentComplete?: (documents: DocumentData, savedPatch?: Record<string, unknown>) => void;
+  onDocumentComplete?: (documents: DocumentData, savedPatch?: Record<string, unknown>) => void | Promise<void>;
   /** Called on every "Save & Continue" to persist current doc data. Returns the built patch so completion can reuse it (avoids duplicate bank/doc uploads). */
   onDocumentSave?: (documents: DocumentData) => void | Promise<Record<string, unknown> | undefined>;
   onStoreSetupComplete?: (storeSetup: StoreSetupData) => void;
@@ -171,10 +398,9 @@ const defaultStoreSetupData: StoreSetupData = {
   },
 };
 
-const CUISINE_SELECTION_STORAGE_KEY = 'registerStoreCuisineSelection';
-
 const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   initialDocuments,
+  verificationBankRejectionReason = null,
   initialStoreSetup,
   onDocumentComplete,
   onDocumentSave,
@@ -188,11 +414,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   initialStep = 'documents',
 }) => {
   const showOtherDocs = (storeType || '').toUpperCase() === 'OTHERS';
-  const [currentStep, setCurrentStep] = useState<'documents' | 'store-setup'>(
-    typeof window !== 'undefined' && localStorage.getItem('registerStoreStep')
-      ? (localStorage.getItem('registerStoreStep') as 'documents' | 'store-setup')
-      : initialStep
-  );
+  const [currentStep, setCurrentStep] = useState<'documents' | 'store-setup'>(initialStep);
   
   // Reset currentStep when initialStep prop changes (e.g., navigating between steps)
   useEffect(() => {
@@ -200,11 +422,7 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
       setCurrentStep(initialStep);
     }
   }, [initialStep]);
-  const [activeSection, setActiveSection] = useState<'pan' | 'aadhar' | 'optional' | 'bank' | 'other'>(
-    typeof window !== 'undefined' && localStorage.getItem('registerStoreSection')
-      ? (localStorage.getItem('registerStoreSection') as 'pan' | 'aadhar' | 'optional' | 'bank' | 'other')
-      : 'pan'
-  );
+  const [activeSection, setActiveSection] = useState<'pan' | 'aadhar' | 'optional' | 'bank' | 'other'>('pan');
   const [showValidationModal, setShowValidationModal] = useState(false);
   const [validationMessage, setValidationMessage] = useState('');
   const [validationType, setValidationType] = useState<'warning' | 'error' | 'info'>('warning');
@@ -216,7 +434,14 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
     }
     return false;
   });
+  const [showOptionalExtraDocuments, setShowOptionalExtraDocuments] = useState(false);
+  const [docPreviewPayload, setDocPreviewPayload] = useState<DocPreviewPayload | null>(null);
   const [documentSaving, setDocumentSaving] = useState(false);
+  /** After a failed Save on Bank tab, outline empty required fields until the user edits. */
+  const [bankRequiredHighlight, setBankRequiredHighlight] = useState(false);
+  useEffect(() => {
+    if (activeSection !== 'bank') setBankRequiredHighlight(false);
+  }, [activeSection]);
 
   const isNewFileSelected = (fieldName: keyof DocumentData) => {
     const v = documents[fieldName];
@@ -334,6 +559,15 @@ const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   const aadharBackPreviewUrl = useImagePreview(documents.aadhar_back, documents.aadhar_back_url);
   const fssaiPreviewUrl = useImagePreview(documents.fssai_image, documents.fssai_image_url);
   const gstPreviewUrl = useImagePreview(documents.gst_image, documents.gst_image_url);
+  const drugLicensePreviewUrl = useImagePreview(documents.drug_license_image, documents.drug_license_image_url);
+  const pharmacistCertPreviewUrl = useImagePreview(documents.pharmacist_certificate, documents.pharmacist_certificate_url);
+  const pharmacyCouncilPreviewUrl = useImagePreview(documents.pharmacy_council_registration, documents.pharmacy_council_registration_url);
+  const tradeLicenseDocPreviewUrl = useImagePreview(documents.trade_license_document, documents.trade_license_document_url);
+  const shopEstDocPreviewUrl = useImagePreview(documents.shop_establishment_document, documents.shop_establishment_document_url);
+  const udyamDocPreviewUrl = useImagePreview(documents.udyam_document, documents.udyam_document_url);
+  const otherDocFilePreviewUrl = useImagePreview(documents.other_document_file, documents.other_document_file_url);
+  const bankProofPreviewUrl = useImagePreview(documents.bank?.bank_proof_file ?? null, documents.bank?.bank_proof_file_url);
+  const upiQrPreviewUrl = useImagePreview(documents.bank?.upi_qr_file ?? null, documents.bank?.upi_qr_screenshot_url);
 
 const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupData);
   const getMediaSrcAndKey = (value: string | null | undefined): { src: string | null; fileKey: string | null } => {
@@ -357,8 +591,17 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       return { src: trimmed, fileKey: null };
     }
 
-    // Full HTTP(S) URL – legacy; backend can derive key from ?url=
+    // Full HTTP(S): same-app attachment proxy (extract key for R2Image retries)
     if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      try {
+        const u = new URL(trimmed);
+        if (u.pathname.includes("/attachments/proxy")) {
+          const key = u.searchParams.get("key");
+          return { src: trimmed, fileKey: key };
+        }
+      } catch {
+        /* fall through */
+      }
       return { src: trimmed, fileKey: null };
     }
 
@@ -373,6 +616,41 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     lunchDinner: false,
     is24Hours: false,
   });
+
+  const docRejection = useMemo(() => {
+    const d = documents as Record<string, unknown>;
+    const bankFromDoc = adminRejectionText(d, 'bank_proof_rejection_reason');
+    const bankFromVerification =
+      typeof verificationBankRejectionReason === 'string' && verificationBankRejectionReason.trim()
+        ? verificationBankRejectionReason.trim()
+        : null;
+    return {
+      pan: adminRejectionText(d, 'pan_rejection_reason'),
+      aadhaar: adminRejectionText(d, 'aadhaar_rejection_reason'),
+      bank_proof: bankFromDoc ?? bankFromVerification,
+    };
+  }, [documents, verificationBankRejectionReason]);
+
+  const optionalRejectionItems = useMemo(() => {
+    const d = documents as Record<string, unknown>;
+    const pairs: [string, string][] = [
+      ['GST', 'gst_rejection_reason'],
+      ['FSSAI', 'fssai_rejection_reason'],
+      ['Drug license', 'drug_license_rejection_reason'],
+      ['Pharmacist certificate', 'pharmacist_certificate_rejection_reason'],
+      ['Pharmacy council registration', 'pharmacy_council_registration_rejection_reason'],
+      ['Trade license', 'trade_license_rejection_reason'],
+      ['Shop & establishment', 'shop_establishment_rejection_reason'],
+      ['Udyam', 'udyam_rejection_reason'],
+      ['Other document', 'other_rejection_reason'],
+    ];
+    const out: { label: string; reason: string }[] = [];
+    for (const [label, key] of pairs) {
+      const r = adminRejectionText(d, key);
+      if (r) out.push({ label, reason: r });
+    }
+    return out;
+  }, [documents]);
 
   // Sync from parent when navigating back so saved data is shown (including persisted document URLs)
   // Track the last hydrated initialDocuments to detect when it changes
@@ -403,6 +681,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         shop_establishment_document_url: (initialDocuments as any).shop_establishment_document_url,
         udyam_document_url: (initialDocuments as any).udyam_document_url,
         other_document_file_url: (initialDocuments as any).other_document_file_url,
+        ...Object.fromEntries(
+          DOC_REJECTION_FIELDS.map((k) => [k, (initialDocuments as Record<string, unknown>)[k] ?? null])
+        ),
       });
       
       // Always hydrate when step changes to documents, or when documents data changes
@@ -462,6 +743,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               (next.bank as any).upi_qr_file = null;
             }
           }
+          const init = initialDocuments as Record<string, unknown>;
+          for (const k of DOC_REJECTION_FIELDS) {
+            if (Object.prototype.hasOwnProperty.call(init, k)) {
+              const v = init[k];
+              (next as Record<string, unknown>)[k] = typeof v === 'string' ? v : null;
+            }
+          }
           return next;
         });
       }
@@ -479,19 +767,19 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     if (initialStoreSetup && typeof initialStoreSetup === 'object') {
       const logoUrl = typeof initialStoreSetup.logo_preview === 'string' ? initialStoreSetup.logo_preview : (typeof (initialStoreSetup as any).logo_url === 'string' ? (initialStoreSetup as any).logo_url : '');
       const bannerUrl = typeof initialStoreSetup.banner_preview === 'string' ? initialStoreSetup.banner_preview : (typeof (initialStoreSetup as any).banner_url === 'string' ? (initialStoreSetup as any).banner_url : '');
-      const galleryUrls = Array.isArray(initialStoreSetup.gallery_previews) ? initialStoreSetup.gallery_previews : (Array.isArray((initialStoreSetup as any).gallery_image_urls) ? (initialStoreSetup as any).gallery_image_urls : []);
-      let cuisineTypes = Array.isArray(initialStoreSetup.cuisine_types) ? initialStoreSetup.cuisine_types : undefined;
-      let foodCategories = Array.isArray(initialStoreSetup.food_categories) ? initialStoreSetup.food_categories : undefined;
-      if ((!cuisineTypes || cuisineTypes.length === 0) && typeof window !== 'undefined') {
-        try {
-          const raw = localStorage.getItem(CUISINE_SELECTION_STORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw) as { cuisine_types?: string[]; food_categories?: string[] };
-            if (Array.isArray(parsed.cuisine_types)) cuisineTypes = parsed.cuisine_types;
-            if (Array.isArray(parsed.food_categories)) foodCategories = parsed.food_categories;
-          }
-        } catch (_) { /* ignore */ }
-      }
+      const rawGalleryUrls = Array.isArray((initialStoreSetup as any).gallery_image_urls)
+        ? ((initialStoreSetup as any).gallery_image_urls as unknown[])
+        : null;
+      const fromPreviews = Array.isArray(initialStoreSetup.gallery_previews)
+        ? initialStoreSetup.gallery_previews
+        : [];
+      const galleryList = (
+        rawGalleryUrls && rawGalleryUrls.length > 0
+          ? rawGalleryUrls
+          : fromPreviews
+      ).filter((u): u is string => typeof u === 'string' && u.trim());
+      const cuisineTypes = Array.isArray(initialStoreSetup.cuisine_types) ? initialStoreSetup.cuisine_types : undefined;
+      const foodCategories = Array.isArray(initialStoreSetup.food_categories) ? initialStoreSetup.food_categories : undefined;
       setStoreSetup((prev) => ({
         ...prev,
         cuisine_types: cuisineTypes ?? prev.cuisine_types,
@@ -504,7 +792,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         accepts_cash: typeof initialStoreSetup.accepts_cash === 'boolean' ? initialStoreSetup.accepts_cash : prev.accepts_cash,
         logo_preview: logoUrl || prev.logo_preview,
         banner_preview: bannerUrl || prev.banner_preview,
-        gallery_previews: galleryUrls.length > 0 ? galleryUrls : prev.gallery_previews,
+        ...(galleryList.length > 0
+          ? {
+              gallery_previews: galleryList,
+              gallery_image_urls: galleryList,
+              gallery_images: galleryList.map(() => null),
+            }
+          : {}),
         store_hours: initialStoreSetup.store_hours && typeof initialStoreSetup.store_hours === 'object'
           ? (() => {
               const normalized: StoreSetupData['store_hours'] = { ...prev.store_hours };
@@ -525,18 +819,6 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       }));
     }
   }, [initialStoreSetup]);
-
-  // Persist cuisine selection to localStorage when chips change (so refresh keeps selection until form is saved).
-  useEffect(() => {
-    if (currentStep !== 'store-setup') return;
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(CUISINE_SELECTION_STORAGE_KEY, JSON.stringify({
-        cuisine_types: storeSetup.cuisine_types || [],
-        food_categories: storeSetup.food_categories || [],
-      }));
-    } catch (_) { /* ignore */ }
-  }, [currentStep, storeSetup.cuisine_types, storeSetup.food_categories]);
 
   // Sync presetToggles with actual store_hours data
   useEffect(() => {
@@ -655,6 +937,26 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     if (!bank) return false;
     if (typeof File !== 'undefined' && bank.upi_qr_file instanceof File) return true;
     return typeof bank.upi_qr_screenshot_url === 'string';
+  };
+
+  const getBankPayoutMissingLabels = (): string[] => {
+    const bank = documents.bank;
+    const method = bank?.payout_method || 'bank';
+    const t = (s?: string) => String(s || '').trim();
+    if (method === 'bank') {
+      const missing: string[] = [];
+      if (!t(bank?.account_holder_name)) missing.push('Account holder name');
+      if (!t(bank?.account_number)) missing.push('Account number');
+      if (!t(bank?.ifsc_code)) missing.push('IFSC code');
+      if (!t(bank?.bank_name)) missing.push('Bank name');
+      if (!bank?.bank_proof_type) missing.push('Bank proof type (Passbook / Cancelled cheque / Statement)');
+      if (!hasBankProofFileOrUrl()) missing.push('Bank proof document');
+      return missing;
+    }
+    const missing: string[] = [];
+    if (!t(bank?.upi_id)) missing.push('UPI ID');
+    if (!hasUpiQrFileOrUrl()) missing.push('UPI QR screenshot');
+    return missing;
   };
 
   const handleDocumentInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -796,13 +1098,21 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         upi_id?: string;
       };
       const method = bank.payout_method || 'bank';
+      const t = (s?: string) => String(s || '').trim();
       if (method === 'bank') {
-        const hasBank = !!(bank.account_holder_name && bank.account_number && bank.ifsc_code && bank.bank_name && bank.bank_proof_type && hasBankProofFileOrUrl());
-        const ifscOk = !bank.ifsc_code || !documentFormatValidators.ifsc(bank.ifsc_code);
-        const accOk = !bank.account_number || !documentFormatValidators.accountNumber(bank.account_number);
+        const hasBank = !!(
+          t(bank.account_holder_name) &&
+          t(bank.account_number) &&
+          t(bank.ifsc_code) &&
+          t(bank.bank_name) &&
+          bank.bank_proof_type &&
+          hasBankProofFileOrUrl()
+        );
+        const ifscOk = !t(bank.ifsc_code) || !documentFormatValidators.ifsc(bank.ifsc_code || '');
+        const accOk = !t(bank.account_number) || !documentFormatValidators.accountNumber(bank.account_number || '');
         return !!(hasBank && ifscOk && accOk);
       }
-      return !!(bank.upi_id && hasUpiQrFileOrUrl());
+      return !!(t(bank.upi_id) && hasUpiQrFileOrUrl());
     } else if (activeSection === 'other') {
       return true;
     }
@@ -815,7 +1125,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     } else if (section === 'aadhar') {
       setValidationMessage('Please fill all required fields in the Aadhar section before proceeding.');
     } else if (section === 'bank') {
-      setValidationMessage('Please complete payout details: for Bank upload passbook/cheque/statement and fill account details; for UPI enter UPI ID and upload QR screenshot.');
+      const missing = getBankPayoutMissingLabels();
+      if (missing.length > 0) {
+        setValidationMessage(
+          `Please fill all required fields before continuing.\n\nStill needed:\n• ${missing.join('\n• ')}`
+        );
+      } else {
+        setValidationMessage(
+          'Please correct your bank details (check IFSC and account number format) before continuing.'
+        );
+      }
     } else if (section === 'optional') {
       if (isPharmaBusiness()) {
         setValidationMessage('Please fill all required pharma documents before proceeding.');
@@ -834,17 +1153,20 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
   const handleDocumentSaveAndContinue = async () => {
     const formatResult = validateDocFormats();
     if (!formatResult.valid) {
+      if (activeSection === 'bank') setBankRequiredHighlight(true);
       setValidationMessage(formatResult.firstError || 'Please correct the invalid document format(s) before proceeding.');
       setValidationType('error');
       setShowValidationModal(true);
       return;
     }
     if (!validateDocumentSection()) {
+      if (activeSection === 'bank') setBankRequiredHighlight(true);
       showDocumentValidationError(activeSection);
       return;
     }
 
     setDocumentSaving(true);
+    if (activeSection === 'bank') setBankRequiredHighlight(false);
     try {
       const savedPatch = onDocumentSave ? await onDocumentSave(documents) : undefined;
       const patchArg: Record<string, unknown> | undefined =
@@ -902,9 +1224,16 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     if (type === "checkbox") {
       processedValue = checked;
     } else if (type === "number") {
-      // Handle number inputs properly to avoid NaN
-      const numValue = value === '' ? null : parseFloat(value);
-      processedValue = (numValue !== null && !isNaN(numValue)) ? numValue : (name === 'delivery_radius_km' ? 5 : null);
+      if (value === "") {
+        processedValue = name === "delivery_radius_km" ? "" : null;
+      } else {
+        const numValue = parseFloat(value);
+        if (!Number.isNaN(numValue) && name === "delivery_radius_km") {
+          processedValue = numValue;
+        } else {
+          processedValue = !Number.isNaN(numValue) ? numValue : name === "delivery_radius_km" ? "" : null;
+        }
+      }
     }
     
     const newForm = {
@@ -959,12 +1288,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     }
     if (filesToAdd.length === 0) return;
 
-    const newImages = Array.isArray(storeSetup.gallery_images)
-      ? storeSetup.gallery_images.filter((f): f is File => !!f)
+    const newImages: (File | null)[] = Array.isArray(storeSetup.gallery_images)
+      ? [...storeSetup.gallery_images]
       : [];
-    const newPreviews = Array.isArray(storeSetup.gallery_previews)
-      ? [...storeSetup.gallery_previews]
+    const newPreviews = Array.isArray(storeSetup.gallery_previews) ? [...storeSetup.gallery_previews] : [];
+    const nextUrls: string[] = Array.isArray((storeSetup as any).gallery_image_urls)
+      ? [...((storeSetup as any).gallery_image_urls as string[])]
       : [];
+    while (newImages.length < newPreviews.length) newImages.push(null);
+    while (nextUrls.length < newPreviews.length) nextUrls.push('');
 
     let loaded = 0;
 
@@ -973,14 +1305,14 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       reader.onloadend = () => {
         newImages.push(file);
         newPreviews.push(reader.result as string);
+        nextUrls.push('');
         loaded++;
         if (loaded === filesToAdd.length) {
-          setStoreSetup(prev => ({
+          setStoreSetup((prev) => ({
             ...(prev as any),
             gallery_images: newImages,
             gallery_previews: newPreviews,
-            // keep existing URLs; they will be merged with new uploads on save
-            gallery_image_urls: (prev as any).gallery_image_urls || [],
+            gallery_image_urls: nextUrls,
           }));
         }
       };
@@ -1283,6 +1615,22 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       return;
     }
 
+    const dr = storeSetup.delivery_radius_km;
+    if (
+      dr === '' ||
+      typeof dr !== 'number' ||
+      Number.isNaN(dr) ||
+      dr < MIN_STORE_DELIVERY_RADIUS_KM ||
+      dr > MAX_STORE_DELIVERY_RADIUS_KM
+    ) {
+      setValidationType('error');
+      setValidationMessage(
+        `Please enter a delivery radius between ${MIN_STORE_DELIVERY_RADIUS_KM} and ${MAX_STORE_DELIVERY_RADIUS_KM} km.`
+      );
+      setShowValidationModal(true);
+      return;
+    }
+
     // All validations passed, proceed
     if (onStoreSetupComplete) {
       onStoreSetupComplete(storeSetup);
@@ -1345,6 +1693,94 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         onDocumentComplete(documents);
       }
     }
+  };
+
+  const renderUploadedDocumentPanel = (args: {
+    viewTitle: string;
+    file: File | null;
+    url?: string;
+    imagePreviewUrl?: string;
+    onChange: () => void;
+    onRemove: () => void;
+    uploading?: boolean;
+  }) => {
+    const { viewTitle, file, url, imagePreviewUrl, onChange, onRemove, uploading } = args;
+    const displayName = file?.name || (url ? 'Uploaded document' : 'Uploaded');
+    const sizeMb = file ? (file.size / 1024 / 1024).toFixed(2) + ' MB' : null;
+    const pdfOnly = isLikelyPdf(file, url) && !imagePreviewUrl;
+    const thumbSrc =
+      imagePreviewUrl ||
+      (!url || isLikelyPdf(file, url) ? null : normalizeDocumentThumbSrc(url));
+    const openPreview = () => setDocPreviewPayload({ title: viewTitle, file, url, imagePreviewUrl });
+    return (
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2.5 sm:p-3">
+        <div className="flex flex-col items-stretch gap-2.5 sm:flex-row sm:items-center sm:gap-3">
+          <button
+            type="button"
+            onClick={openPreview}
+            className="group relative mx-auto flex h-[104px] w-[140px] shrink-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-md border border-slate-200 bg-white text-left focus:outline-none focus:ring-2 focus:ring-indigo-500 sm:mx-0 sm:h-[112px] sm:w-[150px]"
+            aria-label={`Open ${viewTitle} preview`}
+          >
+            {thumbSrc ? (
+              <>
+                <img src={thumbSrc} alt="" className="max-h-full max-w-full object-contain" />
+                <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-slate-900/70 px-1.5 py-0.5 text-[9px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+                  Enlarge
+                </span>
+              </>
+            ) : (
+              <div className="flex flex-col items-center gap-1 px-2 py-3 text-center text-slate-600">
+                <svg className="h-8 w-8 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <p className="text-[11px] font-medium leading-tight text-slate-700">{pdfOnly ? 'PDF' : 'File'}</p>
+                <p className="text-[10px] leading-tight text-slate-500">Tap · View</p>
+              </div>
+            )}
+          </button>
+          <div className="flex min-w-0 flex-1 flex-col justify-center gap-1.5">
+            <div className="min-w-0">
+              <p className="truncate text-xs font-medium text-slate-800 sm:text-sm" title={displayName}>
+                {displayName}
+              </p>
+              {sizeMb ? (
+                <p className="text-[10px] text-slate-500 sm:text-xs">{sizeMb}</p>
+              ) : url ? (
+                <p className="text-[10px] text-slate-500 sm:text-xs">Saved</p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={openPreview}
+                className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50 sm:px-2.5 sm:text-xs"
+              >
+                View
+              </button>
+              <button
+                type="button"
+                onClick={onChange}
+                disabled={!!uploading}
+                className="rounded-md border border-indigo-200 bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 sm:px-2.5 sm:text-xs"
+              >
+                Change
+              </button>
+              <button
+                type="button"
+                onClick={onRemove}
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+                title="Remove"
+              >
+                <span className="sr-only">Remove</span>
+                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const renderReplaceImageModal = () => (
@@ -1416,7 +1852,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               {validationType === 'error' ? 'Required Field Missing' : validationType === 'warning' ? 'Warning' : 'Information'}
             </h3>
           </div>
-          <p className="text-slate-700 text-sm sm:text-base mb-6 leading-relaxed">
+          <p className="text-slate-700 text-sm sm:text-base mb-6 leading-relaxed whitespace-pre-line text-left">
             {validationMessage}
           </p>
           <div className="flex flex-row justify-end gap-3">
@@ -1454,6 +1890,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderPanSection = () => (
     <div className="space-y-2">
+      {docRejection.pan && (
+        <AdminRejectionBanner title="Rejected by verification team — please update and save">
+          {docRejection.pan}
+        </AdminRejectionBanner>
+      )}
       <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
         <div className="flex items-start gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
@@ -1550,65 +1991,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               <p className="text-xs text-slate-500 mt-1">JPG, PNG or PDF · Max 5MB</p>
             </button>
           ) : (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-4 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-800 truncate">
-                      {documents.pan_image ? documents.pan_image.name : 'Uploaded'}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      {documents.pan_image
-                        ? (documents.pan_image.size / 1024 / 1024).toFixed(2) + ' MB'
-                        : documents.pan_image_url ? (
-                            <a
-                              href={documents.pan_image_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-indigo-600 hover:underline"
-                            >
-                              View file
-                            </a>
-                          ) : null}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => triggerFileInputWithReplaceCheck('pan_image', fileInputRefs.pan)}
-                    className="rounded-lg border border-indigo-200 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
-                  >
-                    Change
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removeFile('pan_image')}
-                    className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700"
-                    title="Remove"
-                  >
-                    <span className="sr-only">Remove</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              {panPreviewUrl && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                  <img
-                    src={panPreviewUrl}
-                    alt="PAN preview"
-                    className="h-28 w-full object-contain bg-white"
-                  />
-                </div>
-              )}
-            </div>
+            renderUploadedDocumentPanel({
+              viewTitle: 'PAN card',
+              file: documents.pan_image,
+              url: documents.pan_image_url,
+              imagePreviewUrl: panPreviewUrl,
+              onChange: () => triggerFileInputWithReplaceCheck('pan_image', fileInputRefs.pan),
+              onRemove: () => removeFile('pan_image'),
+              uploading: isUploadingField('pan_image'),
+            })
           )}
         </div>
       </div>
@@ -1632,6 +2023,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderAadharSection = () => (
     <div className="space-y-3">
+      {docRejection.aadhaar && (
+        <AdminRejectionBanner title="Rejected by verification team — please update and save">
+          {docRejection.aadhaar}
+        </AdminRejectionBanner>
+      )}
       <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
         <div className="flex items-start gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
@@ -1714,32 +2110,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <p className="text-xs text-slate-500 mt-0.5">Photo & details</p>
               </button>
             ) : (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-4 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-800 truncate">{documents.aadhar_front ? documents.aadhar_front.name : 'Uploaded'}</p>
-                      <p className="text-xs text-slate-500">{documents.aadhar_front_url ? <a href={documents.aadhar_front_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">View file</a> : 'Front'}</p>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    <button type="button" onClick={() => triggerFileInputWithReplaceCheck('aadhar_front', fileInputRefs.aadharFront)} className="rounded-lg border border-indigo-200 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50">Change</button>
-                    <button type="button" onClick={() => removeFile('aadhar_front')} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700" title="Remove"><span className="sr-only">Remove</span><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
-                  </div>
-                </div>
-                {aadharFrontPreviewUrl && (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                    <img
-                      src={aadharFrontPreviewUrl}
-                      alt="Aadhaar front preview"
-                      className="h-28 w-full object-contain bg-white"
-                    />
-                  </div>
-                )}
-              </div>
+              renderUploadedDocumentPanel({
+                viewTitle: 'Aadhaar front',
+                file: documents.aadhar_front,
+                url: documents.aadhar_front_url,
+                imagePreviewUrl: aadharFrontPreviewUrl,
+                onChange: () => triggerFileInputWithReplaceCheck('aadhar_front', fileInputRefs.aadharFront),
+                onRemove: () => removeFile('aadhar_front'),
+                uploading: isUploadingField('aadhar_front'),
+              })
             )}
           </div>
           <div>
@@ -1762,32 +2141,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 <p className="text-xs text-slate-500 mt-0.5">Address side</p>
               </button>
             ) : (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-4 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-800 truncate">{documents.aadhar_back ? documents.aadhar_back.name : 'Uploaded'}</p>
-                      <p className="text-xs text-slate-500">{documents.aadhar_back_url ? <a href={documents.aadhar_back_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">View file</a> : 'Back'}</p>
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    <button type="button" onClick={() => triggerFileInputWithReplaceCheck('aadhar_back', fileInputRefs.aadharBack)} className="rounded-lg border border-indigo-200 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50">Change</button>
-                    <button type="button" onClick={() => removeFile('aadhar_back')} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700" title="Remove"><span className="sr-only">Remove</span><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
-                  </div>
-                </div>
-                {aadharBackPreviewUrl && (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                    <img
-                      src={aadharBackPreviewUrl}
-                      alt="Aadhaar back preview"
-                      className="h-28 w-full object-contain bg-white"
-                    />
-                  </div>
-                )}
-              </div>
+              renderUploadedDocumentPanel({
+                viewTitle: 'Aadhaar back',
+                file: documents.aadhar_back,
+                url: documents.aadhar_back_url,
+                imagePreviewUrl: aadharBackPreviewUrl,
+                onChange: () => triggerFileInputWithReplaceCheck('aadhar_back', fileInputRefs.aadharBack),
+                onRemove: () => removeFile('aadhar_back'),
+                uploading: isUploadingField('aadhar_back'),
+              })
             )}
           </div>
         </div>
@@ -1807,6 +2169,18 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderOptionalSection = () => (
     <div className="space-y-3">
+      {optionalRejectionItems.length > 0 && (
+        <AdminRejectionBanner title="Verification feedback — please fix the items below and save">
+          <ul className="list-disc space-y-1.5 pl-4">
+            {optionalRejectionItems.map((item) => (
+              <li key={item.label}>
+                <span className="font-semibold">{item.label}: </span>
+                {item.reason}
+              </li>
+            ))}
+          </ul>
+        </AdminRejectionBanner>
+      )}
       {/* Show banner only for Food/Pharma businesses (mandatory docs), hide for optional */}
       {(isFoodBusiness() || isPharmaBusiness()) && (
           <div className={`rounded-lg border p-2.5 ${
@@ -1951,66 +2325,33 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   accept=".jpg,.jpeg,.png,.pdf"
                   className="hidden"
                 />
-                {hasDocFileOrUrl("drug_license_image") ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
-                          ✓
-                        </div>
-                        <div className="min-w-0">
-                          {isUploadingField('drug_license_image') ? (
-                            <div className="flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin text-emerald-900" />
-                              <p className="text-sm font-semibold text-emerald-900">Uploading new file...</p>
-                            </div>
-                          ) : (
-                            <>
-                              <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
-                              {documents.drug_license_image_url && (
-                                <a
-                                  href={documents.drug_license_image_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-xs text-emerald-900 underline underline-offset-2"
-                                >
-                                  View certificate
-                                </a>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeFile("drug_license_image")}
-                        className="rounded-full p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50"
-                        aria-label="Remove file"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() =>
-                    triggerFileInputWithReplaceCheck("drug_license_image", fileInputRefs.drugLicense)
-                  }
-                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  {isUploadingField('drug_license_image')
-                    ? (
+                {!hasDocFileOrUrl("drug_license_image") ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      triggerFileInputWithReplaceCheck("drug_license_image", fileInputRefs.drugLicense)
+                    }
+                    className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    {isUploadingField('drug_license_image') ? (
                       <span className="inline-flex items-center justify-center gap-2">
                         <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
                       </span>
-                    )
-                    : hasDocFileOrUrl("drug_license_image")
-                      ? "Upload new file"
-                      : "Upload Drug Licence"}
-                </button>
+                    ) : (
+                      'Upload Drug Licence'
+                    )}
+                  </button>
+                ) : (
+                  renderUploadedDocumentPanel({
+                    viewTitle: 'Drug licence',
+                    file: documents.drug_license_image,
+                    url: documents.drug_license_image_url,
+                    imagePreviewUrl: drugLicensePreviewUrl,
+                    onChange: () => triggerFileInputWithReplaceCheck("drug_license_image", fileInputRefs.drugLicense),
+                    onRemove: () => removeFile("drug_license_image"),
+                    uploading: isUploadingField('drug_license_image'),
+                  })
+                )}
               </div>
 
               {/* Pharmacist certificate upload */}
@@ -2025,64 +2366,33 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   accept=".jpg,.jpeg,.png,.pdf"
                   className="hidden"
                 />
-                {hasDocFileOrUrl("pharmacist_certificate") ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
-                          ✓
-                        </div>
-                        <div className="min-w-0">
-                          {isUploadingField('pharmacist_certificate') ? (
-                            <div className="flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin text-emerald-900" />
-                              <p className="text-sm font-semibold text-emerald-900">Uploading new file...</p>
-                            </div>
-                          ) : (
-                            <>
-                              <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
-                              {documents.pharmacist_certificate_url && (
-                                <a
-                                  href={documents.pharmacist_certificate_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-xs text-emerald-900 underline underline-offset-2"
-                                >
-                                  View certificate
-                                </a>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded-full p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800 text-xs"
-                        onClick={() => removeFile("pharmacist_certificate")}
-                        aria-label="Remove pharmacist certificate"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() =>
-                    triggerFileInputWithReplaceCheck("pharmacist_certificate", fileInputRefs.pharmacistCert)
-                  }
-                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  {isUploadingField('pharmacist_certificate')
-                    ? (
+                {!hasDocFileOrUrl("pharmacist_certificate") ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      triggerFileInputWithReplaceCheck("pharmacist_certificate", fileInputRefs.pharmacistCert)
+                    }
+                    className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    {isUploadingField('pharmacist_certificate') ? (
                       <span className="inline-flex items-center justify-center gap-2">
                         <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
                       </span>
-                    )
-                    : hasDocFileOrUrl("pharmacist_certificate")
-                      ? "Upload new file"
-                      : "Upload Pharmacist Certificate"}
-                </button>
+                    ) : (
+                      'Upload Pharmacist Certificate'
+                    )}
+                  </button>
+                ) : (
+                  renderUploadedDocumentPanel({
+                    viewTitle: 'Pharmacist certificate',
+                    file: documents.pharmacist_certificate,
+                    url: documents.pharmacist_certificate_url,
+                    imagePreviewUrl: pharmacistCertPreviewUrl,
+                    onChange: () => triggerFileInputWithReplaceCheck("pharmacist_certificate", fileInputRefs.pharmacistCert),
+                    onRemove: () => removeFile("pharmacist_certificate"),
+                    uploading: isUploadingField('pharmacist_certificate'),
+                  })
+                )}
               </div>
 
               {/* Council registration upload */}
@@ -2097,67 +2407,37 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   accept=".jpg,.jpeg,.png,.pdf"
                   className="hidden"
                 />
-                {hasDocFileOrUrl("pharmacy_council_registration") ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
-                          ✓
-                        </div>
-                        <div className="min-w-0">
-                          {isUploadingField('pharmacy_council_registration') ? (
-                            <div className="flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin text-emerald-900" />
-                              <p className="text-sm font-semibold text-emerald-900">Uploading new file...</p>
-                            </div>
-                          ) : (
-                            <>
-                              <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
-                              {documents.pharmacy_council_registration_url && (
-                                <a
-                                  href={documents.pharmacy_council_registration_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-xs text-emerald-900 underline underline-offset-2"
-                                >
-                                  View certificate
-                                </a>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded-full p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800 text-xs"
-                        onClick={() => removeFile("pharmacy_council_registration")}
-                        aria-label="Remove council registration"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() =>
-                    triggerFileInputWithReplaceCheck(
-                      "pharmacy_council_registration",
-                      fileInputRefs.pharmacyCouncil
-                    )
-                  }
-                  className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  {isUploadingField('pharmacy_council_registration')
-                    ? (
+                {!hasDocFileOrUrl("pharmacy_council_registration") ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      triggerFileInputWithReplaceCheck(
+                        "pharmacy_council_registration",
+                        fileInputRefs.pharmacyCouncil
+                      )
+                    }
+                    className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                  >
+                    {isUploadingField('pharmacy_council_registration') ? (
                       <span className="inline-flex items-center justify-center gap-2">
                         <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
                       </span>
-                    )
-                    : hasDocFileOrUrl("pharmacy_council_registration")
-                      ? "Upload new file"
-                      : "Upload Council Registration"}
-                </button>
+                    ) : (
+                      'Upload Council Registration'
+                    )}
+                  </button>
+                ) : (
+                  renderUploadedDocumentPanel({
+                    viewTitle: 'Pharmacy council registration',
+                    file: documents.pharmacy_council_registration,
+                    url: documents.pharmacy_council_registration_url,
+                    imagePreviewUrl: pharmacyCouncilPreviewUrl,
+                    onChange: () =>
+                      triggerFileInputWithReplaceCheck("pharmacy_council_registration", fileInputRefs.pharmacyCouncil),
+                    onRemove: () => removeFile("pharmacy_council_registration"),
+                    uploading: isUploadingField('pharmacy_council_registration'),
+                  })
+                )}
               </div>
             </div>
           </div>
@@ -2170,8 +2450,8 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           <h4 className="text-sm font-medium text-gray-700 mb-1">
             FSSAI Certificate <span className="text-red-500">*</span>
           </h4>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
+          <div className="space-y-3">
+            <div className="max-w-xl">
               <input
                 type="text"
                 name="fssai_number"
@@ -2186,7 +2466,7 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 Required for food businesses as per FSSAI regulations (14 digits)
               </p>
             </div>
-            <div className="flex items-start gap-3">
+            <div>
               <input
                 type="file"
                 ref={fileInputRefs.fssai}
@@ -2194,57 +2474,30 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                 accept=".jpg,.jpeg,.png,.pdf"
                 className="hidden"
               />
-              <button
-                type="button"
-                onClick={() => triggerFileInputWithReplaceCheck('fssai_image', fileInputRefs.fssai)}
-                className="px-3 py-2 text-sm border-2 border-dashed rounded-xl border-rose-300 text-rose-600 hover:border-rose-500 hover:text-rose-700 hover:bg-rose-50"
-              >
-                {isUploadingField('fssai_image') ? (
-                  <span className="inline-flex items-center justify-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
-                  </span>
-                ) : (
-                  hasDocFileOrUrl('fssai_image') ? 'Change File' : 'Upload Certificate'
-                )}
-              </button>
-              {hasDocFileOrUrl('fssai_image') && (
-                <div className="flex-1 space-y-2">
-                  <div className="flex items-center justify-between px-2 py-1 rounded-xl border border-emerald-200 bg-emerald-50/80">
-                    <span className="text-xs text-gray-600 truncate max-w-[140px]">
-                      {documents.fssai_image
-                        ? documents.fssai_image.name
-                        : documents.fssai_image_url ? (
-                            <a
-                              href={documents.fssai_image_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-indigo-600 hover:underline"
-                            >
-                              Uploaded · View
-                            </a>
-                          ) : (
-                            'Uploaded'
-                          )}
+              {!hasDocFileOrUrl('fssai_image') ? (
+                <button
+                  type="button"
+                  onClick={() => triggerFileInputWithReplaceCheck('fssai_image', fileInputRefs.fssai)}
+                  className="w-full rounded-xl border-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-3 text-sm font-medium text-rose-600 hover:border-rose-500 hover:bg-rose-50"
+                >
+                  {isUploadingField('fssai_image') ? (
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFile('fssai_image')}
-                      className="text-red-500 hover:text-red-700 text-xs"
-                      title="Remove"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  {fssaiPreviewUrl && (
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                      <img
-                        src={fssaiPreviewUrl}
-                        alt="FSSAI certificate preview"
-                        className="h-28 w-full object-contain bg-white"
-                      />
-                    </div>
+                  ) : (
+                    'Upload Certificate'
                   )}
-                </div>
+                </button>
+              ) : (
+                renderUploadedDocumentPanel({
+                  viewTitle: 'FSSAI certificate',
+                  file: documents.fssai_image,
+                  url: documents.fssai_image_url,
+                  imagePreviewUrl: fssaiPreviewUrl,
+                  onChange: () => triggerFileInputWithReplaceCheck('fssai_image', fileInputRefs.fssai),
+                  onRemove: () => removeFile('fssai_image'),
+                  uploading: isUploadingField('fssai_image'),
+                })
               )}
             </div>
           </div>
@@ -2343,70 +2596,30 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               accept=".jpg,.jpeg,.png,.pdf"
               className="hidden"
             />
-            {hasDocFileOrUrl('gst_image') ? (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/80 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white text-xs font-bold">
-                      ✓
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-emerald-900">File uploaded</p>
-                      {documents.gst_image_url && (
-                        <a
-                          href={documents.gst_image_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-emerald-900 underline underline-offset-2"
-                        >
-                          View certificate
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
-                      className="rounded-lg border border-emerald-500 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50"
-                    >
-                      Change
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-full p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800 text-xs"
-                      onClick={() => removeFile('gst_image')}
-                      aria-label="Remove GST certificate"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <button
-              type="button"
-              onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
-              className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-            >
-              {isUploadingField('gst_image') ? (
-                <span className="inline-flex items-center justify-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
-                </span>
-              ) : (
-                hasDocFileOrUrl('gst_image') ? 'Upload new file' : 'Upload GST certificate'
-              )}
-            </button>
-
-            {gstPreviewUrl && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                <img
-                  src={gstPreviewUrl}
-                  alt="GST certificate preview"
-                  className="h-28 w-full object-contain bg-white"
-                />
-              </div>
+            {!hasDocFileOrUrl('gst_image') ? (
+              <button
+                type="button"
+                onClick={() => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst)}
+                className="w-full rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+              >
+                {isUploadingField('gst_image') ? (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                  </span>
+                ) : (
+                  'Upload GST certificate'
+                )}
+              </button>
+            ) : (
+              renderUploadedDocumentPanel({
+                viewTitle: 'GST certificate',
+                file: documents.gst_image,
+                url: documents.gst_image_url,
+                imagePreviewUrl: gstPreviewUrl,
+                onChange: () => triggerFileInputWithReplaceCheck('gst_image', fileInputRefs.gst),
+                onRemove: () => removeFile('gst_image'),
+                uploading: isUploadingField('gst_image'),
+              })
             )}
           </div>
         </div>
@@ -2455,9 +2668,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       upi_qr_file: null as File | null,
     };
     const setBank = (field: string, value: string | 'bank' | 'upi' | undefined) => {
+      setBankRequiredHighlight(false);
       setDocuments(prev => ({ ...prev, bank: { ...(prev.bank || bank), [field]: value } }));
     };
     const setBankFile = (field: 'bank_proof_file' | 'upi_qr_file', file: File | null) => {
+      setBankRequiredHighlight(false);
       setDocuments(prev => {
         const nextBank = { ...(prev.bank || bank), [field]: file };
         if (file === null) {
@@ -2468,15 +2683,34 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       });
     };
     const isBank = (bank.payout_method || 'bank') === 'bank';
+    const t = (s?: string) => String(s || '').trim();
+    const missName = bankRequiredHighlight && !t(bank.account_holder_name);
+    const missAcc = bankRequiredHighlight && !t(bank.account_number);
+    const missIfsc = bankRequiredHighlight && !t(bank.ifsc_code);
+    const missBank = bankRequiredHighlight && !t(bank.bank_name);
+    const missProofType = bankRequiredHighlight && !bank.bank_proof_type;
+    const missProofFile = bankRequiredHighlight && !!bank.bank_proof_type && !hasBankProofFileOrUrl();
+    const missUpi = bankRequiredHighlight && !t(bank.upi_id);
+    const missQr = bankRequiredHighlight && !hasUpiQrFileOrUrl();
+    const reqRing = (on: boolean) =>
+      on ? 'border-rose-500 ring-1 ring-rose-200' : 'border-slate-300';
     return (
       <div className="space-y-3">
+        {docRejection.bank_proof && (
+          <AdminRejectionBanner title="Bank proof rejected — please upload a clearer proof and save">
+            {docRejection.bank_proof}
+          </AdminRejectionBanner>
+        )}
         <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-3">
           <div className="flex items-start gap-2">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" /><path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" /></svg>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-amber-900">Payout details</p>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-amber-900">Payout details</p>
+                {docRejection.bank_proof ? <SectionRejectedBadge active={false} /> : null}
+              </div>
               <p className="text-xs text-amber-800 mt-0.5">Choose Bank account or UPI. Upload proof as required.</p>
             </div>
           </div>
@@ -2490,21 +2724,21 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Account holder name <span className="text-rose-500">*</span></label>
-                <input type="text" value={bank.account_holder_name} onChange={e => setBank('account_holder_name', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="As per bank record" />
+                <input type="text" value={bank.account_holder_name} onChange={e => setBank('account_holder_name', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missName)}`} placeholder="As per bank record" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Account number <span className="text-rose-500">*</span></label>
-                <input type="text" value={bank.account_number} onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 18); setBank('account_number', v); setDocFormatErrors(prev => ({ ...prev, account_number: documentFormatValidators.accountNumber(v) })); }} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-mono" placeholder="e.g. 123456789012" />
+                <input type="text" value={bank.account_number} onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 18); setBank('account_number', v); setDocFormatErrors(prev => ({ ...prev, account_number: documentFormatValidators.accountNumber(v) })); }} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-mono ${reqRing(missAcc)}`} placeholder="e.g. 123456789012" />
                 {docFormatErrors.account_number && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.account_number}</p>}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">IFSC code <span className="text-rose-500">*</span></label>
-                <input type="text" value={bank.ifsc_code} onChange={e => { const v = e.target.value.toUpperCase().slice(0, 11); setBank('ifsc_code', v); setDocFormatErrors(prev => ({ ...prev, ifsc_code: documentFormatValidators.ifsc(v) })); }} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-mono uppercase" placeholder="e.g. SBIN0001234" style={{ textTransform: 'uppercase' }} />
+                <input type="text" value={bank.ifsc_code} onChange={e => { const v = e.target.value.toUpperCase().slice(0, 11); setBank('ifsc_code', v); setDocFormatErrors(prev => ({ ...prev, ifsc_code: documentFormatValidators.ifsc(v) })); }} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white font-mono uppercase ${reqRing(missIfsc)}`} placeholder="e.g. SBIN0001234" style={{ textTransform: 'uppercase' }} />
                 {docFormatErrors.ifsc_code && <p className="text-xs text-rose-600 mt-1">{docFormatErrors.ifsc_code}</p>}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Bank name <span className="text-rose-500">*</span></label>
-                <input type="text" value={bank.bank_name} onChange={e => setBank('bank_name', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="e.g. State Bank of India" />
+                <input type="text" value={bank.bank_name} onChange={e => setBank('bank_name', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missBank)}`} placeholder="e.g. State Bank of India" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">Branch name</label>
@@ -2518,17 +2752,17 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Bank proof <span className="text-rose-500">*</span></label>
               <p className="text-xs text-slate-500 mb-1.5">Upload one: Passbook, Cancelled cheque, or Bank statement</p>
-              <div className="flex flex-wrap gap-2 mb-2">
-                {(['passbook', 'cancelled_cheque', 'bank_statement'] as const).map((t) => (
-                  <label key={t} className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input type="radio" name="bank_proof_type" checked={(bank.bank_proof_type || '') === t} onChange={() => setBank('bank_proof_type', t)} className="rounded-full border-slate-300 text-indigo-600 focus:ring-indigo-500" />
-                    <span className="text-sm text-slate-700 capitalize">{t.replace('_', ' ')}</span>
+              <div className={`flex flex-wrap gap-2 mb-2 rounded-lg p-2 -m-0.5 ${missProofType ? 'ring-2 ring-rose-200 border border-rose-300' : ''}`}>
+                {(['passbook', 'cancelled_cheque', 'bank_statement'] as const).map((proofKind) => (
+                  <label key={proofKind} className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" name="bank_proof_type" checked={(bank.bank_proof_type || '') === proofKind} onChange={() => setBank('bank_proof_type', proofKind)} className="rounded-full border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                    <span className="text-sm text-slate-700 capitalize">{proofKind.replace('_', ' ')}</span>
                   </label>
                 ))}
               </div>
               <input type="file" ref={fileInputRefs.bankProof} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('bank_proof_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
               {!hasBankProofFileOrUrl() ? (
-                <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+                <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className={`w-full rounded-lg border-2 border-dashed py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 ${missProofFile ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300 bg-slate-50/50'}`}>
                   {isUploadingBankFile('bank_proof_file') ? (
                     <span className="inline-flex items-center justify-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
@@ -2538,15 +2772,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   )}
                 </button>
               ) : (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
-                  <span className="text-sm text-slate-800 truncate">
-                    {bank.bank_proof_file ? bank.bank_proof_file.name : (bank.bank_proof_file_url ? <a href={bank.bank_proof_file_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Uploaded · View</a> : 'Uploaded')}
-                  </span>
-                  <div className="flex gap-1">
-                    <button type="button" onClick={() => fileInputRefs.bankProof.current?.click()} className="text-xs text-indigo-600 hover:underline">Change</button>
-                    <button type="button" onClick={() => setBankFile('bank_proof_file', null)} className="text-slate-500 hover:text-rose-600">Remove</button>
-                  </div>
-                </div>
+                renderUploadedDocumentPanel({
+                  viewTitle: 'Bank proof',
+                  file: bank.bank_proof_file ?? null,
+                  url: bank.bank_proof_file_url,
+                  imagePreviewUrl: bankProofPreviewUrl,
+                  onChange: () => fileInputRefs.bankProof.current?.click(),
+                  onRemove: () => setBankFile('bank_proof_file', null),
+                  uploading: isUploadingBankFile('bank_proof_file'),
+                })
               )}
             </div>
           </>
@@ -2554,14 +2788,14 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
           <div className="space-y-3">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">UPI ID <span className="text-rose-500">*</span></label>
-              <input type="text" value={bank.upi_id || ''} onChange={e => setBank('upi_id', e.target.value)} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white" placeholder="e.g. merchant@upi" />
+              <input type="text" value={bank.upi_id || ''} onChange={e => setBank('upi_id', e.target.value)} className={`w-full px-3 py-2 text-sm border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white ${reqRing(missUpi)}`} placeholder="e.g. merchant@upi" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">UPI QR screenshot <span className="text-rose-500">*</span></label>
               <p className="text-xs text-slate-500 mb-1.5">Upload screenshot where UPI ID is clearly visible on the QR</p>
               <input type="file" ref={fileInputRefs.upiQr} onChange={(e) => { const f = e.target.files?.[0]; if (f) setBankFile('upi_qr_file', f); }} accept=".jpg,.jpeg,.png,.pdf" className="hidden" />
               {!hasUpiQrFileOrUrl() ? (
-                <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className="w-full rounded-lg border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50">
+                <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className={`w-full rounded-lg border-2 border-dashed py-3 text-center text-sm text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 ${missQr ? 'border-rose-400 bg-rose-50/40' : 'border-slate-300 bg-slate-50/50'}`}>
                   {isUploadingBankFile('upi_qr_file') ? (
                     <span className="inline-flex items-center justify-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
@@ -2571,15 +2805,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                   )}
                 </button>
               ) : (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
-                  <span className="text-sm text-slate-800 truncate">
-                    {bank.upi_qr_file ? bank.upi_qr_file.name : (bank.upi_qr_screenshot_url ? <a href={bank.upi_qr_screenshot_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Uploaded · View</a> : 'Uploaded')}
-                  </span>
-                  <div className="flex gap-1">
-                    <button type="button" onClick={() => fileInputRefs.upiQr.current?.click()} className="text-xs text-indigo-600 hover:underline">Change</button>
-                    <button type="button" onClick={() => setBankFile('upi_qr_file', null)} className="text-slate-500 hover:text-rose-600">Remove</button>
-                  </div>
-                </div>
+                renderUploadedDocumentPanel({
+                  viewTitle: 'UPI QR screenshot',
+                  file: bank.upi_qr_file ?? null,
+                  url: bank.upi_qr_screenshot_url,
+                  imagePreviewUrl: upiQrPreviewUrl,
+                  onChange: () => fileInputRefs.upiQr.current?.click(),
+                  onRemove: () => setBankFile('upi_qr_file', null),
+                  uploading: isUploadingBankFile('upi_qr_file'),
+                })
               )}
             </div>
           </div>
@@ -2590,7 +2824,24 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderOtherDocumentsSection = () => (
     <div className="space-y-2 sm:space-y-2.5">
-      <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other licences (optional but recommended)</h4>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0 space-y-0.5">
+          <p className="text-xs sm:text-sm font-semibold text-gray-700">Other licences &amp; extra documents</p>
+          <p className="text-[10px] sm:text-xs text-slate-500">Optional — trade licence, shop &amp; establishment, Udyam, or another document</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowOptionalExtraDocuments((v) => !v)}
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] sm:text-xs font-medium text-slate-600 hover:bg-slate-50 hover:border-slate-300"
+          aria-expanded={showOptionalExtraDocuments}
+        >
+          {showOptionalExtraDocuments ? 'Hide' : 'Show'}
+          <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${showOptionalExtraDocuments ? 'rotate-180' : ''}`} aria-hidden />
+        </button>
+      </div>
+      {showOptionalExtraDocuments && (
+        <>
+          <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other licences (optional but recommended)</h4>
       {/* Trade licence */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5 items-start">
         <div>
@@ -2629,20 +2880,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               )}
             </button>
           ) : (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
-              <a href={(documents as any).trade_license_document_url} target="_blank" rel="noopener noreferrer" className="text-xs sm:text-sm text-indigo-700 hover:underline truncate">
-                {documents.trade_license_document ? documents.trade_license_document.name : 'View file'}
-              </a>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {isUploadingField('trade_license_document') ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-slate-600" />
-                ) : (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">proxy</span>
-                )}
-                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('trade_license_document', fileInputRefs.tradeLicense)} className="text-xs text-indigo-600 hover:underline">Change</button>
-                <button type="button" onClick={() => removeFile('trade_license_document')} className="text-slate-500 hover:text-rose-600">×</button>
-              </div>
-            </div>
+            renderUploadedDocumentPanel({
+              viewTitle: 'Trade licence',
+              file: documents.trade_license_document,
+              url: documents.trade_license_document_url,
+              imagePreviewUrl: tradeLicenseDocPreviewUrl,
+              onChange: () => triggerFileInputWithReplaceCheck('trade_license_document', fileInputRefs.tradeLicense),
+              onRemove: () => removeFile('trade_license_document'),
+              uploading: isUploadingField('trade_license_document'),
+            })
           )}
         </div>
       </div>
@@ -2692,20 +2938,15 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               )}
             </button>
           ) : (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
-              <a href={(documents as any).shop_establishment_document_url} target="_blank" rel="noopener noreferrer" className="text-xs sm:text-sm text-indigo-700 hover:underline truncate">
-                {documents.shop_establishment_document ? documents.shop_establishment_document.name : 'View file'}
-              </a>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {isUploadingField('shop_establishment_document') ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-slate-600" />
-                ) : (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">proxy</span>
-                )}
-                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('shop_establishment_document', fileInputRefs.shopEstablishment)} className="text-xs text-indigo-600 hover:underline">Change</button>
-                <button type="button" onClick={() => removeFile('shop_establishment_document')} className="text-slate-500 hover:text-rose-600">×</button>
-              </div>
-            </div>
+            renderUploadedDocumentPanel({
+              viewTitle: 'Shop & establishment',
+              file: documents.shop_establishment_document,
+              url: documents.shop_establishment_document_url,
+              imagePreviewUrl: shopEstDocPreviewUrl,
+              onChange: () => triggerFileInputWithReplaceCheck('shop_establishment_document', fileInputRefs.shopEstablishment),
+              onRemove: () => removeFile('shop_establishment_document'),
+              uploading: isUploadingField('shop_establishment_document'),
+            })
           )}
         </div>
       </div>
@@ -2755,27 +2996,20 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               )}
             </button>
           ) : (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2 flex items-center justify-between gap-2">
-              <a href={(documents as any).udyam_document_url} target="_blank" rel="noopener noreferrer" className="text-xs sm:text-sm text-indigo-700 hover:underline truncate">
-                {documents.udyam_document ? documents.udyam_document.name : 'View file'}
-              </a>
-              <div className="flex items-center gap-1.5 shrink-0">
-                {isUploadingField('udyam_document') ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-slate-600" />
-                ) : (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-600">proxy</span>
-                )}
-                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('udyam_document', fileInputRefs.udyam)} className="text-xs text-indigo-600 hover:underline">Change</button>
-                <button type="button" onClick={() => removeFile('udyam_document')} className="text-slate-500 hover:text-rose-600">×</button>
-              </div>
-            </div>
+            renderUploadedDocumentPanel({
+              viewTitle: 'Udyam certificate',
+              file: documents.udyam_document,
+              url: documents.udyam_document_url,
+              imagePreviewUrl: udyamDocPreviewUrl,
+              onChange: () => triggerFileInputWithReplaceCheck('udyam_document', fileInputRefs.udyam),
+              onRemove: () => removeFile('udyam_document'),
+              uploading: isUploadingField('udyam_document'),
+            })
           )}
         </div>
       </div>
 
-      <div className="pt-1">
-        <h4 className="text-xs sm:text-sm font-semibold text-gray-700">Other Document (Optional)</h4>
-      </div>
+          <h4 className="text-xs sm:text-sm font-semibold text-gray-700 pt-1">Other Document (Optional)</h4>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
         <div>
           <label className="block text-[10px] sm:text-xs font-medium text-slate-700 mb-1">Document Type</label>
@@ -2833,25 +3067,19 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             <p className="text-[10px] sm:text-xs text-slate-500 mt-0.5">JPG, PNG or PDF · Max 5MB</p>
           </button>
         ) : (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50/80 p-2.5 sm:p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs sm:text-sm font-medium text-slate-800 truncate">{documents.other_document_file ? documents.other_document_file.name : 'Uploaded'}</p>
-                  <p className="text-[10px] sm:text-xs text-slate-500">{documents.other_document_file ? ((documents.other_document_file.size / 1024 / 1024).toFixed(2) + ' MB') : (documents.other_document_file_url ? <a href={documents.other_document_file_url} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">View file</a> : null)}</p>
-                </div>
-              </div>
-              <div className="flex shrink-0 gap-1.5">
-                <button type="button" onClick={() => triggerFileInputWithReplaceCheck('other_document_file', fileInputRefs.otherDoc)} className="rounded-lg border border-indigo-200 px-2 py-1 text-[10px] sm:text-xs font-medium text-indigo-700 hover:bg-indigo-50">Change</button>
-                <button type="button" onClick={() => removeFile('other_document_file')} className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-700" title="Remove"><span className="sr-only">Remove</span><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
-              </div>
-            </div>
-          </div>
+          renderUploadedDocumentPanel({
+            viewTitle: 'Other document',
+            file: documents.other_document_file,
+            url: documents.other_document_file_url,
+            imagePreviewUrl: otherDocFilePreviewUrl,
+            onChange: () => triggerFileInputWithReplaceCheck('other_document_file', fileInputRefs.otherDoc),
+            onRemove: () => removeFile('other_document_file'),
+            uploading: isUploadingField('other_document_file'),
+          })
         )}
       </div>
+        </>
+      )}
     </div>
   );
 
@@ -2899,15 +3127,27 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
               <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
-              {(['pan', 'aadhar', 'optional', 'bank'] as const).map((section) => (
+              {(['pan', 'aadhar', 'optional', 'bank'] as const).map((section) => {
+                const isActive = activeSection === section;
+                const showRejected =
+                  section === 'pan'
+                    ? !!docRejection.pan
+                    : section === 'aadhar'
+                      ? !!docRejection.aadhaar
+                      : section === 'optional'
+                        ? optionalRejectionItems.length > 0
+                        : !!docRejection.bank_proof;
+                return (
                 <button
                   key={section}
                   type="button"
                   onClick={() => setActiveSection(section)}
                   className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${
-                    activeSection === section ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                    isActive ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span>
                   {section === 'pan'
                     ? 'PAN'
                     : section === 'aadhar'
@@ -2919,8 +3159,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                       ? 'GST / FSSAI'
                       : 'GST / OTHERS'
                     : 'Bank'}
+                    </span>
+                    {showRejected ? <SectionRejectedBadge active={isActive} /> : null}
+                  </span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </aside>
 
@@ -3052,16 +3296,53 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
               </div>
               <div className="border border-slate-200 rounded-lg p-3 sm:p-4 bg-white shadow-sm">
                 <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">Delivery Radius (km)</label>
-                <input
-                  name="delivery_radius_km"
-                  type="number"
-                  value={typeof storeSetup.delivery_radius_km === 'number' && !isNaN(storeSetup.delivery_radius_km) ? storeSetup.delivery_radius_km : 5}
-                  onChange={handleStoreSetupChange}
-                  className="w-full px-3 py-2.5 sm:py-3 text-sm border border-slate-300 rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
-                  min="1"
-                  max="50"
-                />
-                <p className="text-xs text-gray-500 mt-1.5">Max delivery distance</p>
+                {(() => {
+                  const drNum =
+                    typeof storeSetup.delivery_radius_km === 'number' &&
+                    !Number.isNaN(storeSetup.delivery_radius_km)
+                      ? storeSetup.delivery_radius_km
+                      : null;
+                  const deliveryRadiusOutOfRange =
+                    drNum !== null &&
+                    (drNum < MIN_STORE_DELIVERY_RADIUS_KM || drNum > MAX_STORE_DELIVERY_RADIUS_KM);
+                  return (
+                    <>
+                      <input
+                        name="delivery_radius_km"
+                        type="number"
+                        value={
+                          storeSetup.delivery_radius_km === ''
+                            ? ''
+                            : typeof storeSetup.delivery_radius_km === 'number' &&
+                                !Number.isNaN(storeSetup.delivery_radius_km)
+                              ? storeSetup.delivery_radius_km
+                              : 5
+                        }
+                        onChange={handleStoreSetupChange}
+                        className={`w-full px-3 py-2.5 sm:py-3 text-sm border rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 bg-white ${
+                          deliveryRadiusOutOfRange
+                            ? 'border-amber-500 focus:border-amber-500'
+                            : 'border-slate-300 focus:border-indigo-500'
+                        }`}
+                        min={MIN_STORE_DELIVERY_RADIUS_KM}
+                        max={MAX_STORE_DELIVERY_RADIUS_KM}
+                        step={0.5}
+                        placeholder="5"
+                        aria-invalid={deliveryRadiusOutOfRange}
+                      />
+                      {deliveryRadiusOutOfRange ? (
+                        <p className="text-xs text-amber-700 mt-1.5" role="alert">
+                          Delivery radius must be between {MIN_STORE_DELIVERY_RADIUS_KM} and{' '}
+                          {MAX_STORE_DELIVERY_RADIUS_KM} km.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-500 mt-1.5">
+                          Max delivery distance ({MIN_STORE_DELIVERY_RADIUS_KM}–{MAX_STORE_DELIVERY_RADIUS_KM} km)
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
@@ -3467,6 +3748,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
   return (
     <div className="w-full h-full">
       {renderValidationModal()}
+      {docPreviewPayload && (
+        <DocPreviewOverlay
+          payload={docPreviewPayload}
+          onClose={() => setDocPreviewPayload(null)}
+        />
+      )}
       {currentStep === 'documents' && renderDocumentStep()}
       {currentStep === 'store-setup' && renderStoreSetupStep()}
     </div>

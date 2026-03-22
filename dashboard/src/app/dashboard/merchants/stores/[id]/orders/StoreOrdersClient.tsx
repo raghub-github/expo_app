@@ -371,7 +371,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         credentials: 'include',
         signal: signal ?? null,
       });
-      let data: { orders?: unknown[]; error?: string };
+      let data: { orders?: OrdersFoodRow[]; error?: string };
       try {
         data = await res.json();
       } catch {
@@ -676,9 +676,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           result = await tryUpdate();
         }
         if (!result.ok) {
-          const errBody = result.data as { error?: string };
-          toast('Error: ' + (errBody?.error || 'Failed to update order'));
-          return;
+          const msg =
+            (result.data as { error?: string } | null)?.error ?? 'Failed to update order';
+          toast('Error: ' + msg);          return;
         }
         const data = result.data as { order?: OrdersFoodRow };
         if (data?.order) {
@@ -1137,16 +1137,15 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         </div>
                       )}
                     </div>
-                      </>
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
-                        Select an order from the list to view details
-                      </div>
-                    )}
+                    </>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
+                      Select an order from the list to view details
+                    </div>
+                  )}
                   </div>
                 </div>
-                </div>
-
+              </div>
                 {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
                 {selectedOrder && (
                 <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">

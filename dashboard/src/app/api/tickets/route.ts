@@ -10,6 +10,8 @@ import { getSql } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { getRedisClient } from "@/lib/redis";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = "nodejs";
 
@@ -19,7 +21,7 @@ export const runtime = "nodejs";
  */
 export async function GET(request: NextRequest) {
   try {
-    console.log("[GET /api/tickets] Request received");
+
     const supabase = await createServerSupabaseClient();
     const { data: { user }, error: userError } = await supabase.auth.getUser();
 
@@ -39,13 +41,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
-    const hasTicketAccess = await hasDashboardAccessByAuth(user.id, user.email!, "TICKET");
+    const [userIsSuperAdmin, hasTicketAccess] = await Promise.all([
+      isSuperAdmin(user.id, user.email!),
+      hasDashboardAccessByAuth(user.id, user.email!, "TICKET"),
+    ]);
     if (!userIsSuperAdmin && !hasTicketAccess) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });
     }
 
-    console.log("[GET /api/tickets] Auth OK, querying unified_tickets");
+
     const { searchParams } = new URL(request.url);
 
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
@@ -169,11 +173,46 @@ export async function GET(request: NextRequest) {
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
 
+    const redis = getRedisClient();
+    const cacheKey = systemUser ? `tickets:${systemUser.id}:${request.nextUrl.searchParams.toString()}` : null;
+    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
+
+    if (cacheKey) {
+      const cached = getCached<{ tickets: unknown[]; total: number; limit: number; offset: number }>(cacheKey);
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          data: cached,
+        });
+      }
+    }
+
+    if (redis && cacheKey) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as {
+            tickets: unknown[];
+            total: number;
+            limit: number;
+            offset: number;
+          };
+          // Populate memory cache too for immediate follow-up navigations.
+          setCached(cacheKey, parsed, MEMORY_TTL_MS);
+          return NextResponse.json({
+            success: true,
+            data: parsed,
+          });
+        }
+      } catch {
+        // ignore cache read errors
+      }
+    }
+
     try {
       if (whereClause) {
         countResult = (await sqlClient`
-          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as never}
-        `) as unknown as { count: number }[];
+          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as never}        `) as unknown as { count: number }[];
         try {
           ticketRows = (await sqlClient`
             SELECT
@@ -186,8 +225,7 @@ export async function GET(request: NextRequest) {
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
             WHERE ${whereClause as never}
-            ORDER BY ${sqlClient.unsafe(orderByClause)}
-            LIMIT ${limit}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
           `) as unknown as Record<string, unknown>[];
         } catch {
@@ -200,8 +238,7 @@ export async function GET(request: NextRequest) {
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
             FROM public.unified_tickets ut
             WHERE ${whereClause as never}
-            ORDER BY ${sqlClient.unsafe(orderByClause)}
-            LIMIT ${limit}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
           `) as unknown as Record<string, unknown>[];
         }
@@ -220,8 +257,7 @@ export async function GET(request: NextRequest) {
               ut.group_id, tg.group_code as group_code, tg.group_name as group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-            ORDER BY ${sqlClient.unsafe(orderByClause)}
-            LIMIT ${limit}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
           `) as unknown as Record<string, unknown>[];
         } catch {
@@ -233,8 +269,7 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
             FROM public.unified_tickets ut
-            ORDER BY ${sqlClient.unsafe(orderByClause)}
-            LIMIT ${limit}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
           `) as unknown as Record<string, unknown>[];
         }
@@ -286,9 +321,23 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    const payload = { tickets, total: Number(total), limit, offset };
+
+    if (cacheKey) {
+      setCached(cacheKey, payload, MEMORY_TTL_MS);
+    }
+
+    if (redis && cacheKey) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(payload), "EX", 30);
+      } catch {
+        // ignore cache write errors
+      }
+    }
+
     return NextResponse.json({
       success: true,
-      data: { tickets, total: Number(total), limit, offset },
+      data: payload,
     });
   } catch (error) {
     console.error("[GET /api/tickets] Error:", error);
@@ -356,11 +405,11 @@ export async function POST(request: NextRequest) {
 
     // Generate ticket number
     const year = new Date().getFullYear();
-    const countResult = await sqlClient`
+    const countResult = (await sqlClient`
       SELECT COUNT(*)::int as count
       FROM tickets
       WHERE EXTRACT(YEAR FROM created_at) = ${year}
-    `;
+    `) as unknown as { count: number }[];
     const ticketCount = countResult[0]?.count || 0;
     const ticketNumber = `TKT-${year}-${String(ticketCount + 1).padStart(6, "0")}`;
 

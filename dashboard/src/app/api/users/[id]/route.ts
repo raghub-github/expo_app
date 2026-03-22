@@ -25,7 +25,7 @@ import {
 } from "@/lib/audit/audit-logger";
 import { logActionByAuth } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints, areaManagers } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, areaManagers, type DashboardType } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 
@@ -154,14 +154,14 @@ export async function PUT(
         { status: 404 }
       );
     }
-    const systemUser = await getSystemUserById(userPerms.systemUserId);
-    if (!systemUser) {
+    const systemUserRow = await getSystemUserById(userPerms.systemUserId);
+    if (!systemUserRow) {
       return NextResponse.json(
-        { success: false, error: "Actor not found in system" },
+        { success: false, error: "User not found in system" },
         { status: 404 }
       );
     }
-    const userIsSuperAdmin = userPerms.isSuperAdmin;
+    const systemUser = { id: systemUserRow.id, fullName: systemUserRow.fullName ?? "" };    const userIsSuperAdmin = userPerms.isSuperAdmin;
 
     // Check permission (use cached userPerms if available, otherwise call checkPermission)
     // For super admin, they have all permissions
@@ -500,14 +500,10 @@ export async function PUT(
           let allowedActions: string[] = [];
           let context: Record<string, any> = {};
 
-          const dashDefs = DASHBOARD_DEFINITIONS as Record<
-            string,
-            { accessPoints: { group: string; label: string; description: string; allowedActions: string[] }[] }
-          >;
-          if (DASHBOARD_DEFINITIONS && dashDefs[accessPoint.dashboardType]) {
-            const def = dashDefs[accessPoint.dashboardType].accessPoints.find(
-              (ap) => ap.group === accessPoint.accessPointGroup
-            );
+          const dashType = accessPoint.dashboardType as DashboardType;
+          if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
+            const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
+              (ap: any) => ap.group === accessPoint.accessPointGroup            );
             if (def) {
               accessPointName = def.label;
               accessPointDescription = def.description;

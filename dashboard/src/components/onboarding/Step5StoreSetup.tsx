@@ -66,6 +66,8 @@ export interface Step5StoreSetupProps {
   onChange?: (value: StoreSetupData) => void;
   onDeleteBanner?: (currentBannerUrl: string) => void | Promise<void>;
   onDeleteGalleryImage?: (index: number, url: string) => void | Promise<void>;
+  storeInternalId?: number | null;
+  onMediaUploadingChange?: (uploading: boolean) => void;
 }
 
 const MAX_GALLERY_IMAGES = 5;
@@ -214,7 +216,14 @@ const ALL_CUISINES: string[] = [
 ];
 
 export default function Step5StoreSetup(props: Step5StoreSetupProps) {
-  const { initialStoreSetup, onChange, onDeleteBanner, onDeleteGalleryImage } = props;
+  const {
+    initialStoreSetup,
+    onChange,
+    onDeleteBanner,
+    onDeleteGalleryImage,
+    storeInternalId,
+    onMediaUploadingChange,
+  } = props;
 
   const [storeSetup, setStoreSetup] = useState<StoreSetupData>(() => ({
     ...defaultStoreSetup,
@@ -224,6 +233,12 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
       ...(initialStoreSetup?.store_hours || {}),
     },
   }));
+
+  const [mediaUploading, setMediaUploading] = useState(false);
+
+  useEffect(() => {
+    onMediaUploadingChange?.(mediaUploading);
+  }, [mediaUploading, onMediaUploadingChange]);
 
   const [cuisineSearch, setCuisineSearch] = useState("");
   const [presetToggles, setPresetToggles] = useState({
@@ -322,11 +337,43 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
     const trimmed = value.trim();
     if (!trimmed) return undefined;
     if (trimmed.startsWith("/api/attachments/proxy")) return trimmed;
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("data:")) {
+    if (
+      trimmed.startsWith("http://") ||
+      trimmed.startsWith("https://") ||
+      trimmed.startsWith("data:") ||
+      trimmed.startsWith("blob:")
+    ) {
       return trimmed;
     }
     // Treat as raw R2 key ("docs/merchants/...") and wrap in proxy URL
     return `/api/attachments/proxy?key=${encodeURIComponent(trimmed.replace(/^\/+/, ""))}`;
+  };
+
+  const uploadProfileMedia = async (
+    file: File,
+    type: "banner" | "gallery",
+    index: number = 0
+  ): Promise<string | null> => {
+    if (storeInternalId == null || !Number.isFinite(storeInternalId)) return null;
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("type", type);
+    formData.append("index", String(index));
+
+    const res = await fetch(`/api/merchant/stores/${storeInternalId}/profile-media`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+
+    const json = await res.json().catch(() => ({} as any));
+    if (!res.ok) {
+      throw new Error(json?.error ?? "Failed to upload media");
+    }
+    const key = json?.key;
+    if (!key || typeof key !== "string") return null;
+    return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
   };
 
   useEffect(() => {
@@ -585,14 +632,35 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                   onChange={(e) => {
                     const file = e.target.files?.[0] || null;
                     if (!file) return;
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                      setStoreSetup((prev) => ({
-                        ...prev,
-                        banner_preview: reader.result as string,
-                      }));
-                    };
-                    reader.readAsDataURL(file);
+                    const prevBannerPreview = storeSetup.banner_preview;
+                    void (async () => {
+                      setMediaUploading(true);
+                      try {
+                        const dataUrl = await new Promise<string>((resolve, reject) => {
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            const result = reader.result;
+                            if (typeof result === "string" && result) return resolve(result);
+                            reject(new Error("Failed to read banner as data URL."));
+                          };
+                          reader.onerror = () => reject(new Error("Failed to read banner file."));
+                          reader.readAsDataURL(file);
+                        });
+
+                        // Optimistic preview (we will replace with a proxy URL after upload)
+                        setStoreSetup((prev) => ({ ...prev, banner_preview: dataUrl }));
+
+                        const proxyUrl = await uploadProfileMedia(file, "banner");
+                        setStoreSetup((prev) => ({
+                          ...prev,
+                          banner_preview: proxyUrl ?? prevBannerPreview,
+                        }));
+                      } catch {
+                        setStoreSetup((prev) => ({ ...prev, banner_preview: prevBannerPreview }));
+                      } finally {
+                        setMediaUploading(false);
+                      }
+                    })();
                   }}
                 />
                 {storeSetup.banner_preview && (
@@ -634,11 +702,46 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                     const files = e.target.files ? Array.from(e.target.files) : [];
                     if (files.length === 0) return;
                     const limited = files.slice(0, MAX_GALLERY_IMAGES);
-                    const previews = limited.map((file) => URL.createObjectURL(file));
-                    setStoreSetup((prev) => ({
-                      ...prev,
-                      gallery_previews: previews,
-                    }));
+
+                    const prevGalleryPreviews = storeSetup.gallery_previews;
+                    void (async () => {
+                      setMediaUploading(true);
+                      try {
+                        // Optimistic preview while we upload in the background.
+                        // After upload completes, we replace with stable proxy URLs.
+                        const previews = await Promise.all(
+                          limited.map(
+                            (file) =>
+                              new Promise<string>((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onloadend = () => {
+                                  const result = reader.result;
+                                  if (typeof result === "string" && result) return resolve(result);
+                                  reject(new Error("Failed to read image as data URL."));
+                                };
+                                reader.onerror = () => reject(new Error("Failed to read image."));
+                                reader.readAsDataURL(file);
+                              })
+                          )
+                        );
+
+                        setStoreSetup((prev) => ({ ...prev, gallery_previews: previews }));
+
+                        const proxyUrls: string[] = [];
+                        for (let i = 0; i < limited.length; i++) {
+                          const file = limited[i];
+                          const proxyUrl = await uploadProfileMedia(file, "gallery", i);
+                          if (!proxyUrl) throw new Error("Failed to upload gallery image.");
+                          proxyUrls.push(proxyUrl);
+                        }
+
+                        setStoreSetup((prev) => ({ ...prev, gallery_previews: proxyUrls }));
+                      } catch {
+                        setStoreSetup((prev) => ({ ...prev, gallery_previews: prevGalleryPreviews }));
+                      } finally {
+                        setMediaUploading(false);
+                      }
+                    })();
                   }}
                 />
                 <div className="flex flex-wrap gap-1.5 mt-1.5">

@@ -26,14 +26,7 @@ export async function GET() {
       LIMIT 500
     `;
 
-    type StoreRow = {
-      id: number;
-      store_id: string;
-      store_name: string;
-      store_display_name: string | null;
-    };
-    const stores = (rows as unknown as StoreRow[]).map(
-      (r) => ({
+    const stores = (rows as unknown as { id: number; store_id: string; store_name: string; store_display_name: string | null }[]).map(      (r) => ({
         id: r.id,
         storeId: r.store_id,
         name: r.store_display_name ?? r.store_name ?? String(r.store_id),

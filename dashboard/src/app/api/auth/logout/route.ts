@@ -2,12 +2,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { expireSession } from "@/lib/auth/session-manager";
+import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { closeAllOpenUserSessions } from "@/lib/db/operations/user-sessions";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export async function POST(request: NextRequest) {
   const cookieStore = await cookies();
   const response = NextResponse.json({ success: true });
 
   try {
+    // Close dashboard user_sessions while we can still read the auth user (before signOut).
+    try {
+      const supabaseForSessions = await createServerSupabaseClient();
+      const {
+        data: { user: authUser },
+      } = await supabaseForSessions.auth.getUser();
+      if (authUser?.email) {
+        const su = await getSystemUserByEmail(authUser.email);
+        if (su) await closeAllOpenUserSessions(su.id);
+      }
+    } catch (e) {
+      console.warn("[logout] user_sessions close skipped:", e instanceof Error ? e.message : e);
+    }
+
     // Create Supabase client with cookie handling
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,

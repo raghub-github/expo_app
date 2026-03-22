@@ -59,10 +59,10 @@ export const cacheStrategies: Record<CacheTier, CacheConfig> = {
  * Refetch every 24h to keep session alive (Supabase refresh token rolling expiry up to 7 days).
  */
 export const authCacheConfig: CacheConfig = {
-  staleTime: 5 * 60 * 1000, // 5 minutes
-  gcTime: 24 * 60 * 60 * 1000, // 24 hours
+  staleTime: 10 * 60 * 1000, // 10 minutes – matches dashboard bootstrap window
+  gcTime: 30 * 60 * 1000, // 30 minutes – aligns with global query cache
   refetchOnMount: false,
-  refetchOnWindowFocus: true, // Refetch on focus to catch logout in other tabs
+  refetchOnWindowFocus: false,
   refetchInterval: 24 * 60 * 60 * 1000, // Refetch every 24h to renew session
   persist: false, // Don't persist session data (security)
 };

@@ -11,6 +11,8 @@ import { eq, and, or, desc, gte, lte, isNull } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getRedisClient } from "@/lib/redis";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = 'nodejs';
 
@@ -115,6 +117,32 @@ export async function GET(
     };
 
     const db = getDb();
+    const redis = getRedisClient();
+
+    // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
+    // recalculating heavy aggregates on quick tab switches.
+    const cacheKey = riderId ? `rider_summary:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
+    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
+
+    if (cacheKey) {
+      const cached = getCached<unknown>(cacheKey);
+      if (cached) {
+        return NextResponse.json(cached);
+      }
+    }
+
+    if (redis && cacheKey) {
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as unknown;
+          setCached(cacheKey, parsed, MEMORY_TTL_MS);
+          return NextResponse.json(parsed);
+        }
+      } catch {
+        // ignore cache read errors
+      }
+    }
 
     // Get rider basic info
     const [rider] = await db
@@ -149,8 +177,7 @@ export async function GET(
         }
         if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
           ordersConditions.push(
-            eq(ordersCore.status, params_obj.ordersStatus as OrdersCoreRow["status"])
-          );
+            eq(ordersCore.status, params_obj.ordersStatus as (typeof ordersCore.$inferSelect)["status"])          );
         }
         if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
           const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -164,25 +191,36 @@ export async function GET(
           .where(ordersConditions.length > 1 ? and(...ordersConditions) : ordersConditions[0])
           .orderBy(desc(ordersCore.createdAt))
           .limit(params_obj.ordersLimit || 10);
-        recentOrders = rows.map((row) => ({
-          id: row.id,
-          orderType: row.orderType,
-          riderId: row.riderId,
-          customerId: row.customerId,
-          pickupAddress: row.pickupAddressRaw,
-          dropAddress: row.dropAddressRaw,
-          pickupLat: row.pickupLat,
-          pickupLon: row.pickupLon,
-          dropLat: row.dropLat,
-          dropLon: row.dropLon,
-          distanceKm: row.distanceKm,
-          fareAmount: row.fareAmount,
-          riderEarning: row.riderEarning,
-          status: row.status,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-        }));
-      } catch {
+        recentOrders = rows.map((row) => {
+          const r = row as unknown as {
+            pickupAddressRaw?: string;
+            dropAddressRaw?: string;
+            pickupLat?: number;
+            pickupLon?: number;
+            dropLat?: number;
+            dropLon?: number;
+            distanceKm?: number;
+            updatedAt?: Date;
+          };
+          return {
+            id: row.id,
+            orderType: row.orderType,
+            riderId: row.riderId,
+            customerId: row.customerId,
+            pickupAddress: r.pickupAddressRaw,
+            dropAddress: r.dropAddressRaw,
+            pickupLat: r.pickupLat,
+            pickupLon: r.pickupLon,
+            dropLat: r.dropLat,
+            dropLon: r.dropLon,
+            distanceKm: r.distanceKm,
+            fareAmount: row.fareAmount,
+            riderEarning: row.riderEarning,
+            status: row.status,
+            createdAt: row.createdAt,
+            updatedAt: r.updatedAt,
+          };
+        });      } catch {
         // Fallback to orders table if orders_core fails (e.g. table missing)
         const ordersConditions: any[] = [eq(orders.riderId, riderId)];
         if (params_obj.ordersFrom) {
@@ -198,8 +236,7 @@ export async function GET(
         }
         if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
           ordersConditions.push(
-            eq(orders.status, params_obj.ordersStatus as OrdersLegacyRow["status"])
-          );
+            eq(orders.status, params_obj.ordersStatus as (typeof orders.$inferSelect)["status"])          );
         }
         if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
           const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -229,8 +266,7 @@ export async function GET(
       }
       if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
         ordersConditions.push(
-          eq(orders.status, params_obj.ordersStatus as OrdersLegacyRow["status"])
-        );
+          eq(orders.status, params_obj.ordersStatus as (typeof orders.$inferSelect)["status"])        );
       }
       if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
         const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -402,7 +438,8 @@ export async function GET(
 
     // When "All Services" is banned but at least one individual service is whitelisted, show "Partially allowed" so UI is consistent
     const allStatus = toStatus(effectiveAll);
-    let allStatusAdjusted = allStatus;
+    type AllStatusRow = NonNullable<typeof allStatus> & { partiallyAllowedServices?: string[] };
+    let allStatusAdjusted: AllStatusRow | null = allStatus;
     if (allStatus?.isBanned) {
       const foodAllowed = !effectiveFood?.isBanned;
       const parcelAllowed = !effectiveParcel?.isBanned;
@@ -616,7 +653,7 @@ export async function GET(
       }
     });
 
-    return NextResponse.json({
+    const payload = {
       success: true,
       data: {
         rider: {
@@ -745,7 +782,21 @@ export async function GET(
         orderMetrics,
         onboardingFees,
       },
-    });
+    } as const;
+
+    if (cacheKey) {
+      setCached(cacheKey, payload, MEMORY_TTL_MS);
+    }
+
+    if (redis && cacheKey) {
+      try {
+        await redis.set(cacheKey, JSON.stringify(payload), "EX", 30);
+      } catch {
+        // ignore cache write errors
+      }
+    }
+
+    return NextResponse.json(payload);
   } catch (error) {
     console.error("[GET /api/riders/[id]/summary] Error:", error);
     return NextResponse.json(

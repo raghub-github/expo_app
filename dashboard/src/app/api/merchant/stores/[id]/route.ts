@@ -115,7 +115,7 @@ export async function GET(
           country: store.country ?? null,
           latitude: store.latitude ?? null,
           longitude: store.longitude ?? null,
-          banner_url: store.banner_url ?? null,
+          logo_url: null,          banner_url: store.banner_url ?? null,
           gallery_images: store.gallery_images ?? null,
           cuisine_types: store.cuisine_types ?? null,
           food_categories: null,
@@ -286,7 +286,6 @@ export async function PATCH(
     const section = "profile";
     try {
       for (const key of Object.keys(data)) {
-        // `access.store` is a structured row type, not indexable. Cast via `unknown` for audit logging.
         const oldVal = (access.store as unknown as Record<string, unknown>)[key];
         const newVal = (updated as unknown as Record<string, unknown>)[key];
         await logFieldChange(

@@ -41,7 +41,11 @@ export function R2Image({ src, alt, className = "", fallbackSrc }: R2ImageProps)
   }
 
   const resolved =
-    resolvedSrc && (resolvedSrc.startsWith("http") || resolvedSrc.startsWith("/") || resolvedSrc.startsWith("data:"))
+    resolvedSrc &&
+    (resolvedSrc.startsWith("http") ||
+      resolvedSrc.startsWith("/") ||
+      resolvedSrc.startsWith("data:") ||
+      resolvedSrc.startsWith("blob:"))
       ? resolvedSrc
       : fallbackSrc;
   if (!resolved) {

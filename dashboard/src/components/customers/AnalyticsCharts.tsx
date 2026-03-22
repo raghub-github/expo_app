@@ -171,8 +171,11 @@ export function AnalyticsCharts({ stats, loading = false }: AnalyticsChartsProps
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(value) => `₹${Number(value ?? 0).toLocaleString()}`} />
-            <Legend />
+            <Tooltip
+              formatter={(value) =>
+                value != null ? `₹${Number(value).toLocaleString()}` : ""
+              }
+            />            <Legend />
             <Line
               type="monotone"
               dataKey="food"

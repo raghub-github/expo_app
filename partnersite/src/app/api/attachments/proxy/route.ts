@@ -2,7 +2,7 @@
  * GET /api/attachments/proxy?url=<encoded-url>  OR  ?key=<encoded-r2-key>
  *
  * Serves R2 objects on demand so attachments never show expiry errors.
- * - ?key=: R2 object key (e.g. docs/merchants/GMMP1005/stores/GMMC1017/onboarding/documents/pan/file.pdf). Preferred.
+ * - ?key=: R2 object key (e.g. .../onboarding/documents/file.pdf or .../onboarding/agreement/contract-....pdf). Preferred.
  * - ?url=: Full R2 URL; key is extracted from pathname. Keeps existing stored URLs working.
  *
  * Every request fetches the object from R2 using server credentials and streams it to the client.
@@ -12,8 +12,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { normalizeR2ObjectKey } from "@/lib/r2";
 
 function getR2Client(): S3Client {
+  const endpoint = process.env.R2_ENDPOINT || "";
+  const forcePathStyle =
+    String(process.env.R2_S3_FORCE_PATH_STYLE || "").toLowerCase() === "true" ||
+    /\.r2\.cloudflarestorage\.com/i.test(endpoint);
   return new S3Client({
     region: process.env.R2_REGION || "auto",
     endpoint: process.env.R2_ENDPOINT,
@@ -21,6 +26,7 @@ function getR2Client(): S3Client {
       accessKeyId: process.env.R2_ACCESS_KEY!,
       secretAccessKey: process.env.R2_SECRET_KEY!,
     },
+    forcePathStyle,
   });
 }
 
@@ -36,6 +42,358 @@ function keyFromUrl(decodedUrl: string): string | null {
     return null;
   }
   return null;
+}
+
+/** Parent folder typo seen in DB: GMMMP1005 vs correct GMMP1005 */
+function merchantPathTypoVariants(key: string): string[] {
+  const out = new Set<string>([key]);
+  const gmmmp = key.replace(/\/merchants\/GMMMP(\d+)/gi, "/merchants/GMMP$1");
+  if (gmmmp !== key) out.add(gmmmp);
+  const extraM = key.replace(/\/merchants\/GMMP(\d+)/gi, "/merchants/GMMMP$1");
+  if (extraM !== key) out.add(extraM);
+  return [...out];
+}
+
+/** .../stores/{id}/menu/file -> onboarding menu type folders (new + legacy nested paths) */
+function flatMenuToOnboardingKeys(key: string): string[] {
+  const re = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/menu\/([^/]+)$/i;
+  const m = key.match(re);
+  if (!m) return [];
+  const prefix = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
+  const file = m[2];
+  const base = `${prefix}/onboarding`;
+  return [
+    `${base}/menu/${file}`,
+    `${base}/menu-pdf/${file}`,
+    `${base}/menu-images/${file}`,
+    `${base}/menu-csv/${file}`,
+    `${base}/menu/pdf/${file}`,
+    `${base}/menu/images/${file}`,
+    `${base}/menu/csv/${file}`,
+  ];
+}
+
+/** .../onboarding/menu-{pdf|images|csv}/file or .../onboarding/menu/{pdf|images|csv}/file -> .../menu/file */
+function onboardingMenuToFlatKeys(key: string): string[] {
+  const out: string[] = [];
+  const reNew = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/onboarding\/menu-(pdf|images|csv)\/([^/]+)$/i;
+  const m1 = key.match(reNew);
+  if (m1) {
+    const prefix = m1[1].startsWith("docs/") ? m1[1] : `docs/${m1[1]}`;
+    out.push(`${prefix}/menu/${m1[3]}`);
+  }
+  const reOld = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/onboarding\/menu\/(?:pdf|images|csv)\/([^/]+)$/i;
+  const m2 = key.match(reOld);
+  if (m2) {
+    const prefix = m2[1].startsWith("docs/") ? m2[1] : `docs/${m2[1]}`;
+    out.push(`${prefix}/menu/${m2[2]}`);
+  }
+  return out;
+}
+
+/** `.../onboarding/menu/{pdf|csv|images}/f` <-> legacy `.../onboarding/menu-{pdf|csv|images}/f` */
+function onboardingMenuLayoutVariants(key: string): string[] {
+  const out: string[] = [];
+  const base = "(?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft)";
+  const reNested = new RegExp(
+    `^(${base})\\/onboarding\\/menu\\/(pdf|csv|images)\\/([^/]+)$`,
+    "i"
+  );
+  const m = key.match(reNested);
+  if (m) {
+    const p = m[1];
+    const prefix = p.startsWith("docs/") ? p : `docs/${p}`;
+    const type = m[2].toLowerCase();
+    const file = m[3];
+    const legacySeg =
+      type === "pdf" ? "menu-pdf" : type === "csv" ? "menu-csv" : "menu-images";
+    out.push(`${prefix}/onboarding/${legacySeg}/${file}`);
+  }
+  const reLegacy = new RegExp(
+    `^(${base})\\/onboarding\\/menu-(pdf|images|csv)\\/([^/]+)$`,
+    "i"
+  );
+  const m2 = key.match(reLegacy);
+  if (m2) {
+    const p = m2[1];
+    const prefix = p.startsWith("docs/") ? p : `docs/${p}`;
+    const kind = m2[2].toLowerCase();
+    const file = m2[3];
+    const sub = kind === "pdf" ? "pdf" : kind === "csv" ? "csv" : "images";
+    out.push(`${prefix}/onboarding/menu/${sub}/${file}`);
+  }
+  return out;
+}
+
+/** Flat `.../onboarding/menu/{file}` (step 3) <-> `.../stores/{id}/menu/{file}` legacy */
+function onboardingFlatMenuReferenceVariants(key: string): string[] {
+  const out: string[] = [];
+  const reOnb = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/menu\/([^/]+)$/i;
+  const m = key.match(reOnb);
+  if (m) {
+    const p = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
+    const file = m[2];
+    if (file && !/^(pdf|csv|images)$/i.test(file)) {
+      out.push(`${p}/menu/${file}`);
+    }
+  }
+  const reStore = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/menu\/([^/]+)$/i;
+  const m2 = key.match(reStore);
+  if (m2 && !m2[0].toLowerCase().includes("/onboarding/")) {
+    const p = m2[1].startsWith("docs/") ? m2[1] : `docs/${m2[1]}`;
+    const file = m2[2];
+    if (file) out.push(`${p}/onboarding/menu/${file}`);
+  }
+  return out;
+}
+
+const LEGACY_ONBOARDING_DOC_SEGMENTS =
+  "pan|aadhaar|fssai|gst|bank|agreements|pharma|other";
+
+/**
+ * Flat layout: .../onboarding/documents/{file}
+ * Legacy: .../onboarding/{type}/{file} or .../onboarding/documents/{type}/{file}
+ */
+function onboardingDocumentsPathVariants(key: string): string[] {
+  const out: string[] = [];
+  const typeAlt = LEGACY_ONBOARDING_DOC_SEGMENTS.split("|");
+
+  const flatDoc = new RegExp(
+    `^((?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft))\\/onboarding\\/documents\\/([^/]+)$`,
+    "i"
+  );
+  const mFlat = key.match(flatDoc);
+  if (mFlat) {
+    const prefix = mFlat[1].startsWith("docs/") ? mFlat[1] : `docs/${mFlat[1]}`;
+    const file = mFlat[2];
+    if (file) {
+      for (const seg of typeAlt) {
+        out.push(`${prefix}/onboarding/${seg}/${file}`);
+      }
+      for (const seg of typeAlt) {
+        out.push(`${prefix}/onboarding/documents/${seg}/${file}`);
+      }
+    }
+  }
+
+  const legacyType = new RegExp(
+    `^((?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft))\\/onboarding\\/(${LEGACY_ONBOARDING_DOC_SEGMENTS})\\/(.+)$`,
+    "i"
+  );
+  const mLeg = key.match(legacyType);
+  if (mLeg) {
+    const prefix = mLeg[1].startsWith("docs/") ? mLeg[1] : `docs/${mLeg[1]}`;
+    const file = mLeg[3];
+    if (file) out.push(`${prefix}/onboarding/documents/${file}`);
+  }
+
+  const nestedUnderDocuments = new RegExp(
+    `^((?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft))\\/onboarding\\/documents\\/(${LEGACY_ONBOARDING_DOC_SEGMENTS})\\/(.+)$`,
+    "i"
+  );
+  const mNest = key.match(nestedUnderDocuments);
+  if (mNest) {
+    const prefix = mNest[1].startsWith("docs/") ? mNest[1] : `docs/${mNest[1]}`;
+    const typeSeg = mNest[2];
+    const file = mNest[3];
+    if (file) {
+      out.push(`${prefix}/onboarding/documents/${file}`);
+      out.push(`${prefix}/onboarding/${typeSeg}/${file}`);
+    }
+  }
+
+  return out;
+}
+
+/** Legacy gallery path .../onboarding/store-media/gallery/ <-> .../onboarding/store-media-gallery/ */
+function onboardingStoreMediaGalleryVariants(key: string): string[] {
+  const out: string[] = [];
+  const reOld = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media\/gallery\/(.+)$/i;
+  const m = key.match(reOld);
+  if (m) {
+    const prefix = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
+    out.push(`${prefix}/onboarding/store-media-gallery/${m[2]}`);
+  }
+  const reNew = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media-gallery\/(.+)$/i;
+  const m2 = key.match(reNew);
+  if (m2) {
+    const prefix = m2[1].startsWith("docs/") ? m2[1] : `docs/${m2[1]}`;
+    out.push(`${prefix}/onboarding/store-media/gallery/${m2[2]}`);
+  }
+  return out;
+}
+
+/** `.../onboarding/assets/{banner|gallery}/file` <-> legacy `store-media` / `store-media-gallery` */
+function onboardingStoreAssetsPathVariants(key: string): string[] {
+  const out: string[] = [];
+  const reAssetsBanner = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/assets\/banner\/([^/]+)$/i;
+  const mb = key.match(reAssetsBanner);
+  if (mb) {
+    const prefix = mb[1].startsWith("docs/") ? mb[1] : `docs/${mb[1]}`;
+    out.push(`${prefix}/onboarding/store-media/${mb[2]}`);
+  }
+  const reAssetsGallery = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/assets\/gallery\/([^/]+)$/i;
+  const mg = key.match(reAssetsGallery);
+  if (mg) {
+    const prefix = mg[1].startsWith("docs/") ? mg[1] : `docs/${mg[1]}`;
+    out.push(`${prefix}/onboarding/store-media-gallery/${mg[2]}`);
+  }
+  const reLegacyBanner = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media\/(banner[^/]*)$/i;
+  const lb = key.match(reLegacyBanner);
+  if (lb) {
+    const prefix = lb[1].startsWith("docs/") ? lb[1] : `docs/${lb[1]}`;
+    out.push(`${prefix}/onboarding/assets/banner/${lb[2]}`);
+  }
+  const reLegacyGallery = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media-gallery\/([^/]+)$/i;
+  const lg = key.match(reLegacyGallery);
+  if (lg) {
+    const prefix = lg[1].startsWith("docs/") ? lg[1] : `docs/${lg[1]}`;
+    out.push(`${prefix}/onboarding/assets/gallery/${lg[2]}`);
+  }
+  return out;
+}
+
+/**
+ * Signed contract PDF: `.../onboarding/agreement/{file}` <-> same filename under `documents/` (legacy submit).
+ * Only applies to obvious contract names (*.pdf, contract-approval- / partner-agreement- prefixes).
+ */
+function onboardingAgreementPathVariants(key: string): string[] {
+  const out: string[] = [];
+  const m = key.match(
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/(agreement|documents)\/([^/]+)$/i
+  );
+  if (!m) return out;
+  const prefix = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
+  const folder = m[2].toLowerCase();
+  const file = m[3];
+  if (!file || !/\.pdf$/i.test(file)) return out;
+  if (!/^contract-approval-/i.test(file) && !/^partner-agreement/i.test(file)) return out;
+  const other = folder === "agreement" ? "documents" : "agreement";
+  out.push(`${prefix}/onboarding/${other}/${file}`);
+  return out;
+}
+
+/** Menu reference: .../stores/{storeId}/menu/file <-> .../menu/{storeId}/file (legacy vs current layout) */
+function menuReferencePathVariants(key: string): string[] {
+  const out: string[] = [];
+  const reOld = /^((?:docs\/)?merchants\/[^/]+)\/stores\/([^/]+)\/menu\/(.+)$/i;
+  const mOld = key.match(reOld);
+  if (mOld && !key.includes("/onboarding/")) {
+    const base = mOld[1].replace(/^docs\//, "");
+    const storeId = mOld[2];
+    const file = mOld[3];
+    out.push(`${base}/menu/${storeId}/${file}`);
+    out.push(`docs/${base}/menu/${storeId}/${file}`);
+  }
+  const reNew = /^((?:docs\/)?merchants\/[^/]+)\/menu\/([^/]+)\/(.+)$/i;
+  const mNew = key.match(reNew);
+  if (mNew && !key.includes("/onboarding/") && !key.includes("/stores/")) {
+    const base = mNew[1].replace(/^docs\//, "");
+    const storeId = mNew[2];
+    const file = mNew[3];
+    out.push(`${base}/stores/${storeId}/menu/${file}`);
+    out.push(`docs/${base}/stores/${storeId}/menu/${file}`);
+  }
+  return out;
+}
+
+/**
+ * R2 keys historically used `merchants/...`, `docs/merchants/...`, flat `/menu/`,
+ * `/onboarding/menu/...`, legacy `/onboarding/{pan|...}/`, or flat `/onboarding/documents/{file}`.
+ * DB sometimes has parent typo GMMMP vs GMMP.
+ */
+function expandR2LookupCandidates(primary: string): string[] {
+  const k = primary.trim();
+  if (!k) return [];
+  const seen = new Set<string>();
+  const add = (s: string) => {
+    const t = s.trim();
+    if (t) seen.add(t);
+  };
+
+  const roots = merchantPathTypoVariants(k);
+  for (const root of roots) {
+    add(root);
+    if (root.startsWith("merchants/") && !root.startsWith("docs/")) {
+      add(`docs/${root}`);
+    } else if (root.startsWith("docs/")) {
+      const noDocs = root.replace(/^docs\//, "");
+      if (noDocs) add(noDocs);
+    }
+    for (const ob of onboardingMenuToFlatKeys(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of onboardingMenuLayoutVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of onboardingFlatMenuReferenceVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of flatMenuToOnboardingKeys(root)) {
+      add(ob);
+    }
+    for (const ob of menuReferencePathVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of onboardingDocumentsPathVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of onboardingStoreMediaGalleryVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of onboardingStoreAssetsPathVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    for (const ob of onboardingAgreementPathVariants(root)) {
+      add(ob);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      else if (ob.startsWith("docs/")) {
+        const nd = ob.replace(/^docs\//, "");
+        if (nd) add(nd);
+      }
+    }
+    if (/\/menu_sheet_\d+$/.test(root)) {
+      add(`${root}.csv`);
+      if (root.startsWith("merchants/") && !root.startsWith("docs/")) add(`docs/${root}.csv`);
+    }
+  }
+
+  return [...seen];
 }
 
 /** Allow only our R2-related URLs for security. */
@@ -77,6 +435,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Missing key or url parameter" }, { status: 400 });
     }
 
+    key = normalizeR2ObjectKey(key.trim());
+
     const bucket = process.env.R2_BUCKET_NAME;
     if (!bucket || !process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || !process.env.R2_ENDPOINT) {
       return NextResponse.json(
@@ -86,70 +446,67 @@ export async function GET(request: NextRequest) {
     }
 
     const client = getR2Client();
-    const objectKey = key.trim();
-    const command = new GetObjectCommand({
-      Bucket: bucket,
-      Key: objectKey,
-    });
-    const response = await client.send(command);
+    const candidates = expandR2LookupCandidates(key.trim());
+    let lastError: unknown = null;
 
-    if (!response.Body) {
-      return NextResponse.json({ error: "Empty object" }, { status: 404 });
+    for (const objectKey of candidates) {
+      try {
+        const response = await client.send(
+          new GetObjectCommand({ Bucket: bucket, Key: objectKey })
+        );
+        if (!response.Body) {
+          lastError = new Error("Empty object");
+          continue;
+        }
+        const contentType = response.ContentType ?? "application/octet-stream";
+        const headers = new Headers();
+        headers.set("Content-Type", contentType);
+        headers.set("Cache-Control", "private, max-age=3600");
+        if (response.ContentLength != null) {
+          headers.set("Content-Length", String(response.ContentLength));
+        }
+        headers.set("Access-Control-Allow-Origin", "*");
+        return new NextResponse(response.Body as any, { status: 200, headers });
+      } catch (e: any) {
+        lastError = e;
+        if (e?.name === "NoSuchKey") continue;
+        if (e?.name === "NotFound") continue;
+        console.error("[attachments/proxy] GetObject:", objectKey, e);
+        throw e;
+      }
     }
 
-    const contentType = response.ContentType ?? "application/octet-stream";
-    const headers = new Headers();
-    headers.set("Content-Type", contentType);
-    headers.set("Cache-Control", "private, max-age=3600");
-    if (response.ContentLength != null) {
-      headers.set("Content-Length", String(response.ContentLength));
-    }
-    headers.set("Access-Control-Allow-Origin", "*");
-
-    return new NextResponse(response.Body as any, {
-      status: 200,
-      headers,
-    });
-  } catch (err: any) {
-    if (err?.name === "NoSuchKey") {
-      const bucket = process.env.R2_BUCKET_NAME;
-      const keyParam = request.nextUrl.searchParams.get("key");
-      let key: string | null = keyParam ? decodeURIComponent(keyParam.trim()) : null;
-
-      const tryKey = async (objectKey: string): Promise<NextResponse | null> => {
+    // Bucket name accidentally prefixed on key (legacy)
+    const trimmed = key.trim();
+    if (trimmed.startsWith(bucket + "/")) {
+      const inner = trimmed.slice(bucket.length + 1);
+      for (const objectKey of expandR2LookupCandidates(inner)) {
         try {
-          const client = getR2Client();
           const response = await client.send(
-            new GetObjectCommand({ Bucket: bucket!, Key: objectKey })
+            new GetObjectCommand({ Bucket: bucket, Key: objectKey })
           );
           if (response.Body) {
             const contentType = response.ContentType ?? "application/octet-stream";
             const headers = new Headers();
             headers.set("Content-Type", contentType);
             headers.set("Cache-Control", "private, max-age=3600");
-            if (response.ContentLength != null) headers.set("Content-Length", String(response.ContentLength));
+            if (response.ContentLength != null) {
+              headers.set("Content-Length", String(response.ContentLength));
+            }
             headers.set("Access-Control-Allow-Origin", "*");
             return new NextResponse(response.Body as any, { status: 200, headers });
           }
         } catch (e: any) {
-          if (e?.name !== "NoSuchKey") console.error("[attachments/proxy] Retry Error:", e);
-        }
-        return null;
-      };
-
-      if (key && bucket) {
-        if (key.startsWith(bucket + "/")) {
-          const res = await tryKey(key.slice(bucket.length + 1));
-          if (res) return res;
-        }
-        // Menu sheet keys from onboarding often stored without extension; R2 may have .csv
-        if (/\/menu_sheet_\d+$/.test(key)) {
-          const res = await tryKey(key + ".csv");
-          if (res) return res;
+          if (e?.name !== "NoSuchKey" && e?.name !== "NotFound") console.error("[attachments/proxy] Retry:", e);
         }
       }
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+
+    if (lastError && (lastError as { name?: string }).name !== "NoSuchKey") {
+      console.error("[attachments/proxy] Exhausted keys for:", key.slice(0, 120), lastError);
+    }
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  } catch (err: any) {
     console.error("[attachments/proxy] Error:", err);
     return NextResponse.json(
       { error: "Failed to load attachment" },

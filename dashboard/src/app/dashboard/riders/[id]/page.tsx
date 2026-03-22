@@ -308,7 +308,7 @@ export default function RiderDetailsPage() {
     );
   }
 
-  const rider = riderData.rider;
+  const rider = riderData.rider as Rider;
   const documents = riderData.documents || [];
   const addresses = riderData.addresses ?? [];
   const vehicle = riderData.vehicle ?? null;

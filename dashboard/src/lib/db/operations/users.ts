@@ -4,8 +4,9 @@
  */
 
 import { getDb } from "../client";
-import { systemUsers } from "../schema";
+import { systemUsers, userSessions } from "../schema";
 import { eq, and, or, ilike, isNull, sql, desc, asc, inArray } from "drizzle-orm";
+import { closeAllOpenUserSessions } from "./user-sessions";
 
 export interface CreateUserData {
   system_user_id: string;
@@ -29,7 +30,6 @@ export interface CreateUserData {
 }
 
 export interface UpdateUserData {
-  /** Maps to system_users.system_user_id */
   system_user_id?: string;
   full_name?: string;
   first_name?: string;
@@ -283,7 +283,8 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   const limit = filters.limit || 20;
   const offset = (page - 1) * limit;
   
-  // Build where conditions
+  let query = db.select().from(systemUsers).$dynamic();
+    // Build where conditions
   const conditions = [];
   
   // Exclude soft-deleted users
@@ -321,20 +322,26 @@ export async function listSystemUsers(filters: UserFilters = {}) {
 
   const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
+  
+  if (sortBy === "fullName") {
+    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.fullName) : desc(systemUsers.fullName));
+  } else if (sortBy === "email") {
+    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.email) : desc(systemUsers.email));
+  } else if (sortBy === "createdAt") {
+    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.createdAt) : desc(systemUsers.createdAt));
+  } else {
+    query = query.orderBy(desc(systemUsers.createdAt));
+  }
+  
+  // Get total count for pagination
+  let countQuery = db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(systemUsers)
+    .$dynamic();
 
-  const query =
-    sortBy === "fullName"
-      ? filteredQuery.orderBy(sortOrder === "asc" ? asc(systemUsers.fullName) : desc(systemUsers.fullName))
-      : sortBy === "email"
-        ? filteredQuery.orderBy(sortOrder === "asc" ? asc(systemUsers.email) : desc(systemUsers.email))
-        : sortBy === "createdAt"
-          ? filteredQuery.orderBy(sortOrder === "asc" ? asc(systemUsers.createdAt) : desc(systemUsers.createdAt))
-          : filteredQuery.orderBy(desc(systemUsers.createdAt));
-
-  const countBase = db.select({ count: sql<number>`count(*)::int` }).from(systemUsers);
-  const countQuery =
-    conditions.length > 0 ? countBase.where(and(...conditions)) : countBase;
-
+  if (conditions.length > 0) {
+    countQuery = countQuery.where(and(...conditions));
+  }
   const [{ count: total }] = await countQuery;
   
   // Apply pagination
@@ -378,7 +385,7 @@ export async function isUserAccountActive(id: number): Promise<boolean> {
  */
 export async function updateLastLogin(id: number) {
   const db = getDb();
-  
+
   await db
     .update(systemUsers)
     .set({
@@ -388,6 +395,25 @@ export async function updateLastLogin(id: number) {
       updatedAt: new Date(),
     })
     .where(eq(systemUsers.id, id));
+}
+
+/**
+ * Insert a new row in user_sessions for this login (login_time set, logout_time null)
+ */
+export async function insertUserSession(systemUserId: number): Promise<void> {
+  const db = getDb();
+  const now = new Date();
+  await closeAllOpenUserSessions(systemUserId, now);
+  await db.insert(userSessions).values({
+    userId: systemUserId,
+    loginTime: now,
+    logoutTime: null,
+    offlineAt: null,
+    currentStatus: "online",
+    statusChangedAt: now,
+    workSeconds: 0,
+    breakSeconds: 0,
+  });
 }
 
 /**
@@ -464,10 +490,9 @@ export async function getUniqueRoles(): Promise<string[]> {
       sql`SELECT DISTINCT primary_role as role FROM system_users WHERE deleted_at IS NULL ORDER BY role`
     );
     
-    // Extract roles
-    const rows = Array.isArray(result) ? result : [];
-    const roles = rows.map((row: { role?: string }) => row.role as string).filter(Boolean);
-    
+    // Extract roles (execute() returns RowList / iterable, not node-pg { rows })
+    const rows = Array.from(result as Iterable<Record<string, unknown>>);
+    const roles = rows.map((row) => row.role as string).filter(Boolean);    
     // Sort roles alphabetically, but put SUPER_ADMIN first if it exists
     return roles.sort((a: string, b: string) => {
       if (a === "SUPER_ADMIN") return -1;

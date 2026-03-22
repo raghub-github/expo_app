@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
     // Normalize IFSC / bankName so that "not provided" is sent as NULL (not empty string)
     const ifscCode =
       payoutMethod === "bank" && body.ifsc_code
-        ? String(body.ifsc_code).trim()
+        ? String(body.ifsc_code).trim().toUpperCase()
         : null;
     const bankName =
       payoutMethod === "bank" && body.bank_name

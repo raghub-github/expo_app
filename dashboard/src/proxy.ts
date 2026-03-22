@@ -8,6 +8,33 @@ import {
   updateActivity,
   expireSession,
 } from "@/lib/auth/session-manager";
+
+/** Normalize cookie options so `sameSite` matches Next.js ResponseCookie (not plain string). */
+function setSafeResponseCookie(
+  response: NextResponse,
+  name: string,
+  value: string,
+  options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }
+) {
+  const sameSite =
+    options.sameSite === "lax" ||
+    options.sameSite === "strict" ||
+    options.sameSite === "none"
+      ? options.sameSite
+      : undefined;
+  response.cookies.set(name, value, {
+    maxAge: options.maxAge,
+    path: options.path,
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite,
+  });
+}
+
+// Throttle audit tracking per route to avoid spamming /api/audit/track.
+// Keyed by pathname + method; value is last-sent timestamp (ms).
+const auditLastSent = new Map<string, number>();
+const AUDIT_MIN_INTERVAL_MS = 5000;
 // Note: User validation is done in /api/auth/set-cookie, not in proxy
 // Proxy runs in Edge Runtime which doesn't support database connections
 
@@ -58,7 +85,15 @@ export async function proxy(request: NextRequest) {
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
               request.cookies.set(name, value);
-              response.cookies.set(name, value, options);
+              if (options) {
+                setSafeResponseCookie(response, name, value, {
+                  maxAge: options.maxAge ?? 0,
+                  path: options.path ?? "/",
+                  httpOnly: options.httpOnly,
+                  sameSite: options.sameSite as string | undefined,
+                  secure: options.secure,
+                });
+              }
             });
           },
         },
@@ -88,8 +123,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, toResponseCookieOptions(options));
-          },
+            setSafeResponseCookie(response, name, value, options);          },
         };
         updateActivity(cookieManager);
       }
@@ -106,16 +140,17 @@ export async function proxy(request: NextRequest) {
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ])) as unknown as {
-          data?: { user?: { id: string; email?: string } | null };
+        ]) as unknown as {          data?: { user?: { id: string; email?: string } | null };
           error?: { message?: string; code?: string };
         };
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
 
         if (user) {
-          session = { user: { id: user.id, email: user.email }, ...(user as object) } as unknown as typeof session;
-        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
+          session = {
+            user: { id: user.id, email: user.email },
+            ...user,
+          } as unknown as typeof session;        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
         }
@@ -186,8 +221,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, toResponseCookieOptions(options));
-          },
+            setSafeResponseCookie(response, name, value, options);          },
         };
         updateActivity(cookieManager);
       }
@@ -230,8 +264,8 @@ export async function proxy(request: NextRequest) {
       if (!validity.isValid) {
         if (debugProxy) console.log("[proxy] Session expired:", validity.reason);
         const cookieSetter = {
-          set: (name: string, value: string, options: any) => {
-            response.cookies.set(name, value, options);
+          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+            setSafeResponseCookie(response, name, value, options);
           },
         };
         expireSession(cookieSetter);
@@ -258,8 +292,8 @@ export async function proxy(request: NextRequest) {
       // Session is valid - update last activity time
       const cookieManager = {
         get: (name: string) => request.cookies.get(name),
-        set: (name: string, value: string, options: any) => {
-          response.cookies.set(name, value, options);
+        set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+          setSafeResponseCookie(response, name, value, options);
         },
       };
       updateActivity(cookieManager);
@@ -270,7 +304,7 @@ export async function proxy(request: NextRequest) {
         !pathname.startsWith("/_next") &&
         !pathname.startsWith("/favicon.ico");
 
-      if (shouldTrack) {
+      if (shouldTrack && process.env.NODE_ENV !== "development") {
         const isApiRequest = pathname.startsWith("/api/");
         const actionType = (() => {
           switch (request.method.toUpperCase()) {
@@ -302,40 +336,48 @@ export async function proxy(request: NextRequest) {
 
         const dashboardType = resolveDashboardType(pathname);
 
-        // Fire-and-forget audit tracking
-        // Don't block the request if audit tracking fails or times out
-        fetch(new URL("/api/audit/track", request.url), {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            cookie: request.headers.get("cookie") || "",
-            "x-forwarded-for": request.headers.get("x-forwarded-for") || "",
-            "user-agent": request.headers.get("user-agent") || "",
-          },
-          body: JSON.stringify({
-            eventType: isApiRequest ? "API_CALL" : "PAGE_VIEW",
-            dashboardType,
-            actionType,
-            resourceType: isApiRequest ? "API" : "PAGE",
-            resourceId: pathname,
-            actionDetails: {
-              path: pathname,
-              method: request.method,
+        const throttleKey = `${pathname}:${request.method}`;
+        const now = Date.now();
+        const last = auditLastSent.get(throttleKey) ?? 0;
+
+        if (now - last >= AUDIT_MIN_INTERVAL_MS) {
+          auditLastSent.set(throttleKey, now);
+
+          // Fire-and-forget audit tracking
+          // Don't block the request if audit tracking fails or times out
+          fetch(new URL("/api/audit/track", request.url), {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              cookie: request.headers.get("cookie") || "",
+              "x-forwarded-for": request.headers.get("x-forwarded-for") || "",
+              "user-agent": request.headers.get("user-agent") || "",
             },
-            requestPath: pathname,
-            requestMethod: request.method,
-          }),
-        }).catch((error) => {
-          // Silently ignore timeout, network, and fetch failures - audit tracking should never block requests
-          // Edge/sandbox can fail with "fetch failed" for same-origin calls; don't log these
-          const isExpected =
-            error.name === "HeadersTimeoutError" ||
-            error.message?.includes("timeout") ||
-            error.message?.includes("fetch failed");
-          if (!isExpected) {
-            console.error("[proxy] Audit tracking failed:", error);
-          }
-        });
+            body: JSON.stringify({
+              eventType: isApiRequest ? "API_CALL" : "PAGE_VIEW",
+              dashboardType,
+              actionType,
+              resourceType: isApiRequest ? "API" : "PAGE",
+              resourceId: pathname,
+              actionDetails: {
+                path: pathname,
+                method: request.method,
+              },
+              requestPath: pathname,
+              requestMethod: request.method,
+            }),
+          }).catch((error) => {
+            // Silently ignore timeout, network, and fetch failures - audit tracking should never block requests
+            // Edge/sandbox can fail with "fetch failed" for same-origin calls; don't log these
+            const isExpected =
+              error.name === "HeadersTimeoutError" ||
+              error.message?.includes("timeout") ||
+              error.message?.includes("fetch failed");
+            if (!isExpected) {
+              console.error("[proxy] Audit tracking failed:", error);
+            }
+          });
+        }
       }
     }
 

@@ -1,7 +1,7 @@
 'use client';
 
 import Image from "next/image";
-import { useSessionQuery } from "@/hooks/queries/useAuthQuery";
+import { useAuthOptional } from "@/providers/AuthProvider";
 import { getUserInitials } from "@/lib/user-avatar";
 
 interface OrderHeaderProps {
@@ -10,14 +10,21 @@ interface OrderHeaderProps {
 }
 
 export default function OrderHeader({ forceSkeleton = false }: OrderHeaderProps) {
-  const { data, isLoading } = useSessionQuery();
-  const email = data?.session?.user?.email ?? null;
-  const name = (data as any)?.session?.user?.full_name ?? null;
+  const auth = useAuthOptional();
+  const authUser = auth?.user ?? null;
+  const authReady = auth?.authReady ?? false;
+  const email = authUser?.email ?? null;
+  const name =
+    (authUser as any)?.full_name ??
+    (authUser as any)?.user_metadata?.full_name ??
+    (authUser as any)?.user_metadata?.name ??
+    null;
 
   const displayEmail = email ?? "—";
   const initials = getUserInitials(name, email);
+  const displayName = name ?? displayEmail;
 
-  const showSkeleton = forceSkeleton || (isLoading && !data);
+  const showSkeleton = forceSkeleton || (!authReady && !email);
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur shadow-[0_1px_4px_rgba(15,23,42,0.08)]">
@@ -52,7 +59,7 @@ export default function OrderHeader({ forceSkeleton = false }: OrderHeaderProps)
                 {initials}
               </div>
               <p className="max-w-[180px] truncate text-[11px] font-medium text-slate-600 sm:max-w-[220px] sm:text-xs text-right">
-                {displayEmail}
+                {displayName}
               </p>
             </>
           )}

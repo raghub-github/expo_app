@@ -373,14 +373,12 @@ export async function DELETE(
     `) as { id: number; r2_key: string | null }[];
 
     await sql.begin(async (trx) => {
-      // postgres types: TransactionSql omits Sql call signatures; double-cast for strict TS
-      const trxSql = trx as unknown as typeof sql;
-      await trxSql`
+      const run = trx as unknown as typeof sql;
+      await run`
         DELETE FROM merchant_menu_item_images
         WHERE menu_item_id = ${menuItemId}
       `;
-      await trxSql`
-        DELETE FROM merchant_menu_items
+      await run`        DELETE FROM merchant_menu_items
         WHERE id = ${menuItemId} AND store_id = ${storeId}
       `;
     });

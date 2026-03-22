@@ -483,6 +483,13 @@ export const systemUserStatusEnum = pgEnum("system_user_status", [
   "LOCKED",
 ]);
 
+export const userLiveStatusEnum = pgEnum("user_live_status", [
+  "online",
+  "offline",
+  "break",
+  "emergency",
+]);
+
 export const areaManagerTypeEnum = pgEnum("area_manager_type", [
   "MERCHANT",
   "RIDER",
@@ -560,6 +567,38 @@ export const systemUsers = pgTable(
     primaryRoleIdx: index("system_users_primary_role_idx").on(table.primaryRole),
     statusIdx: index("system_users_status_idx").on(table.status),
     reportsToIdx: index("system_users_reports_to_idx").on(table.reportsToId),
+  })
+);
+
+/**
+ * User sessions - Login/logout and live status per session (dashboard agents)
+ */
+export const userSessions = pgTable(
+  "user_sessions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: bigint("user_id", { mode: "number" })
+      .notNull()
+      .references(() => systemUsers.id, { onDelete: "cascade" }),
+    loginTime: timestamp("login_time", { withTimezone: true }).notNull(),
+    logoutTime: timestamp("logout_time", { withTimezone: true }),
+    offlineAt: timestamp("offline_at", { withTimezone: true }),
+    currentStatus: userLiveStatusEnum("current_status").notNull().default("online"),
+    statusChangedAt: timestamp("status_changed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    workSeconds: integer("work_seconds").notNull().default(0),
+    breakSeconds: integer("break_seconds").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    userIdIdx: index("user_sessions_user_id_idx").on(table.userId),
+    loginTimeIdx: index("user_sessions_login_time_idx").on(table.loginTime),
   })
 );
 
@@ -814,6 +853,14 @@ export type DashboardType =
   | "ORDER_PERSON_RIDE"
   | "ORDER_PARCEL"
   | "TICKET" // Ticket dashboard (all tickets with granular access control)
+  | "TICKET_FOOD"
+  | "TICKET_PARCEL"
+  | "TICKET_PERSON_RIDE"
+  | "TICKET_GENERAL"
+  | "TICKET_CUSTOMER_FOOD"
+  | "TICKET_CUSTOMER_PARCEL"
+  | "TICKET_CUSTOMER_PERSON_RIDE"
+  | "TICKET_CUSTOMER_GENERAL"
   | "OFFER"
   | "AREA_MANAGER"
   | "PAYMENT"

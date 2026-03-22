@@ -321,6 +321,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     requestMethod?: string;
   }) => {
     try {
+      if (process.env.NODE_ENV === "development") return;
       if (typeof window === "undefined") return;
       void fetch("/api/audit/track", {
         method: "POST",
@@ -810,8 +811,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         has_customizations: customizations.length > 0,
         has_addons: customizations.some(
           (c: { addons?: { length?: number }[] }) => (c.addons?.length ?? 0) > 0
-        ),
-        has_variants: variants.length > 0,
+        ),        has_variants: variants.length > 0,
         is_popular: data.is_popular ?? false,
         is_recommended: data.is_recommended ?? false,
         preparation_time_minutes: data.preparation_time_minutes ?? 15,
@@ -2612,8 +2612,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               setAddImageValidationError("");
               setAddImageValidating(false);
               addImagePendingFileRef.current = null;
-            }}
-          >
+            }}          >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
                 key={addModalKey}
@@ -2666,8 +2665,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               setEditImageValidationError("");
               setEditImageValidating(false);
               editImagePendingFileRef.current = null;
-            }}
-          >
+            }}          >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
                 isEdit

@@ -68,13 +68,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 });
     }
 
-    const { data: parent } = await db
-      .from('merchant_parents')
-      .select('parent_merchant_id')
-      .eq('id', store.parent_id)
-      .maybeSingle();
-    const parentCode = (parent as { parent_merchant_id?: string } | null)?.parent_merchant_id ?? (store.parent_id != null ? String(store.parent_id) : null);
-    const offersPath = getOffersR2Path(storeId.trim(), parentCode);
+    const offersPath = getOffersR2Path(storeId.trim(), String(store.parent_id));
 
     // One image per offer: delete any existing object for this offer (same key prefix)
     const existingKeys = await listR2KeysByPrefix(offersPath, 50);

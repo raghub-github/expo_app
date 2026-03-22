@@ -41,8 +41,7 @@ async function fetchMerchantOffers(filters: MerchantOffersFilters): Promise<{ of
 
 export function useMerchantOffersQuery(filters: MerchantOffersFilters) {
   return useQuery({
-    queryKey: queryKeys.offers.merchant.list(filters as Record<string, unknown>),
-    queryFn: () => fetchMerchantOffers(filters),
+    queryKey: queryKeys.offers.merchant.list(filters as unknown as Record<string, unknown>),    queryFn: () => fetchMerchantOffers(filters),
   });
 }
 

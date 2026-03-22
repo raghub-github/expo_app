@@ -80,8 +80,7 @@ export async function GET(
         ORDER BY ut.created_at DESC
         LIMIT 100
       `;
-      rows = result as unknown as OrderTicketRow[];
-    } catch (e) {
+      rows = result as unknown as Row[];    } catch (e) {
       console.error("[GET /api/orders/[orderId]/tickets] Query error:", e);
       return NextResponse.json(
         { success: false, error: "Failed to fetch tickets" },

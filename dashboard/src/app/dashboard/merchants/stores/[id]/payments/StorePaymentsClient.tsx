@@ -37,6 +37,7 @@ import {
   useLazyGetPayoutQuoteQuery,
   useCreatePayoutRequestMutation,
 } from "@/store/api/merchantStoreApi";
+import { useMerchantWalletRequestsSummaryQuery } from "@/hooks/queries/useMerchantWalletRequestsSummaryQuery";
 
 const LEDGER_CATEGORIES = [
   "ORDER_EARNING",
@@ -198,6 +199,8 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   } = useGetStoreWalletQuery(storeId, {
     skip: !storeId,
   });
+
+  const { data: walletRequestsSummaryData } = useMerchantWalletRequestsSummaryQuery(storeId);
 
   const {
     data: ledgerQueryData,
@@ -845,7 +848,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
         </div>
 
         {/* Wallet adjustment requests */}
-        <WalletRequestsSection storeId={storeId} />
+        <WalletRequestsSection storeId={storeId} summaryCounts={walletRequestsSummaryData?.counts ?? null} />
 
         {/* Filters + Ledger */}
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
@@ -1366,81 +1369,81 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               </div>
               {(() => {
                 const amt = parseFloat(withdrawalAmount);
-                if (payoutQuoteLoading && !Number.isNaN(amt) && amt >= 100) {
-                  return (
+                if (payoutQuoteLoading && amt >= 100) {                  return (
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center gap-2 text-slate-600 text-sm">
                       <Loader2 size={18} className="animate-spin" />
                       Calculating...
                     </div>
                   );
                 }
-                if (payoutQuote == null || Number.isNaN(amt) || amt < 100) return null;
-                const quote = payoutQuote as NonNullable<typeof payoutQuote>;
+                if (payoutQuote == null || isNaN(amt) || amt < 100) {
+                  return null;
+                }
+                const q = payoutQuote as NonNullable<typeof payoutQuote>;
                 return (
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
-                    <p className="text-sm font-medium text-slate-700">
-                      Withdrawal calculation
-                    </p>
-                    <div className="flex justify-between text-sm text-slate-600">
-                      <span>Requested amount (gross)</span>
-                      <span className="tabular-nums">
-                        ₹
-                        {quote.requested_amount.toLocaleString("en-IN", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-sm text-slate-600">
-                      <span>Commission ({quote.commission_percentage}%)</span>
-                      <span className="tabular-nums text-amber-600">
-                        −₹
-                        {(quote.commission_amount ?? 0).toLocaleString("en-IN", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-sm text-slate-600">
-                      <span>
-                        GST on Commission (
-                        {quote.gst_on_commission_percent ?? 18}%)
-                      </span>
-                      <span className="tabular-nums text-amber-600">
-                        −₹
-                        {(quote.gst_on_commission ?? quote.tax_amount ?? 0).toLocaleString(
-                          "en-IN",
-                          { minimumFractionDigits: 2, maximumFractionDigits: 2 }
-                        )}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-sm text-slate-600">
-                      <span>TDS</span>
-                      <span className="tabular-nums">
-                        {(quote.tds_amount ?? 0) > 0
-                          ? `−₹${(quote.tds_amount ?? 0).toLocaleString("en-IN", {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}`
-                          : "—"}
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-sm text-slate-600">
-                      <span>TCS</span>
-                      <span className="tabular-nums">—</span>
-                    </div>
-                    <div className="flex justify-between text-sm font-semibold text-slate-800 pt-2 border-t border-slate-200">
-                      <span>You receive (net payout)</span>
-                      <span className="tabular-nums text-emerald-600">
-                        ₹
-                        {quote.net_payout_amount.toLocaleString("en-IN", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </div>
-                  </div>
-                );
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+                      <p className="text-sm font-medium text-slate-700">
+                        Withdrawal calculation
+                      </p>
+                      <div className="flex justify-between text-sm text-slate-600">
+                        <span>Requested amount (gross)</span>
+                        <span className="tabular-nums">
+                          ₹
+                          {q.requested_amount.toLocaleString("en-IN", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm text-slate-600">
+                        <span>Commission ({q.commission_percentage}%)</span>
+                        <span className="tabular-nums text-amber-600">
+                          −₹
+                          {(q.commission_amount ?? 0).toLocaleString("en-IN", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm text-slate-600">
+                        <span>
+                          GST on Commission (
+                          {q.gst_on_commission_percent ?? 18}%)
+                        </span>
+                        <span className="tabular-nums text-amber-600">
+                          −₹
+                          {(q.gst_on_commission ?? q.tax_amount ?? 0).toLocaleString(
+                            "en-IN",
+                            { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm text-slate-600">
+                        <span>TDS</span>
+                        <span className="tabular-nums">
+                          {(q.tds_amount ?? 0) > 0
+                            ? `−₹${(q.tds_amount ?? 0).toLocaleString("en-IN", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}`
+                            : "—"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm text-slate-600">
+                        <span>TCS</span>
+                        <span className="tabular-nums">—</span>
+                      </div>
+                      <div className="flex justify-between text-sm font-semibold text-slate-800 pt-2 border-t border-slate-200">
+                        <span>You receive (net payout)</span>
+                        <span className="tabular-nums text-emerald-600">
+                          ₹
+                          {q.net_payout_amount.toLocaleString("en-IN", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                      </div>
+                    </div>                );
               })()}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">

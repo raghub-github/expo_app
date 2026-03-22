@@ -11,8 +11,10 @@
  */
 
 import { getDb, getSql } from "../db/client";
-import { eq, and, isNull, sql } from "drizzle-orm";
+import { eq, and, isNull, sql, type InferSelectModel } from "drizzle-orm";
 import { systemUsers } from "../db/schema";
+
+type SystemUserRow = InferSelectModel<typeof systemUsers>;
 
 export interface SystemUser {
   id: number;
@@ -108,18 +110,15 @@ export async function getSystemUserByEmail(
           if (!Number.isFinite(numericId)) {
             result = [];
           } else {
-            result = [
-              {
-                id: numericId,
-                system_user_id: row.system_user_id,
-                email: row.email,
-                mobile: row.mobile,
-                full_name: row.full_name,
-                primary_role: row.primary_role,
-                status: row.status,
-              },
-            ] as unknown as typeof result;
-          }
+            result = [{
+              id: numericId,
+              system_user_id: row.system_user_id,
+              email: row.email,
+              mobile: row.mobile,
+              full_name: row.full_name,
+              primary_role: row.primary_role as SystemUserRow["primaryRole"],
+              status: row.status as SystemUserRow["status"],
+            }];          }
         }
       } catch {
         // Ignore raw fallback errors; result stays empty

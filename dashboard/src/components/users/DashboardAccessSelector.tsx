@@ -260,6 +260,150 @@ export const DASHBOARD_DEFINITIONS: Record<
       },
     ],
   },
+  TICKET_FOOD: {
+    label: "Tickets — Food",
+    description: "Food service tickets (all ticket types for the food vertical).",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_FOOD",
+        label: "View Food Tickets",
+        description: "View food-related tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_FOOD",
+        label: "Food Ticket Actions",
+        description: "Act on food tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_PARCEL: {
+    label: "Tickets — Parcel",
+    description: "Parcel service tickets.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_PARCEL",
+        label: "View Parcel Tickets",
+        description: "View parcel-related tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_PARCEL",
+        label: "Parcel Ticket Actions",
+        description: "Act on parcel tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_PERSON_RIDE: {
+    label: "Tickets — Person ride",
+    description: "Person ride service tickets.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_PERSON_RIDE",
+        label: "View Person Ride Tickets",
+        description: "View person ride tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_PERSON_RIDE",
+        label: "Person Ride Ticket Actions",
+        description: "Act on person ride tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_GENERAL: {
+    label: "Tickets — General",
+    description: "General / uncategorized ticket access.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_FOOD",
+        label: "View Tickets",
+        description: "View tickets (general bucket)",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_FOOD",
+        label: "Ticket Actions",
+        description: "Act on tickets (general bucket)",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_CUSTOMER_FOOD: {
+    label: "Customer tickets — Food",
+    description: "Customer-submitted food tickets.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_FOOD",
+        label: "View Customer Food Tickets",
+        description: "View customer food tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_FOOD",
+        label: "Customer Food Ticket Actions",
+        description: "Act on customer food tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_CUSTOMER_PARCEL: {
+    label: "Customer tickets — Parcel",
+    description: "Customer-submitted parcel tickets.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_PARCEL",
+        label: "View Customer Parcel Tickets",
+        description: "View customer parcel tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_PARCEL",
+        label: "Customer Parcel Ticket Actions",
+        description: "Act on customer parcel tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_CUSTOMER_PERSON_RIDE: {
+    label: "Customer tickets — Person ride",
+    description: "Customer-submitted person ride tickets.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_PERSON_RIDE",
+        label: "View Customer Person Ride Tickets",
+        description: "View customer person ride tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_PERSON_RIDE",
+        label: "Customer Person Ride Ticket Actions",
+        description: "Act on customer person ride tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
+  TICKET_CUSTOMER_GENERAL: {
+    label: "Customer tickets — General",
+    description: "Customer-submitted general tickets.",
+    accessPoints: [
+      {
+        group: "TICKET_VIEW_FOOD",
+        label: "View Customer Tickets",
+        description: "View general customer tickets",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_ACTIONS_FOOD",
+        label: "Customer Ticket Actions",
+        description: "Act on general customer tickets",
+        allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
+      },
+    ],
+  },
   OFFER: {
     label: "Offer Dashboard",
     description: "Manage offers for rider, customer, and merchant apps",

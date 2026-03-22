@@ -15,7 +15,6 @@ import { useToast } from "@/context/ToastContext";
 import { usePermission } from "@/hooks/usePermission";
 import {
   useGetWalletRequestsQuery,
-  useGetWalletRequestsSummaryQuery,
   useCreateWalletRequestMutation,
   useUpdateWalletRequestStatusMutation,
   type WalletRequestRow,
@@ -32,9 +31,11 @@ function hasAdminRole(roles: unknown): boolean {
 
 export function WalletRequestsSection({
   storeId,
+  summaryCounts,
   onRequestCreated,
 }: {
   storeId: string;
+  summaryCounts?: Record<string, number> | null;
   onRequestCreated?: () => void;
 }) {
   const { toast } = useToast();
@@ -65,9 +66,7 @@ export function WalletRequestsSection({
     }
   );
 
-  const { data: summaryData } = useGetWalletRequestsSummaryQuery(storeId, {
-    skip: !storeId,
-  });
+  const pendingCountFromSummary = summaryCounts?.PENDING ?? 0;
 
   const [createRequest, { isLoading: createLoading }] = useCreateWalletRequestMutation();
   const [updateStatus] = useUpdateWalletRequestStatusMutation();
@@ -76,7 +75,6 @@ export function WalletRequestsSection({
   const total = listData?.total ?? 0;
   const loading = listLoading || listFetching;
 
-  const pendingCountFromSummary = summaryData?.counts?.PENDING ?? 0;
   const pendingCount =
     pendingCountFromSummary || requests.filter((r) => r.status === "PENDING").length;
 
@@ -98,8 +96,7 @@ export function WalletRequestsSection({
         direction: formDirection,
         amount,
         reason,
-        order_id: orderId != null && Number.isFinite(orderId) ? orderId : undefined,
-      }).unwrap();
+        order_id: typeof orderId === "number" && Number.isFinite(orderId) ? orderId : undefined,      }).unwrap();
       if (res.success) {
         toast("Request submitted");
         setFormAmount("");

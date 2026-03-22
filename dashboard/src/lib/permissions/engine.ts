@@ -478,13 +478,12 @@ export async function getUserDashboardAccess(systemUserId: number): Promise<Dash
         )
       );
     
-    return result.map(row => ({
+    return result.map((row) => ({
       id: row.id,
       systemUserId: row.systemUserId,
       dashboardType: row.dashboardType,
       accessLevel: row.accessLevel,
-      isActive: row.isActive ?? false,
-      grantedBy: row.grantedBy,
+      isActive: row.isActive === true,      grantedBy: row.grantedBy,
       grantedByName: row.grantedByName || undefined,
       grantedAt: row.grantedAt,
     }));
@@ -543,7 +542,7 @@ export async function getUserAccessPoints(
         )
       );
     
-    return result.map(row => ({
+    return result.map((row) => ({
       id: row.id,
       systemUserId: row.systemUserId,
       dashboardType: row.dashboardType,
@@ -552,8 +551,7 @@ export async function getUserAccessPoints(
       accessPointDescription: row.accessPointDescription || undefined,
       allowedActions: (row.allowedActions as string[]) || [],
       context: (row.context as Record<string, any>) || undefined,
-      isActive: row.isActive ?? false,
-    }));
+      isActive: row.isActive === true,    }));
   } catch (error) {
     console.error("Error fetching access points:", error);
     return [];

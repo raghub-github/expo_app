@@ -425,10 +425,7 @@ export function RiderPenaltiesClient() {
           rider ? (
             <button
               type="button"
-              onClick={() => {
-                void refetchPenalties();
-              }}
-              disabled={loading}
+              onClick={() => void refetchPenalties()}              disabled={loading}
               className="p-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 shrink-0"
               title="Refresh penalties"
               aria-label="Refresh penalties"
@@ -591,10 +588,7 @@ export function RiderPenaltiesClient() {
                               key={p.id}
                               penalty={p}
                               riderId={rider.id}
-                              onReverted={() => {
-                                void refetchPenalties();
-                              }}
-                              revertingId={revertingId}
+                              onReverted={() => void refetchPenalties()}                              revertingId={revertingId}
                               onRevert={openRevertModal}
                               canRevert={canRevertForService(p.serviceType ?? "parcel")}
                             />

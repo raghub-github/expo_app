@@ -128,14 +128,13 @@ function RiderDashboardLayoutInner({
 
 export default function RiderDashboardLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <Suspense
       fallback={
-        <div className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen bg-[var(--background)] flex items-center justify-center`}>
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+        <div
+          className={`${geistSans.variable} ${geistMono.variable} antialiased bg-[var(--background)] text-[var(--foreground)] flex min-h-screen items-center justify-center`}
+        >          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
         </div>
       }
     >

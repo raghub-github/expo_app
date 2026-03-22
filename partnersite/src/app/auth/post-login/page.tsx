@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { Store, Loader2, User, Building2, ChevronRight, LogOut } from "lucide-react";
 import Link from "next/link";
 import LogoutConfirmModal from "@/components/LogoutConfirmModal";
+import { StoreVerificationRejectionsBadge } from "@/components/partner/StoreVerificationRejectionsBadge";
+import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
 
 type StoreItem = {
   store_id: string;
@@ -16,6 +18,7 @@ type StoreItem = {
   current_onboarding_step?: number | null;
   onboarding_completed?: boolean | null;
   payment_status?: "pending" | "completed";
+  verification_step_rejections?: PartnerVerificationStepRejection[];
 };
 
 type ResolveData = {
@@ -37,6 +40,8 @@ export default function PostLoginPage() {
   const [data, setData] = useState<ResolveData | null>(null);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [verificationSubmittedBanner, setVerificationSubmittedBanner] = useState(false);
+  const [highlightStorePublicId, setHighlightStorePublicId] = useState<string | null>(null);
 
   const resolveSession = useCallback(async () => {
     setStatus("loading");
@@ -84,6 +89,19 @@ export default function PostLoginPage() {
     resolveSession();
   }, [resolveSession]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const u = new URL(window.location.href);
+    if (u.searchParams.get("verification_updates_submitted") !== "1") return;
+    setVerificationSubmittedBanner(true);
+    const hi = u.searchParams.get("highlight_store")?.trim();
+    if (hi) setHighlightStorePublicId(hi);
+    u.searchParams.delete("verification_updates_submitted");
+    u.searchParams.delete("highlight_store");
+    const qs = u.searchParams.toString();
+    window.history.replaceState({}, "", `${u.pathname}${qs ? `?${qs}` : ""}`);
+  }, []);
+
   const goToDashboard = (storeId: string) => {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem("selectedStoreId", storeId);
@@ -93,8 +111,15 @@ export default function PostLoginPage() {
 
   const goToOnboarding = (storeId?: string) => {
     const parentId = data?.parentId ?? data?.onboardingProgress?.parent_id ?? 0;
+    const store =
+      storeId && data?.stores ? data.stores.find((s) => s.store_id === storeId) : undefined;
+    const rej = store?.verification_step_rejections;
+    const fixParam =
+      Array.isArray(rej) && rej.length > 0
+        ? `&verification_fix_step=${Math.min(...rej.map((r) => Number(r.step_number)))}`
+        : "";
     const query = storeId
-      ? `?parent_id=${parentId}&store_id=${encodeURIComponent(storeId)}`
+      ? `?parent_id=${parentId}&store_id=${encodeURIComponent(storeId)}${fixParam}`
       : `?parent_id=${parentId}`;
     router.push(`/auth/register-store${query}`);
   };
@@ -185,6 +210,23 @@ export default function PostLoginPage() {
 
       <main className="flex-1 px-3 sm:px-4 md:px-6 py-4 sm:py-6 overflow-auto">
         <div className="mx-auto max-w-5xl space-y-4 sm:space-y-5">
+          {verificationSubmittedBanner && (
+            <div
+              className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+              role="status"
+            >
+              <p className="leading-relaxed pr-2">
+                Your updates have been successfully submitted. Our team will review and verify them shortly.
+              </p>
+              <button
+                type="button"
+                onClick={() => setVerificationSubmittedBanner(false)}
+                className="shrink-0 self-end sm:self-start rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {/* Compact parent details */}
           <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
@@ -248,7 +290,7 @@ export default function PostLoginPage() {
               <>
                 {/* Desktop: table */}
                 <div className="hidden sm:block overflow-x-auto">
-                  <table className="w-full min-w-[600px] text-sm">
+                  <table className="w-full min-w-[720px] text-sm">
                     <thead>
                       <tr className="border-b border-slate-200 bg-slate-50/80">
                         <th className="text-left py-3 px-3 sm:px-4 font-semibold text-slate-700">Store</th>
@@ -263,39 +305,74 @@ export default function PostLoginPage() {
                       {stores.map((store) => {
                         const badge = getStatusBadge(store.approval_status);
                         const isApproved = store.approval_status === "APPROVED";
+                        const hasStepRejections =
+                          Array.isArray(store.verification_step_rejections) &&
+                          store.verification_step_rejections.length > 0;
                         const canContinueOnboarding =
                           !isApproved &&
-                          (((store.approval_status || "").toUpperCase() === "DRAFT") ||
+                          (hasStepRejections ||
+                            ((store.approval_status || "").toUpperCase() === "DRAFT") ||
                             ((store.approval_status || "").toUpperCase() === "REJECTED") ||
                             (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
                         const step = typeof store.current_onboarding_step === "number"
                           ? Math.min(Math.max(store.current_onboarding_step, 1), 9)
                           : null;
+                        const anyResubmitted =
+                          hasStepRejections &&
+                          (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
+                        const isHighlighted =
+                          !!highlightStorePublicId && store.store_id === highlightStorePublicId;
                         return (
-                          <tr key={store.store_id} className="border-b border-slate-100 hover:bg-slate-50/50">
-                            <td className="py-3 px-3 sm:px-4">
-                              <p className="font-medium text-slate-900">{store.store_name || "Unnamed store"}</p>
-                              <p className="text-xs text-slate-500 font-mono">{store.store_id}</p>
+                          <tr
+                            key={store.store_id}
+                            className={`border-b border-slate-100 hover:bg-slate-50/50 ${
+                              isHighlighted ? "bg-emerald-50/90 ring-2 ring-emerald-200 ring-inset" : ""
+                            }`}
+                          >
+                            <td className="py-3 px-3 sm:px-4 align-top">
+                              <div className="space-y-1">
+                                <p className="font-medium text-slate-900">{store.store_name || "Unnamed store"}</p>
+                                <p className="text-xs text-slate-500 font-mono">{store.store_id}</p>
+                              </div>
                             </td>
-                            <td className="py-3 px-3 sm:px-4 text-slate-600 max-w-[180px] truncate" title={store.full_address ?? undefined}>
+                            <td className="py-3 px-3 sm:px-4 text-slate-600 max-w-[180px] truncate align-top" title={store.full_address ?? undefined}>
                               {store.full_address || "—"}
                             </td>
-                            <td className="py-3 px-3 sm:px-4">
-                              <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${badge.className}`}>
-                                {badge.label}
-                              </span>
+                            <td className="py-3 px-3 sm:px-4 align-top">
+                              <div className="flex max-w-[260px] flex-col gap-1.5">
+                                <span
+                                  className={`inline-flex w-fit shrink-0 text-xs font-medium px-2 py-0.5 rounded-full ${
+                                    hasStepRejections ? `${badge.className} ring-2 ring-red-200/80` : badge.className
+                                  }`}
+                                  title={
+                                    hasStepRejections
+                                      ? "Some onboarding steps need correction — tap for details"
+                                      : undefined
+                                  }
+                                >
+                                  {badge.label}
+                                </span>
+                                {hasStepRejections && (
+                                  <StoreVerificationRejectionsBadge
+                                    rejections={store.verification_step_rejections}
+                                    variant="inline"
+                                    hideInlineResubmittedChip={anyResubmitted}
+                                    className="max-w-full"
+                                  />
+                                )}
+                              </div>
                             </td>
-                            <td className="py-3 px-3 sm:px-4">
+                            <td className="py-3 px-3 sm:px-4 align-top">
                               <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${
                                 store.payment_status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
                               }`}>
                                 {store.payment_status === "completed" ? "Completed" : "Pending"}
                               </span>
                             </td>
-                            <td className="py-3 px-3 sm:px-4 text-slate-600">
+                            <td className="py-3 px-3 sm:px-4 text-slate-600 align-top">
                               {step != null ? `${step} / 9` : "—"}
                             </td>
-                            <td className="py-3 px-3 sm:px-4 text-right">
+                            <td className="py-3 px-3 sm:px-4 text-right align-top">
                               {isApproved ? (
                                 <button
                                   type="button"
@@ -306,14 +383,23 @@ export default function PostLoginPage() {
                                   <ChevronRight className="h-4 w-4" />
                                 </button>
                               ) : canContinueOnboarding ? (
-                                <button
-                                  type="button"
-                                  onClick={() => goToOnboarding(store.store_id)}
-                                  className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-                                >
-                                  Continue
-                                  <ChevronRight className="h-4 w-4" />
-                                </button>
+                                anyResubmitted && hasStepRejections ? (
+                                  <span
+                                    className="inline-flex items-center justify-center rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 cursor-default select-none"
+                                    title="Awaiting team review"
+                                  >
+                                    Resubmitted
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => goToOnboarding(store.store_id)}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                                  >
+                                    {hasStepRejections ? "Review & fix" : "Continue"}
+                                    <ChevronRight className="h-4 w-4" />
+                                  </button>
+                                )
                               ) : (
                                 <span className="text-xs text-slate-500">Awaiting verification</span>
                               )}
@@ -330,26 +416,49 @@ export default function PostLoginPage() {
                   {stores.map((store) => {
                     const badge = getStatusBadge(store.approval_status);
                     const isApproved = store.approval_status === "APPROVED";
+                    const hasStepRejections =
+                      Array.isArray(store.verification_step_rejections) &&
+                      store.verification_step_rejections.length > 0;
                     const canContinueOnboarding =
                       !isApproved &&
-                      (((store.approval_status || "").toUpperCase() === "DRAFT") ||
+                      (hasStepRejections ||
+                        ((store.approval_status || "").toUpperCase() === "DRAFT") ||
                         ((store.approval_status || "").toUpperCase() === "REJECTED") ||
                         (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
                     const step = typeof store.current_onboarding_step === "number"
                       ? Math.min(Math.max(store.current_onboarding_step, 1), 9)
                       : null;
+                    const anyResubmitted =
+                      hasStepRejections &&
+                      (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
+                    const isHighlighted =
+                      !!highlightStorePublicId && store.store_id === highlightStorePublicId;
                     return (
-                      <div key={store.store_id} className="p-3 flex flex-col gap-2">
+                      <div
+                        key={store.store_id}
+                        className={`p-3 flex flex-col gap-2 ${
+                          isHighlighted ? "bg-emerald-50/90 ring-2 ring-emerald-200 ring-inset -mx-0" : ""
+                        }`}
+                      >
                         <div className="flex justify-between items-start gap-2">
                           <div className="min-w-0">
                             <p className="font-medium text-slate-900 truncate">{store.store_name || "Unnamed store"}</p>
-                            <p className="text-xs text-slate-500 font-mono">{store.store_id}</p>
+                            <p className="text-xs text-slate-500 font-mono mt-0.5">{store.store_id}</p>
                             {store.full_address && (
                               <p className="text-xs text-slate-600 truncate mt-0.5">{store.full_address}</p>
                             )}
                           </div>
                           <div className="shrink-0 flex flex-col items-end gap-1">
-                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${badge.className}`}>
+                            <span
+                              className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                hasStepRejections ? `${badge.className} ring-2 ring-red-200/80` : badge.className
+                              }`}
+                              title={
+                                hasStepRejections
+                                  ? "Some onboarding steps need correction"
+                                  : undefined
+                              }
+                            >
                               {badge.label}
                             </span>
                             <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
@@ -359,6 +468,14 @@ export default function PostLoginPage() {
                             </span>
                           </div>
                         </div>
+                        {hasStepRejections && (
+                          <StoreVerificationRejectionsBadge
+                            rejections={store.verification_step_rejections}
+                            variant="inline"
+                            hideInlineResubmittedChip={anyResubmitted}
+                            className="max-w-full"
+                          />
+                        )}
                         <div className="flex items-center justify-between gap-2">
                           {step != null && (
                             <span className="text-xs text-slate-500">Step {step} / 9</span>
@@ -374,14 +491,23 @@ export default function PostLoginPage() {
                                 <ChevronRight className="h-4 w-4" />
                               </button>
                             ) : canContinueOnboarding ? (
-                              <button
-                                type="button"
-                                onClick={() => goToOnboarding(store.store_id)}
-                                className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
-                              >
-                                Continue
-                                <ChevronRight className="h-4 w-4" />
-                              </button>
+                              anyResubmitted && hasStepRejections ? (
+                                <span
+                                  className="flex items-center justify-center rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 cursor-default select-none"
+                                  title="Awaiting team review"
+                                >
+                                  Resubmitted
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => goToOnboarding(store.store_id)}
+                                  className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+                                >
+                                  {hasStepRejections ? "Review & fix" : "Continue"}
+                                  <ChevronRight className="h-4 w-4" />
+                                </button>
+                              )
                             ) : (
                               <span className="text-xs text-slate-500">Awaiting verification</span>
                             )}

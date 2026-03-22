@@ -60,13 +60,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 });
     }
 
-    const { data: parent } = await db
-      .from('merchant_parents')
-      .select('parent_merchant_id')
-      .eq('id', store.parent_id)
-      .maybeSingle();
-    const parentMerchantCode = (parent as { parent_merchant_id?: string } | null)?.parent_merchant_id || (store.parent_id != null ? String(store.parent_id) : null);
-    const menuDir = getMerchantMenuPath(storeId.trim(), parentMerchantCode);
+    const menuDir = getMerchantMenuPath(storeId.trim(), String(store.parent_id));
     const ext = (file.name && /\.([a-zA-Z0-9]+)$/.exec(file.name)?.[1]) || 'jpg';
     const safeExt = ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase();
     const uniqueName = `menu_${Date.now()}_${Math.random().toString(36).slice(2, 10)}.${safeExt}`;

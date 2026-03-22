@@ -74,6 +74,12 @@ export async function POST(request: NextRequest) {
         { status: 403 }
       );
     }
+    if (!user.email) {
+      return NextResponse.json(
+        { success: false, error: "Account email is required" },
+        { status: 400 }
+      );
+    }
 
     const body = await request.json();
     const { name, city, latitude, longitude, address } = body;
@@ -189,48 +195,46 @@ export async function PUT(request: NextRequest) {
     }
 
     const sql = getSql();
-    
-    // Build update query using template literals for safety
-    const updateParts: any[] = [];
-    
+
+    const setFragments: string[] = [];
+    const params: unknown[] = [];
+    let n = 1;
     if (name !== undefined) {
-      updateParts.push(sql`name = ${name}`);
+      setFragments.push(`name = $${n++}`);
+      params.push(name);
     }
     if (city !== undefined) {
-      updateParts.push(sql`city = ${city}`);
+      setFragments.push(`city = $${n++}`);
+      params.push(city);
     }
     if (latitude !== undefined) {
-      updateParts.push(sql`latitude = ${latitude}`);
+      setFragments.push(`latitude = $${n++}`);
+      params.push(latitude);
     }
     if (longitude !== undefined) {
-      updateParts.push(sql`longitude = ${longitude}`);
+      setFragments.push(`longitude = $${n++}`);
+      params.push(longitude);
     }
     if (address !== undefined) {
-      updateParts.push(sql`address = ${address}`);
+      setFragments.push(`address = $${n++}`);
+      params.push(address);
     }
     if (is_active !== undefined) {
-      updateParts.push(sql`is_active = ${is_active}`);
+      setFragments.push(`is_active = $${n++}`);
+      params.push(is_active);
     }
 
-    if (updateParts.length === 0) {
+    if (setFragments.length === 0) {
       return NextResponse.json(
         { success: false, error: "No fields to update" },
         { status: 400 }
       );
     }
 
-    // Combine update parts (postgres.js provides sql.join; typings may omit it on Sql<{}>)
-    const updateClause = (
-      sql as unknown as { join: (parts: unknown[], sep: unknown) => unknown }
-    ).join(updateParts, sql`, `);
-    // Fragment from sql.join is valid at runtime; postgres.js typings use never for dynamic fragments
-    const [updatedServicePoint] = await sql`
-      UPDATE service_points
-      SET ${updateClause as never}, updated_at = NOW()
-      WHERE id = ${id}
-      RETURNING id, name, city, latitude, longitude, address, is_active, created_at, updated_at
-    `;
-
+    const [updatedServicePoint] = await sql.unsafe(
+      `UPDATE service_points SET ${setFragments.join(", ")}, updated_at = NOW() WHERE id = $${n} RETURNING id, name, city, latitude, longitude, address, is_active, created_at, updated_at`,
+      [...params, id] as never[]
+    );
     if (!updatedServicePoint) {
       return NextResponse.json(
         { success: false, error: "Service point not found" },

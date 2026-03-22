@@ -51,6 +51,13 @@ interface OnboardingPaymentRow {
 export function RiderWalletClient() {
   const searchParams = useSearchParams();
   const riderContext = useRiderDashboardOptional();
+  const riderFromContext = riderContext?.currentRiderInfo
+    ? {
+        id: riderContext.currentRiderInfo.id,
+        name: riderContext.currentRiderInfo.name,
+        mobile: riderContext.currentRiderInfo.mobile,
+      }
+    : null;
   const searchValue = (searchParams.get("search") || "").trim();
 
   const [rider, setRider] = useState<RiderInfo | null>(null);

@@ -8,7 +8,9 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { resolveAssignedAreaManagersForStoreVerification } from "@/lib/db/operations/parent-area-managers";
 import { getSql } from "@/lib/db/client";
+import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
 
 export const runtime = "nodejs";
 
@@ -86,7 +88,7 @@ export async function GET(
       country: store.country ?? null,
       latitude: store.latitude ?? null,
       longitude: store.longitude ?? null,
-      banner_url: store.banner_url ?? null,
+      logo_url: null,      banner_url: store.banner_url ?? null,
       gallery_images: store.gallery_images ?? null,
       cuisine_types: store.cuisine_types ?? null,
       food_categories: null,
@@ -108,19 +110,7 @@ export async function GET(
     try {
       const sql = getSql();
       const docRows = await sql`
-        SELECT store_id,
-               pan_document_number, pan_document_url, pan_is_verified, pan_verified_at, pan_verified_by, pan_rejection_reason,
-               gst_document_number, gst_document_url, gst_is_verified, gst_verified_at, gst_verified_by, gst_rejection_reason,
-               aadhaar_document_number, aadhaar_document_url, aadhaar_document_metadata, aadhaar_is_verified, aadhaar_verified_at, aadhaar_verified_by, aadhaar_rejection_reason,
-               fssai_document_number, fssai_document_url, fssai_expiry_date, fssai_is_verified, fssai_verified_at, fssai_verified_by, fssai_rejection_reason,
-               drug_license_document_number, drug_license_document_url, drug_license_is_verified, drug_license_verified_at, drug_license_verified_by, drug_license_rejection_reason,
-               pharmacist_certificate_document_number, pharmacist_certificate_document_url, pharmacist_certificate_expiry_date,
-               pharmacy_council_registration_document_url,
-               -- Other licences (optional but recommended)
-               trade_license_document_number, trade_license_document_url, trade_license_expiry_date, trade_license_is_verified, trade_license_verified_at, trade_license_verified_by, trade_license_rejection_reason,
-               shop_establishment_document_number, shop_establishment_document_url, shop_establishment_expiry_date, shop_establishment_is_verified, shop_establishment_verified_at, shop_establishment_verified_by, shop_establishment_rejection_reason,
-               udyam_document_number, udyam_document_url, udyam_is_verified, udyam_verified_at, udyam_verified_by, udyam_rejection_reason,
-               other_document_number, other_document_url, other_document_type, other_expiry_date, other_is_verified, other_verified_at, other_verified_by, other_rejection_reason
+        SELECT *
         FROM merchant_store_documents
         WHERE store_id = ${storeId}
         LIMIT 1
@@ -128,15 +118,15 @@ export async function GET(
       const doc = Array.isArray(docRows) ? docRows[0] : docRows;
       if (doc) {
         const d = doc as Record<string, unknown>;
-        if (d.pan_verified_at instanceof Date) d.pan_verified_at = d.pan_verified_at.toISOString();
-        if (d.gst_verified_at instanceof Date) d.gst_verified_at = d.gst_verified_at.toISOString();
-        if (d.aadhaar_verified_at instanceof Date) d.aadhaar_verified_at = d.aadhaar_verified_at.toISOString();
-        if (d.fssai_verified_at instanceof Date) d.fssai_verified_at = d.fssai_verified_at.toISOString();
-        if (d.drug_license_verified_at instanceof Date) d.drug_license_verified_at = d.drug_license_verified_at.toISOString();
+        // Normalize all date-like fields to ISO strings so frontend always gets serializable values.
+        Object.keys(d).forEach((key) => {
+          const value = d[key];
+          if (value instanceof Date) d[key] = value.toISOString();
+        });
         documents = d;
       }
-    } catch {
-      // table may not exist or RLS
+    } catch (e) {
+      console.warn("[verification-data] merchant_store_documents:", e);
     }
 
     let operatingHours: Record<string, unknown> | null = null;
@@ -296,11 +286,12 @@ export async function GET(
       // table may not exist or RLS
     }
 
-    let menuMediaFiles: Array<{ id: number; original_file_name: string | null; r2_key: string; public_url: string | null; verification_status: string; created_at: string }> = [];
+    let menuMediaFiles: MenuMediaFile[] = [];
     try {
       const sql = getSql();
       const mediaRows = await sql`
-        SELECT id, original_file_name, r2_key, public_url, verification_status, created_at
+        SELECT id, store_id, media_scope, source_entity, original_file_name, r2_key, public_url, menu_url,
+               mime_type, file_size_bytes, verification_status, created_at, menu_reference_image_urls
         FROM merchant_store_media_files
         WHERE store_id = ${storeId}
           AND media_scope = 'MENU_REFERENCE'
@@ -309,16 +300,51 @@ export async function GET(
         ORDER BY created_at DESC
       `;
       const rows = Array.isArray(mediaRows) ? mediaRows : [mediaRows];
-      menuMediaFiles = rows.map((r: Record<string, unknown>) => ({
-        id: Number(r.id),
-        original_file_name: r.original_file_name != null ? String(r.original_file_name) : null,
-        r2_key: String(r.r2_key),
-        public_url: r.public_url != null ? String(r.public_url) : null,
-        verification_status: String(r.verification_status ?? "PENDING"),
-        created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
-      }));
+      menuMediaFiles = rows.map((r: Record<string, unknown>) => mapRowToMenuMediaFile(r));
     } catch (e) {
       console.warn("[verification-data] merchant_store_media_files:", e);
+    }
+
+    let bankAccounts: Record<string, unknown>[] = [];
+    try {
+      const sql = getSql();
+      const bankRows = await sql`
+        SELECT
+          id, store_id, account_holder_name, account_number, ifsc_code, bank_name, branch_name, account_type,
+          is_verified, verified_by, verified_at, verification_method, upi_id, upi_verified,
+          is_primary, is_active, payout_method, bank_proof_type, bank_proof_file_url, upi_qr_screenshot_url,
+          verification_status, is_disabled, beneficiary_name, razorpay_fund_account_id, razorpay_validation_id,
+          created_at, updated_at
+        FROM merchant_store_bank_accounts
+        WHERE store_id = ${storeId}
+        ORDER BY COALESCE(is_primary, false) DESC, id ASC
+      `;
+      const rows = Array.isArray(bankRows) ? bankRows : [bankRows];
+      bankAccounts = rows
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          const o = r as Record<string, unknown>;
+          ["verified_at", "created_at", "updated_at", "last_attempt_at"].forEach((k) => {
+            const v = o[k];
+            if (v instanceof Date) o[k] = v.toISOString();
+          });
+          return o;
+        });
+    } catch (e) {
+      console.warn("[verification-data] merchant_store_bank_accounts:", e);
+    }
+
+    let assignedAreaManagers: {
+      id: number;
+      full_name: string | null;
+      email: string | null;
+      mobile: string | null;
+    }[] = [];
+    try {
+      const amId = (store as { area_manager_id?: number | null }).area_manager_id ?? null;
+      assignedAreaManagers = await resolveAssignedAreaManagersForStoreVerification(storeId, amId);
+    } catch (e) {
+      console.warn("[verification-data] assignedAreaManagers:", e);
     }
 
     return NextResponse.json({
@@ -329,6 +355,8 @@ export async function GET(
       onboardingPayments,
       agreementAcceptance,
       menuMediaFiles,
+      bankAccounts,
+      assignedAreaManagers,
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/verification-data]", e);

@@ -1,16 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useMemo } from "react";
-import {
-  useSessionQuery,
-  useSessionStatusQuery,
-  useLogout,
-} from "@/hooks/queries/useAuthQuery";
-import {
-  usePermissionsQuery,
-  type PermissionsData,
-} from "@/hooks/queries/usePermissionsQuery";
-
+import { useQueryClient } from "@tanstack/react-query";
 interface SessionUser {
   id: string;
   email: string;
@@ -33,13 +24,32 @@ interface SessionStatus {
   };
 }
 
+interface PermissionsData {
+  exists: boolean;
+  systemUserId: number | null;
+  isSuperAdmin: boolean;
+  roles?: string[];
+  permissions?: string[];
+  message?: string;
+}
+
+export interface SystemUserSummary {
+  id: number;
+  systemUserId: string;
+  fullName: string;
+  email: string;
+}
 interface AuthContextValue {
+  /** True once bootstrap/auth state has been resolved and queries may run */
+  authReady: boolean;
   /** Current user from session (null when not authenticated or loading) */
   user: SessionUser | null;
   /** Session status: time remaining, expired, etc. */
   sessionStatus: SessionStatus | null;
   /** Permissions and roles (null until loaded) */
   permissions: PermissionsData | null;
+  /** Canonical identity from system_users (bootstrap/session; stable for profile header) */
+  systemUser: SystemUserSummary | null;
   /** True when session or permissions are loading and we have no cached data */
   isLoading: boolean;
   /** True when session query resolved and user is authenticated */
@@ -55,49 +65,66 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const sessionQuery = useSessionQuery();
-  const sessionStatusQuery = useSessionStatusQuery();
-  const permissionsQuery = usePermissionsQuery();
-  const logoutMutation = useLogout();
+export function AuthProvider({
+  children,
+  authReady,
+}: {
+  children: React.ReactNode;
+  authReady?: boolean;
+}) {
+  const queryClient = useQueryClient();
 
-  const user = sessionQuery.data?.session?.user ?? null;
-  const sessionStatus: SessionStatus | null = sessionStatusQuery.data
+  const bootstrapSession = queryClient.getQueryData<{
+    session?: { user?: SessionUser };
+    permissions?: PermissionsData;
+    systemUser?: SystemUserSummary | null;
+  }>(["auth", "session"]);
+
+  const user = bootstrapSession?.session?.user ?? null;
+  const permissions = (bootstrapSession?.permissions as PermissionsData | undefined) ?? null;
+  const systemUser = bootstrapSession?.systemUser ?? null;
+
+  const isAuthenticated = Boolean(user);
+  const isLoading = !authReady && !user;
+  const isError = false;
+  const error: Error | null = null;
+
+  const sessionStatus: SessionStatus | null = user
     ? {
-        authenticated: sessionStatusQuery.data.authenticated,
-        expired: sessionStatusQuery.data.expired,
-        reason: sessionStatusQuery.data.reason,
-        session: sessionStatusQuery.data.session,
+        authenticated: true,
+        expired: false,
+        reason: undefined,
+        session: user.email
+          ? {
+              email: user.email,
+              userId: user.id,
+            }
+          : undefined,
       }
     : null;
-  const permissions = permissionsQuery.data ?? null;
-
-  const isLoading =
-    (sessionQuery.isLoading && !sessionQuery.data) ||
-    (permissionsQuery.isLoading && !permissionsQuery.data);
-  const isAuthenticated = Boolean(sessionStatus?.authenticated && user);
-  const isError = sessionQuery.isError || permissionsQuery.isError;
-  const error = sessionQuery.error || permissionsQuery.error || null;
 
   const logout = useCallback(() => {
-    logoutMutation.mutate();
-  }, [logoutMutation]);
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+  }, []);
 
   const refetch = useCallback(() => {
-    sessionQuery.refetch();
-    sessionStatusQuery.refetch();
-    permissionsQuery.refetch();
-  }, [sessionQuery, sessionStatusQuery, permissionsQuery]);
+    // Re-run bootstrap to refresh auth state
+    queryClient.invalidateQueries({ queryKey: ["auth", "bootstrap"] });
+  }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
+      authReady: Boolean(authReady || user),
       user,
       sessionStatus,
       permissions,
+      systemUser,
       isLoading,
       isAuthenticated,
       isError,
-      error: error instanceof Error ? error : null,
+      error,
       logout,
       refetch,
     }),
@@ -105,6 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       sessionStatus,
       permissions,
+      systemUser,
       isLoading,
       isAuthenticated,
       isError,

@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { Users, UtensilsCrossed, Package, Car } from "lucide-react";
 
 interface SummaryCardsProps {
@@ -10,7 +11,9 @@ interface SummaryCardsProps {
   loading?: boolean;
 }
 
-export function SummaryCards({
+const CARD_MIN_HEIGHT = "min-h-[120px]";
+
+export const SummaryCards = React.memo(function SummaryCards({
   allUsers,
   foodUsers,
   parcelUsers,
@@ -59,9 +62,9 @@ export function SummaryCards({
         return (
           <div
             key={card.title}
-            className={`${card.bgColor} rounded-lg border border-gray-200 p-6 shadow-sm hover:shadow-md transition-shadow`}
+            className={`${card.bgColor} rounded-lg border border-gray-200 p-6 shadow-sm hover:shadow-md transition-all duration-200 ${CARD_MIN_HEIGHT}`}
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between h-full">
               <div className="flex-1">
                 <p className="text-sm font-medium text-gray-600 mb-1">
                   {card.title}
@@ -83,4 +86,4 @@ export function SummaryCards({
       })}
     </div>
   );
-}
+});
