@@ -366,9 +366,9 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     setManualActivationLock(d.block_auto_open === true);
     setIsTodayScheduledClosed(d.is_today_scheduled_closed === true);
     if ((d.today_slots?.length ?? 0) > 0) {
-      const first = d.today_slots[0];
-      setOpeningTime(first.start || "09:00");
-      setClosingTime(first.end || "23:00");
+      const first = d.today_slots?.[0];
+      setOpeningTime(first?.start || "09:00");
+      setClosingTime(first?.end || "23:00");
     }
   }, [operationsQuery.data]);
 

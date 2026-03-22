@@ -2,7 +2,7 @@
  * GET /api/offers/stores - List merchant stores for offer creation dropdown
  */
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSql } from "@/lib/db/client";
 import { apiErrorResponse } from "@/lib/api-errors";
@@ -26,7 +26,13 @@ export async function GET() {
       LIMIT 500
     `;
 
-    const stores = (rows as { id: number; store_id: string; store_name: string; store_display_name: string | null }[]).map(
+    type StoreRow = {
+      id: number;
+      store_id: string;
+      store_name: string;
+      store_display_name: string | null;
+    };
+    const stores = (rows as unknown as StoreRow[]).map(
       (r) => ({
         id: r.id,
         storeId: r.store_id,

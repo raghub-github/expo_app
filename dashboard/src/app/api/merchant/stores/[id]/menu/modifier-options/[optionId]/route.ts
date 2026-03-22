@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { mergeBool, mergeNum, mergeOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 
 export const runtime = "nodejs";
@@ -41,14 +42,19 @@ export async function PUT(
       return NextResponse.json({ success: false, error: "Invalid price_delta" }, { status: 400 });
     }
 
+    const image_url = mergeOptionalStr(body.image_url, e.image_url);
+    const in_stock = mergeBool(body.in_stock, e.in_stock);
+    const default_quantity = mergeNum(body.default_quantity, e.default_quantity);
+    const display_order = mergeNum(body.display_order, e.display_order);
+
     await sql`
       UPDATE merchant_modifier_options
       SET name = ${name},
           price_delta = ${price_delta},
-          image_url = ${body.image_url !== undefined ? body.image_url : e.image_url},
-          in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
-          default_quantity = ${body.default_quantity !== undefined ? body.default_quantity : e.default_quantity},
-          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
+          image_url = ${image_url},
+          in_stock = ${in_stock},
+          default_quantity = ${default_quantity},
+          display_order = ${display_order},
           updated_at = NOW()
       WHERE id = ${optId}
     `;

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import type { ResponseCookie } from "next/dist/compiled/@edge-runtime/cookies";
 import { createServerClient } from "@supabase/ssr";
 import {
   getSessionMetadata,
@@ -9,6 +10,28 @@ import {
 } from "@/lib/auth/session-manager";
 // Note: User validation is done in /api/auth/set-cookie, not in proxy
 // Proxy runs in Edge Runtime which doesn't support database connections
+
+function toResponseCookieOptions(options: {
+  maxAge: number;
+  path: string;
+  httpOnly?: boolean;
+  sameSite?: string;
+  secure?: boolean;
+}): Partial<ResponseCookie> {
+  const same =
+    options.sameSite === "strict" ||
+    options.sameSite === "lax" ||
+    options.sameSite === "none"
+      ? options.sameSite
+      : "lax";
+  return {
+    maxAge: options.maxAge,
+    path: options.path,
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite: same,
+  };
+}
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
@@ -65,7 +88,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options);
+            response.cookies.set(name, value, toResponseCookieOptions(options));
           },
         };
         updateActivity(cookieManager);
@@ -78,17 +101,20 @@ export async function proxy(request: NextRequest) {
 
     if (hasAuthCookie) {
       try {
-        const userResult = await Promise.race([
+        const userResult = (await Promise.race([
           supabase.auth.getUser(),
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ]) as { data?: { user?: { id: string; email?: string } }; error?: { message?: string; code?: string } };
+        ])) as unknown as {
+          data?: { user?: { id: string; email?: string } | null };
+          error?: { message?: string; code?: string };
+        };
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
 
         if (user) {
-          session = { user: { id: user.id, email: user.email }, ...user } as typeof session;
+          session = { user: { id: user.id, email: user.email }, ...(user as object) } as unknown as typeof session;
         } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
@@ -160,7 +186,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options);
+            response.cookies.set(name, value, toResponseCookieOptions(options));
           },
         };
         updateActivity(cookieManager);

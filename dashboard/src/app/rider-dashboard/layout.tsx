@@ -1,6 +1,6 @@
 "use client";
 import SearchBar from "./SearchBar";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import type { Metadata } from "next";
@@ -32,7 +32,7 @@ const sidebarLinks = [
   { label: "Leaderboard", href: "/rider-dashboard/riders" },
 ];
 
-export default function RiderDashboardLayout({
+function RiderDashboardLayoutInner({
   children,
 }: Readonly<{
   children: React.ReactNode;
@@ -123,6 +123,24 @@ export default function RiderDashboardLayout({
         </main>
       </div>
     </div>
+  );
+}
+
+export default function RiderDashboardLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <Suspense
+      fallback={
+        <div className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen bg-[var(--background)] flex items-center justify-center`}>
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+        </div>
+      }
+    >
+      <RiderDashboardLayoutInner>{children}</RiderDashboardLayoutInner>
+    </Suspense>
   );
 }
 

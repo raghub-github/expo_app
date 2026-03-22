@@ -68,23 +68,24 @@ export function Sidebar() {
       }
 
       // Check dashboard access
-      if (item.dashboardType) {
+      const dashType = item.dashboardType;
+      if (dashType) {
         // Super admin has access to all dashboards
         if (isSuperAdmin) {
           return true;
         }
-        
+
         // Special handling for Orders - show if user has access to any order type
-        if (item.dashboardType === "ORDER_FOOD") {
-          return accessibleDashboards.has("ORDER_FOOD") || 
-                 accessibleDashboards.has("ORDER_PERSON_RIDE") || 
-                 accessibleDashboards.has("ORDER_PARCEL");
+        if (dashType === "ORDER_FOOD") {
+          return (
+            accessibleDashboards.has("ORDER_FOOD") ||
+            accessibleDashboards.has("ORDER_PERSON_RIDE") ||
+            accessibleDashboards.has("ORDER_PARCEL")
+          );
         }
-        
+
         // Check dashboard access directly (CUSTOMER and TICKET are now consolidated)
-        return accessibleDashboards.has(item.dashboardType);
-        
-        return accessibleDashboards.has(item.dashboardType);
+        return accessibleDashboards.has(dashType);
       }
 
       // Default: show if no specific requirements

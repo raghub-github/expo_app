@@ -14,6 +14,8 @@ export interface SystemUser {
   mobile: string;
   alternateMobile?: string;
   primaryRole: string;
+  /** Account lifecycle status from API (e.g. ACTIVE, SUSPENDED) */
+  status?: string;
   subrole?: string;
   subroleOther?: string;
   roleDisplayName?: string;

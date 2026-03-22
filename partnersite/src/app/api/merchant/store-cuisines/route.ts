@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
-import { getCuisinesForStore, upsertStoreCuisines } from '@/lib/cuisines';
+import {
+  getCuisinesForStore,
+  getLinkedCuisinesDetailed,
+  getCatalogCuisinesNotLinked,
+  syncLegacyCuisineTypesFromMerchantStore,
+  upsertStoreCuisines,
+} from '@/lib/cuisines';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -44,7 +50,7 @@ export async function GET(req: NextRequest) {
     const db = getSupabaseAdmin();
     const { data: store, error: storeError } = await db
       .from('merchant_stores')
-      .select('id, parent_id')
+      .select('id, parent_id, cuisine_types')
       .eq('store_id', storeCode.trim())
       .single();
 
@@ -55,8 +61,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 });
     }
 
-    const cuisines = await getCuisinesForStore(store.id as number);
-    return NextResponse.json({ cuisines });
+    const storePk = store.id as number;
+    await syncLegacyCuisineTypesFromMerchantStore(storePk);
+    const cuisines = await getCuisinesForStore(storePk);
+    const detailed = await getLinkedCuisinesDetailed(storePk);
+    const catalog = await getCatalogCuisinesNotLinked(storePk);
+    return NextResponse.json({ cuisines, cuisineDetails: detailed, catalog });
   } catch (e) {
     console.error('[store-cuisines GET]', e);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

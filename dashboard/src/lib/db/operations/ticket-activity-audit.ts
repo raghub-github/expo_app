@@ -18,6 +18,7 @@ type AuditPayload = {
   assigned_by_type?: string | null;
   previous_assignee_user_id?: number | null;
   previous_assignee_name?: string | null;
+  unassigned_by_user_id?: number | null;
   old_status?: string | null;
   new_status?: string | null;
   old_priority?: string | null;
@@ -33,12 +34,12 @@ type AuditPayload = {
   new_value?: unknown;
 };
 
-type SqlClient = {
+export type TicketAuditSqlClient = {
   unsafe: (query: string, values?: unknown[]) => Promise<unknown[]>;
 };
 
 export async function insertTicketActivityAudit(
-  sqlClient: SqlClient,
+  sqlClient: TicketAuditSqlClient,
   payload: AuditPayload
 ): Promise<void> {
   const cols = [
@@ -56,6 +57,7 @@ export async function insertTicketActivityAudit(
     "assigned_by_type",
     "previous_assignee_user_id",
     "previous_assignee_name",
+    "unassigned_by_user_id",
     "old_status",
     "new_status",
     "old_priority",

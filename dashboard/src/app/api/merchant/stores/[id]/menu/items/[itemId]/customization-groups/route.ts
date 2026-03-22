@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { bodyBool, bodyNum, bodyOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess, genId } from "../../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -32,10 +33,16 @@ export async function POST(
     const [item] = await sql`SELECT id FROM merchant_menu_items WHERE id = ${menuItemId} AND store_id = ${storeId} LIMIT 1`;
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
+    const customization_type = bodyOptionalStr(body.customization_type);
+    const is_required = bodyBool(body.is_required, false);
+    const min_selection = bodyNum(body.min_selection, 0);
+    const max_selection = bodyNum(body.max_selection, 1);
+    const display_order = bodyNum(body.display_order, 0);
+
     const customizationId = genId("CUST_");
     const [row] = await sql`
       INSERT INTO merchant_menu_item_customizations (menu_item_id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order)
-      VALUES (${menuItemId}, ${customizationId}, ${customization_title}, ${body.customization_type ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
+      VALUES (${menuItemId}, ${customizationId}, ${customization_title}, ${customization_type}, ${is_required}, ${min_selection}, ${max_selection}, ${display_order})
       RETURNING id, customization_id
     `;
     try {

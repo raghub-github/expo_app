@@ -436,7 +436,7 @@ export async function getUserDomainAccess(
  */
 export async function isSuperAdmin(
   supabaseAuthId: string,
-  email: string
+  email?: string | null
 ): Promise<boolean> {
   try {
     const userPerms = await getUserPermissions(supabaseAuthId, email);
@@ -453,7 +453,7 @@ export async function isSuperAdmin(
  */
 export async function requireSuperAdmin(
   supabaseAuthId: string,
-  email: string
+  email?: string | null
 ): Promise<void> {
   const isAdmin = await isSuperAdmin(supabaseAuthId, email);
   if (!isAdmin) {
@@ -483,7 +483,7 @@ export async function getUserDashboardAccess(systemUserId: number): Promise<Dash
       systemUserId: row.systemUserId,
       dashboardType: row.dashboardType,
       accessLevel: row.accessLevel,
-      isActive: row.isActive,
+      isActive: row.isActive ?? false,
       grantedBy: row.grantedBy,
       grantedByName: row.grantedByName || undefined,
       grantedAt: row.grantedAt,
@@ -552,7 +552,7 @@ export async function getUserAccessPoints(
       accessPointDescription: row.accessPointDescription || undefined,
       allowedActions: (row.allowedActions as string[]) || [],
       context: (row.context as Record<string, any>) || undefined,
-      isActive: row.isActive,
+      isActive: row.isActive ?? false,
     }));
   } catch (error) {
     console.error("Error fetching access points:", error);

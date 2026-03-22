@@ -14,7 +14,7 @@ interface DashboardAccess {
   isActive: boolean;
 }
 
-interface AccessPoint {
+export interface AccessPoint {
   dashboardType: string;
   accessPointGroup: string;
   accessPointName: string;

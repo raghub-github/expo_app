@@ -12,6 +12,8 @@ export type MenuCategory = {
   category_description: string | null;
   category_image_url: string | null;
   parent_category_id: number | null;
+  /** cuisine_master.id — must be linked via merchant_store_cuisines for this store */
+  cuisine_id?: number | null;
   display_order: number;
   is_active: boolean;
   created_at: string;
@@ -36,6 +38,8 @@ export type MenuItemRow = {
   has_addons: boolean;
   has_variants: boolean;
   preparation_time_minutes: number | null;
+  /** Item-level packaging fee (₹); null/omitted when not set */
+  packaging_charges?: number | null;
   serves: number | null;
   serves_label: string | null;
   item_size_value: number | null;
@@ -93,6 +97,159 @@ export async function fetchStoreProfile(
   };
 }
 
+export type CategoryUiConfig = {
+  store_type: string | null;
+  cuisine_field: {
+    visible: boolean;
+    required_for_root: boolean;
+    inherit_on_subcategory: boolean;
+  };
+  /** Plan allows linking more cuisines from cuisine_master (not free-text creation). */
+  allow_create_custom_cuisine: boolean;
+};
+
+export type MenuCuisineOption = {
+  id: number;
+  name: string;
+  is_system_defined: boolean;
+};
+
+export async function fetchCategoryUiConfig(
+  storeId: string,
+  token: string
+): Promise<CategoryUiConfig | null> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/category-config`,
+    token
+  );
+  if (!res.ok) return null;
+  return (await res.json()) as CategoryUiConfig;
+}
+
+function normalizeMenuCuisineRows(raw: unknown): MenuCuisineOption[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (x): x is MenuCuisineOption =>
+      x != null &&
+      typeof (x as MenuCuisineOption).id === "number" &&
+      typeof (x as MenuCuisineOption).name === "string"
+  );
+}
+
+/** Linked store cuisines + active master rows not yet linked (for “add to store”). */
+export async function fetchMenuCuisinesAndCatalog(
+  storeId: string,
+  token: string
+): Promise<{ cuisines: MenuCuisineOption[]; catalog: MenuCuisineOption[] }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/cuisines`,
+    token
+  );
+  if (!res.ok) return { cuisines: [], catalog: [] };
+  const data = (await res.json().catch(() => ({}))) as { cuisines?: unknown; catalog?: unknown };
+  return {
+    cuisines: normalizeMenuCuisineRows(data.cuisines),
+    catalog: normalizeMenuCuisineRows(data.catalog),
+  };
+}
+
+/** Link an existing cuisine_master row to this store (POST …/cuisines/link). */
+export async function linkMenuCuisineFromCatalog(
+  storeId: string,
+  token: string,
+  cuisineId: number
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/cuisines/link`,
+    token,
+    { method: "POST", body: JSON.stringify({ cuisine_id: cuisineId }) }
+  );
+  const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+  if (!res.ok) {
+    throw new Error(
+      typeof data.message === "string" && data.message.trim()
+        ? data.message
+        : typeof data.error === "string"
+          ? data.error
+          : `Link cuisine failed: ${res.status}`
+    );
+  }
+}
+
+/** Unlink a cuisine from this store (DELETE …/cuisines/:cuisineId). */
+/**
+ * After item save: link selected cuisine names that are in the master catalog but not yet on the store profile.
+ * Plan limits enforced by the backend link endpoint.
+ */
+export async function ensureStoreCuisinesLinkedForItemNames(
+  storeId: string,
+  token: string,
+  cuisineTypeCsv: string | null | undefined
+): Promise<{ linked: number; warnings: string[] }> {
+  const names = (cuisineTypeCsv ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (names.length === 0) return { linked: 0, warnings: [] };
+
+  const { cuisines, catalog } = await fetchMenuCuisinesAndCatalog(storeId, token);
+  const linkedLower = new Set(cuisines.map((c) => c.name.toLowerCase().trim()));
+  const catalogByLower = new Map(catalog.map((c) => [c.name.toLowerCase().trim(), c]));
+
+  let linked = 0;
+  const warnings: string[] = [];
+
+  for (const name of names) {
+    const key = name.toLowerCase().trim();
+    if (!key) continue;
+    if (linkedLower.has(key)) continue;
+
+    const cat = catalogByLower.get(key);
+    if (cat) {
+      try {
+        await linkMenuCuisineFromCatalog(storeId, token, cat.id);
+        linked++;
+        linkedLower.add(key);
+        catalogByLower.delete(key);
+      } catch (e) {
+        warnings.push(e instanceof Error ? e.message : String(e));
+      }
+    } else {
+      warnings.push(
+        `"${name}" could not be linked — it may already be on your store or not in the master cuisine list.`
+      );
+    }
+  }
+
+  return { linked, warnings };
+}
+
+export async function unlinkMenuCuisine(
+  storeId: string,
+  token: string,
+  cuisineId: number
+): Promise<void> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/cuisines/${cuisineId}`,
+    token,
+    { method: "DELETE" }
+  );
+  const data = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+  if (!res.ok) {
+    throw new Error(
+      typeof data.message === "string" && data.message.trim()
+        ? data.message
+        : typeof data.error === "string"
+          ? data.error
+          : `Unlink cuisine failed: ${res.status}`
+    );
+  }
+}
+
 export async function fetchMenuCategories(
   storeId: string,
   token: string
@@ -109,6 +266,64 @@ export async function fetchMenuCategories(
   return res.json() as Promise<ListCategoriesResponse>;
 }
 
+/** Type-ahead: distinct category names from other stores (excludes names already on this store). */
+export async function fetchCategoryNameSuggestions(
+  storeId: string,
+  token: string,
+  opts: { q: string; limit?: number; editingCategoryId?: number | null }
+): Promise<string[]> {
+  const base = getApiBaseUrl();
+  const params = new URLSearchParams();
+  params.set("q", (opts.q ?? "").trim().slice(0, 30));
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.editingCategoryId != null) {
+    params.set("editingCategoryId", String(opts.editingCategoryId));
+  }
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/category-name-suggestions?${params.toString()}`,
+    token
+  );
+  if (!res.ok) {
+    return [];
+  }
+  const data = (await res.json().catch(() => ({}))) as { suggestions?: unknown };
+  return Array.isArray(data.suggestions)
+    ? data.suggestions.filter((x): x is string => typeof x === "string")
+    : [];
+}
+
+/** Subcategory names from other stores (excludes names already under this parent on this store). */
+export async function fetchSubcategoryNameSuggestions(
+  storeId: string,
+  token: string,
+  opts: {
+    q: string;
+    limit?: number;
+    parentCategoryId: number;
+    editingCategoryId?: number | null;
+  }
+): Promise<string[]> {
+  const base = getApiBaseUrl();
+  const params = new URLSearchParams();
+  params.set("q", (opts.q ?? "").trim().slice(0, 30));
+  params.set("parentCategoryId", String(opts.parentCategoryId));
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.editingCategoryId != null) {
+    params.set("editingCategoryId", String(opts.editingCategoryId));
+  }
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/subcategory-name-suggestions?${params.toString()}`,
+    token
+  );
+  if (!res.ok) {
+    return [];
+  }
+  const data = (await res.json().catch(() => ({}))) as { suggestions?: unknown };
+  return Array.isArray(data.suggestions)
+    ? data.suggestions.filter((x): x is string => typeof x === "string")
+    : [];
+}
+
 export async function createCategory(
   storeId: string,
   token: string,
@@ -117,6 +332,7 @@ export async function createCategory(
     category_description?: string | null;
     category_image_url?: string | null;
     parent_category_id?: number | null;
+    cuisine_id?: number | null;
     display_order?: number;
     is_active?: boolean;
   }
@@ -143,6 +359,7 @@ export async function updateCategory(
     category_description?: string | null;
     category_image_url?: string | null;
     parent_category_id?: number | null;
+    cuisine_id?: number | null;
     display_order?: number;
     is_active?: boolean;
   }
@@ -171,10 +388,21 @@ export async function deleteCategory(
     { method: "DELETE" }
   );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: string; itemCount?: number; message?: string };
+    const err = await res.json().catch(() => ({})) as {
+      error?: string;
+      itemCount?: number;
+      subcategoryCount?: number;
+      message?: string;
+    };
     if (err.error === "category_has_items") {
       const n = err.itemCount ?? 0;
       throw new Error(`This category has ${n} item${n !== 1 ? "s" : ""}. Move or delete them first, then delete the category.`);
+    }
+    if (err.error === "category_has_subcategories") {
+      const n = err.subcategoryCount ?? 0;
+      throw new Error(
+        `This category has ${n} subcategor${n !== 1 ? "ies" : "y"}. Remove or reassign them first.`
+      );
     }
     throw new Error(err.message || `Delete category failed: ${res.status}`);
   }

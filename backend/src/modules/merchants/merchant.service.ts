@@ -1,4 +1,5 @@
 import { getSupabase } from "../../lib/supabase.js";
+import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import type {
   MerchantMenuItemRow,
   MerchantStoreRow,
@@ -104,7 +105,7 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, logo_url, banner_url, gallery_images, ads_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km")
+    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, ads_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km")
     .eq("store_id", storeId)
     .single();
   if (error || !data) return null;
@@ -322,7 +323,7 @@ export async function getMenuItemFullConfig(
       name: item.item_name,
       description: item.item_description ?? null,
       price: parseFloat(item.selling_price),
-      imageUrl: item.item_image_url ?? null,
+      imageUrl: toAbsoluteClientMediaUrl(item.item_image_url ?? null),
       isVeg: (item.food_type ?? "").toLowerCase().startsWith("veg"),
       hasCustomizations: item.has_customizations === true,
       hasAddons: item.has_addons === true,
@@ -387,7 +388,6 @@ export async function search(params: {
       store_id: string;
       store_name: string;
       store_display_name: string | null;
-      logo_url: string | null;
       banner_url: string | null;
       cuisine_types: string[] | null;
       distance_km: number;
@@ -415,7 +415,6 @@ export async function search(params: {
       store_name: s.store_name,
       store_display_name: s.store_display_name,
       store_description: null,
-      logo_url: s.logo_url,
       banner_url: s.banner_url,
       cuisine_types: s.cuisine_types,
       city: null,
@@ -483,7 +482,7 @@ export async function search(params: {
 
   const { data: storeRows, error: storeError } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, logo_url, banner_url, cuisine_types, city, is_active, is_accepting_orders, status")
+    .select("id, store_id, store_name, store_display_name, store_description, banner_url, cuisine_types, city, is_active, is_accepting_orders, status")
     .in("id", storeIds)
     .eq("is_active", true);
 

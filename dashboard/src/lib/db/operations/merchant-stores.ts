@@ -22,12 +22,12 @@ export interface MerchantStoreRow {
   country: string | null;
   latitude: number | null;
   longitude: number | null;
-  logo_url: string | null;
   banner_url: string | null;
   gallery_images: string[] | null;
   cuisine_types: string[] | null;
-  food_categories: string[] | null;
   avg_preparation_time_minutes: number | null;
+  /** Default packaging fee (₹) for the store; per-item overrides use merchant_menu_items.packaging_charges */
+  packaging_charge_amount: number | null;
   min_order_amount: number | null;
   delivery_radius_km: number | null;
   is_pure_veg: boolean | null;
@@ -270,7 +270,7 @@ export async function delistMerchantStore(params: {
 
   await sql.begin(async (tx) => {
     // Update store flags; status is derived from approval_status trigger (enforce_store_status_rule)
-    await tx`
+    await (tx as unknown as typeof sql)`
       UPDATE merchant_stores
       SET
         approval_status = 'DELISTED'::store_approval_status,
@@ -284,7 +284,7 @@ export async function delistMerchantStore(params: {
     `;
 
     // Insert into store_delisting_logs for permanent audit trail
-    await tx`
+    await (tx as unknown as typeof sql)`
       INSERT INTO store_delisting_logs (
         store_id,
         action_by_user_id,
@@ -324,7 +324,7 @@ export async function delistMerchantStore(params: {
     `;
 
     // Optionally also create a block entry so other systems can respect delisting.
-    await tx`
+    await (tx as unknown as typeof sql)`
       INSERT INTO merchant_store_blocks (
         store_id,
         block_type,
@@ -439,7 +439,7 @@ export async function relistMerchantStore(params: {
 
   await sql.begin(async (tx) => {
     // Restore approval_status (typically APPROVED) but keep store operationally CLOSED.
-    await tx`
+    await (tx as unknown as typeof sql)`
       UPDATE merchant_stores
       SET
         approval_status = ${targetApproval}::store_approval_status,
@@ -453,7 +453,7 @@ export async function relistMerchantStore(params: {
     `;
 
     // Audit entry in store_delisting_logs to capture relist action.
-    await tx`
+    await (tx as unknown as typeof sql)`
       INSERT INTO store_delisting_logs (
         store_id,
         action_by_user_id,
@@ -493,7 +493,7 @@ export async function relistMerchantStore(params: {
     `;
 
     // Mark existing DELISTED blocks as unblocked.
-    await tx`
+    await (tx as unknown as typeof sql)`
       UPDATE merchant_store_blocks
       SET
         is_unblocked = TRUE,
@@ -737,7 +737,7 @@ export async function listMerchantStores(params: {
   const rows = await sql<MerchantStoreRow[]>`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -778,7 +778,7 @@ export async function getMerchantStoreById(
       ? await sql`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes, packaging_charge_amount,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -792,7 +792,7 @@ export async function getMerchantStoreById(
       : await sql`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes, packaging_charge_amount,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -835,7 +835,7 @@ export async function getChildStoreByStoreId(
       ? await sql`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -849,7 +849,7 @@ export async function getChildStoreByStoreId(
       : await sql`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -1268,7 +1268,7 @@ export async function getChildMerchantStores(
       ? await sql`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -1282,7 +1282,7 @@ export async function getChildMerchantStores(
       : await sql`
     SELECT id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
            store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-           logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+           banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,
            min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
            area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
            rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,
@@ -1324,11 +1324,9 @@ export async function updateMerchantStore(
     country?: string | null;
     latitude?: number | null;
     longitude?: number | null;
-    logo_url?: string | null;
     banner_url?: string | null;
     gallery_images?: string[] | null;
     cuisine_types?: string[] | null;
-    food_categories?: string[] | null;
     avg_preparation_time_minutes?: number | null;
     min_order_amount?: number | null;
     delivery_radius_km?: number | null;
@@ -1364,7 +1362,8 @@ export async function updateMerchantStore(
   if (data.store_display_name !== undefined) setClauses.push(sql`store_display_name = ${data.store_display_name}`);
   if (data.store_description !== undefined) setClauses.push(sql`store_description = ${data.store_description}`);
   if (data.store_email !== undefined) setClauses.push(sql`store_email = ${data.store_email}`);
-  if (data.store_phones !== undefined) setClauses.push(sql`store_phones = ${sql.array(data.store_phones)}`);
+  if (data.store_phones !== undefined)
+    setClauses.push(sql`store_phones = ${sql.array(data.store_phones ?? [])}`);
   if (data.store_type !== undefined) setClauses.push(sql`store_type = ${data.store_type}`);
   if (data.custom_store_type !== undefined) setClauses.push(sql`custom_store_type = ${data.custom_store_type}`);
   if (data.full_address !== undefined) setClauses.push(sql`full_address = ${data.full_address}`);
@@ -1375,11 +1374,11 @@ export async function updateMerchantStore(
   if (data.country !== undefined) setClauses.push(sql`country = ${data.country}`);
   if (data.latitude !== undefined) setClauses.push(sql`latitude = ${data.latitude}`);
   if (data.longitude !== undefined) setClauses.push(sql`longitude = ${data.longitude}`);
-  if (data.logo_url !== undefined) setClauses.push(sql`logo_url = ${data.logo_url}`);
   if (data.banner_url !== undefined) setClauses.push(sql`banner_url = ${data.banner_url}`);
-  if (data.gallery_images !== undefined) setClauses.push(sql`gallery_images = ${sql.array(data.gallery_images)}`);
-  if (data.cuisine_types !== undefined) setClauses.push(sql`cuisine_types = ${sql.array(data.cuisine_types)}`);
-  if (data.food_categories !== undefined) setClauses.push(sql`food_categories = ${sql.array(data.food_categories)}`);
+  if (data.gallery_images !== undefined)
+    setClauses.push(sql`gallery_images = ${sql.array(data.gallery_images ?? [])}`);
+  if (data.cuisine_types !== undefined)
+    setClauses.push(sql`cuisine_types = ${sql.array(data.cuisine_types ?? [])}`);
   if (data.avg_preparation_time_minutes !== undefined) setClauses.push(sql`avg_preparation_time_minutes = ${data.avg_preparation_time_minutes}`);
   if (data.min_order_amount !== undefined) setClauses.push(sql`min_order_amount = ${data.min_order_amount}`);
   if (data.delivery_radius_km !== undefined) setClauses.push(sql`delivery_radius_km = ${data.delivery_radius_km}`);
@@ -1409,7 +1408,7 @@ export async function updateMerchantStore(
     WHERE ${whereClause}
     RETURNING id, store_id, parent_id, store_name, store_display_name, store_description, store_email,
               store_phones, full_address, landmark, city, state, postal_code, country, latitude, longitude,
-              logo_url, banner_url, gallery_images, cuisine_types, food_categories, avg_preparation_time_minutes,
+              banner_url, gallery_images, cuisine_types, avg_preparation_time_minutes,
               min_order_amount, delivery_radius_km, is_pure_veg, accepts_online_payment, accepts_cash,
               area_manager_id, status, approval_status, approval_reason, approved_by, approved_at,
               rejected_reason, current_onboarding_step, onboarding_completed, onboarding_completed_at,

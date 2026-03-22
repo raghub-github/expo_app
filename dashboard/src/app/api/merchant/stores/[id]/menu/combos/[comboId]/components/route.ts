@@ -46,9 +46,11 @@ export async function POST(
     if (!item) return NextResponse.json({ success: false, error: "Menu item not found" }, { status: 404 });
 
     const variant_id = body.variant_id != null ? Number(body.variant_id) : null;
+    const quantity = Number(body.quantity) || 1;
+    const display_order = Number(body.display_order) || 0;
     const [row] = await sql`
       INSERT INTO merchant_menu_combo_components (combo_id, menu_item_id, variant_id, quantity, display_order)
-      VALUES (${cId}, ${menu_item_id}, ${variant_id}, ${body.quantity ?? 1}, ${body.display_order ?? 0})
+      VALUES (${cId}, ${menu_item_id}, ${variant_id}, ${quantity}, ${display_order})
       RETURNING id
     `;
     try {
@@ -66,6 +68,22 @@ export async function POST(
     try {
       await logStoreActivity({ storeId, section: "combo_component", action: "create", summary: `Agent added item to combo #${cId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}
+
+    // Backend-derived combo_price: SUM(menu_item.selling_price * quantity)
+    const [priceRow] = await sql`
+      SELECT COALESCE(SUM(m.selling_price::numeric * cc.quantity), 0)::numeric AS derived_price
+      FROM merchant_menu_combo_components cc
+      INNER JOIN merchant_menu_items m ON m.id = cc.menu_item_id AND m.store_id = ${storeId}
+      WHERE cc.combo_id = ${cId}
+    `;
+    const derivedPrice = (priceRow as any)?.derived_price ?? 0;
+    await sql`
+      UPDATE merchant_menu_combos
+      SET combo_price = ${derivedPrice},
+          updated_at = NOW()
+      WHERE id = ${cId} AND store_id = ${storeId}
+    `;
+
     return NextResponse.json({ success: true, id: Number((row as any)?.id) }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/combos/[comboId]/components]", e);

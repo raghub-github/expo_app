@@ -8,10 +8,17 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, riderDocuments, systemUsers, onboardingPayments } from "@/lib/db/schema";
 import { eq, and, or, desc, gte, lte, isNull } from "drizzle-orm";
+import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = 'nodejs';
+
+/** Query params are strings; Drizzle enum columns need the schema literal union */
+type OrdersCoreRow = InferSelectModel<typeof ordersCore>;
+type OrdersLegacyRow = InferSelectModel<typeof orders>;
+type TicketRow = InferSelectModel<typeof tickets>;
+type RiderPenaltyRow = InferSelectModel<typeof riderPenalties>;
 
 interface SummaryQueryParams {
   ordersLimit?: number;
@@ -136,10 +143,14 @@ export async function GET(
           ordersConditions.push(lte(ordersCore.createdAt, new Date(params_obj.ordersTo)));
         }
         if (params_obj.ordersOrderType && params_obj.ordersOrderType !== "all") {
-          ordersConditions.push(eq(ordersCore.orderType, params_obj.ordersOrderType as "food" | "parcel" | "person_ride"));
+          ordersConditions.push(
+            eq(ordersCore.orderType, params_obj.ordersOrderType as OrdersCoreRow["orderType"])
+          );
         }
         if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-          ordersConditions.push(eq(ordersCore.status, params_obj.ordersStatus));
+          ordersConditions.push(
+            eq(ordersCore.status, params_obj.ordersStatus as OrdersCoreRow["status"])
+          );
         }
         if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
           const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -158,18 +169,18 @@ export async function GET(
           orderType: row.orderType,
           riderId: row.riderId,
           customerId: row.customerId,
-          pickupAddress: (row as { pickupAddressRaw?: string }).pickupAddressRaw,
-          dropAddress: (row as { dropAddressRaw?: string }).dropAddressRaw,
-          pickupLat: (row as { pickupLat?: number }).pickupLat,
-          pickupLon: (row as { pickupLon?: number }).pickupLon,
-          dropLat: (row as { dropLat?: number }).dropLat,
-          dropLon: (row as { dropLon?: number }).dropLon,
-          distanceKm: (row as { distanceKm?: number }).distanceKm,
+          pickupAddress: row.pickupAddressRaw,
+          dropAddress: row.dropAddressRaw,
+          pickupLat: row.pickupLat,
+          pickupLon: row.pickupLon,
+          dropLat: row.dropLat,
+          dropLon: row.dropLon,
+          distanceKm: row.distanceKm,
           fareAmount: row.fareAmount,
           riderEarning: row.riderEarning,
           status: row.status,
           createdAt: row.createdAt,
-          updatedAt: (row as { updatedAt?: Date }).updatedAt,
+          updatedAt: row.updatedAt,
         }));
       } catch {
         // Fallback to orders table if orders_core fails (e.g. table missing)
@@ -181,10 +192,14 @@ export async function GET(
           ordersConditions.push(lte(orders.createdAt, new Date(params_obj.ordersTo)));
         }
         if (params_obj.ordersOrderType && params_obj.ordersOrderType !== "all") {
-          ordersConditions.push(eq(orders.orderType, params_obj.ordersOrderType as "food" | "parcel" | "person_ride"));
+          ordersConditions.push(
+            eq(orders.orderType, params_obj.ordersOrderType as OrdersLegacyRow["orderType"])
+          );
         }
         if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-          ordersConditions.push(eq(orders.status, params_obj.ordersStatus));
+          ordersConditions.push(
+            eq(orders.status, params_obj.ordersStatus as OrdersLegacyRow["status"])
+          );
         }
         if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
           const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -208,10 +223,14 @@ export async function GET(
         ordersConditions.push(lte(orders.createdAt, new Date(params_obj.ordersTo)));
       }
       if (params_obj.ordersOrderType && params_obj.ordersOrderType !== "all") {
-        ordersConditions.push(eq(orders.orderType, params_obj.ordersOrderType as "food" | "parcel" | "person_ride"));
+        ordersConditions.push(
+          eq(orders.orderType, params_obj.ordersOrderType as OrdersLegacyRow["orderType"])
+        );
       }
       if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-        ordersConditions.push(eq(orders.status, params_obj.ordersStatus));
+        ordersConditions.push(
+          eq(orders.status, params_obj.ordersStatus as OrdersLegacyRow["status"])
+        );
       }
       if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
         const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -252,7 +271,9 @@ export async function GET(
       ticketsConditions.push(lte(tickets.createdAt, new Date(params_obj.ticketsTo)));
     }
     if (params_obj.ticketsStatus && params_obj.ticketsStatus !== "all") {
-      ticketsConditions.push(eq(tickets.status, params_obj.ticketsStatus as "open" | "in_progress" | "resolved" | "closed"));
+      ticketsConditions.push(
+        eq(tickets.status, params_obj.ticketsStatus as TicketRow["status"])
+      );
     }
     if (params_obj.ticketsCategory && params_obj.ticketsCategory !== "all") {
       ticketsConditions.push(eq(tickets.category, params_obj.ticketsCategory));
@@ -349,7 +370,21 @@ export async function GET(
     const effectiveParcel = getEffectiveForSlot(['parcel', 'all']);
     const effectivePersonRide = getEffectiveForSlot(['person_ride', 'all']);
 
-    const toStatus = (eff: ReturnType<typeof getEffectiveForSlot>) => {
+    type BlacklistServiceStatus = {
+      isBanned: boolean;
+      reason: string;
+      isPermanent: boolean;
+      expiresAt: string | null;
+      createdAt: string;
+      source: string;
+      remainingMs: number | null;
+      actorEmail: string | null;
+      actorName: string | null;
+      /** Present when "all" is adjusted to partially allowed (per-service whitelist) */
+      partiallyAllowedServices?: string[];
+    };
+
+    const toStatus = (eff: ReturnType<typeof getEffectiveForSlot>): BlacklistServiceStatus | null => {
       if (!eff) return null;
       const row = eff as { source?: string; actorEmail?: string | null; actorName?: string | null };
       return {
@@ -425,7 +460,12 @@ export async function GET(
         if (params_obj.penaltiesServiceType === "unspecified" || params_obj.penaltiesServiceType === "null") {
           penaltiesConditions.push(isNull(riderPenalties.serviceType));
         } else {
-          penaltiesConditions.push(eq(riderPenalties.serviceType, params_obj.penaltiesServiceType as "food" | "parcel" | "person_ride"));
+          penaltiesConditions.push(
+            eq(
+              riderPenalties.serviceType,
+              params_obj.penaltiesServiceType as NonNullable<RiderPenaltyRow["serviceType"]>
+            )
+          );
         }
       }
       if (params_obj.penaltiesOrderId && params_obj.penaltiesOrderId.trim() !== "") {

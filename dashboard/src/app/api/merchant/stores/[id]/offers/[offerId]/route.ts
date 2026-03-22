@@ -10,8 +10,35 @@ import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
+import { deleteDocument } from "@/lib/services/r2";
 
 export const runtime = "nodejs";
+
+function extractKeyFromProxyOrUrl(value: string): string | null {
+  const v = (value || "").trim();
+  if (!v) return null;
+  // proxy format
+  if (v.includes("/api/attachments/proxy") && v.includes("key=")) {
+    try {
+      const u = new URL(v, "http://dummy");
+      const k = u.searchParams.get("key");
+      return k ? decodeURIComponent(k) : null;
+    } catch {
+      return null;
+    }
+  }
+  // full url => key = pathname
+  if (v.startsWith("http://") || v.startsWith("https://")) {
+    try {
+      const u = new URL(v);
+      return u.pathname.replace(/^\/+/, "") || null;
+    } catch {
+      return null;
+    }
+  }
+  // already a key
+  return v.replace(/^\/+/, "");
+}
 
 async function assertStoreAccess(storeId: number) {
   const supabase = await createServerSupabaseClient();
@@ -69,6 +96,7 @@ export async function PATCH(
       offer_type,
       offer_sub_type,
       menu_item_ids,
+      offer_image_aspect_ratio,
       discount_value,
       min_order_amount,
       buy_quantity,
@@ -118,10 +146,19 @@ export async function PATCH(
       updates.push(`offer_type = $${p++}`);
       values.push(offer_type);
     }
-    if (menu_item_ids !== undefined) {
-      // Keep offer targeting consistent across platforms: store menu_item_ids inside offer_metadata.
+    if (menu_item_ids !== undefined || offer_image_aspect_ratio !== undefined) {
+      // Keep offer targeting + rendering metadata consistent across platforms: store both inside offer_metadata.
       const currentMeta = ((existing as any).offer_metadata as Record<string, unknown>) ?? {};
-      const nextMeta = { ...currentMeta, menu_item_ids: Array.isArray(menu_item_ids) ? menu_item_ids : null };
+      const nextMeta: Record<string, unknown> = { ...currentMeta };
+      if (menu_item_ids !== undefined) {
+        nextMeta.menu_item_ids = Array.isArray(menu_item_ids) ? menu_item_ids : null;
+      }
+      if (offer_image_aspect_ratio !== undefined) {
+        nextMeta.offer_image_aspect_ratio =
+          offer_image_aspect_ratio == null || !Number.isFinite(Number(offer_image_aspect_ratio))
+            ? null
+            : Number(offer_image_aspect_ratio);
+      }
       updates.push(`offer_metadata = $${p++}::jsonb`);
       values.push(JSON.stringify(nextMeta));
     }
@@ -188,6 +225,17 @@ export async function DELETE(
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }
     const sql = getSql();
+
+    // Read banner URL before soft-delete so we can remove the object from R2.
+    const [offerRow] = await sql`
+      SELECT offer_image_url
+      FROM merchant_offers
+      WHERE id = ${offerIdNum} AND store_id = ${storeId}
+      LIMIT 1
+    `;
+    const oldOfferImageUrl = (offerRow as any)?.offer_image_url as string | null | undefined;
+    const oldKey = oldOfferImageUrl ? extractKeyFromProxyOrUrl(oldOfferImageUrl) : null;
+
     const [updated] = await sql`
       UPDATE merchant_offers SET is_active = false, updated_at = NOW()
       WHERE id = ${offerIdNum} AND store_id = ${storeId}
@@ -196,6 +244,12 @@ export async function DELETE(
     if (!updated) {
       return NextResponse.json({ success: false, error: "Offer not found" }, { status: 404 });
     }
+
+    // Best-effort cleanup: banner deletion should never block the offer delete.
+    if (oldKey) {
+      deleteDocument(oldKey).catch(() => undefined);
+    }
+
     try {
       await logStoreActivity({ storeId, section: "offer", action: "delete", entityId: offerIdNum, summary: `Agent deleted offer`, actorType: "agent", source: "dashboard" });
     } catch (_) {}

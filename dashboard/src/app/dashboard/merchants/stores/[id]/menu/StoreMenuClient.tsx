@@ -23,7 +23,6 @@ import { MenuItemsGridSkeleton } from "@/components/ui/MenuItemsGridSkeleton";
 import { MenuItemForm, type ItemFormData } from "./MenuItemForm";
 import {
   ITEM_PLACEHOLDER_SVG,
-  CATEGORY_SUGGESTIONS,
   normalizeFoodTypeForForm,
   normalizeSpiceLevelForForm,
   getFoodTypeLabel,
@@ -32,6 +31,10 @@ import {
   type Customization,
   type Variant,
 } from "./menu-types";
+import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
+import Link from "next/link";
+import { normalizeMenuItemImageFile, validateMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
+import { ensureStoreCuisinesLinkedForItemNames } from "@/lib/merchant/ensureStoreCuisinesForItem";
 
 const defaultItemFormData: ItemFormData = {
   item_name: "",
@@ -43,7 +46,7 @@ const defaultItemFormData: ItemFormData = {
   base_price: "",
   selling_price: "",
   discount_percentage: "0",
-  tax_percentage: "5",
+  tax_percentage: "0",
   in_stock: true,
   available_quantity: "",
   low_stock_threshold: "",
@@ -53,16 +56,61 @@ const defaultItemFormData: ItemFormData = {
   is_popular: false,
   is_recommended: false,
   preparation_time_minutes: 15,
+  packaging_enabled: false,
+  packaging_charges: "",
   serves: 1,
   serves_label: "",
   item_size_value: "",
   item_size_unit: "",
+  available_for_delivery: true,
+  weight_per_serving: "",
+  weight_per_serving_unit: "grams",
+  calories_kcal: "",
+  protein: "",
+  protein_unit: "mg",
+  carbohydrates: "",
+  carbohydrates_unit: "mg",
+  fat: "",
+  fat_unit: "mg",
+  fibre: "",
+  fibre_unit: "mg",
+  item_tags: "",
   is_active: true,
   allergens: "",
   category_id: null,
   customizations: [],
   variants: [],
 };
+
+function nutritionPayloadFromForm(form: ItemFormData) {
+  const parseOpt = (s: string): number | null => {
+    const t = String(s ?? "").trim();
+    if (!t) return null;
+    const n = Number(t.replace(/,/g, ""));
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const tags = form.item_tags
+    ? String(form.item_tags)
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean)
+    : [];
+  return {
+    available_for_delivery: form.available_for_delivery !== false,
+    weight_per_serving: parseOpt(form.weight_per_serving),
+    weight_per_serving_unit: form.weight_per_serving_unit || "grams",
+    calories_kcal: parseOpt(form.calories_kcal),
+    protein: parseOpt(form.protein),
+    protein_unit: form.protein_unit || "mg",
+    carbohydrates: parseOpt(form.carbohydrates),
+    carbohydrates_unit: form.carbohydrates_unit || "mg",
+    fat: parseOpt(form.fat),
+    fat_unit: form.fat_unit || "mg",
+    fibre: parseOpt(form.fibre),
+    fibre_unit: form.fibre_unit || "mg",
+    item_tags: tags.length ? tags : null,
+  };
+}
 
 function normalizeCategory(c: {
   id?: number;
@@ -71,6 +119,7 @@ function normalizeCategory(c: {
   category_name?: string;
   category_description?: string | null;
   parent_category_id?: number | null;
+  cuisine_id?: number | null;
   display_order?: number | null;
   is_active?: boolean;
 }): MenuCategory {
@@ -80,9 +129,21 @@ function normalizeCategory(c: {
     category_name: c.category_name ?? c.name ?? "—",
     category_description: c.category_description ?? undefined,
     parent_category_id: c.parent_category_id ?? undefined,
+    cuisine_id: c.cuisine_id != null ? Number(c.cuisine_id) : undefined,
     display_order: c.display_order ?? undefined,
     is_active: c.is_active !== false,
   };
+}
+
+function formatCategoryLabel(categories: MenuCategory[], categoryId: number | null | undefined): string {
+  if (categoryId == null) return "Uncategorized";
+  const cat = categories.find((c) => c.id === categoryId);
+  if (!cat) return "Uncategorized";
+  if (cat.parent_category_id) {
+    const parent = categories.find((c) => c.id === cat.parent_category_id);
+    return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
+  }
+  return cat.category_name;
 }
 
 function normalizeItem(
@@ -113,6 +174,8 @@ function normalizeItem(
     cuisine_type: (item.cuisine_type as string) ?? undefined,
     is_active: (item.is_active as boolean) ?? true,
     preparation_time_minutes: (item.preparation_time_minutes as number) ?? undefined,
+    packaging_charges:
+      item.packaging_charges == null ? undefined : Number(item.packaging_charges as number),
     serves: (item.serves as number) ?? undefined,
     serves_label: (item.serves_label as string) ?? null,
     item_size_value:
@@ -133,6 +196,41 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const menuQuery = useStoreMenuQuery(storeId);
   const data = menuQuery.data ?? null;
   const loading = menuQuery.isLoading;
+  const storeMenuDefaults = useMemo(() => {
+    const s = (
+      data as {
+        store?: { avg_preparation_time_minutes?: number | null; packaging_charge_amount?: number | null };
+      } | null
+    )?.store;
+    return {
+      avg_preparation_time_minutes: s?.avg_preparation_time_minutes ?? null,
+      packaging_charge_amount: s?.packaging_charge_amount ?? null,
+    };
+  }, [data]);
+  const [addCreatedItemId, setAddCreatedItemId] = useState<number | null>(null);
+  const [addModalKey, setAddModalKey] = useState(0);
+  const initialAddVariantsRef = useRef<number[]>([]);
+  const initialAddCustRef = useRef<number[]>([]);
+  const initialAddAddonIdsRef = useRef<Record<number, number[]>>({});
+
+  const openAddItemModal = useCallback(() => {
+    setAddCreatedItemId(null);
+    initialAddVariantsRef.current = [];
+    initialAddCustRef.current = [];
+    initialAddAddonIdsRef.current = {};
+    setAddModalKey((k) => k + 1);
+    setAddForm({
+      ...defaultItemFormData,
+      preparation_time_minutes: storeMenuDefaults.avg_preparation_time_minutes ?? 15,
+    });
+    setAddError("");
+    setImagePreview("");
+    setAddImageFile(null);
+    setAddImageValidationError("");
+    setAddImageValidating(false);
+    addImagePendingFileRef.current = null;
+    setShowAddModal(true);
+  }, [storeMenuDefaults]);
   const refreshMenu = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
   }, [queryClient, storeId]);
@@ -168,12 +266,23 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [categoryError, setCategoryError] = useState<string | null>(null);
   const [categorySuggestionsOpen, setCategorySuggestionsOpen] = useState(false);
+  const [categoryPeerSuggestions, setCategoryPeerSuggestions] = useState<string[]>([]);
+  const [categoryPeerSuggestionsLoading, setCategoryPeerSuggestionsLoading] = useState(false);
+  const debouncedCategoryNameInput = useDebouncedValue(categoryForm.category_name ?? "", 280);
   const [showManageCategoriesModal, setShowManageCategoriesModal] = useState(false);
   const [showDeleteCategoryModal, setShowDeleteCategoryModal] = useState(false);
   const [deleteCategoryId, setDeleteCategoryId] = useState<number | null>(null);
   const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(null);
   const [isDeletingCategory, setIsDeletingCategory] = useState(false);
   const [parentCategoryIdInForm, setParentCategoryIdInForm] = useState<number | null>(null);
+  const [categoryUiConfig, setCategoryUiConfig] = useState<{
+    cuisine_field: { visible: boolean; required_for_root: boolean; inherit_on_subcategory: boolean };
+    allow_create_custom_cuisine: boolean;
+    limits?: { max_cuisines: number | null; current_custom_cuisine_count: number };
+  } | null>(null);
+  const [cuisineOptions, setCuisineOptions] = useState<
+    Array<{ id: number; name: string; is_system_defined: boolean }>
+  >([]);
 
   const [addForm, setAddForm] = useState<ItemFormData>(defaultItemFormData);
   const [editForm, setEditForm] = useState<ItemFormData>(defaultItemFormData);
@@ -181,6 +290,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [editImagePreview, setEditImagePreview] = useState("");
   const [addImageFile, setAddImageFile] = useState<File | null>(null);
   const [editImageFile, setEditImageFile] = useState<File | null>(null);
+  const [addImageValidationError, setAddImageValidationError] = useState("");
+  const [editImageValidationError, setEditImageValidationError] = useState("");
+  const [addImageValidating, setAddImageValidating] = useState(false);
+  const [editImageValidating, setEditImageValidating] = useState(false);
+  const addImagePendingFileRef = useRef<File | null>(null);
+  const editImagePendingFileRef = useRef<File | null>(null);
   const [addError, setAddError] = useState("");
   const [editError, setEditError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -254,6 +369,109 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       cancelled = true;
     };
   }, [storePublicId, crStatus, crType]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/menu/category-config`, {
+          credentials: "include",
+        });
+        const cfg = (await res.json().catch(() => null)) as {
+          cuisine_field?: { visible?: boolean; required_for_root?: boolean; inherit_on_subcategory?: boolean };
+          allow_create_custom_cuisine?: boolean;
+          limits?: { max_cuisines?: number | null; current_custom_cuisine_count?: number };
+        } | null;
+        if (cancelled || !res.ok || !cfg?.cuisine_field) return;
+        setCategoryUiConfig({
+          cuisine_field: {
+            visible: Boolean(cfg.cuisine_field.visible),
+            required_for_root: Boolean(cfg.cuisine_field.required_for_root),
+            inherit_on_subcategory: Boolean(cfg.cuisine_field.inherit_on_subcategory),
+          },
+          allow_create_custom_cuisine: Boolean(cfg.allow_create_custom_cuisine),
+          limits: cfg.limits
+            ? {
+                max_cuisines:
+                  cfg.limits.max_cuisines != null && Number.isFinite(Number(cfg.limits.max_cuisines))
+                    ? Number(cfg.limits.max_cuisines)
+                    : null,
+                current_custom_cuisine_count: Number(cfg.limits.current_custom_cuisine_count ?? 0),
+              }
+            : undefined,
+        });
+      } catch {
+        if (!cancelled) setCategoryUiConfig(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId]);
+
+  const parseCuisineRows = (
+    rows: unknown
+  ): Array<{ id: number; name: string; is_system_defined: boolean }> => {
+    if (!Array.isArray(rows)) return [];
+    const out: Array<{ id: number; name: string; is_system_defined: boolean }> = [];
+    for (const raw of rows) {
+      if (raw == null || typeof raw !== "object") continue;
+      const x = raw as Record<string, unknown>;
+      const idRaw = x.id;
+      const idNum =
+        typeof idRaw === "bigint" ? Number(idRaw) : typeof idRaw === "number" ? idRaw : Number(idRaw);
+      if (!Number.isFinite(idNum) || idNum <= 0) continue;
+      if (typeof x.name !== "string") continue;
+      out.push({
+        id: idNum,
+        name: x.name,
+        is_system_defined: Boolean(x.is_system_defined),
+      });
+    }
+    return out;
+  };
+
+  const loadStoreCuisines = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/cuisines`, { credentials: "include" });
+      const j = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        cuisines?: unknown;
+      };
+      if (!res.ok || j.success === false) {
+        setCuisineOptions([]);
+        return;
+      }
+      const linked = parseCuisineRows(Array.isArray(j.cuisines) ? j.cuisines : []);
+      setCuisineOptions(linked);
+      setCategoryUiConfig((prev) =>
+        prev?.limits
+          ? { ...prev, limits: { ...prev.limits, current_custom_cuisine_count: linked.length } }
+          : prev
+      );
+    } catch {
+      setCuisineOptions([]);
+    }
+  }, [storeId]);
+
+  useEffect(() => {
+    void loadStoreCuisines();
+  }, [loadStoreCuisines]);
+
+  useEffect(() => {
+    if (showCategoryModal && categoryUiConfig?.cuisine_field.visible) {
+      void loadStoreCuisines();
+    }
+  }, [showCategoryModal, categoryUiConfig?.cuisine_field.visible, loadStoreCuisines]);
+
+  const showCuisinePicker =
+    Boolean(categoryUiConfig?.cuisine_field.visible) && parentCategoryIdInForm == null;
+
+  const selectedCuisineForCategory = useMemo(() => {
+    const cid = categoryForm.cuisine_id;
+    if (cid == null || Number.isNaN(Number(cid))) return null;
+    return cuisineOptions.find((c) => c.id === Number(cid)) ?? null;
+  }, [categoryForm.cuisine_id, cuisineOptions]);
 
   const handleApproveCr = async (id: number) => {
     setCrActionLoadingId(id);
@@ -360,6 +578,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       category_name?: string;
       category_description?: string | null;
       parent_category_id?: number | null;
+      cuisine_id?: number | null;
       display_order?: number | null;
       is_active?: boolean;
     });
@@ -381,6 +600,74 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     () => parentCategories.flatMap((p) => [p, ...(childrenByParentId.get(p.id) ?? [])]),
     [parentCategories, childrenByParentId]
   );
+
+  /** Same scope as DB unique (store + parent + lower(name)): root vs siblings under a parent. */
+  const categoryNameConflictSet = useMemo(() => {
+    const set = new Set<string>();
+    const scopeParent = parentCategoryIdInForm ?? null;
+    for (const c of categories) {
+      if (categoryModalMode === "edit" && editingCategoryId != null && c.id === editingCategoryId) continue;
+      const rowParent = c.parent_category_id ?? null;
+      if (rowParent !== scopeParent) continue;
+      const n = (c.category_name ?? "").toLowerCase().trim();
+      if (n) set.add(n);
+    }
+    return set;
+  }, [categories, categoryModalMode, editingCategoryId, parentCategoryIdInForm]);
+
+  const useSubcategoryPeerSuggestions =
+    parentCategoryIdInForm != null;
+
+  useEffect(() => {
+    if (!showCategoryModal) {
+      setCategoryPeerSuggestions([]);
+      setCategoryPeerSuggestionsLoading(false);
+      return;
+    }
+    const ac = new AbortController();
+    (async () => {
+      setCategoryPeerSuggestionsLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("q", debouncedCategoryNameInput.trim().slice(0, 30));
+        if (categoryModalMode === "edit" && editingCategoryId != null) {
+          params.set("editingCategoryId", String(editingCategoryId));
+        }
+        let url: string;
+        if (useSubcategoryPeerSuggestions && parentCategoryIdInForm != null) {
+          params.set("parentCategoryId", String(parentCategoryIdInForm));
+          url = `/api/merchant/stores/${storeId}/menu/subcategory-name-suggestions?${params.toString()}`;
+        } else {
+          url = `/api/merchant/stores/${storeId}/menu/category-name-suggestions?${params.toString()}`;
+        }
+        const res = await fetch(url, { credentials: "include", signal: ac.signal });
+        const j = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          suggestions?: unknown;
+          error?: string;
+        };
+        if (!res.ok || j.success === false) throw new Error(j.error || "Request failed");
+        const list = Array.isArray(j.suggestions)
+          ? j.suggestions.filter((x): x is string => typeof x === "string")
+          : [];
+        if (!ac.signal.aborted) setCategoryPeerSuggestions(list);
+      } catch {
+        if (!ac.signal.aborted) setCategoryPeerSuggestions([]);
+      } finally {
+        if (!ac.signal.aborted) setCategoryPeerSuggestionsLoading(false);
+      }
+    })();
+    return () => ac.abort();
+  }, [
+    showCategoryModal,
+    debouncedCategoryNameInput,
+    storeId,
+    categoryModalMode,
+    editingCategoryId,
+    parentCategoryIdInForm,
+    useSubcategoryPeerSuggestions,
+  ]);
+
   const rawItems = (data && "items" in data && Array.isArray(data.items) ? data.items : []) as Record<string, unknown>[];
   const menuItems: MenuItem[] = rawItems.map((item, i) => normalizeItem(item, i));
 
@@ -503,7 +790,10 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       const basePriceNum = data.base_price != null ? Number(data.base_price) : null;
       const sellingPriceNum = data.selling_price != null ? Number(data.selling_price) : null;
       const discountNum = data.discount_percentage != null ? Number(data.discount_percentage) : 0;
-      const taxNum = data.tax_percentage != null ? Number(data.tax_percentage) : 5;
+      const taxNum = data.tax_percentage != null ? Number(data.tax_percentage) : 0;
+      const pkgRaw = (data as { packaging_charges?: unknown }).packaging_charges;
+      const pkgNum = pkgRaw != null && pkgRaw !== "" ? Number(pkgRaw) : NaN;
+      const packaging_enabled = Number.isFinite(pkgNum) && pkgNum > 0;
       setEditForm({
         ...defaultItemFormData,
         item_name: data.item_name ?? "",
@@ -518,11 +808,15 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         tax_percentage: String(taxNum),
         in_stock: data.in_stock ?? true,
         has_customizations: customizations.length > 0,
-        has_addons: customizations.some((c) => (c.addons?.length ?? 0) > 0),
+        has_addons: customizations.some(
+          (c: { addons?: { length?: number }[] }) => (c.addons?.length ?? 0) > 0
+        ),
         has_variants: variants.length > 0,
         is_popular: data.is_popular ?? false,
         is_recommended: data.is_recommended ?? false,
         preparation_time_minutes: data.preparation_time_minutes ?? 15,
+        packaging_enabled,
+        packaging_charges: packaging_enabled ? String(pkgNum) : "",
         serves: data.serves ?? 1,
         serves_label: data.serves_label ?? "",
         item_size_value: data.item_size_value != null ? String(data.item_size_value) : "",
@@ -543,6 +837,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           : "";
       const basePriceNum = item.base_price != null ? Number(item.base_price) : null;
       const sellingPriceNum = item.selling_price != null ? Number(item.selling_price) : null;
+      const pkgNumFb =
+        item.packaging_charges != null ? Number(item.packaging_charges as number) : NaN;
+      const packaging_enabled_fb = Number.isFinite(pkgNumFb) && pkgNumFb > 0;
       setEditForm({
         ...defaultItemFormData,
         item_name: item.item_name ?? "",
@@ -554,7 +851,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         base_price: basePriceNum != null ? basePriceNum.toFixed(2) : "",
         selling_price: sellingPriceNum != null ? sellingPriceNum.toFixed(2) : "",
         discount_percentage: String(item.discount_percentage ?? "0"),
-        tax_percentage: String(item.tax_percentage ?? "5"),
+        tax_percentage: String(item.tax_percentage ?? "0"),
         in_stock: item.in_stock ?? true,
         has_customizations: (item.customizations?.length ?? 0) > 0,
         has_addons: (item.customizations?.some((c) => (c.addons?.length ?? 0) > 0)) ?? false,
@@ -562,10 +859,40 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         is_popular: item.is_popular ?? false,
         is_recommended: item.is_recommended ?? false,
         preparation_time_minutes: item.preparation_time_minutes ?? 15,
+        packaging_enabled: packaging_enabled_fb,
+        packaging_charges: packaging_enabled_fb ? String(pkgNumFb) : "",
         serves: item.serves ?? 1,
         serves_label: item.serves_label ?? "",
         item_size_value: item.item_size_value != null ? String(item.item_size_value) : "",
         item_size_unit: item.item_size_unit ?? "",
+        available_for_delivery: (item as { available_for_delivery?: boolean }).available_for_delivery ?? true,
+        weight_per_serving:
+          (item as { weight_per_serving?: unknown }).weight_per_serving != null
+            ? String((item as { weight_per_serving?: unknown }).weight_per_serving)
+            : "",
+        weight_per_serving_unit:
+          (item as { weight_per_serving_unit?: string }).weight_per_serving_unit ?? "grams",
+        calories_kcal:
+          (item as { calories_kcal?: unknown }).calories_kcal != null
+            ? String((item as { calories_kcal?: unknown }).calories_kcal)
+            : "",
+        protein:
+          (item as { protein?: unknown }).protein != null ? String((item as { protein?: unknown }).protein) : "",
+        protein_unit: (item as { protein_unit?: string }).protein_unit ?? "mg",
+        carbohydrates:
+          (item as { carbohydrates?: unknown }).carbohydrates != null
+            ? String((item as { carbohydrates?: unknown }).carbohydrates)
+            : "",
+        carbohydrates_unit: (item as { carbohydrates_unit?: string }).carbohydrates_unit ?? "mg",
+        fat: (item as { fat?: unknown }).fat != null ? String((item as { fat?: unknown }).fat) : "",
+        fat_unit: (item as { fat_unit?: string }).fat_unit ?? "mg",
+        fibre: (item as { fibre?: unknown }).fibre != null ? String((item as { fibre?: unknown }).fibre) : "",
+        fibre_unit: (item as { fibre_unit?: string }).fibre_unit ?? "mg",
+        item_tags: Array.isArray((item as { item_tags?: unknown }).item_tags)
+          ? ((item as { item_tags?: string[] }).item_tags ?? []).join(", ")
+          : typeof (item as { item_tags?: unknown }).item_tags === "string"
+            ? String((item as { item_tags?: string }).item_tags)
+            : "",
         is_active: item.is_active ?? true,
         allergens: allergensString,
         category_id: item.category_id ?? null,
@@ -579,13 +906,106 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setShowEditModal(true);
   };
 
-  const handleAddItem = async () => {
+  const packagingPayloadForForm = (form: ItemFormData) => {
+    if (!form.packaging_enabled) return null;
+    const raw = String(form.packaging_charges ?? "").replace(/,/g, "").trim();
+    if (raw !== "") {
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    }
+    const def = storeMenuDefaults.packaging_charge_amount;
+    if (def != null && Number.isFinite(Number(def)) && Number(def) >= 0) return Number(def);
+    return null;
+  };
+
+  const assertAddMainValid = (form: ItemFormData) => {
+    if (!form.item_name.trim()) {
+      setAddError("Name is required");
+      throw new Error("Name is required");
+    }
+    if (!form.category_id) {
+      setAddError("Category is required");
+      throw new Error("Category is required");
+    }
+    if (!form.base_price || Number(form.base_price) <= 0) {
+      setAddError("Valid base price required");
+      throw new Error("Valid base price required");
+    }
+    if (form.packaging_enabled) {
+      const raw = String(form.packaging_charges ?? "").replace(/,/g, "").trim();
+      const n = raw !== "" ? Number(raw) : NaN;
+      const def = storeMenuDefaults.packaging_charge_amount;
+      const hasAmount = raw !== "" && Number.isFinite(n) && n >= 0;
+      const hasStoreDefault = def != null && Number.isFinite(Number(def)) && Number(def) >= 0;
+      if (!hasAmount && !hasStoreDefault) {
+        setAddError("Enter packaging amount (₹) or turn off packaging.");
+        throw new Error("Packaging");
+      }
+    }
     setAddError("");
-    if (!addForm.item_name.trim()) return setAddError("Name is required");
-    if (!addForm.category_id) return setAddError("Category is required");
-    if (!addForm.base_price || Number(addForm.base_price) <= 0) return setAddError("Valid base price required");
+  };
+
+  /** Step 1 (or update main fields after item exists): create item or PATCH when revisiting tab 1. */
+  const handleAddSaveAndNext = async () => {
+    assertAddMainValid(addForm);
     setIsSaving(true);
     try {
+      if (addCreatedItemId != null) {
+        const packagingPayload = packagingPayloadForForm(addForm);
+        const payload = {
+          item_name: addForm.item_name.trim(),
+          item_description: addForm.item_description?.trim() || null,
+          category_id: addForm.category_id,
+          food_type: addForm.food_type || null,
+          spice_level: addForm.spice_level || null,
+          cuisine_type: addForm.cuisine_type || null,
+          base_price: addForm.base_price ? Number(addForm.base_price) : 0,
+          selling_price: addForm.selling_price ? Number(addForm.selling_price) : Number(addForm.base_price),
+          discount_percentage: 0,
+          in_stock: Boolean(addForm.in_stock),
+          is_active: Boolean(addForm.is_active),
+          is_popular: Boolean(addForm.is_popular),
+          is_recommended: Boolean(addForm.is_recommended),
+          preparation_time_minutes: addForm.preparation_time_minutes ?? null,
+          packaging_charges: packagingPayload,
+          serves: addForm.serves ?? null,
+          serves_label: addForm.serves_label || null,
+          item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
+          item_size_unit: addForm.item_size_unit || null,
+          allergens: addForm.allergens ? String(addForm.allergens).split(",").map((s) => s.trim()).filter(Boolean) : [],
+          ...nutritionPayloadFromForm(addForm),
+        };
+        const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${addCreatedItemId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const r = await res.json().catch(() => ({}));
+        if (!res.ok || r?.success === false) throw new Error(r?.error || "Update failed");
+        if (addImageFile) {
+          const fd = new FormData();
+          fd.append("file", addImageFile);
+          const imgRes = await fetch(`/api/merchant/stores/${storeId}/menu/items/${addCreatedItemId}/images`, {
+            method: "POST",
+            body: fd,
+          });
+          const img = await imgRes.json().catch(() => ({}));
+          if (!imgRes.ok || img?.success === false) toast(img?.error || "Image upload failed.");
+          else setAddImageFile(null);
+        }
+        try {
+          const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(storeId, addForm.cuisine_type);
+          if (linked > 0) await loadStoreCuisines();
+          if (skippedMessages.length > 0) toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+        } catch {
+          /* non-fatal */
+        }
+        await refreshMenu();
+        toast("Item details updated.");
+        return;
+      }
+
+      const packagingPayload = packagingPayloadForForm(addForm);
       const payload = {
         item_name: addForm.item_name.trim(),
         item_description: addForm.item_description?.trim() || null,
@@ -597,11 +1017,24 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         selling_price: addForm.selling_price ? Number(addForm.selling_price) : Number(addForm.base_price),
         in_stock: Boolean(addForm.in_stock),
         is_active: Boolean(addForm.is_active),
+        is_popular: Boolean(addForm.is_popular),
+        is_recommended: Boolean(addForm.is_recommended),
+        has_customizations: false,
+        has_addons: false,
+        has_variants: false,
         preparation_time_minutes: addForm.preparation_time_minutes ?? null,
+        packaging_charges: packagingPayload,
         serves: addForm.serves ?? null,
         serves_label: addForm.serves_label || null,
         item_size_value: addForm.item_size_value ? Number(addForm.item_size_value) : null,
         item_size_unit: addForm.item_size_unit || null,
+        allergens: addForm.allergens
+          ? String(addForm.allergens)
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : null,
+        ...nutritionPayloadFromForm(addForm),
       };
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items`, {
         method: "POST",
@@ -611,15 +1044,20 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       const r = await res.json().catch(() => ({}));
       if (!res.ok || r?.success === false) throw new Error(r?.error || "Create failed");
       const newId = Number(r?.id);
+      if (!Number.isFinite(newId)) throw new Error("Invalid item id from server");
       trackAudit({
         actionType: "CREATE",
         resourceType: "merchant_menu_items",
-        resourceId: Number.isFinite(newId) ? String(newId) : undefined,
+        resourceId: String(newId),
         actionDetails: { action: "create_item", payload: { ...payload, item_description: payload.item_description ? "[text]" : null } },
         actionStatus: "SUCCESS",
         requestMethod: "POST",
       });
-      if (addImageFile && Number.isFinite(newId)) {
+      initialAddVariantsRef.current = [];
+      initialAddCustRef.current = [];
+      initialAddAddonIdsRef.current = {};
+      setAddCreatedItemId(newId);
+      if (addImageFile) {
         const fd = new FormData();
         fd.append("file", addImageFile);
         const imgRes = await fetch(`/api/merchant/stores/${storeId}/menu/items/${newId}/images`, {
@@ -628,12 +1066,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         });
         const img = await imgRes.json().catch(() => ({}));
         if (!imgRes.ok || img?.success === false) {
-          // Item created; image upload failed. Keep item.
           toast(img?.error || "Image upload failed (item created).");
           trackAudit({
             actionType: "UPDATE",
             resourceType: "merchant_menu_item_images",
-            resourceId: Number.isFinite(newId) ? String(newId) : undefined,
+            resourceId: String(newId),
             actionDetails: { action: "upload_item_image" },
             actionStatus: "FAILED",
             errorMessage: img?.error || "Image upload failed",
@@ -648,26 +1085,176 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             actionStatus: "SUCCESS",
             requestMethod: "POST",
           });
+          setAddImageFile(null);
         }
       }
-      toast("Menu item created.");
+      try {
+        const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(storeId, addForm.cuisine_type);
+        if (linked > 0) await loadStoreCuisines();
+        if (skippedMessages.length > 0) toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+      } catch {
+        /* non-fatal */
+      }
+      await refreshMenu();
+      toast("Item saved. Add customizations or variants, then Submit.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Error saving item.";
+      const validationOnly = ["Name is required", "Category is required", "Valid base price required", "Packaging"].includes(msg);
+      if (!validationOnly) {
+        setAddError(msg);
+        trackAudit({
+          actionType: "CREATE",
+          resourceType: "merchant_menu_items",
+          actionDetails: { action: "add_save_step" },
+          actionStatus: "FAILED",
+          errorMessage: msg,
+          requestMethod: "POST",
+        });
+      }
+      throw e;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const syncItemOptionFlags = async (itemId: number, form: ItemFormData) => {
+    const custs = form.customizations ?? [];
+    const vars = form.variants ?? [];
+    const has_customizations = custs.length > 0;
+    const has_variants = vars.length > 0;
+    const has_addons = custs.some((c) => (c.addons?.length ?? 0) > 0);
+    const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ has_customizations, has_variants, has_addons }),
+    });
+    const r = await res.json().catch(() => ({}));
+    if (!res.ok || r?.success === false) throw new Error(r?.error || "Failed to update option flags");
+  };
+
+  const handleAddSubmitOptions = async () => {
+    if (addCreatedItemId == null) {
+      toast("Save the item on the first tab first.");
+      throw new Error("No item");
+    }
+    setAddError("");
+    setIsSaving(true);
+    try {
+      const base = `/api/merchant/stores/${storeId}/menu`;
+      const itemId = addCreatedItemId;
+      const currentVariantIds = (addForm.variants ?? []).map((v) => v.id).filter((id): id is number => id != null && Number.isFinite(id));
+      const toDeleteVariants = initialAddVariantsRef.current.filter((id) => !currentVariantIds.includes(id));
+      for (const id of toDeleteVariants) {
+        const r = await fetch(`${base}/variants/${id}`, { method: "DELETE" });
+        if (!r.ok) throw new Error("Failed to delete variant");
+      }
+      for (const v of addForm.variants ?? []) {
+        const payload = {
+          variant_name: v.variant_name,
+          variant_type: v.variant_type ?? null,
+          variant_price: v.variant_price,
+          is_default: v.is_default ?? false,
+          display_order: v.display_order ?? 0,
+        };
+        if (v.id && Number.isFinite(v.id)) {
+          const r = await fetch(`${base}/variants/${v.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) throw new Error("Failed to update variant");
+        } else {
+          const r = await fetch(`${base}/items/${itemId}/variants`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) throw new Error("Failed to add variant");
+        }
+      }
+
+      const currentCustIds = (addForm.customizations ?? []).map((c) => c.id).filter((id): id is number => id != null && Number.isFinite(id));
+      const toDeleteCust = initialAddCustRef.current.filter((id) => !currentCustIds.includes(id));
+      for (const id of toDeleteCust) {
+        const r = await fetch(`${base}/customization-groups/${id}`, { method: "DELETE" });
+        if (!r.ok) throw new Error("Failed to delete customization group");
+      }
+
+      const groupIdsInOrder: number[] = [];
+      for (const c of addForm.customizations ?? []) {
+        const payload = {
+          customization_title: c.customization_title,
+          customization_type: c.customization_type ?? null,
+          is_required: c.is_required,
+          min_selection: c.min_selection,
+          max_selection: c.max_selection,
+          display_order: c.display_order,
+        };
+        if (c.id && Number.isFinite(c.id)) {
+          const r = await fetch(`${base}/customization-groups/${c.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) throw new Error("Failed to update customization group");
+          groupIdsInOrder.push(c.id);
+        } else {
+          const r = await fetch(`${base}/items/${itemId}/customization-groups`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j?.id) throw new Error("Failed to add customization group");
+          groupIdsInOrder.push(j.id);
+        }
+      }
+
+      let custIndex = 0;
+      for (const c of addForm.customizations ?? []) {
+        const groupId = groupIdsInOrder[custIndex++] ?? 0;
+        if (!groupId) continue;
+        const initialAddonIds = initialAddAddonIdsRef.current[c.id ?? 0] ?? [];
+        const currentAddonIds = (c.addons ?? []).map((o) => o.id).filter((id): id is number => id != null && Number.isFinite(id));
+        const toDeleteAddons = initialAddonIds.filter((id) => !currentAddonIds.includes(id));
+        for (const id of toDeleteAddons) {
+          const r = await fetch(`${base}/customization-options/${id}`, { method: "DELETE" });
+          if (!r.ok) throw new Error("Failed to delete addon");
+        }
+        for (const o of c.addons ?? []) {
+          const optPayload = { addon_name: o.addon_name, addon_price: o.addon_price ?? 0, display_order: o.display_order ?? 0 };
+          if (o.id && Number.isFinite(o.id)) {
+            const r = await fetch(`${base}/customization-options/${o.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(optPayload),
+            });
+            if (!r.ok) throw new Error("Failed to update addon");
+          } else {
+            const r = await fetch(`${base}/customization-groups/${groupId}/options`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(optPayload),
+            });
+            if (!r.ok) throw new Error("Failed to add addon");
+          }
+        }
+      }
+
+      await syncItemOptionFlags(itemId, addForm);
+      toast("Menu item finished — variants and customizations saved.");
       await refreshMenu();
       setShowAddModal(false);
+      setAddCreatedItemId(null);
       setAddForm(defaultItemFormData);
       setImagePreview("");
       setAddImageFile(null);
-    } catch {
-      setAddError("Error saving item.");
-      trackAudit({
-        actionType: "CREATE",
-        resourceType: "merchant_menu_items",
-        actionDetails: { action: "create_item" },
-        actionStatus: "FAILED",
-        errorMessage: "Error saving item.",
-        requestMethod: "POST",
-      });
+    } catch (e) {
+      setAddError(e instanceof Error ? e.message : "Failed to save options.");
+      throw e;
+    } finally {
+      setIsSaving(false);
     }
-    setIsSaving(false);
   };
 
   const handleSaveEdit = async () => {
@@ -675,8 +1262,16 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     if (editingId == null) return;
     if (!editForm.item_name.trim()) return setEditError("Name is required");
     if (!editForm.category_id) return setEditError("Category is required");
+    if (editImageValidationError) {
+      return setEditError("Fix the image issue in the upload area or use Auto-fix.");
+    }
     setIsSavingEdit(true);
     try {
+      const packagingPayload = (() => {
+        if (!editForm.packaging_enabled) return null;
+        const n = Number(String(editForm.packaging_charges ?? "").replace(/,/g, ""));
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      })();
       const payload = {
         item_name: editForm.item_name.trim(),
         item_description: editForm.item_description?.trim() || null,
@@ -687,17 +1282,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         base_price: editForm.base_price ? Number(editForm.base_price) : 0,
         selling_price: editForm.selling_price ? Number(editForm.selling_price) : (editForm.base_price ? Number(editForm.base_price) : 0),
         discount_percentage: 0,
-        tax_percentage: editForm.tax_percentage != null && editForm.tax_percentage !== "" ? Number(editForm.tax_percentage) : 5,
         in_stock: Boolean(editForm.in_stock),
         is_active: Boolean(editForm.is_active),
         is_popular: Boolean(editForm.is_popular),
         is_recommended: Boolean(editForm.is_recommended),
         preparation_time_minutes: editForm.preparation_time_minutes ?? null,
+        packaging_charges: packagingPayload,
         serves: editForm.serves ?? null,
         serves_label: editForm.serves_label || null,
         item_size_value: editForm.item_size_value ? Number(editForm.item_size_value) : null,
         item_size_unit: editForm.item_size_unit || null,
         allergens: editForm.allergens ? String(editForm.allergens).split(",").map((s) => s.trim()).filter(Boolean) : [],
+        ...nutritionPayloadFromForm(editForm),
       };
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${editingId}`, {
         method: "PUT",
@@ -735,6 +1331,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         });
       }
       toast("Menu item updated.");
+      try {
+        const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(
+          storeId,
+          editForm.cuisine_type
+        );
+        if (linked > 0) await loadStoreCuisines();
+        if (skippedMessages.length > 0) {
+          toast(skippedMessages.slice(0, 2).join(" ") + (skippedMessages.length > 2 ? " …" : ""));
+        }
+      } catch {
+        /* non-fatal */
+      }
       await refreshMenu();
       setShowEditModal(false);
     } catch {
@@ -820,6 +1428,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         }
       }
 
+      await syncItemOptionFlags(editingId, editForm);
       toast("Variants and customizations saved.");
       await refreshMenu();
       setShowEditModal(false);
@@ -829,7 +1438,35 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setIsSavingEdit(false);
   };
 
-  const handleProcessImage = (file: File, isEdit: boolean) => {
+  const handleProcessImage = async (file: File, isEdit: boolean) => {
+    if (isEdit) {
+      setEditImageValidationError("");
+      setEditImageValidating(true);
+      editImagePendingFileRef.current = file;
+    } else {
+      setAddImageValidationError("");
+      setAddImageValidating(true);
+      addImagePendingFileRef.current = file;
+    }
+    const check = await validateMenuItemImageFile(file);
+    if (isEdit) {
+      setEditImageValidating(false);
+    } else {
+      setAddImageValidating(false);
+    }
+    if (!check.valid) {
+      if (isEdit) {
+        setEditImageValidationError(check.error);
+      } else {
+        setAddImageValidationError(check.error);
+      }
+      return;
+    }
+    if (isEdit) {
+      editImagePendingFileRef.current = null;
+    } else {
+      addImagePendingFileRef.current = null;
+    }
     const preview = URL.createObjectURL(file);
     if (isEdit) {
       setEditImageFile(file);
@@ -838,6 +1475,37 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       setAddImageFile(file);
       setImagePreview(preview);
     }
+  };
+
+  const handleNormalizeMenuItemImage = async (isEdit: boolean) => {
+    const pending = isEdit ? editImagePendingFileRef.current : addImagePendingFileRef.current;
+    if (!pending) {
+      toast("Choose an image first.");
+      return;
+    }
+    if (isEdit) {
+      setEditImageValidationError("");
+      setEditImageValidating(true);
+    } else {
+      setAddImageValidationError("");
+      setAddImageValidating(true);
+    }
+    const normalized = await normalizeMenuItemImageFile(pending);
+    if (isEdit) {
+      setEditImageValidating(false);
+    } else {
+      setAddImageValidating(false);
+    }
+    if (!normalized.ok) {
+      if (isEdit) {
+        setEditImageValidationError(normalized.error);
+      } else {
+        setAddImageValidationError(normalized.error);
+      }
+      toast(normalized.error);
+      return;
+    }
+    await handleProcessImage(normalized.file, isEdit);
   };
 
   const handleDeleteItem = async () => {
@@ -914,7 +1582,13 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
 
   const openAddCategory = () => {
     setCategoryModalMode("add");
-    setCategoryForm({ category_name: "", category_description: "", display_order: categories.length, is_active: true });
+    setCategoryForm({
+      category_name: "",
+      category_description: "",
+      display_order: categories.length,
+      is_active: true,
+      cuisine_id: undefined,
+    });
     setParentCategoryIdInForm(null);
     setEditingCategoryId(null);
     setShowCategoryModal(true);
@@ -927,6 +1601,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       category_description: "",
       display_order: siblings.length,
       is_active: true,
+      cuisine_id: undefined,
     });
     setParentCategoryIdInForm(parent.id);
     setEditingCategoryId(null);
@@ -939,6 +1614,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       category_description: cat.category_description ?? "",
       display_order: cat.display_order ?? 0,
       is_active: cat.is_active !== false,
+      cuisine_id: cat.cuisine_id ?? undefined,
     });
     setParentCategoryIdInForm(cat.parent_category_id ?? null);
     setEditingCategoryId(cat.id);
@@ -957,15 +1633,26 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       setCategoryError("Category name must not exceed 30 characters");
       return;
     }
+    if (
+      showCuisinePicker &&
+      categoryUiConfig?.cuisine_field.required_for_root &&
+      (categoryForm.cuisine_id == null || Number.isNaN(Number(categoryForm.cuisine_id)))
+    ) {
+      setCategoryError("Select a cuisine for this category");
+      return;
+    }
     setCategoryLoading(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         category_name: name,
         category_description: (categoryForm.category_description ?? "").trim() || null,
         parent_category_id: parentCategoryIdInForm ?? null,
         display_order: Number(categoryForm.display_order) || 0,
         is_active: Boolean(categoryForm.is_active),
       };
+      if (showCuisinePicker && categoryForm.cuisine_id != null && !Number.isNaN(Number(categoryForm.cuisine_id))) {
+        payload.cuisine_id = Number(categoryForm.cuisine_id);
+      }
       const isEdit = categoryModalMode === "edit" && editingCategoryId != null;
       const url = isEdit
         ? `/api/merchant/stores/${storeId}/menu/categories/${editingCategoryId}`
@@ -977,7 +1664,15 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         body: JSON.stringify(payload),
       });
       const r = await res.json().catch(() => ({}));
-      if (!res.ok || r?.success === false) throw new Error(r?.error || "Save failed");
+      if (!res.ok || r?.success === false) {
+        const msg =
+          typeof r?.message === "string" && r.message.trim()
+            ? r.message
+            : typeof r?.error === "string"
+              ? r.error
+              : "Save failed";
+        throw new Error(msg);
+      }
       toast(isEdit ? "Category updated." : "Category created.");
       trackAudit({
         actionType: isEdit ? "UPDATE" : "CREATE",
@@ -993,8 +1688,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       setEditingCategoryId(null);
       setParentCategoryIdInForm(null);
       setShowManageCategoriesModal(false);
-    } catch {
-      setCategoryError("Error saving category");
+    } catch (e) {
+      setCategoryError(e instanceof Error ? e.message : "Error saving category");
       trackAudit({
         actionType: categoryModalMode === "edit" ? "UPDATE" : "CREATE",
         resourceType: "merchant_menu_categories",
@@ -1018,12 +1713,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       if (!res.ok || r?.success === false) {
         if (r?.error === "category_has_items" && typeof r?.itemCount === "number") {
           setCategoryDeleteError(`Cannot delete: ${r.itemCount} item(s) are in this category. Move or remove them first.`);
+        } else if (r?.error === "category_has_subcategories" && typeof r?.subcategoryCount === "number") {
+          setCategoryDeleteError(
+            `Cannot delete: this category has ${r.subcategoryCount} subcategory(ies). Remove or reassign them first.`
+          );
         } else {
-          setCategoryDeleteError(r?.error ?? "Delete failed");
+          setCategoryDeleteError(
+            typeof r?.message === "string" && r.message.trim() ? r.message : String(r?.error ?? "Delete failed")
+          );
         }
         return;
       }
-      toast("Category deleted.");
+      toast("Category removed.");
       trackAudit({
         actionType: "DELETE",
         resourceType: "merchant_menu_categories",
@@ -1066,7 +1767,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               Manage categories
             </button>
             <button
-              onClick={() => setShowAddModal(true)}
+              onClick={() => openAddItemModal()}
               disabled={!canAddItem}
               className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50"
             >
@@ -1394,7 +2095,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
               {searchedItems.map((item) => {
-                const category = categories.find((c) => c.id === item.category_id);
+                const categoryDisplayLabel = formatCategoryLabel(categories, item.category_id);
                 const discount = Number(item.discount_percentage);
                 const hasDiscount = discount > 0;
                 return (
@@ -1416,8 +2117,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           <div className="flex-1 min-w-0">
                             <div className="font-bold text-sm text-gray-900 truncate">{item.item_name}</div>
                           <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-                            <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">
-                              {category?.category_name ?? "Uncategorized"}
+                            <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide truncate" title={categoryDisplayLabel}>
+                              {categoryDisplayLabel}
                             </div>
                             <span
                               className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
@@ -1544,6 +2245,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           {item.preparation_time_minutes != null && (
                             <span>• Prep {item.preparation_time_minutes} min</span>
                           )}
+                          {item.packaging_charges != null && Number(item.packaging_charges) > 0 && (
+                            <span>• Pkg ₹{Number(item.packaging_charges).toFixed(0)}</span>
+                          )}
                           {item.cuisine_type && (
                             <span className="truncate max-w-[120px]">• {item.cuisine_type}</span>
                           )}
@@ -1653,7 +2357,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 </div>
                 <div>
                   <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-0.5">
-                    {(categories.find((c) => c.id === reviewItem.category_id)?.category_name as string) ?? "Uncategorized"}
+                    {formatCategoryLabel(categories, reviewItem.category_id)}
                   </div>
                   <div className="text-base font-bold text-gray-900">{reviewItem.item_name}</div>
                   {reviewItem.item_description && (
@@ -1717,6 +2421,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     <div>
                       <span className="font-semibold">Prep time: </span>
                       {reviewItem.preparation_time_minutes} min
+                    </div>
+                  )}
+                  {reviewItem.packaging_charges != null && Number(reviewItem.packaging_charges) > 0 && (
+                    <div>
+                      <span className="font-semibold">Packaging: </span>₹{Number(reviewItem.packaging_charges).toFixed(2)}
                     </div>
                   )}
                   {reviewItem.cuisine_type && (
@@ -1896,12 +2605,18 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
             onClick={() => {
               setShowAddModal(false);
+              setAddCreatedItemId(null);
               setAddForm(defaultItemFormData);
               setImagePreview("");
+              setAddImageFile(null);
+              setAddImageValidationError("");
+              setAddImageValidating(false);
+              addImagePendingFileRef.current = null;
             }}
           >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
+                key={addModalKey}
                 isEdit={false}
                 formData={addForm}
                 setFormData={setAddForm}
@@ -1913,12 +2628,24 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 imageUsed={imageUsed}
                 imageLimit={imageLimit}
                 imageSlotsLeft={imageSlotsLeft}
+                storeDefaults={storeMenuDefaults}
+                storeId={storeId}
+                currentItemId={addCreatedItemId != null ? String(addCreatedItemId) : undefined}
+                imageValidationError={addImageValidationError}
+                imageValidating={addImageValidating}
+                onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(false)}
                 onCancel={() => {
                   setShowAddModal(false);
+                  setAddCreatedItemId(null);
                   setAddForm(defaultItemFormData);
                   setImagePreview("");
+                  setAddImageFile(null);
+                  setAddImageValidationError("");
+                  setAddImageValidating(false);
+                  addImagePendingFileRef.current = null;
                 }}
-                onSubmit={handleAddItem}
+                onSaveAndNext={handleAddSaveAndNext}
+                onSubmitOptions={addCreatedItemId != null ? handleAddSubmitOptions : undefined}
                 isSaving={isSaving}
                 error={addError}
                 title="Add New Menu Item"
@@ -1934,7 +2661,12 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         createPortal(
           <div
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
-            onClick={() => setShowEditModal(false)}
+            onClick={() => {
+              setShowEditModal(false);
+              setEditImageValidationError("");
+              setEditImageValidating(false);
+              editImagePendingFileRef.current = null;
+            }}
           >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
@@ -1949,7 +2681,16 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 imageUsed={imageUsed}
                 imageLimit={imageLimit}
                 imageSlotsLeft={imageSlotsLeft}
-                onCancel={() => setShowEditModal(false)}
+                storeDefaults={storeMenuDefaults}
+                imageValidationError={editImageValidationError}
+                imageValidating={editImageValidating}
+                onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(true)}
+                onCancel={() => {
+                  setShowEditModal(false);
+                  setEditImageValidationError("");
+                  setEditImageValidating(false);
+                  editImagePendingFileRef.current = null;
+                }}
                 onSubmit={handleSaveEdit}
                 onSubmitOptions={handleSaveEditOptions}
                 isSaving={isSavingEdit}
@@ -2171,19 +2912,120 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   </button>
                 </div>
                 <div className="space-y-4">
-                  {categoryModalMode === "add" && (
+                  {categoryModalMode === "add" && parentCategoryIdInForm != null && (
+                    <div className="rounded-lg bg-orange-50 border border-orange-100 px-3 py-2 text-sm text-gray-800">
+                      <span className="font-medium">Subcategory under </span>
+                      {parentCategories.find((p) => p.id === parentCategoryIdInForm)?.category_name ?? "parent"}
+                    </div>
+                  )}
+                  {categoryModalMode === "add" &&
+                    parentCategoryIdInForm != null &&
+                    categoryUiConfig?.cuisine_field.visible &&
+                    (() => {
+                      const p = parentCategories.find((x) => x.id === parentCategoryIdInForm);
+                      const hasCuisine = p != null && p.cuisine_id != null && !Number.isNaN(Number(p.cuisine_id));
+                      return !hasCuisine ? (
+                        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
+                          This parent category has no cuisine set. Add or edit the parent to assign a cuisine before
+                          adding subcategories.
+                        </div>
+                      ) : null;
+                    })()}
+                  {showCuisinePicker && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Parent category (optional)</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Cuisine{categoryUiConfig?.cuisine_field.required_for_root ? " *" : ""}
+                      </label>
+                      <p className="text-[11px] text-gray-500 mb-2">
+                        Choose one cuisine for this category from the cuisines linked to your store. Add or remove store
+                        cuisines on the store profile — use <span className="italic">Edit cuisine list</span> below when
+                        it applies.
+                      </p>
+                      {categoryUiConfig?.cuisine_field.required_for_root && cuisineOptions.length === 0 && (
+                        <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
+                          No cuisines linked to this store yet. Open{" "}
+                          <Link
+                            href={`/dashboard/merchants/stores/${storeId}/profile`}
+                            className="font-semibold underline"
+                          >
+                            Store profile → Edit cuisine list
+                          </Link>{" "}
+                          to add cuisines from the master list first.
+                        </div>
+                      )}
                       <select
-                        value={parentCategoryIdInForm ?? ""}
-                        onChange={(e) => setParentCategoryIdInForm(e.target.value === "" ? null : Number(e.target.value))}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                        value={categoryForm.cuisine_id != null ? String(categoryForm.cuisine_id) : ""}
+                        onChange={(e) =>
+                          setCategoryForm({
+                            ...categoryForm,
+                            cuisine_id: e.target.value === "" ? undefined : Number(e.target.value),
+                          })
+                        }
                       >
-                        <option value="">None (top-level category)</option>
-                        {parentCategories.map((p) => (
-                          <option key={p.id} value={p.id}>{p.category_name}</option>
+                        <option value="">
+                          {categoryUiConfig?.cuisine_field.required_for_root ? "Select cuisine…" : "— Optional —"}
+                        </option>
+                        {cuisineOptions.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                            {!c.is_system_defined ? " (custom)" : ""}
+                          </option>
                         ))}
                       </select>
+                      {selectedCuisineForCategory != null && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className="text-[10px] text-gray-500">Selected for this category:</span>
+                          <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 border border-orange-200 px-2 py-0.5 text-xs text-gray-900">
+                            {selectedCuisineForCategory.name}
+                            {!categoryUiConfig?.cuisine_field.required_for_root && (
+                              <button
+                                type="button"
+                                className="text-red-600 hover:text-red-800 font-bold"
+                                title="Clear cuisine for this category"
+                                onClick={() =>
+                                  setCategoryForm((f) => ({
+                                    ...f,
+                                    cuisine_id: undefined,
+                                  }))
+                                }
+                              >
+                                ×
+                              </button>
+                            )}
+                          </span>
+                        </div>
+                      )}
+                      {!categoryUiConfig?.cuisine_field.required_for_root &&
+                        categoryForm.cuisine_id == null &&
+                        cuisineOptions.length > 0 && (
+                          <p className="mt-2 text-[11px] text-gray-600">
+                            Optional — leave empty if not needed, or{" "}
+                            <Link
+                              href={`/dashboard/merchants/stores/${storeId}/profile`}
+                              className="font-semibold text-orange-600 hover:text-orange-700 underline"
+                            >
+                              edit cuisine list
+                            </Link>{" "}
+                            to change which cuisines are available for this store.
+                          </p>
+                        )}
+                      {!categoryUiConfig?.cuisine_field.required_for_root &&
+                        categoryForm.cuisine_id == null &&
+                        cuisineOptions.length === 0 && (
+                          <p className="mt-2 text-[11px] text-gray-600">
+                            <Link
+                              href={`/dashboard/merchants/stores/${storeId}/profile`}
+                              className="font-semibold text-orange-600 hover:text-orange-700 underline"
+                            >
+                              Edit cuisine list
+                            </Link>{" "}
+                            on the store profile to link cuisines from the master list first.
+                          </p>
+                        )}
+                      <p className="mt-2 text-xs text-gray-500">
+                        Subcategories inherit cuisine from their parent; only top-level categories pick a cuisine here.
+                      </p>
                     </div>
                   )}
                   {categoryModalMode === "edit" && (
@@ -2203,7 +3045,9 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                   )}
                   <div className="relative">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Category Name * (max 30 characters)
+                      {useSubcategoryPeerSuggestions
+                        ? "Subcategory name * (max 30 characters)"
+                        : "Category name * (max 30 characters)"}
                     </label>
                     <input
                       type="text"
@@ -2217,7 +3061,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       }}
                       onFocus={() => setCategorySuggestionsOpen(true)}
                       onBlur={() => setTimeout(() => setCategorySuggestionsOpen(false), 180)}
-                      placeholder="Start typing for suggestions..."
+                      placeholder={
+                        useSubcategoryPeerSuggestions
+                          ? "Start typing — subcategory names from other stores"
+                          : "Start typing — category names from other stores"
+                      }
                     />
                     {(categoryForm.category_name?.length ?? 0) > 0 && (
                       <span className="absolute right-3 top-9 text-xs text-gray-400">
@@ -2225,46 +3073,77 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                       </span>
                     )}
                     {categorySuggestionsOpen && (
-                      <div className="absolute z-10 left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg py-1">
-                        {(() => {
-                          const q = (categoryForm.category_name ?? "").toLowerCase().trim();
-                          const matched =
-                            q.length === 0
-                              ? CATEGORY_SUGGESTIONS.slice(0, 12)
-                              : CATEGORY_SUGGESTIONS.filter((c) => c.toLowerCase().includes(q)).slice(0, 12);
-                          return (
-                            <>
-                              {matched.map((s) => (
-                                <button
-                                  key={s}
-                                  type="button"
-                                  className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-orange-50"
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    setCategoryForm({ ...categoryForm, category_name: s });
-                                    setCategorySuggestionsOpen(false);
-                                  }}
-                                >
-                                  {s}
-                                </button>
-                              ))}
-                              {q && !CATEGORY_SUGGESTIONS.some((c) => c.toLowerCase() === q) && (
-                                <div className="border-t border-gray-100 mt-1 pt-1">
-                                  <button
-                                    type="button"
-                                    className="w-full text-left px-3 py-2 text-sm text-orange-600 font-medium hover:bg-orange-50"
-                                    onMouseDown={(e) => {
-                                      e.preventDefault();
-                                      setCategorySuggestionsOpen(false);
-                                    }}
-                                  >
-                                    Add &quot;{categoryForm.category_name}&quot; as custom category
-                                  </button>
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
+                      <div className="absolute z-10 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                        {categoryPeerSuggestionsLoading ? (
+                          <p className="px-3 py-2 text-sm text-gray-500">
+                            {useSubcategoryPeerSuggestions
+                              ? "Loading subcategory suggestions from other stores…"
+                              : "Loading suggestions from other stores…"}
+                          </p>
+                        ) : (
+                          (() => {
+                            const q = (categoryForm.category_name ?? "").trim();
+                            const qLower = q.toLowerCase();
+                            const matched = categoryPeerSuggestions.filter(
+                              (s) => !categoryNameConflictSet.has(String(s).toLowerCase().trim())
+                            );
+                            const exactInList =
+                              qLower.length > 0 &&
+                              matched.some((s) => s.toLowerCase().trim() === qLower);
+                            const duplicateOnStore =
+                              qLower.length > 0 && categoryNameConflictSet.has(qLower);
+                            return (
+                              <>
+                                {matched.length > 0 ? (
+                                  matched.map((s) => (
+                                    <button
+                                      key={s}
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-orange-50"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        setCategoryForm({ ...categoryForm, category_name: s.slice(0, 30) });
+                                        setCategorySuggestionsOpen(false);
+                                      }}
+                                    >
+                                      {s}
+                                    </button>
+                                  ))
+                                ) : (
+                                  <p className="px-3 py-2 text-sm text-gray-500">
+                                    {q.length > 0
+                                      ? "No matching names from other stores yet. You can still use your own name."
+                                      : useSubcategoryPeerSuggestions
+                                        ? "Popular subcategory names from other stores."
+                                        : "Popular category names from other stores on the platform."}
+                                  </p>
+                                )}
+                                {q.length > 0 && !exactInList && !duplicateOnStore && (
+                                  <div className="border-t border-gray-100 mt-1 pt-1">
+                                    <button
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 text-sm text-orange-600 font-medium hover:bg-orange-50"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        setCategorySuggestionsOpen(false);
+                                      }}
+                                    >
+                                      Use &quot;{categoryForm.category_name}&quot; as new{" "}
+                                      {useSubcategoryPeerSuggestions ? "subcategory" : "category"}
+                                    </button>
+                                  </div>
+                                )}
+                                {duplicateOnStore && (
+                                  <p className="px-3 py-2 text-xs text-red-600 border-t border-gray-100">
+                                    {useSubcategoryPeerSuggestions
+                                      ? "This name is already used under this category."
+                                      : "This store already has a category with this name."}
+                                  </p>
+                                )}
+                              </>
+                            );
+                          })()
+                        )}
                       </div>
                     )}
                   </div>

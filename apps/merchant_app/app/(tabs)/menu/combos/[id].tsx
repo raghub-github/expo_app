@@ -113,21 +113,8 @@ export default function ComboEditScreen() {
     };
   }, [combo?.components, itemById, extraItemsById, storeId, token]);
 
-  // Auto-calculate combo price as sum of component item prices × quantity
-  useEffect(() => {
-    if (!combo?.components?.length) {
-      setPrice("");
-      return;
-    }
-    let total = 0;
-    for (const comp of combo.components) {
-      const item = itemById.get(comp.menu_item_id);
-      const priceNum = item ? Number(item.selling_price) || 0 : 0;
-      const qty = comp.quantity ?? 1;
-      total += priceNum * qty;
-    }
-    setPrice(total > 0 ? total.toFixed(2) : "");
-  }, [combo?.components, itemById]);
+  // Combo price is computed in the backend from components (pricing strategy).
+  // We only display `price` returned by `fetchCombo()`.
 
   const load = useCallback(async () => {
     if (!token || !storeId || id == null || Number.isNaN(id)) return;

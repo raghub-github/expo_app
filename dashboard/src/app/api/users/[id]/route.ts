@@ -154,7 +154,13 @@ export async function PUT(
         { status: 404 }
       );
     }
-    const systemUser = { id: userPerms.systemUserId };
+    const systemUser = await getSystemUserById(userPerms.systemUserId);
+    if (!systemUser) {
+      return NextResponse.json(
+        { success: false, error: "Actor not found in system" },
+        { status: 404 }
+      );
+    }
     const userIsSuperAdmin = userPerms.isSuperAdmin;
 
     // Check permission (use cached userPerms if available, otherwise call checkPermission)
@@ -494,9 +500,13 @@ export async function PUT(
           let allowedActions: string[] = [];
           let context: Record<string, any> = {};
 
-          if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[accessPoint.dashboardType]) {
-            const def = DASHBOARD_DEFINITIONS[accessPoint.dashboardType].accessPoints.find(
-              (ap: any) => ap.group === accessPoint.accessPointGroup
+          const dashDefs = DASHBOARD_DEFINITIONS as Record<
+            string,
+            { accessPoints: { group: string; label: string; description: string; allowedActions: string[] }[] }
+          >;
+          if (DASHBOARD_DEFINITIONS && dashDefs[accessPoint.dashboardType]) {
+            const def = dashDefs[accessPoint.dashboardType].accessPoints.find(
+              (ap) => ap.group === accessPoint.accessPointGroup
             );
             if (def) {
               accessPointName = def.label;

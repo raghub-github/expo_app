@@ -381,7 +381,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       }
       if (res.ok) {
         if (Array.isArray(data.orders)) {
-          setOrders(data.orders);
+          setOrders(data.orders as OrdersFoodRow[]);
         } else {
           setOrders([]);
         }
@@ -501,10 +501,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           setOtpVerified((prev) => new Set(prev).add(orderId));
           toast('OTP verified');
         } else {
-          toast('Error: ' + (data.error || 'Invalid OTP' || 'Failed'));
+          toast('Error: ' + (data.error || 'Invalid OTP'));
         }
       } catch {
-        toast('Error: ' + ('Validation failed' || 'Failed'));
+        toast('Error: Validation failed');
       }
     },
     [storeId, otpInput]
@@ -539,7 +539,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         setShowTurnOnModal(false);
         toast('Store is now OPEN. Orders are being accepted!');
       } else {
-        toast('Error: ' + (data.error || 'Failed to open store' || 'Failed'));
+        toast('Error: ' + (data.error || 'Failed to open store'));
       }
     } catch {
       toast('Error: Failed to open store');
@@ -618,10 +618,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           toast(`Store closed until ${until.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}. You can also turn it ON manually anytime.`);
         } else toast(`Store closed for today. Reopens tomorrow at ${openingTimeForClose}`);
       } else {
-        toast('Error: ' + (data.error || 'Failed to close store' || 'Failed'));
+        toast('Error: ' + (data.error || 'Failed to close store'));
       }
     } catch {
-      toast('Error: ' + ('Failed to close store' || 'Failed'));
+      toast('Error: Failed to close store');
     } finally {
       setCloseConfirmLoading(false);
     }
@@ -629,26 +629,26 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
 
   const handleStoreCloseModalConfirm = useCallback(() => {
     if (!closeClosureType) {
-      toast('Error: ' + ('Please select closure type' || 'Failed'));
+      toast('Error: Please select closure type');
       return;
     }
     if (closeClosureType === 'temporary') {
       if (!closeClosureDate || !closeClosureTime) {
-        toast('Error: ' + ('Please select date and time for reopening' || 'Failed'));
+        toast('Error: Please select date and time for reopening');
         return;
       }
       const closedUntil = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
       if (closedUntil.getTime() <= Date.now()) {
-        toast('Error: ' + ('Reopening date and time must be in the future' || 'Failed'));
+        toast('Error: Reopening date and time must be in the future');
         return;
       }
     }
     if (!closeReason?.trim()) {
-      toast('Error: ' + ('Please select a reason for closing' || 'Failed'));
+      toast('Error: Please select a reason for closing');
       return;
     }
     if (closeReason === 'Other' && !closeReasonOther?.trim()) {
-      toast('Error: ' + ('Please enter the reason in "Other"' || 'Failed'));
+      toast('Error: Please enter the reason in "Other"');
       return;
     }
     void confirmStoreClose();
@@ -676,7 +676,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           result = await tryUpdate();
         }
         if (!result.ok) {
-          toast('Error: ' + ((result.data as { error?: string } || 'Failed'))?.error || 'Failed to update');
+          const errBody = result.data as { error?: string };
+          toast('Error: ' + (errBody?.error || 'Failed to update order'));
           return;
         }
         const data = result.data as { order?: OrdersFoodRow };
@@ -692,7 +693,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         }
         toast(`Order status updated to ${newStatus}`);
       } catch {
-        toast('Error: ' + ('Failed to update order' || 'Failed'));
+        toast('Error: Failed to update order');
       } finally {
         setActionLoading(null);
       }
@@ -1136,16 +1137,15 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         </div>
                       )}
                     </div>
-                  </div>
-                </div>
+                      </>
                     ) : (
                       <div className="flex-1 flex items-center justify-center p-8 text-gray-500 text-sm text-center">
                         Select an order from the list to view details
                       </div>
                     )}
-              </div>
-              </div>
-              </div>
+                  </div>
+                </div>
+                </div>
 
                 {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
                 {selectedOrder && (

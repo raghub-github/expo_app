@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
 export async function GET(request: NextRequest) {
   try {
     const db = getDb();
-    const checks: Record<string, boolean | string> = {};
+    const checks: Record<string, boolean | string | number> = {};
 
     // Check database connection
     try {
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
       ORDER BY table_name;
     `);
 
-    const tableNames = (tables.rows || []).map((row: any) => row.table_name);
+    const tableNames = (tables as any[]).map((row: any) => row.table_name);
     
     checks.dashboard_access_table = tableNames.includes('dashboard_access');
     checks.dashboard_access_points_table = tableNames.includes('dashboard_access_points');
@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
       ORDER BY indexname;
     `);
 
-    checks.indexes_count = (indexes.rows || []).length;
+    checks.indexes_count = (indexes as any[]).length;
 
     // Overall status
     const allTablesExist = 

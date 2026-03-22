@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { mergeBool, mergeNum, mergeOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -42,13 +43,17 @@ export async function PUT(
       return NextResponse.json({ success: false, error: "Invalid addon_price" }, { status: 400 });
     }
 
+    const addon_image_url = mergeOptionalStr(body.addon_image_url, e.addon_image_url);
+    const in_stock = mergeBool(body.in_stock, e.in_stock);
+    const display_order = mergeNum(body.display_order, e.display_order);
+
     await sql`
       UPDATE merchant_menu_item_addons
       SET addon_name = ${addon_name},
           addon_price = ${addon_price},
-          addon_image_url = ${body.addon_image_url !== undefined ? body.addon_image_url : e.addon_image_url},
-          in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
-          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
+          addon_image_url = ${addon_image_url},
+          in_stock = ${in_stock},
+          display_order = ${display_order},
           updated_at = NOW()
       WHERE id = ${oId}
     `;

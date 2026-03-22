@@ -59,6 +59,22 @@ export async function DELETE(
     try {
       await logStoreActivity({ storeId, section: "combo_component", action: "delete", summary: `Agent removed item from combo #${cId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}
+
+    // Backend-derived combo_price: SUM(menu_item.selling_price * quantity)
+    const [priceRow] = await sql`
+      SELECT COALESCE(SUM(m.selling_price::numeric * cc.quantity), 0)::numeric AS derived_price
+      FROM merchant_menu_combo_components cc
+      INNER JOIN merchant_menu_items m ON m.id = cc.menu_item_id AND m.store_id = ${storeId}
+      WHERE cc.combo_id = ${cId}
+    `;
+    const derivedPrice = (priceRow as any)?.derived_price ?? 0;
+    await sql`
+      UPDATE merchant_menu_combos
+      SET combo_price = ${derivedPrice},
+          updated_at = NOW()
+      WHERE id = ${cId} AND store_id = ${storeId}
+    `;
+
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/combos/[comboId]/components/[componentId]]", e);

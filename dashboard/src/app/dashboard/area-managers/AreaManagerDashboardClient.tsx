@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import {
   Store,
@@ -16,6 +16,12 @@ import {
   Search,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import {
+  useGetAreaManagerMetricsQuery,
+  useGetAreaManagerCountsQuery,
+  useGetAreaManagersQuery,
+  type AreaManagerListItem,
+} from "@/store/api/areaManagerApi";
 
 interface MerchantMetrics {
   managerType: "MERCHANT";
@@ -44,67 +50,11 @@ interface RiderMetrics {
 
 type MetricsData = MerchantMetrics | RiderMetrics;
 
-interface AreaManagerListItem {
-  id: number;
-  userId: number;
-  managerType: string;
-  areaCode: string | null;
-  localityCode: string | null;
-  city: string | null;
-  status: string;
-  fullName: string | null;
-  email: string | null;
-}
-
 function SuperAdminAreaManagerList() {
   const [type, setType] = useState<"MERCHANT" | "RIDER">("MERCHANT");
   const [search, setSearch] = useState("");
-  const [list, setList] = useState<AreaManagerListItem[]>([]);
-  const [listLoading, setListLoading] = useState(false);
-  const [counts, setCounts] = useState<{ merchant: number; rider: number } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/area-manager/list/counts", { credentials: "include" });
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!cancelled && json?.data) {
-          setCounts(json.data);
-        }
-      } catch {
-        if (!cancelled) setCounts(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setListLoading(true);
-    (async () => {
-      try {
-        const res = await fetch(`/api/area-manager/list?type=${type}`, {
-          credentials: "include",
-        });
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!cancelled && json?.data?.items) {
-          setList(json.data.items);
-        }
-      } catch {
-        if (!cancelled) setList([]);
-      } finally {
-        if (!cancelled) setListLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [type]);
+  const { data: counts } = useGetAreaManagerCountsQuery();
+  const { data: list = [], isLoading: listLoading } = useGetAreaManagersQuery(type);
 
   const searchLower = search.trim().toLowerCase();
   const filteredList = searchLower
@@ -293,37 +243,9 @@ function StatCard({
 }
 
 export function AreaManagerDashboardClient() {
-  const [data, setData] = useState<MetricsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, isLoading, error } = useGetAreaManagerMetricsQuery();
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/area-manager/metrics", { credentials: "include" });
-        if (!res.ok) {
-          const j = await res.json().catch(() => ({}));
-          throw new Error(j?.error ?? "Failed to load metrics");
-        }
-        const json = await res.json();
-        if (!cancelled) {
-          setData(json.data);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Something went wrong");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
         <LoadingSpinner />
@@ -334,7 +256,7 @@ export function AreaManagerDashboardClient() {
   if (error) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-medium text-red-800">{error}</p>
+        <p className="text-sm font-medium text-red-800">{error instanceof Error ? error.message : "Something went wrong"}</p>
       </div>
     );
   }

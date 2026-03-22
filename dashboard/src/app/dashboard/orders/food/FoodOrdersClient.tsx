@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { X, RefreshCw, Filter, CheckCircle2, ChevronDown } from "lucide-react";
+import { useGetCoreOrdersQuery } from "@/store/api/ordersApi";
 
 // Exact color codes from reference image
 const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
@@ -90,10 +91,21 @@ export default function FoodOrdersClient() {
   });
 
   const selectedStatus = urlStatus ?? null;
-  const [orders, setOrders] = useState<OrdersCoreRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const {
+    data: ordersData,
+    isLoading: loading,
+    refetch,
+  } = useGetCoreOrdersQuery({
+    orderType: "food",
+    statusFilter: urlStatus ?? undefined,
+    search: urlSearch || undefined,
+    searchType: urlSearchType || undefined,
+    page: 1,
+    limit: 20,
+  });
+
+  const orders = ordersData?.data ?? [];
+  const total = ordersData?.pagination?.total ?? orders.length;
   const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
@@ -118,46 +130,6 @@ export default function FoodOrdersClient() {
     },
     [router, searchParams]
   );
-
-  useEffect(() => {
-    let cancelled = false;
-    const params = new URLSearchParams();
-    params.set("orderType", "food");
-    const status = searchParams.get("statusFilter");
-    if (status) params.set("statusFilter", status);
-    const search = searchParams.get("search");
-    if (search) params.set("search", search);
-    const searchType = searchParams.get("searchType");
-    if (searchType) params.set("searchType", searchType);
-    params.set("page", "1");
-    params.set("limit", "20");
-
-    setLoading(true);
-    fetch(`/api/orders/core?${params.toString()}`)
-      .then((res) => res.json())
-      .then((body) => {
-        if (cancelled) return;
-        if (body.success && Array.isArray(body.data)) {
-          setOrders(body.data);
-          setTotal(body.pagination?.total ?? body.data.length);
-        } else {
-          setOrders([]);
-          setTotal(0);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOrders([]);
-          setTotal(0);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [searchParams.toString(), refreshKey]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -255,7 +227,9 @@ export default function FoodOrdersClient() {
     router.replace("/dashboard/orders/food", { scroll: false });
   }, [router]);
 
-  const refreshData = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const refreshData = useCallback(() => {
+    refetch();
+  }, [refetch]);
 
   const orderCount = total;
 

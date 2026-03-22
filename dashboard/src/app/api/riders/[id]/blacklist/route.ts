@@ -208,8 +208,32 @@ export async function POST(
           VALUES (${riderId}, ${dbServiceType}, ${reason}, ${action === "blacklist"}, ${isPermanent}, ${expiresAtForSql}, ${adminUserId}, 'agent')
           RETURNING id, rider_id, service_type, reason, banned, is_permanent, expires_at, admin_user_id, source, created_at
         `;
-        const r = rawRow as { id: number; expires_at: Date | null; source: string; created_at: Date };
-        row = { ...r, expiresAt: r.expires_at, createdAt: r.created_at } as (typeof blacklistHistory.$inferSelect);
+        const r = rawRow as {
+          id: number;
+          rider_id: number;
+          service_type: string;
+          reason: string;
+          banned: boolean;
+          is_permanent: boolean;
+          expires_at: Date | null;
+          admin_user_id: number | null;
+          source: string;
+          created_at: Date;
+        };
+        // No actor_email in this fallback insert; shape must match Drizzle row for downstream use
+        row = {
+          id: r.id,
+          riderId: r.rider_id,
+          serviceType: r.service_type as (typeof blacklistHistory.$inferSelect)["serviceType"],
+          reason: r.reason,
+          banned: r.banned,
+          isPermanent: r.is_permanent,
+          expiresAt: r.expires_at,
+          adminUserId: r.admin_user_id,
+          actorEmail: null,
+          source: r.source,
+          createdAt: r.created_at,
+        };
       } else {
         throw err;
       }

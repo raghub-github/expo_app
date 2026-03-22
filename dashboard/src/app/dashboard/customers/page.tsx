@@ -81,10 +81,6 @@ function CustomersPageContent() {
     { enabled: shouldFetchStats }
   );
 
-  const handleApplyFilters = () => {
-    setFiltersApplied(true);
-  };
-
   // Handle redirect to detail page if search returns single customer (ID/mobile search)
   useEffect(() => {
     if (search && isCustomerIdOrMobile(search) && data?.customers && data.customers.length === 1 && !isLoading) {

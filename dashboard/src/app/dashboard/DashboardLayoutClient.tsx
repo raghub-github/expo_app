@@ -190,8 +190,11 @@ export default function DashboardLayoutClient({
     return true;
   });
 
-  // Apply persisted state on navigation. Only one sidebar open at a time.
-  // Orders page: always left closed, right open. Settings: right open. Other pages: use persisted.
+  // Apply sidebar state on navigation.
+  // Orders page: always left closed, right open. Settings: right open.
+  // Other pages:
+  // - If the page has a right sidebar, auto-close left and open right.
+  // - If the page does not have a right sidebar, keep left open and right closed.
   useEffect(() => {
     if (isSettingsPage && hasRightSidebar) {
       setIsRightSidebarOpen(true);
@@ -205,23 +208,12 @@ export default function DashboardLayoutClient({
     }
     if (!hasRightSidebar) {
       setIsRightSidebarOpen(false);
-      setIsLeftSidebarOpen(true);
+      setIsLeftSidebarOpen(true); // pages without right sidebar: show only left
       return;
     }
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 1024;
-    if (isMobile) return;
-    const persisted = getPersistedSidebar();
-    if (persisted === "left") {
-      setIsLeftSidebarOpen(true);
-      setIsRightSidebarOpen(false);
-    } else if (persisted === "right" || persisted === null) {
-      setIsLeftSidebarOpen(false);
-      setIsRightSidebarOpen(true);
-    } else {
-      // "none" = both closed; left remains collapsed
-      setIsLeftSidebarOpen(false);
-      setIsRightSidebarOpen(false);
-    }
+    // Default: pages with right sidebar → open right, close left
+    setIsLeftSidebarOpen(false);
+    setIsRightSidebarOpen(true);
   }, [hasRightSidebar, isStoreOrdersPath, isSettingsPage, cleanPathname]);
 
   // Enforce only one sidebar open at a time (never both expanded)

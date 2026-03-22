@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { usePathname } from "next/navigation";
 import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
-import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
+import { useDashboardAccessQuery, type AccessPoint } from "@/hooks/queries/useDashboardAccessQuery";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { toPermissionKey, toPermissionKeys } from "@/lib/permissions/constants";
 import type { DashboardType, ActionType } from "@/lib/db/schema";
@@ -29,7 +29,7 @@ export function usePermission() {
     }
     if (!permissionsData?.permissions?.length) return new Set<string>();
     const arr = permissionsData.permissions as Array<{ module: string; action: string; resourceType?: string }>;
-    if (typeof arr[0] === "string") return new Set(arr as string[]);
+    if (typeof arr[0] === "string") return new Set(arr as unknown as string[]);
     return new Set(toPermissionKeys(arr));
   }, [permissionsData?.permissionStrings, permissionsData?.permissions]);
 
@@ -43,8 +43,8 @@ export function usePermission() {
   }, [dashboardAccessData?.dashboards]);
 
   const accessPointsByDashboard = useMemo(() => {
-    if (!dashboardAccessData?.accessPoints?.length) return new Map<string, typeof dashboardAccessData.accessPoints>();
-    const map = new Map<string, typeof dashboardAccessData.accessPoints>();
+    if (!dashboardAccessData?.accessPoints?.length) return new Map<string, AccessPoint[]>();
+    const map = new Map<string, AccessPoint[]>();
     for (const ap of dashboardAccessData.accessPoints) {
       if (!ap.isActive) continue;
       const key = ap.dashboardType;

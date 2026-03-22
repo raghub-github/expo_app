@@ -1,10 +1,11 @@
 /**
  * Outlet info page — GatiMitra branding, light background.
  * Data from backend (GET store, GET operating-hours). No dining fields.
- * Each section has its own edit modal: name, cuisines, address, pickup instructions → confirm → API → toast.
+ * Each section has its own edit modal: name, address → confirm → API → toast.
+ * Cuisines: plain text on profile; Edit opens chips + master list (link/unlink via merchant-menu API).
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -32,6 +33,12 @@ import { useAuth } from "@/context/AuthContext";
 import { getConfig } from "@/config/env";
 import { getOutlet, updateOutlet, updatePickupInstruction, resolveImageUrl, type OutletInfo, type OutletUpdateBody } from "@/services/outletApi";
 import { reverseGeocode, forwardGeocode, type GeocodeAddress } from "@/services/geocoding";
+import {
+  fetchMenuCuisinesAndCatalog,
+  linkMenuCuisineFromCatalog,
+  unlinkMenuCuisine,
+  type MenuCuisineOption,
+} from "@/services/menuApi";
 
 const TOAST_DURATION_MS = 2800;
 const DEFAULT_MAP_CENTER = { lat: 22.5726, lng: 88.3639 };
@@ -112,8 +119,12 @@ export default function OutletInfoScreen() {
   const [editAddressModalVisible, setEditAddressModalVisible] = useState(false);
   const [editPickupModalVisible, setEditPickupModalVisible] = useState(false);
   const [draftStoreName, setDraftStoreName] = useState("");
-  const [draftCuisines, setDraftCuisines] = useState<string[]>([]);
-  const [newCuisineInput, setNewCuisineInput] = useState("");
+  /** Edit-cuisine modal: linked rows + catalog from GET …/cuisines */
+  const [editCuisineLinked, setEditCuisineLinked] = useState<MenuCuisineOption[]>([]);
+  const [editCuisineCatalog, setEditCuisineCatalog] = useState<MenuCuisineOption[]>([]);
+  const [cuisineSearch, setCuisineSearch] = useState("");
+  const [cuisineLoading, setCuisineLoading] = useState(false);
+  const [cuisineMutating, setCuisineMutating] = useState(false);
   const [draftAddress, setDraftAddress] = useState({
     full_address: "",
     city: "",
@@ -133,10 +144,10 @@ export default function OutletInfoScreen() {
   const [coordLonStr, setCoordLonStr] = useState("");
   const [draftPickupInstruction, setDraftPickupInstruction] = useState("");
 
-  // Confirmation modal before saving (for name, cuisine, address)
+  // Confirmation modal before saving (for name, address)
   const [confirmModal, setConfirmModal] = useState<{
     visible: boolean;
-    type: "name" | "cuisine" | "address";
+    type: "name" | "address";
     message: string;
     payload: OutletUpdateBody;
   }>({ visible: false, type: "name", message: "", payload: {} });
@@ -192,20 +203,82 @@ export default function OutletInfoScreen() {
     }, TOAST_DURATION_MS);
   };
 
+  const openEditCuisine = useCallback(async () => {
+    if (!token || !outlet?.store_id) {
+      Alert.alert("Cuisines", "Store is not ready. Try again in a moment.");
+      return;
+    }
+    setCuisineSearch("");
+    setEditCuisineModalVisible(true);
+    setCuisineLoading(true);
+    setEditCuisineLinked([]);
+    setEditCuisineCatalog([]);
+    try {
+      const { cuisines, catalog } = await fetchMenuCuisinesAndCatalog(outlet.store_id, token);
+      setEditCuisineLinked(cuisines);
+      setEditCuisineCatalog(catalog);
+    } catch (e) {
+      Alert.alert("Could not load cuisines", e instanceof Error ? e.message : "Please try again.");
+      setEditCuisineModalVisible(false);
+    } finally {
+      setCuisineLoading(false);
+    }
+  }, [token, outlet?.store_id]);
+
+  const filteredCuisineCatalog = useMemo(() => {
+    const q = cuisineSearch.trim().toLowerCase();
+    const linkedIds = new Set(editCuisineLinked.map((c) => c.id));
+    let rows = editCuisineCatalog.filter((c) => !linkedIds.has(c.id));
+    if (q) {
+      rows = rows.filter((c) => c.name.toLowerCase().includes(q));
+    }
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  }, [editCuisineCatalog, editCuisineLinked, cuisineSearch]);
+
+  const handleUnlinkCuisine = useCallback(
+    async (c: MenuCuisineOption) => {
+      if (!token || !outlet?.store_id || cuisineMutating) return;
+      setCuisineMutating(true);
+      try {
+        await unlinkMenuCuisine(outlet.store_id, token, c.id);
+        setEditCuisineLinked((prev) => prev.filter((x) => x.id !== c.id));
+        setEditCuisineCatalog((prev) => {
+          if (prev.some((x) => x.id === c.id)) return prev;
+          return [...prev, c].sort((a, b) => a.name.localeCompare(b.name));
+        });
+        refetchOutlet();
+        showToast(`Removed “${c.name}”`);
+      } catch (e) {
+        Alert.alert("Could not remove cuisine", e instanceof Error ? e.message : "Try again.");
+      } finally {
+        setCuisineMutating(false);
+      }
+    },
+    [token, outlet?.store_id, cuisineMutating]
+  );
+
+  const handleLinkCuisine = useCallback(
+    async (c: MenuCuisineOption) => {
+      if (!token || !outlet?.store_id || cuisineMutating) return;
+      setCuisineMutating(true);
+      try {
+        await linkMenuCuisineFromCatalog(outlet.store_id, token, c.id);
+        setEditCuisineLinked((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)));
+        setEditCuisineCatalog((prev) => prev.filter((x) => x.id !== c.id));
+        refetchOutlet();
+        showToast(`Added “${c.name}”`);
+      } catch (e) {
+        Alert.alert("Could not add cuisine", e instanceof Error ? e.message : "Try again.");
+      } finally {
+        setCuisineMutating(false);
+      }
+    },
+    [token, outlet?.store_id, cuisineMutating]
+  );
+
   const openEditName = () => {
     setDraftStoreName(outlet?.store_name ?? "");
     setEditNameModalVisible(true);
-  };
-  const openEditCuisine = () => {
-    const list = [
-      ...(Array.isArray(outlet?.cuisine_types) ? outlet!.cuisine_types : []),
-      ...(Array.isArray(outlet?.food_categories) ? outlet!.food_categories : []),
-    ]
-      .map((c) => (typeof c === "string" ? c.trim() : String(c)))
-      .filter(Boolean);
-    setDraftCuisines(list);
-    setNewCuisineInput("");
-    setEditCuisineModalVisible(true);
   };
   const openEditAddress = () => {
     const initial = {
@@ -393,11 +466,7 @@ export default function OutletInfoScreen() {
     setSaving(true);
     try {
       await updateOutlet(storeId, payload, token);
-      if (type === "cuisine") {
-        // Cuisines can be complex → refetch authoritative data.
-        refetchOutlet();
-      }
-      showToast(type === "cuisine" ? "Cuisines updated" : type === "name" ? "Store name updated" : "Address updated");
+      showToast(type === "name" ? "Store name updated" : "Address updated");
     } catch (e) {
       // On failure, fall back to backend state.
       refetchOutlet();
@@ -459,7 +528,6 @@ export default function OutletInfoScreen() {
   ]
     .map((c) => (typeof c === "string" ? c.trim() : String(c)))
     .filter(Boolean);
-  const cuisineDisplay = cuisineList.slice(0, 10);
   const hasMoreCuisines = cuisineList.length > 10;
   const pickupInstruction = outlet.pickup_instruction?.trim() || null;
 
@@ -542,13 +610,9 @@ export default function OutletInfoScreen() {
               <Text style={styles.fieldValue}>—</Text>
             ) : (
               <>
-                <View style={styles.chipRow}>
-                  {cuisineDisplay.map((c) => (
-                    <View key={c} style={styles.chip}>
-                      <Text style={styles.chipText}>{c}</Text>
-                    </View>
-                  ))}
-                </View>
+                <Text style={styles.cuisinePlainText} numberOfLines={hasMoreCuisines ? 4 : undefined}>
+                  {cuisineList.join(", ")}
+                </Text>
                 {hasMoreCuisines && (
                   <Pressable
                     onPress={() => setCuisineModalVisible(true)}
@@ -578,18 +642,12 @@ export default function OutletInfoScreen() {
                 </View>
                 <ScrollView
                   style={styles.allCuisinesScroll}
-                  contentContainerStyle={styles.modalChipScrollContent}
+                  contentContainerStyle={styles.allCuisinesPlainScrollContent}
                   showsVerticalScrollIndicator={true}
                   bounces={true}
                   nestedScrollEnabled={true}
                 >
-                  <View style={styles.modalChipWrap}>
-                    {cuisineList.map((c) => (
-                      <View key={c} style={styles.modalChip}>
-                        <Text style={styles.modalChipText}>{c}</Text>
-                      </View>
-                    ))}
-                  </View>
+                  <Text style={styles.allCuisinesPlainText}>{cuisineList.join(", ")}</Text>
                 </ScrollView>
               </Pressable>
             </Pressable>
@@ -706,87 +764,105 @@ export default function OutletInfoScreen() {
         </Pressable>
       </Modal>
 
-      {/* Edit Cuisine modal */}
+      {/* Edit Cuisine modal — chips + search + master list (link/unlink immediately) */}
       <Modal visible={editCuisineModalVisible} transparent animationType="fade" onRequestClose={() => setEditCuisineModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setEditCuisineModalVisible(false)}>
           <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.modalKeyboardWrap}>
             <Pressable style={styles.modalCardFlex} onPress={(e) => e.stopPropagation()}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Edit cuisine tags</Text>
+                <Text style={styles.modalTitle}>Edit cuisines</Text>
                 <Pressable onPress={() => setEditCuisineModalVisible(false)} hitSlop={12}>
                   <Ionicons name="close" size={24} color={GatiMitraMerchant.textPrimary} />
                 </Pressable>
               </View>
               <View style={styles.modalBody}>
-                <Text style={styles.fieldLabel}>Add or remove cuisines</Text>
-                <View style={styles.addCuisineRow}>
-                  <TextInput
-                    style={[styles.input, styles.addCuisineInput]}
-                    value={newCuisineInput}
-                    onChangeText={setNewCuisineInput}
-                    placeholder="Add cuisine..."
-                    placeholderTextColor={GatiMitraMerchant.textTertiary}
-                    onSubmitEditing={() => {
-                      const t = newCuisineInput.trim();
-                      if (t && !draftCuisines.includes(t)) setDraftCuisines((prev) => [...prev, t]);
-                      setNewCuisineInput("");
-                    }}
-                  />
-                  <Pressable
-                    onPress={() => {
-                      const t = newCuisineInput.trim();
-                      if (t && !draftCuisines.includes(t)) setDraftCuisines((prev) => [...prev, t]);
-                      setNewCuisineInput("");
-                    }}
-                    style={[styles.addCuisineBtn, (!newCuisineInput.trim() || draftCuisines.includes(newCuisineInput.trim())) && styles.addCuisineBtnDisabled]}
-                  >
-                    <Text style={styles.addCuisineBtnText}>Add</Text>
-                  </Pressable>
-                </View>
+                <Text style={styles.fieldHint}>
+                  Linked from the master list. Tap × to remove, or pick a cuisine below to add. Changes save immediately.
+                </Text>
+                <TextInput
+                  style={[styles.input, { marginTop: 10 }]}
+                  value={cuisineSearch}
+                  onChangeText={setCuisineSearch}
+                  placeholder="Search cuisines to add…"
+                  placeholderTextColor={GatiMitraMerchant.textTertiary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!cuisineLoading}
+                />
               </View>
-              <ScrollView
-                style={styles.modalChipScroll}
-                contentContainerStyle={styles.modalChipScrollContent}
-                showsVerticalScrollIndicator={true}
-                keyboardShouldPersistTaps="handled"
-              >
-                <View style={styles.modalChipWrap}>
-                  {draftCuisines.map((c) => (
-                    <View key={c} style={styles.draftChipRow}>
-                      <View style={styles.modalChip}>
-                        <Text style={styles.modalChipText}>{c}</Text>
-                      </View>
-                      <Pressable onPress={() => setDraftCuisines((prev) => prev.filter((x) => x !== c))} hitSlop={8} style={styles.chipRemove}>
-                        <Ionicons name="close-circle" size={20} color={GatiMitraMerchant.error} />
-                      </Pressable>
-                    </View>
-                  ))}
+              {cuisineLoading ? (
+                <View style={styles.cuisineLoadingBox}>
+                  <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+                  <Text style={styles.cuisineLoadingText}>Loading cuisines…</Text>
                 </View>
-              </ScrollView>
+              ) : (
+                <>
+                  <View style={styles.modalBody}>
+                    <Text style={styles.fieldLabel}>On this store</Text>
+                  </View>
+                  <ScrollView
+                    style={styles.modalChipScroll}
+                    contentContainerStyle={styles.modalChipScrollContent}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                  >
+                    <View style={styles.modalChipWrap}>
+                      {editCuisineLinked.length === 0 ? (
+                        <Text style={styles.cuisineEmptyHint}>No cuisines linked yet. Search and add below.</Text>
+                      ) : (
+                        editCuisineLinked.map((c) => (
+                          <View key={c.id} style={styles.draftChipRow}>
+                            <View style={styles.modalChip}>
+                              <Text style={styles.modalChipText}>{c.name}</Text>
+                            </View>
+                            <Pressable
+                              onPress={() => handleUnlinkCuisine(c)}
+                              disabled={cuisineMutating}
+                              hitSlop={8}
+                              style={styles.chipRemove}
+                            >
+                              <Ionicons name="close-circle" size={20} color={GatiMitraMerchant.error} />
+                            </Pressable>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  </ScrollView>
+                  <View style={styles.modalBody}>
+                    <Text style={styles.fieldLabel}>Add from master list</Text>
+                  </View>
+                  <ScrollView
+                    style={styles.cuisineCatalogScroll}
+                    contentContainerStyle={styles.cuisineCatalogScrollContent}
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                  >
+                    {filteredCuisineCatalog.length === 0 ? (
+                      <Text style={styles.cuisineCatalogEmpty}>
+                        {cuisineSearch.trim() ? "No matching cuisines." : "All linked cuisines are already on this store."}
+                      </Text>
+                    ) : (
+                      filteredCuisineCatalog.map((c) => (
+                        <Pressable
+                          key={c.id}
+                          onPress={() => handleLinkCuisine(c)}
+                          disabled={cuisineMutating}
+                          style={({ pressed }) => [styles.cuisineCatalogRow, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.cuisineCatalogRowText}>{c.name}</Text>
+                          <Ionicons name="add-circle-outline" size={22} color={GatiMitraMerchant.primary} />
+                        </Pressable>
+                      ))
+                    )}
+                  </ScrollView>
+                </>
+              )}
               <View style={styles.modalFooter}>
-                <Pressable onPress={() => setEditCuisineModalVisible(false)} style={[styles.modalBtn, styles.modalBtnSecondary]}>
-                  <Text style={styles.modalBtnTextSecondary}>Cancel</Text>
-                </Pressable>
                 <Pressable
-                  onPress={() => {
-                    const original = [
-                      ...(Array.isArray(outlet?.cuisine_types) ? outlet!.cuisine_types : []),
-                      ...(Array.isArray(outlet?.food_categories) ? outlet!.food_categories : []),
-                    ].map((c) => (typeof c === "string" ? c.trim() : String(c))).filter(Boolean);
-                    const changed = original.length !== draftCuisines.length || original.some((o) => !draftCuisines.includes(o)) || draftCuisines.some((d) => !original.includes(d));
-                    setEditCuisineModalVisible(false);
-                    setConfirmModal({
-                      visible: true,
-                      type: "cuisine",
-                      message: changed
-                        ? "You have edited or removed cuisines. This may affect how customers find your store. Are you sure you want to save?"
-                        : "Are you sure you want to update cuisine tags?",
-                      payload: { cuisine_types: draftCuisines, food_categories: [] },
-                    });
-                  }}
-                  style={[styles.modalBtn, styles.modalBtnPrimary]}
+                  onPress={() => setEditCuisineModalVisible(false)}
+                  style={[styles.modalBtn, styles.modalBtnPrimary, { flex: 1 }]}
                 >
-                  <Text style={styles.modalBtnTextPrimary}>Save</Text>
+                  <Text style={styles.modalBtnTextPrimary}>Done</Text>
                 </Pressable>
               </View>
             </Pressable>
@@ -1189,6 +1265,12 @@ const styles = StyleSheet.create({
   fieldLabel: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textSecondary, textTransform: "uppercase", letterSpacing: 0.3 },
   editLink: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.primary },
   fieldValue: { fontSize: 14, color: GatiMitraMerchant.textPrimary, marginTop: 2 },
+  cuisinePlainText: {
+    fontSize: 14,
+    color: GatiMitraMerchant.textPrimary,
+    marginTop: 4,
+    lineHeight: 20,
+  },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
   chip: {
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
@@ -1243,7 +1325,30 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  modalChipScroll: { flex: 1, minHeight: 0 },
+  allCuisinesPlainScrollContent: { paddingHorizontal: 16, paddingBottom: 16 },
+  allCuisinesPlainText: { fontSize: 14, color: GatiMitraMerchant.textPrimary, lineHeight: 22 },
+  cuisineLoadingBox: {
+    paddingVertical: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  cuisineLoadingText: { fontSize: 13, color: GatiMitraMerchant.textSecondary },
+  cuisineEmptyHint: { fontSize: 13, color: GatiMitraMerchant.textTertiary, fontStyle: "italic", paddingVertical: 4 },
+  cuisineCatalogScroll: { maxHeight: 200, minHeight: 80 },
+  cuisineCatalogScrollContent: { paddingHorizontal: 16, paddingBottom: 8 },
+  cuisineCatalogEmpty: { fontSize: 13, color: GatiMitraMerchant.textTertiary, paddingVertical: 12 },
+  cuisineCatalogRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.divider,
+  },
+  cuisineCatalogRowText: { fontSize: 15, color: GatiMitraMerchant.textPrimary, flex: 1, paddingRight: 8 },
+  modalChipScroll: { flex: 1, minHeight: 0, maxHeight: 180 },
   modalChipScrollContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24 },
   modalHeader: {
     flexDirection: "row",

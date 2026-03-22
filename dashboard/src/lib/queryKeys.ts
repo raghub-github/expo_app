@@ -92,6 +92,14 @@ export const queryKeys = {
     menu: (storeId: string) => ["merchant-store", storeId, "menu"] as const,
   },
 
+  // Merchant offers (dashboard)
+  offers: {
+    merchant: {
+      list: (filters: Record<string, unknown>) => ["offers", "merchant", "list", filters] as const,
+    },
+    stores: () => ["offers", "stores"] as const,
+  },
+
   // Rider Dashboard
   rider: {
     summary: (riderId: number | null, params: RiderSummaryParams) =>

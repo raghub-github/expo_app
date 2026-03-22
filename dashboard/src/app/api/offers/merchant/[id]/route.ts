@@ -119,7 +119,8 @@ export async function PUT(
     const sql = getSql();
 
     const updates: string[] = [];
-    const values: unknown[] = [];
+    /** Bound parameters for `sql.unsafe` (must not be `unknown[]` for postgres.js typings). */
+    const values: (string | number | boolean | null)[] = [];
     let p = 1;
 
     if (title !== undefined) {

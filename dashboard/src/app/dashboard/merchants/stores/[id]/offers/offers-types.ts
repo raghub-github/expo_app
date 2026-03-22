@@ -13,6 +13,8 @@ export interface Offer {
   get_quantity: number | null;
   coupon_code: string | null;
   image_url: string | null;
+  /** width/height (e.g. 2 for 800x400). Saved into offer_metadata. */
+  offer_image_aspect_ratio?: number | null;
   valid_from: string;
   valid_till: string;
   is_active: boolean | null;

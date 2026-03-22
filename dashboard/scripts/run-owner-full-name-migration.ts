@@ -21,7 +21,7 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const DATABASE_URL = process.env.DATABASE_URL || process.env.NEXT_PUBLIC_DATABASE_URL;
+const DATABASE_URL = (process.env.DATABASE_URL || process.env.NEXT_PUBLIC_DATABASE_URL) as string | undefined;
 
 if (!DATABASE_URL) {
   console.error("❌ DATABASE_URL or NEXT_PUBLIC_DATABASE_URL is required");
@@ -29,7 +29,7 @@ if (!DATABASE_URL) {
 }
 
 async function run() {
-  const sql = postgres(DATABASE_URL, { max: 1 });
+  const sql = postgres(DATABASE_URL!, { max: 1 });
   try {
     const migrationPath = path.join(process.cwd(), "drizzle", "0132_merchant_stores_owner_full_name.sql");
     if (!fs.existsSync(migrationPath)) {

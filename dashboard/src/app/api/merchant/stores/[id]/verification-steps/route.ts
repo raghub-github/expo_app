@@ -51,7 +51,7 @@ async function allowStoreAccess(storeId: number) {
     allowed: true as const,
     user: { id: user.id, email: user.email },
     systemUserId: systemUser?.id ?? null,
-    systemUserName: systemUser?.name ?? user.email,
+    systemUserName: (systemUser?.full_name?.trim() || user.email) ?? "",
     store,
     areaManagerId,
   };
@@ -138,8 +138,10 @@ export async function POST(
       );
     }
     const notes = typeof body.notes === "string" ? body.notes.trim() || null : null;
+    // systemUserName is always a string from allowStoreAccess; avoid `typeof ... === "string"` ternary
+    // (TS treats the else branch as unreachable → `never` and errors on access.user).
     const verifiedByName =
-      typeof access.systemUserName === "string" ? access.systemUserName : access.user?.email ?? "agent";
+      access.systemUserName.trim() || access.user.email || "agent";
     const ok = await upsertStoreVerificationStep({
       storeId,
       stepNumber: step,

@@ -66,7 +66,11 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const parentId = body.parentId != null ? Number(body.parentId) : null;
-    const areaManagerIds = Array.isArray(body.areaManagerIds) ? body.areaManagerIds.map((id: unknown) => Number(id)).filter((n) => Number.isFinite(n)) : [];
+    const areaManagerIds = Array.isArray(body.areaManagerIds)
+      ? body.areaManagerIds
+          .map((id: unknown) => Number(id))
+          .filter((n: number) => Number.isFinite(n))
+      : [];
 
     if (!parentId || !Number.isFinite(parentId)) {
       return NextResponse.json({ success: false, error: "parentId is required" }, { status: 400 });

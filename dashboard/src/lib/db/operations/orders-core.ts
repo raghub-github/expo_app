@@ -987,7 +987,8 @@ export async function insertOrderCancellationReason(
       reasonCode: input.reasonCode,
       reasonText: input.reasonText ?? null,
       refundStatus: input.refundStatus ?? "pending",
-      refundAmount: input.refundAmount ?? null,
+      refundAmount:
+        input.refundAmount != null ? String(input.refundAmount) : null,
       metadata: (input.metadata ?? {}) as Record<string, unknown>,
     })
     .returning({ id: orderCancellationReasons.id });

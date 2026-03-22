@@ -11,7 +11,20 @@ const urlCache = new Map<string, CacheEntry>();
 
 function isKey(value: string): boolean {
   const s = value?.trim() || '';
-  return s.length > 0 && !s.startsWith('http://') && !s.startsWith('https://') && !s.startsWith('data:') && !s.startsWith('blob:');
+  // Relative app paths (e.g. /api/attachments/proxy?key=...) are URLs, not raw R2 keys
+  return (
+    s.length > 0 &&
+    !s.startsWith('/') &&
+    !s.startsWith('http://') &&
+    !s.startsWith('https://') &&
+    !s.startsWith('data:') &&
+    !s.startsWith('blob:')
+  );
+}
+
+function isNonExpiringRelativeImageSrc(s: string): boolean {
+  const t = s.trim();
+  return t.startsWith('/api/attachments/proxy') || t.startsWith('/v1/attachments/proxy');
 }
 
 async function fetchSignedUrlByKey(fileKey: string): Promise<string> {
@@ -104,6 +117,13 @@ export function R2Image({
     mountedRef.current = true;
     if (!src?.trim()) {
       setDisplayUrl(null);
+      setError(false);
+      setRetryCount(0);
+      return;
+    }
+    const trimmedSrc = src.trim();
+    if (isNonExpiringRelativeImageSrc(trimmedSrc)) {
+      setDisplayUrl(trimmedSrc);
       setError(false);
       setRetryCount(0);
       return;

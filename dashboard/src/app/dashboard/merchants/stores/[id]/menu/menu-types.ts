@@ -5,13 +5,6 @@ export const ITEM_PLACEHOLDER_SVG =
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" fill="#f3f4f6"/><path d="M32 18c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9zm0 14c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5z" fill="#d1d5db"/><path d="M20 38l4 12h16l4-12H20z" fill="#9ca3af"/><ellipse cx="32" cy="44" rx="12" ry="3" fill="#e5e7eb"/></svg>'
   );
 
-// Suggested category names for type-ahead (max 30 chars)
-export const CATEGORY_SUGGESTIONS = [
-  "North Indian", "South Indian", "Mughlai", "Punjabi", "Chinese", "Indo-Chinese", "Thai", "Italian", "Mexican", "American",
-  "Fast Food", "Street Food", "Cafe", "Bakery", "Desserts", "Beverages", "Pizza", "Burger", "Sandwich", "Momos", "Biryani",
-  "Breakfast", "Snacks", "Sweets", "Pure Veg", "Seafood", "Chicken Special", "Healthy Food", "Thali", "Combo Meals",
-].map((n) => (n.length > 30 ? n.slice(0, 30) : n));
-
 export const CUSTOMIZATION_VARIANT_LIMIT = 10;
 /** Same values as merchant app and DB: VEG, NON_VEG, EGG, Vegan */
 export const FOOD_TYPES = [
@@ -78,6 +71,10 @@ export const SERVES_OPTIONS = [
 
 export const SIZE_UNITS = ["slices", "kg", "litre", "ml", "serves", "cms", "piece", "grams", "inches"];
 
+/** Aligned with merchant app + backend `merchant_menu_items` (food / restaurant). */
+export const WEIGHT_PER_SERVING_UNITS = ["grams", "kg", "oz", "lbs"] as const;
+export const NUTRIENT_UNITS = ["mg", "g"] as const;
+
 export interface Addon {
   id?: number;
   addon_id: string;
@@ -134,10 +131,25 @@ export interface MenuItem {
   item_image_url?: string;
   item_description?: string;
   preparation_time_minutes?: number;
+  /** Per-item packaging fee (₹); overrides store default for this item only when set */
+  packaging_charges?: number | null;
   serves?: number;
   serves_label?: string | null;
   item_size_value?: number | null;
   item_size_unit?: string | null;
+  available_for_delivery?: boolean;
+  weight_per_serving?: number | null;
+  weight_per_serving_unit?: string | null;
+  calories_kcal?: number | null;
+  protein?: number | null;
+  protein_unit?: string | null;
+  carbohydrates?: number | null;
+  carbohydrates_unit?: string | null;
+  fat?: number | null;
+  fat_unit?: string | null;
+  fibre?: number | null;
+  fibre_unit?: string | null;
+  item_tags?: string[] | null;
   allergens?: string[] | string;
   customizations?: Customization[];
   variants?: Variant[];
@@ -167,6 +179,8 @@ export interface MenuCategory {
   category_name: string;
   category_description?: string | null;
   parent_category_id?: number | null;
+  /** FOOD / restaurant root categories — FK to `cuisine_master` (store must have row in merchant_store_cuisines) */
+  cuisine_id?: number | null;
   display_order?: number | null;
   is_active?: boolean;
   created_at?: string;

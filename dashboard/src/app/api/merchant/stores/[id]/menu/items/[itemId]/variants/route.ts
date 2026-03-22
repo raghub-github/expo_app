@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { bodyBool, bodyNum, bodyOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess, genId } from "../../../assert-store-access";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
@@ -45,10 +46,14 @@ export async function POST(
     const [item] = await sql`SELECT id FROM merchant_menu_items WHERE id = ${menuItemId} AND store_id = ${storeId} LIMIT 1`;
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
+    const variant_type = bodyOptionalStr(body.variant_type);
+    const is_default = bodyBool(body.is_default, false);
+    const display_order = bodyNum(body.display_order, 0);
+
     const variantId = genId("VAR_");
     const [row] = await sql`
       INSERT INTO merchant_menu_item_variants (menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order)
-      VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${body.variant_type ?? null}, ${variant_price}, ${body.is_default ?? false}, ${body.display_order ?? 0})
+      VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${variant_type}, ${variant_price}, ${is_default}, ${display_order})
       RETURNING id
     `;
     try {

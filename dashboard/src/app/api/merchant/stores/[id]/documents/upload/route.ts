@@ -130,7 +130,7 @@ export async function POST(
     // Use external merchant/child codes in the key so URLs match the
     // docs-style paths (docs/merchants/GMMP.../stores/GMMC.../onboarding/documents/...).
     const parentCode =
-      (store.parent_merchant_id as string | null) ||
+      (store.parent?.parent_merchant_id as string | null) ||
       String(store.parent_id ?? store.id);
     const storeCode = String(store.store_id || storeId);
     const timestamp = Date.now();

@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { bodyBool, bodyNum, bodyOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess, genId, getModifierLimits } from "../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -77,10 +78,16 @@ export async function POST(
       );
     }
 
+    const description = bodyOptionalStr(body.description);
+    const is_required = bodyBool(body.is_required, false);
+    const min_selection = bodyNum(body.min_selection, 0);
+    const max_selection = bodyNum(body.max_selection, 1);
+    const display_order = bodyNum(body.display_order, 0);
+
     const groupCode = genId("MG_");
     const [row] = await sql`
       INSERT INTO merchant_modifier_groups (store_id, group_code, title, description, is_required, min_selection, max_selection, display_order)
-      VALUES (${storeId}, ${groupCode}, ${title}, ${body.description ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
+      VALUES (${storeId}, ${groupCode}, ${title}, ${description}, ${is_required}, ${min_selection}, ${max_selection}, ${display_order})
       RETURNING id, group_code
     `;
     const r = row as any;

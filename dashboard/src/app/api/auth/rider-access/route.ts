@@ -28,7 +28,7 @@ export async function GET() {
     // Use getUser() instead of getSession() to avoid refresh token race conditions
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     
-    if (userError || !user) {
+    if (userError || !user || !user.email) {
       // Check if it's an invalid refresh token error
       if (isInvalidRefreshToken(userError)) {
         await supabase.auth.signOut();
@@ -44,7 +44,7 @@ export async function GET() {
     }
 
     const authId = user.id;
-    const email = user.email;
+    const email = user.email!;
 
     const systemUserId = await getSystemUserIdFromAuthUser(authId, email);
     if (!systemUserId) {

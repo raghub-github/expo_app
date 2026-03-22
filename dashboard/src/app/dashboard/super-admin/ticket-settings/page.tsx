@@ -15,7 +15,12 @@ import {
   useDeleteTicketTagMutation,
 } from "@/store/api/superAdminApi";
 
-type TitleRow = { id?: number; titleCode: string; titleText: string };
+type TitleRow = {
+  id?: number;
+  titleCode: string;
+  titleText: string;
+  displayOrder?: number | null;
+};
 
 type Group = {
   id: number;
@@ -77,7 +82,9 @@ export default function TicketSettingsPage() {
   const [tags, setTags] = useState<TagRecord[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [activeTab, setActiveTab] = useState<"groups" | "tags">("groups");
-  const [groupForm, setGroupForm] = useState<Partial<Group> & { groupCode: string; groupName: string; titles?: TitleRow[] } | null>(null);
+  const [groupForm, setGroupForm] = useState<
+    (Omit<Partial<Group>, "titles"> & { groupCode: string; groupName: string; titles?: TitleRow[] }) | null
+  >(null);
   const [tagForm, setTagForm] = useState<Partial<TagRecord> & { tagCode: string; tagName: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -386,7 +393,7 @@ export default function TicketSettingsPage() {
                   <label className="block text-xs font-medium text-gray-600">Titles (multiple per group)</label>
                   <button
                     type="button"
-                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "" }] })}
+                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "", displayOrder: null }] })}
                     className="text-xs text-blue-600 hover:underline"
                   >
                     + Add title
@@ -602,7 +609,7 @@ export default function TicketSettingsPage() {
                   <label className="block text-xs font-medium text-gray-600">Titles</label>
                   <button
                     type="button"
-                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "" }] })}
+                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "", displayOrder: null }] })}
                     className="text-xs text-blue-600 hover:underline"
                   >
                     + Add title
@@ -656,7 +663,12 @@ export default function TicketSettingsPage() {
                     ticketSection: groupForm.ticketSection ?? null,
                     ticketCategory: groupForm.ticketCategory ?? null,
                     sourceRole: groupForm.sourceRole ?? null,
-                    titles: groupForm.titles,
+                    titles: (groupForm.titles ?? []).map((t) => ({
+                      id: t.id ?? 0,
+                      titleCode: t.titleCode,
+                      titleText: t.titleText,
+                      displayOrder: t.displayOrder ?? null,
+                    })),
                   })}
                   disabled={saving}
                   className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"

@@ -171,7 +171,7 @@ export function AnalyticsCharts({ stats, loading = false }: AnalyticsChartsProps
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(value: number) => `₹${value.toLocaleString()}`} />
+            <Tooltip formatter={(value) => `₹${Number(value ?? 0).toLocaleString()}`} />
             <Legend />
             <Line
               type="monotone"

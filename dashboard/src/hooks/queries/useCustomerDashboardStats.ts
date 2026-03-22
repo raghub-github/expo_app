@@ -51,10 +51,10 @@ export function useCustomerDashboardStats(
   options?: { enabled?: boolean }
 ) {
   return useQuery({
-    queryKey: queryKeys.customers.stats(filters),
+    queryKey: queryKeys.customers.stats(filters as Record<string, unknown>),
     queryFn: () => fetchDashboardStats(filters),
     enabled: options?.enabled !== false,
-    ...getCacheConfig(CacheTier.LOW), // Stats are low frequency, can cache longer
+    ...getCacheConfig(CacheTier.MEDIUM),
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 }

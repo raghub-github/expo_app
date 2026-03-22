@@ -210,6 +210,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
   const {
     data: bankAccountsQueryData,
     isLoading: bankAccountsQueryLoading,
+    refetch: refetchBankAccounts,
   } = useGetBankAccountsQuery(storeId, {
     skip: !storeId || (!bankSectionExpanded && !showWithdrawal),
   });
@@ -551,7 +552,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
           bank_proof_file_url: "",
         });
         setBankProofFile(null);
-        fetchBankAccounts();
+        void refetchBankAccounts();
       } else {
         toast(data.error || "Failed to add");
       }
@@ -580,7 +581,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
         if (body.set_default) toast("Set as default");
         else if (body.set_disabled === true) toast("Account disabled");
         else if (body.set_disabled === false) toast("Account enabled");
-        fetchBankAccounts();
+        void refetchBankAccounts();
       } else toast(data.error || "Failed");
     } catch {
       toast("Failed");
@@ -1365,9 +1366,17 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               </div>
               {(() => {
                 const amt = parseFloat(withdrawalAmount);
-                const showBreakdown =
-                  !payoutQuoteLoading && payoutQuote && !isNaN(amt) && amt >= 100;
-                return showBreakdown ? (
+                if (payoutQuoteLoading && !Number.isNaN(amt) && amt >= 100) {
+                  return (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center gap-2 text-slate-600 text-sm">
+                      <Loader2 size={18} className="animate-spin" />
+                      Calculating...
+                    </div>
+                  );
+                }
+                if (payoutQuote == null || Number.isNaN(amt) || amt < 100) return null;
+                const quote = payoutQuote as NonNullable<typeof payoutQuote>;
+                return (
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
                     <p className="text-sm font-medium text-slate-700">
                       Withdrawal calculation
@@ -1376,17 +1385,17 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                       <span>Requested amount (gross)</span>
                       <span className="tabular-nums">
                         ₹
-                        {payoutQuote.requested_amount.toLocaleString("en-IN", {
+                        {quote.requested_amount.toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
                       </span>
                     </div>
                     <div className="flex justify-between text-sm text-slate-600">
-                      <span>Commission ({payoutQuote.commission_percentage}%)</span>
+                      <span>Commission ({quote.commission_percentage}%)</span>
                       <span className="tabular-nums text-amber-600">
                         −₹
-                        {(payoutQuote.commission_amount ?? 0).toLocaleString("en-IN", {
+                        {(quote.commission_amount ?? 0).toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
@@ -1395,11 +1404,11 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                     <div className="flex justify-between text-sm text-slate-600">
                       <span>
                         GST on Commission (
-                        {payoutQuote.gst_on_commission_percent ?? 18}%)
+                        {quote.gst_on_commission_percent ?? 18}%)
                       </span>
                       <span className="tabular-nums text-amber-600">
                         −₹
-                        {(payoutQuote.gst_on_commission ?? payoutQuote.tax_amount ?? 0).toLocaleString(
+                        {(quote.gst_on_commission ?? quote.tax_amount ?? 0).toLocaleString(
                           "en-IN",
                           { minimumFractionDigits: 2, maximumFractionDigits: 2 }
                         )}
@@ -1408,8 +1417,8 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                     <div className="flex justify-between text-sm text-slate-600">
                       <span>TDS</span>
                       <span className="tabular-nums">
-                        {(payoutQuote.tds_amount ?? 0) > 0
-                          ? `−₹${(payoutQuote.tds_amount ?? 0).toLocaleString("en-IN", {
+                        {(quote.tds_amount ?? 0) > 0
+                          ? `−₹${(quote.tds_amount ?? 0).toLocaleString("en-IN", {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
                             })}`
@@ -1424,19 +1433,14 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                       <span>You receive (net payout)</span>
                       <span className="tabular-nums text-emerald-600">
                         ₹
-                        {payoutQuote.net_payout_amount.toLocaleString("en-IN", {
+                        {quote.net_payout_amount.toLocaleString("en-IN", {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
                         })}
                       </span>
                     </div>
                   </div>
-                ) : payoutQuoteLoading && amt >= 100 ? (
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center gap-2 text-slate-600 text-sm">
-                    <Loader2 size={18} className="animate-spin" />
-                    Calculating...
-                  </div>
-                ) : null;
+                );
               })()}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">

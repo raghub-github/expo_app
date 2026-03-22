@@ -108,15 +108,17 @@ export async function getSystemUserByEmail(
           if (!Number.isFinite(numericId)) {
             result = [];
           } else {
-            result = [{
-              id: numericId,
-              system_user_id: row.system_user_id,
-              email: row.email,
-              mobile: row.mobile,
-              full_name: row.full_name,
-              primary_role: row.primary_role,
-              status: row.status,
-            }];
+            result = [
+              {
+                id: numericId,
+                system_user_id: row.system_user_id,
+                email: row.email,
+                mobile: row.mobile,
+                full_name: row.full_name,
+                primary_role: row.primary_role,
+                status: row.status,
+              },
+            ] as unknown as typeof result;
           }
         }
       } catch {

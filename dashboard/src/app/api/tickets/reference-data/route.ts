@@ -121,11 +121,14 @@ export async function GET() {
         WHERE is_active = true
         ORDER BY tag_name ASC
       `;
-      tags = (tagRows || []).map((r: { id: bigint; tag_code: string; tag_name: string }) => ({
-        id: Number(r.id),
-        tagCode: r.tag_code ?? "",
-        tagName: r.tag_name ?? "",
-      }));
+      tags = (tagRows || []).map((r: unknown) => {
+        const row = r as { id: bigint; tag_code: string; tag_name: string };
+        return {
+          id: Number(row.id),
+          tagCode: row.tag_code ?? "",
+          tagName: row.tag_name ?? "",
+        };
+      });
     } catch {
       tags = [];
     }

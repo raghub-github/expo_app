@@ -6,7 +6,10 @@ import {
   useSessionStatusQuery,
   useLogout,
 } from "@/hooks/queries/useAuthQuery";
-import { usePermissionsQuery } from "@/hooks/queries/usePermissionsQuery";
+import {
+  usePermissionsQuery,
+  type PermissionsData,
+} from "@/hooks/queries/usePermissionsQuery";
 
 interface SessionUser {
   id: string;
@@ -28,15 +31,6 @@ interface SessionStatus {
     sessionStartTime?: number;
     lastActivityTime?: number;
   };
-}
-
-interface PermissionsData {
-  exists: boolean;
-  systemUserId: number | null;
-  isSuperAdmin: boolean;
-  roles?: string[];
-  permissions?: string[];
-  message?: string;
 }
 
 interface AuthContextValue {

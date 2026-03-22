@@ -16,7 +16,7 @@ export const queryClient = new QueryClient({
       refetchOnMount: false,
       refetchOnReconnect: true,
       // Keep previous data visible during refetch for smooth, non-jarring updates
-      placeholderData: (previousData) => previousData,
+      placeholderData: <T,>(previousData: T | undefined) => previousData,
       retry: 1,
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
     },

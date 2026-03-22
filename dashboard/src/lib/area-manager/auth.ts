@@ -139,6 +139,7 @@ export async function getAreaManagerFromAuth(
         managerType: roleType,
         areaCode: null,
         localityCode: null,
+        city: null,
         status: "ACTIVE",
       },
       systemUserId: systemUser.id,

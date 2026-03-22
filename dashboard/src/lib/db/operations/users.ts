@@ -29,6 +29,8 @@ export interface CreateUserData {
 }
 
 export interface UpdateUserData {
+  /** Maps to system_users.system_user_id */
+  system_user_id?: string;
   full_name?: string;
   first_name?: string;
   last_name?: string;
@@ -281,8 +283,6 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   const limit = filters.limit || 20;
   const offset = (page - 1) * limit;
   
-  let query = db.select().from(systemUsers);
-  
   // Build where conditions
   const conditions = [];
   
@@ -316,34 +316,25 @@ export async function listSystemUsers(filters: UserFilters = {}) {
     conditions.push(eq(systemUsers.department, filters.department));
   }
   
-  // Apply where conditions
-  if (conditions.length > 0) {
-    query = query.where(and(...conditions));
-  }
-  
-  // Sorting
+  const filteredQuery =
+    conditions.length > 0 ? db.select().from(systemUsers).where(and(...conditions)) : db.select().from(systemUsers);
+
   const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
-  
-  if (sortBy === "fullName") {
-    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.fullName) : desc(systemUsers.fullName));
-  } else if (sortBy === "email") {
-    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.email) : desc(systemUsers.email));
-  } else if (sortBy === "createdAt") {
-    query = query.orderBy(sortOrder === "asc" ? asc(systemUsers.createdAt) : desc(systemUsers.createdAt));
-  } else {
-    query = query.orderBy(desc(systemUsers.createdAt));
-  }
-  
-  // Get total count for pagination
-  const countQuery = db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(systemUsers);
-  
-  if (conditions.length > 0) {
-    countQuery.where(and(...conditions));
-  }
-  
+
+  const query =
+    sortBy === "fullName"
+      ? filteredQuery.orderBy(sortOrder === "asc" ? asc(systemUsers.fullName) : desc(systemUsers.fullName))
+      : sortBy === "email"
+        ? filteredQuery.orderBy(sortOrder === "asc" ? asc(systemUsers.email) : desc(systemUsers.email))
+        : sortBy === "createdAt"
+          ? filteredQuery.orderBy(sortOrder === "asc" ? asc(systemUsers.createdAt) : desc(systemUsers.createdAt))
+          : filteredQuery.orderBy(desc(systemUsers.createdAt));
+
+  const countBase = db.select({ count: sql<number>`count(*)::int` }).from(systemUsers);
+  const countQuery =
+    conditions.length > 0 ? countBase.where(and(...conditions)) : countBase;
+
   const [{ count: total }] = await countQuery;
   
   // Apply pagination
@@ -430,7 +421,7 @@ export async function incrementFailedLoginAttempts(id: number) {
     .returning();
   
   // Lock account after 5 failed attempts
-  if (updated && updated.failedLoginAttempts >= 5) {
+  if (updated && (updated.failedLoginAttempts ?? 0) >= 5) {
     await db
       .update(systemUsers)
       .set({
@@ -474,10 +465,11 @@ export async function getUniqueRoles(): Promise<string[]> {
     );
     
     // Extract roles
-    const roles = result.rows.map((row: any) => row.role as string).filter(Boolean);
+    const rows = Array.isArray(result) ? result : [];
+    const roles = rows.map((row: { role?: string }) => row.role as string).filter(Boolean);
     
     // Sort roles alphabetically, but put SUPER_ADMIN first if it exists
-    return roles.sort((a, b) => {
+    return roles.sort((a: string, b: string) => {
       if (a === "SUPER_ADMIN") return -1;
       if (b === "SUPER_ADMIN") return 1;
       return a.localeCompare(b);

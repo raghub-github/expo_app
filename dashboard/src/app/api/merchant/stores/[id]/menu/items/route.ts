@@ -10,6 +10,13 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import {
+  bodyBool,
+  bodyNum,
+  bodyNumOrNull,
+  bodyOptionalStr,
+  bodyTextArrayOrNull,
+} from "@/lib/db/sql-json-body";
 import { ulid } from "ulid";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -68,37 +75,92 @@ export async function POST(
     }
 
     const itemId = ulid();
+    const item_description = bodyOptionalStr(body.item_description);
+    const food_type = bodyOptionalStr(body.food_type);
+    const spice_level = bodyOptionalStr(body.spice_level);
+    const cuisine_type = bodyOptionalStr(body.cuisine_type);
+    const preparation_time_minutes = bodyNumOrNull(body.preparation_time_minutes);
+    const packaging_charges = body.packaging_charges === null ? null : bodyNumOrNull(body.packaging_charges);
+    const serves = bodyNumOrNull(body.serves);
+    const serves_label = bodyOptionalStr(body.serves_label);
+    const short_name = bodyOptionalStr(body.short_name);
+    const display_order = bodyNum(body.display_order, 0);
+    const item_size_value = bodyNumOrNull(body.item_size_value);
+    const item_size_unit = bodyOptionalStr(body.item_size_unit);
+    const available_for_delivery = bodyBool(body.available_for_delivery, true);
+    const in_stock = bodyBool(body.in_stock, true);
+    const is_active = bodyBool(body.is_active, true);
+    const is_popular = bodyBool(body.is_popular, false);
+    const is_recommended = bodyBool(body.is_recommended, false);
+    const has_customizations = bodyBool(body.has_customizations, false);
+    const has_addons = bodyBool(body.has_addons, false);
+    const has_variants = bodyBool(body.has_variants, false);
+
+    const allergens = bodyTextArrayOrNull(body.allergens);
+    const item_tags = bodyTextArrayOrNull(body.item_tags);
+    const weight_per_serving = bodyNumOrNull(body.weight_per_serving);
+    const weight_per_serving_unit = bodyOptionalStr(body.weight_per_serving_unit) ?? "grams";
+    const calories_kcal = bodyNumOrNull(body.calories_kcal);
+    const protein = bodyNumOrNull(body.protein);
+    const protein_unit = bodyOptionalStr(body.protein_unit) ?? "mg";
+    const carbohydrates = bodyNumOrNull(body.carbohydrates);
+    const carbohydrates_unit = bodyOptionalStr(body.carbohydrates_unit) ?? "mg";
+    const fat = bodyNumOrNull(body.fat);
+    const fat_unit = bodyOptionalStr(body.fat_unit) ?? "mg";
+    const fibre = bodyNumOrNull(body.fibre);
+    const fibre_unit = bodyOptionalStr(body.fibre_unit) ?? "mg";
+
     const sql = getSql();
     const [row] = await sql`
       INSERT INTO merchant_menu_items (
         store_id, category_id, item_id, item_name, item_description, food_type, spice_level, cuisine_type,
-        base_price, selling_price, preparation_time_minutes, serves, serves_label, short_name, display_order,
+        base_price, selling_price, preparation_time_minutes, packaging_charges, serves, serves_label, short_name, display_order,
         item_size_value, item_size_unit, available_for_delivery,
-        in_stock, is_active,
+        allergens, item_tags,
+        weight_per_serving, weight_per_serving_unit, calories_kcal,
+        protein, protein_unit, carbohydrates, carbohydrates_unit,
+        fat, fat_unit, fibre, fibre_unit,
+        in_stock, is_active, is_popular, is_recommended,
         has_customizations, has_addons, has_variants,
         approval_status, approved_at, approved_by,
         created_at, updated_at
       )
       VALUES (
-        ${storeId}, ${category_id}, ${itemId}, ${item_name}, ${body.item_description ?? null},
-        ${body.food_type ?? null}, ${body.spice_level ?? null}, ${body.cuisine_type ?? null},
+        ${storeId}, ${category_id}, ${itemId}, ${item_name}, ${item_description},
+        ${food_type}, ${spice_level}, ${cuisine_type},
         ${base_price}, ${selling_price},
-        ${body.preparation_time_minutes ?? null},
-        ${body.serves ?? null},
-        ${body.serves_label ?? null},
-        ${body.short_name ?? null},
-        ${body.display_order ?? 0},
-        ${body.item_size_value ?? null},
-        ${body.item_size_unit ?? null},
-        ${body.available_for_delivery ?? true},
-        ${body.in_stock ?? true},
-        ${body.is_active ?? true},
-        ${body.has_customizations ?? false},
-        ${body.has_addons ?? false},
-        ${body.has_variants ?? false},
-        'PENDING'::merchant_menu_item_approval_status,
-        NULL,
-        NULL,
+        ${preparation_time_minutes},
+        ${packaging_charges},
+        ${serves},
+        ${serves_label},
+        ${short_name},
+        ${display_order},
+        ${item_size_value},
+        ${item_size_unit},
+        ${available_for_delivery},
+        ${allergens},
+        ${item_tags},
+        ${weight_per_serving},
+        ${weight_per_serving_unit},
+        ${calories_kcal},
+        ${protein},
+        ${protein_unit},
+        ${carbohydrates},
+        ${carbohydrates_unit},
+        ${fat},
+        ${fat_unit},
+        ${fibre},
+        ${fibre_unit},
+        ${in_stock},
+        ${is_active},
+        ${is_popular},
+        ${is_recommended},
+        ${has_customizations},
+        ${has_addons},
+        ${has_variants},
+        'APPROVED'::merchant_menu_item_approval_status,
+        NOW(),
+        ${user.email ?? null},
         NOW(),
         NOW()
       )

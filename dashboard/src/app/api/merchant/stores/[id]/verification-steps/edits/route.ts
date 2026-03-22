@@ -40,7 +40,7 @@ async function allowStoreAccess(storeId: number) {
   return {
     allowed: true as const,
     systemUserId: systemUser?.id ?? null,
-    systemUserName: systemUser?.name ?? user.email,
+    systemUserName: (systemUser?.full_name?.trim() || user.email) ?? "",
   };
 }
 
@@ -75,7 +75,7 @@ export async function POST(
     }
     const oldValue = body.old_value === undefined ? null : (body.old_value == null ? null : String(body.old_value));
     const newValue = body.new_value === undefined ? null : (body.new_value == null ? null : String(body.new_value));
-    const editedByName = typeof access.systemUserName === "string" ? access.systemUserName : "agent";
+    const editedByName = access.systemUserName.trim() || "agent";
     const ok = await insertStoreVerificationStepEdit({
       storeId,
       stepNumber: step,

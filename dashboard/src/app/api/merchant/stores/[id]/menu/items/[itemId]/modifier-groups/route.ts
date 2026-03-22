@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { bodyNum } from "@/lib/db/sql-json-body";
 import { assertStoreAccess, getModifierLimits } from "../../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -104,9 +105,10 @@ export async function POST(
     `;
     if (existing) return NextResponse.json({ success: false, error: "ALREADY_LINKED" }, { status: 409 });
 
+    const display_order = bodyNum(body.display_order, 0);
     const [row] = await sql`
       INSERT INTO merchant_item_modifier_groups (menu_item_id, modifier_group_id, display_order)
-      VALUES (${menuItemId}, ${modifier_group_id}, ${body.display_order ?? 0})
+      VALUES (${menuItemId}, ${modifier_group_id}, ${display_order})
       RETURNING id
     `;
     try {

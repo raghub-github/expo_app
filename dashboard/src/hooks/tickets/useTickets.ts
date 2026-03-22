@@ -74,7 +74,7 @@ const TICKETS_FETCH_TIMEOUT_MS = 60_000; // 60s so slow DB doesn't hang the UI f
 
 export function useTickets(filters: TicketFilters = {}) {
   return useQuery<TicketsResponse>({
-    queryKey: queryKeys.tickets.list(filters),
+    queryKey: queryKeys.tickets.list(filters as Record<string, unknown>),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters.serviceTypes?.length) params.set("serviceType", filters.serviceTypes.join(","));

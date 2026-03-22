@@ -41,6 +41,7 @@ export const fetchMenuCategories = async (storeId: string) => {
       .from('merchant_menu_categories')
       .select('*')
       .eq('store_id', storeData.id)
+      .or('is_deleted.is.null,is_deleted.eq.false')
       .order('category_name', { ascending: true });
     if (error) throw error;
     return data || [];
@@ -102,13 +103,39 @@ export const updateMenuCategory = async (categoryId: number, updates: any) => {
   }
 };
 
-// Delete a menu category by id
+// Soft-delete a menu category (aligns with backend: block if items or live subcategories exist)
 export const deleteMenuCategory = async (categoryId: number) => {
   try {
-    const { error } = await supabase
+    const { data: cat, error: catErr } = await supabaseAdmin
       .from('merchant_menu_categories')
-      .delete()
-      .eq('id', categoryId);
+      .select('id, store_id')
+      .eq('id', categoryId)
+      .maybeSingle();
+    if (catErr || !cat) return false;
+
+    const { count: subCount, error: subErr } = await supabaseAdmin
+      .from('merchant_menu_categories')
+      .select('id', { count: 'exact', head: true })
+      .eq('parent_category_id', categoryId)
+      .eq('store_id', cat.store_id)
+      .or('is_deleted.is.null,is_deleted.eq.false');
+    if (subErr) throw subErr;
+    if ((subCount ?? 0) > 0) return false;
+
+    const { count: itemCount, error: itemErr } = await supabaseAdmin
+      .from('merchant_menu_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('category_id', categoryId)
+      .eq('store_id', cat.store_id)
+      .or('is_deleted.is.null,is_deleted.eq.false');
+    if (itemErr) throw itemErr;
+    if ((itemCount ?? 0) > 0) return false;
+
+    const { error } = await supabaseAdmin
+      .from('merchant_menu_categories')
+      .update({ is_deleted: true, updated_at: new Date().toISOString() })
+      .eq('id', categoryId)
+      .eq('store_id', cat.store_id);
     if (error) throw error;
     return true;
   } catch (error) {
@@ -751,6 +778,10 @@ export const createMenuItem = async (itemData: any) => {
         is_popular: itemData.is_popular ?? false,
         is_recommended: itemData.is_recommended ?? false,
         preparation_time_minutes: itemData.preparation_time_minutes ?? 15,
+        packaging_charges:
+          itemData.packaging_charges === null || itemData.packaging_charges === undefined
+            ? null
+            : Number(itemData.packaging_charges),
         serves: itemData.serves ?? 1,
         is_active: itemData.is_active ?? true,
         allergens: itemData.allergens || null
@@ -795,6 +826,10 @@ export const updateMenuItem = async (itemId: string, itemData: any) => {
       is_popular: itemData.is_popular ?? false,
       is_recommended: itemData.is_recommended ?? false,
       preparation_time_minutes: itemData.preparation_time_minutes ?? 15,
+      packaging_charges:
+        itemData.packaging_charges === null || itemData.packaging_charges === undefined
+          ? null
+          : Number(itemData.packaging_charges),
       serves: itemData.serves ?? 1,
       is_active: itemData.is_active ?? true,
       allergens: itemData.allergens || null,

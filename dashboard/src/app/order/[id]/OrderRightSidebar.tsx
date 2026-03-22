@@ -748,7 +748,7 @@ export default function OrderRightSidebar({
           ...prev,
           {
             id: String(saved.riderId),
-            riderId: saved.riderId,
+            riderId: saved.riderId ?? null,
             riderName: saved.riderName ?? null,
             riderMobile: saved.riderMobile ?? null,
             providerName: normalizeProviderName(saved.providerName) ?? saved.providerName ?? null,

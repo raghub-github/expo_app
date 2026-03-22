@@ -91,8 +91,8 @@ export async function GET() {
       FROM tickets
       WHERE current_assignee_user_id IS NOT NULL
     `;
-    const assignedAgentIds = assignedAgentsResult
-      .map((r: { current_assignee_user_id: unknown }) => r.current_assignee_user_id)
+    const assignedAgentIds = (assignedAgentsResult as unknown as { current_assignee_user_id: unknown }[])
+      .map((r) => r.current_assignee_user_id)
       .filter((id): id is number => id != null && (typeof id === "number" || typeof id === "bigint"))
       .map((id) => Number(id));
     

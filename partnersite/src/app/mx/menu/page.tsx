@@ -5,19 +5,6 @@ const ITEM_PLACEHOLDER_SVG = "data:image/svg+xml," + encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" fill="#f3f4f6"/><path d="M32 18c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9zm0 14c-2.8 0-5-2.2-5-5s2.2-5 5-5 5 2.2 5 5-2.2 5-5 5z" fill="#d1d5db"/><path d="M20 38l4 12h16l4-12H20z" fill="#9ca3af"/><ellipse cx="32" cy="44" rx="12" ry="3" fill="#e5e7eb"/></svg>'
 );
 
-// Suggested category names for type-ahead (max 30 chars per name)
-const CATEGORY_SUGGESTIONS = [
-  "North Indian", "South Indian", "Mughlai", "Punjabi", "Rajasthani", "Gujarati", "Maharashtrian", "Bengali", "Bihari", "Awadhi", "Kashmiri", "Hyderabadi",
-  "Chinese", "Indo-Chinese", "Thai", "Asian", "Japanese", "Korean", "Vietnamese", "Italian", "Mexican", "American", "Mediterranean", "Lebanese", "Turkish", "Arabian", "Continental", "European",
-  "Fast Food", "Street Food", "Cafe", "Bakery", "Desserts", "Ice Cream", "Beverages", "Juices", "Smoothies", "Shake & Thick Shakes", "Tea", "Coffee",
-  "Pizza", "Burger", "Sandwich", "Wraps & Rolls", "Frankie", "Kathi Roll", "Momos", "Noodles", "Pasta", "Biryani", "Pulao", "Kebab", "Tandoor", "Grill", "BBQ",
-  "Seafood", "Fish & Chips", "Chicken Special", "Mutton Dishes", "Egg Dishes", "Pure Veg", "Jain Food", "Healthy Food", "Salads", "Diet Food", "Protein Meals",
-  "Home Style Food", "Thali", "Mini Meals", "Combo Meals", "Lunch Box", "Dinner Specials", "Breakfast", "Brunch", "Snacks", "Chaat", "Panipuri", "Sweets", "Mithai", "Halwa", "Lassi", "Kulfi", "Falooda",
-  "Waffles", "Pancakes", "Donuts", "Brownies", "Cakes", "Pastries", "Cupcakes", "Chocolate Special", "Frozen Desserts", "Mocktails", "Soft Drinks", "Energy Drinks", "Milkshakes", "Fruit Bowls",
-  "Organic Food", "Vegan", "Gluten Free", "Regional Indian", "Coastal Food", "Andhra Cuisine", "Chettinad", "Malabar", "Kerala Food", "Tamil Cuisine", "Telangana Cuisine", "Street Chinese", "Fusion Food",
-  "Cloud Kitchen", "Family Restaurant", "Fine Dining", "Quick Bites", "Budget Meals", "Late Night Delivery", "Takeaway Only", "Bulk Orders", "Party Orders", "Catering",
-].map(n => n.length > 30 ? n.slice(0, 30) : n);
-
 // Helper to generate menu item id like GMI1001, GMI1002, ...
 function generateMenuItemId() {
   if (typeof window !== 'undefined') {
@@ -52,8 +39,22 @@ interface MenuItem {
   available_quantity?: number;
   low_stock_threshold?: number;
   preparation_time_minutes?: number;
+  packaging_charges?: number | null;
   serves?: number;
   allergens?: string[];
+  available_for_delivery?: boolean;
+  weight_per_serving?: number | null;
+  weight_per_serving_unit?: string | null;
+  calories_kcal?: number | null;
+  protein?: number | null;
+  protein_unit?: string | null;
+  carbohydrates?: number | null;
+  carbohydrates_unit?: string | null;
+  fat?: number | null;
+  fat_unit?: string | null;
+  fibre?: number | null;
+  fibre_unit?: string | null;
+  item_tags?: string[] | null;
   customizations?: Customization[];
   variants?: Variant[];
   food_type?: string;
@@ -103,7 +104,7 @@ interface Variant {
   is_default?: boolean;
 }
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, Suspense, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation'
 import { Toaster, toast } from 'sonner'
@@ -126,23 +127,75 @@ import {
 } from '@/lib/database'
 import { MenuItemsGridSkeleton } from '@/components/PageSkeleton'
 import { R2Image } from '@/components/R2Image'
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue'
+import { linkItemCuisineSelectionsToStoreProfile } from '@/lib/linkItemCuisinesToStore'
+import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/menuItemImageValidationClient'
 
 // --- Menu Category interface ---
 type MerchantStore = {
+  id?: number;
   store_id: string;
   store_name: string;
+  avg_preparation_time_minutes?: number | null;
+  packaging_charge_amount?: number | null;
 };
 
 interface MenuCategory {
   id: number;
   store_id: number;
   category_name: string;
+  parent_category_id?: number | null;
+  display_order?: number | null;
   is_active?: boolean;
   created_at?: string;
   updated_at?: string;
 }
 
+function formatCategoryLabel(categories: MenuCategory[], categoryId: number | null | undefined): string {
+  if (categoryId == null) return 'Uncategorized';
+  const cat = categories.find((c) => c.id === categoryId);
+  if (!cat) return 'Uncategorized';
+  if (cat.parent_category_id) {
+    const parent = categories.find((c) => c.id === cat.parent_category_id);
+    return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
+  }
+  return cat.category_name;
+}
+
 const CUSTOMIZATION_VARIANT_LIMIT = 10;
+
+const WEIGHT_PER_SERVING_UNITS = ['grams', 'kg', 'oz', 'lbs'] as const;
+const NUTRIENT_UNITS = ['mg', 'g'] as const;
+
+function mxNutritionPayloadFromForm(form: Record<string, unknown>) {
+  const parseOpt = (s: unknown): number | null => {
+    const t = String(s ?? '').trim();
+    if (!t) return null;
+    const n = Number(t.replace(/,/g, ''));
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const tags = form.item_tags
+    ? String(form.item_tags)
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
+    : [];
+  return {
+    available_for_delivery: form.available_for_delivery !== false,
+    weight_per_serving: parseOpt(form.weight_per_serving),
+    weight_per_serving_unit: (form.weight_per_serving_unit as string) || 'grams',
+    calories_kcal: parseOpt(form.calories_kcal),
+    protein: parseOpt(form.protein),
+    protein_unit: (form.protein_unit as string) || 'mg',
+    carbohydrates: parseOpt(form.carbohydrates),
+    carbohydrates_unit: (form.carbohydrates_unit as string) || 'mg',
+    fat: parseOpt(form.fat),
+    fat_unit: (form.fat_unit as string) || 'mg',
+    fibre: parseOpt(form.fibre),
+    fibre_unit: (form.fibre_unit as string) || 'mg',
+    item_tags: tags.length ? tags : null,
+  };
+}
 
 const MENU_CSV_MIN_ROWS = 1;
 const MENU_CSV_MAX_ROWS = 500;
@@ -183,43 +236,6 @@ function validateMenuCsv(file: File): Promise<{ valid: true } | { valid: false; 
   });
 }
 
-// Menu item image upload rules (production)
-const MENU_ITEM_IMAGE = {
-  MAX_SIZE_BYTES: 1 * 1024 * 1024, // 1 MB
-  ACCEPT_TYPES: ['image/png', 'image/jpeg', 'image/jpg'] as const,
-  IDEAL_MIN_KB: 200,
-  IDEAL_MAX_KB: 500,
-  RECOMMENDED_PX: 800,
-} as const;
-
-function validateMenuItemImage(file: File): Promise<{ valid: true } | { valid: false; error: string }> {
-  const type = file.type?.toLowerCase();
-  const allowed = ['image/png', 'image/jpeg', 'image/jpg'];
-  if (!type || !allowed.includes(type)) {
-    return Promise.resolve({ valid: false, error: 'Only PNG and JPG/JPEG images are allowed.' });
-  }
-  if (file.size > MENU_ITEM_IMAGE.MAX_SIZE_BYTES) {
-    return Promise.resolve({ valid: false, error: 'Image must be 1 MB or smaller.' });
-  }
-  return new Promise((resolve) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      if (img.naturalWidth !== img.naturalHeight) {
-        resolve({ valid: false, error: 'Please upload a square image (1:1 ratio).' });
-      } else {
-        resolve({ valid: true });
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve({ valid: false, error: 'Could not read image. Use a valid PNG or JPG file.' });
-    };
-    img.src = url;
-  });
-}
-
 interface ItemFormProps {
   isEdit?: boolean;
   /** When true, all fields are read-only and only a Close button is shown (view details in merchant portal). */
@@ -253,8 +269,14 @@ interface ItemFormProps {
   imageValidationError?: string;
   /** True while aspect-ratio/size validation is in progress */
   imageValidating?: boolean;
+  /** Center 1:1 crop + resize after validation failed */
+  onNormalizeMenuItemImage?: () => void | Promise<void>;
   /** Dynamic cuisine options loaded for this store; falls back to default list if empty. */
   cuisineOptions?: string[];
+  storeDefaults?: {
+    avg_preparation_time_minutes?: number | null;
+    packaging_charge_amount?: number | null;
+  };
 }
 
 export const dynamic = 'force-dynamic'
@@ -327,8 +349,107 @@ function ItemForm(props: ItemFormProps) {
     maxCuisinesPerItem = null,
     imageValidationError,
     imageValidating = false,
+    onNormalizeMenuItemImage,
     cuisineOptions,
+    storeDefaults,
   } = props;
+
+  const categoryPickerRef = React.useRef<HTMLDivElement>(null);
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [categoryPickerQuery, setCategoryPickerQuery] = useState('');
+
+  type CategorySection = {
+    key: string;
+    title: string;
+    rows: { id: number; parentName: string; subName: string | null }[];
+  };
+
+  const categorySections = useMemo((): CategorySection[] => {
+    const sortKids = (a: MenuCategory, b: MenuCategory) =>
+      (a.display_order ?? 0) - (b.display_order ?? 0) || a.id - b.id;
+    const byParent = new Map<number, MenuCategory[]>();
+    for (const c of categories) {
+      if (c.parent_category_id) {
+        const arr = byParent.get(c.parent_category_id) ?? [];
+        arr.push(c);
+        byParent.set(c.parent_category_id, arr);
+      }
+    }
+    const roots = categories.filter((c) => !c.parent_category_id).slice().sort(sortKids);
+    const used = new Set<number>();
+    const sections: CategorySection[] = [];
+    for (const root of roots) {
+      const kids = (byParent.get(root.id) ?? []).slice().sort(sortKids);
+      if (kids.length) {
+        for (const ch of kids) used.add(ch.id);
+        sections.push({
+          key: `p-${root.id}`,
+          title: root.category_name,
+          rows: kids.map((ch) => ({
+            id: ch.id,
+            parentName: root.category_name,
+            subName: ch.category_name,
+          })),
+        });
+      } else {
+        used.add(root.id);
+        sections.push({
+          key: `leaf-${root.id}`,
+          title: root.category_name,
+          rows: [{ id: root.id, parentName: root.category_name, subName: null }],
+        });
+      }
+    }
+    const orphans = categories.filter((c) => c.parent_category_id && !used.has(c.id));
+    if (orphans.length) {
+      sections.push({
+        key: 'orphan',
+        title: 'Other',
+        rows: orphans.sort(sortKids).map((c) => ({
+          id: c.id,
+          parentName: c.category_name,
+          subName: null,
+        })),
+      });
+    }
+    return sections;
+  }, [categories]);
+
+  const filteredCategorySections = useMemo(() => {
+    const q = categoryPickerQuery.trim().toLowerCase();
+    if (!q) return categorySections;
+    return categorySections
+      .map((sec) => ({
+        ...sec,
+        rows: sec.rows.filter((row) => {
+          const a = row.parentName.toLowerCase();
+          const b = row.subName?.toLowerCase() ?? '';
+          return a.includes(q) || b.includes(q) || `${a} ${b}`.includes(q);
+        }),
+      }))
+      .filter((sec) => sec.rows.length > 0);
+  }, [categorySections, categoryPickerQuery]);
+
+  const categoryButtonLabel = useMemo(() => {
+    if (formData.category_id == null) return 'Select category';
+    const cat = categories.find((c) => c.id === formData.category_id);
+    if (!cat) return 'Select category';
+    const parent = cat.parent_category_id
+      ? categories.find((c) => c.id === cat.parent_category_id)
+      : null;
+    return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
+  }, [formData.category_id, categories]);
+
+  useEffect(() => {
+    if (!categoryPickerOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (categoryPickerRef.current && !categoryPickerRef.current.contains(e.target as Node)) {
+        setCategoryPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [categoryPickerOpen]);
 
   const ALL_CUISINES: string[] = Array.isArray(cuisineOptions) && cuisineOptions.length > 0
     ? Array.from(new Set([...cuisineOptions, ...CUISINE_TYPES]))
@@ -350,25 +471,25 @@ function ItemForm(props: ItemFormProps) {
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Auto-calculate Selling Price
+  // Auto-calculate selling price from base discount (tax comes from agreement later, not shown here)
   useEffect(() => {
     const base = parseFloat(formData.base_price) || 0;
     const discount = parseFloat(formData.discount_percentage) || 0;
-    const tax = parseFloat(formData.tax_percentage) || 0;
     if (base > 0) {
-      const selling = base - (base * discount / 100) + (base * tax / 100);
+      const selling = base - (base * discount / 100);
       if (!isNaN(selling)) {
         setFormData((prev: any) => ({ ...prev, selling_price: selling.toFixed(2) }));
       }
     } else {
       setFormData((prev: any) => ({ ...prev, selling_price: '' }));
     }
-  }, [formData.base_price, formData.discount_percentage, formData.tax_percentage, setFormData]);
+  }, [formData.base_price, formData.discount_percentage, setFormData]);
 
   const [activeSection, setActiveSection] = useState<'main' | 'customization'>('main');
   const [showFoodDropdown, setShowFoodDropdown] = useState(false);
   const [cuisineSearch, setCuisineSearch] = useState('');
   const [cuisineViewMore, setCuisineViewMore] = useState(false);
+  const [nutritionExpanded, setNutritionExpanded] = useState(false);
   const [customizations, setCustomizations] = useState<Customization[]>(formData.customizations || []);
   useEffect(() => {
     setCustomizations(formData.customizations || []);
@@ -441,7 +562,7 @@ function ItemForm(props: ItemFormProps) {
     }
 
     setCustomizations(updatedCustomizations);
-    setFormData({ ...formData, customizations: updatedCustomizations });
+    setFormData({ ...formData, customizations: updatedCustomizations, has_customizations: updatedCustomizations.length > 0 });
     setNewCustomization({
       customization_title: '',
       customization_type: 'Checkbox',
@@ -468,7 +589,7 @@ function ItemForm(props: ItemFormProps) {
   const handleDeleteCustomization = (index: number) => {
     const updatedCustomizations = customizations.filter((_: Customization, i: number) => i !== index);
     setCustomizations(updatedCustomizations);
-    setFormData({ ...formData, customizations: updatedCustomizations });
+    setFormData({ ...formData, customizations: updatedCustomizations, has_customizations: updatedCustomizations.length > 0 });
   };
 
   const handleAddAddon = (customizationIndex: number) => {
@@ -489,7 +610,7 @@ function ItemForm(props: ItemFormProps) {
       }
     ];
     setCustomizations(updatedCustomizations);
-    setFormData({ ...formData, customizations: updatedCustomizations });
+    setFormData({ ...formData, customizations: updatedCustomizations, has_customizations: updatedCustomizations.length > 0 });
   };
 
   const handleUpdateAddon = (customizationIndex: number, addonIndex: number, field: string, value: any) => {
@@ -498,7 +619,7 @@ function ItemForm(props: ItemFormProps) {
     addons[addonIndex] = { ...addons[addonIndex], [field]: value };
     updatedCustomizations[customizationIndex].addons = addons;
     setCustomizations(updatedCustomizations);
-    setFormData({ ...formData, customizations: updatedCustomizations });
+    setFormData({ ...formData, customizations: updatedCustomizations, has_customizations: updatedCustomizations.length > 0 });
   };
 
   const handleDeleteAddon = (customizationIndex: number, addonIndex: number) => {
@@ -507,7 +628,7 @@ function ItemForm(props: ItemFormProps) {
     addons.splice(addonIndex, 1);
     updatedCustomizations[customizationIndex].addons = addons;
     setCustomizations(updatedCustomizations);
-    setFormData({ ...formData, customizations: updatedCustomizations });
+    setFormData({ ...formData, customizations: updatedCustomizations, has_customizations: updatedCustomizations.length > 0 });
   };
 
   // Validation helpers
@@ -515,22 +636,28 @@ function ItemForm(props: ItemFormProps) {
   const isOfferPercentInvalid =
     formData.discount_percentage !== '' && (isNaN(offerPercentNum) || offerPercentNum < 0 || offerPercentNum > 100);
 
-  const taxPercentNum = Number(formData.tax_percentage);
-  const isTaxPercentInvalid =
-    formData.tax_percentage !== '' && (isNaN(taxPercentNum) || taxPercentNum < 0 || taxPercentNum > 100);
-
   const basePriceNum = Number(formData.base_price);
   const isBasePriceInvalid = formData.base_price !== '' && (isNaN(basePriceNum) || basePriceNum <= 0);
 
   const sellingPriceNum = Number(formData.selling_price);
   const isSellingPriceInvalid = formData.selling_price !== '' && (isNaN(sellingPriceNum) || sellingPriceNum <= 0);
 
+  const lockOptionsTab = Boolean(onSaveAndNext) && !currentItemId;
+
   return (
     <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-2 md:mx-0 border border-gray-100">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
         <div>
           <h2 className="text-base font-bold text-gray-900">{readOnly ? 'View menu item details' : title}</h2>
-          <p className="text-xs text-gray-500">{readOnly ? 'View only — editing is managed from the agent dashboard' : (isEdit ? `Editing: ${currentItemId}` : 'Enter details for the menu item')}</p>
+          <p className="text-xs text-gray-500">
+            {readOnly
+              ? 'View only — editing is managed from the agent dashboard'
+              : isEdit
+                ? `Editing: ${currentItemId}`
+                : currentItemId
+                  ? `Item #${currentItemId} — add customizations or variants on the next tab`
+                  : 'Enter details for the menu item'}
+          </p>
         </div>
         <button type="button" onClick={onCancel} className="p-1.5 hover:bg-gray-100 rounded-lg" aria-label="Close">
           <X size={18} className="text-gray-600" />
@@ -547,8 +674,17 @@ function ItemForm(props: ItemFormProps) {
         </button>
         <button
           type="button"
-          onClick={() => setActiveSection('customization')}
-          className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'customization' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'}`}
+          title={
+            lockOptionsTab
+              ? 'Use Save and Next on the first tab to create the item, then add options here'
+              : undefined
+          }
+          disabled={lockOptionsTab}
+          onClick={() => {
+            if (lockOptionsTab) return;
+            setActiveSection('customization');
+          }}
+          className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'customization' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'} ${lockOptionsTab ? 'opacity-40 cursor-not-allowed' : ''}`}
         >
           Customizations & variants
         </button>
@@ -560,19 +696,18 @@ function ItemForm(props: ItemFormProps) {
         onSubmit={async (e) => {
           e.preventDefault();
           if (readOnly) return;
-          if (activeSection === 'main') {
-            if (onSaveAndNext) {
-              try {
+          try {
+            if (activeSection === 'main') {
+              if (onSaveAndNext) {
                 await onSaveAndNext();
                 setActiveSection('customization');
-              } catch (_) {}
-            } else if (onSubmit) onSubmit();
-          } else {
-            if (onSubmitOptions) {
-              try {
-                await onSubmitOptions();
-              } catch (_) {}
-            } else if (onSubmit) onSubmit();
+              } else if (onSubmit) onSubmit();
+            } else {
+              if (onSubmitOptions) await onSubmitOptions();
+              else if (onSubmit) onSubmit();
+            }
+          } catch {
+            /* error state / toast from handler */
           }
         }}
       >
@@ -584,12 +719,97 @@ function ItemForm(props: ItemFormProps) {
                 <label className="text-xs font-medium text-gray-600">Item name *</label>
                 <input type="text" placeholder="Name" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.item_name} onChange={e => !readOnly && setFormData({ ...formData, item_name: e.target.value })} required />
               </div>
-              <div>
+              <div className="relative" ref={categoryPickerRef}>
                 <label className="text-xs font-medium text-gray-600">Category *</label>
-                <select disabled={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.category_id ?? ''} onChange={e => !readOnly && setFormData({ ...formData, category_id: e.target.value ? Number(e.target.value) : null })} required>
-                  <option value="">Select</option>
-                  {categories.map((cat: MenuCategory) => <option key={cat.id} value={cat.id}>{cat.category_name}</option>)}
-                </select>
+                <button
+                  type="button"
+                  disabled={readOnly}
+                  aria-expanded={categoryPickerOpen}
+                  aria-haspopup="listbox"
+                  className={`mt-0.5 w-full flex items-center justify-between gap-2 px-3 py-2 border rounded-lg text-sm text-left transition-colors shadow-sm ${
+                    readOnly
+                      ? 'bg-gray-50 border-gray-200 cursor-not-allowed opacity-90'
+                      : 'bg-white border-gray-200 hover:border-orange-200 hover:bg-orange-50/30'
+                  }`}
+                  onClick={() => {
+                    if (readOnly) return;
+                    setCategoryPickerOpen((o) => !o);
+                  }}
+                >
+                  <span
+                    className={
+                      formData.category_id == null ? 'text-gray-400' : 'text-gray-900 font-medium truncate'
+                    }
+                  >
+                    {categoryButtonLabel}
+                  </span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${categoryPickerOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
+                {categoryPickerOpen && !readOnly && (
+                  <div className="absolute z-50 mt-1 w-full rounded-xl border border-gray-200/90 bg-white shadow-xl shadow-gray-200/60 overflow-hidden ring-1 ring-black/5">
+                    <div className="p-2 border-b border-gray-100 bg-gradient-to-b from-gray-50/80 to-white">
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                        <input
+                          type="search"
+                          className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-gray-200 bg-white"
+                          placeholder="Search categories…"
+                          value={categoryPickerQuery}
+                          onChange={(e) => setCategoryPickerQuery(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          autoComplete="off"
+                        />
+                      </div>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto py-1">
+                      {filteredCategorySections.length === 0 ? (
+                        <p className="px-3 py-4 text-sm text-gray-500 text-center">No categories match</p>
+                      ) : (
+                        filteredCategorySections.map((sec) => (
+                          <div key={sec.key} className="mb-0.5 last:mb-0">
+                            <div className="sticky top-0 z-10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-400 bg-gradient-to-r from-slate-50 via-white to-gray-50/80 border-b border-gray-100/80">
+                              {sec.title}
+                            </div>
+                            {sec.rows.map((row) => (
+                              <button
+                                key={row.id}
+                                type="button"
+                                role="option"
+                                aria-selected={formData.category_id === row.id}
+                                className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2 transition-colors border-b border-gray-50 last:border-0 ${
+                                  formData.category_id === row.id
+                                    ? 'bg-orange-50 text-orange-950'
+                                    : 'text-gray-800 hover:bg-slate-50'
+                                }`}
+                                onClick={() => {
+                                  setFormData({ ...formData, category_id: row.id });
+                                  setCategoryPickerOpen(false);
+                                  setCategoryPickerQuery('');
+                                }}
+                              >
+                                <span className="min-w-0">
+                                  {row.subName != null ? (
+                                    <>
+                                      <span className="font-semibold text-gray-900">{row.parentName}</span>
+                                      <span className="text-gray-500 font-normal"> ({row.subName})</span>
+                                    </>
+                                  ) : (
+                                    <span className="font-semibold text-gray-900">{row.parentName}</span>
+                                  )}
+                                </span>
+                                {formData.category_id === row.id && (
+                                  <span className="text-orange-600 text-xs font-bold shrink-0">✓</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             {/* Row 2: Food type, Spice */}
@@ -778,7 +998,7 @@ function ItemForm(props: ItemFormProps) {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/png,image/jpeg,image/jpg"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
                       className="hidden"
                       onChange={handleImageChange}
                       disabled={false}
@@ -817,6 +1037,16 @@ function ItemForm(props: ItemFormProps) {
                     {imageValidationError && (
                       <p className="text-xs text-red-600 mt-1 max-w-[10rem]" role="alert">{imageValidationError}</p>
                     )}
+                    {!readOnly && imageValidationError && onNormalizeMenuItemImage && (
+                      <button
+                        type="button"
+                        className="mt-1 text-xs text-orange-600 font-semibold hover:text-orange-700 disabled:opacity-50"
+                        onClick={() => void onNormalizeMenuItemImage()}
+                        disabled={imageValidating}
+                      >
+                        Auto-fix (1:1 crop and resize)
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -827,8 +1057,8 @@ function ItemForm(props: ItemFormProps) {
                 <input type="text" readOnly={readOnly} placeholder="e.g. Nuts, Dairy" className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.allergens || ''} onChange={e => !readOnly && setFormData({ ...formData, allergens: e.target.value })} />
               </div>
             </div>
-            {/* Pricing row: base, selling, discount%, tax% */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {/* Pricing row: base, selling, discount% */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               <div>
                 <label className="text-xs font-medium text-gray-600">Base price (₹) *</label>
                 <input type="number" min="0" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isBasePriceInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.base_price} onChange={e => !readOnly && setFormData({ ...formData, base_price: e.target.value })} required />
@@ -842,10 +1072,6 @@ function ItemForm(props: ItemFormProps) {
               <div>
                 <label className="text-xs font-medium text-gray-600">Discount %</label>
                 <input type="number" min="0" max="100" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isOfferPercentInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.discount_percentage} onChange={e => !readOnly && setFormData({ ...formData, discount_percentage: e.target.value })} />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Tax %</label>
-                <input type="number" min="0" max="100" step="0.01" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50' : ''} ${isTaxPercentInvalid ? 'border-red-300' : 'border-gray-200'}`} value={formData.tax_percentage} onChange={e => !readOnly && setFormData({ ...formData, tax_percentage: e.target.value })} />
               </div>
             </div>
             {/* Stock & prep */}
@@ -863,20 +1089,274 @@ function ItemForm(props: ItemFormProps) {
                 <input type="number" min="0" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.low_stock_threshold || ''} onChange={e => !readOnly && setFormData({ ...formData, low_stock_threshold: e.target.value || '' })} placeholder="—" />
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-600">Prep (min)</label>
+                <label className="text-xs font-medium text-gray-600">Prep / ETA (min)</label>
                 <input type="number" min="0" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.preparation_time_minutes ?? 15} onChange={e => !readOnly && setFormData({ ...formData, preparation_time_minutes: Number(e.target.value) || 15 })} />
+                {storeDefaults?.avg_preparation_time_minutes != null && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">Store default: {storeDefaults.avg_preparation_time_minutes} min</p>
+                )}
               </div>
               <div>
                 <label className="text-xs font-medium text-gray-600">Serves</label>
                 <input type="number" min="1" readOnly={readOnly} className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`} value={formData.serves ?? 1} onChange={e => !readOnly && setFormData({ ...formData, serves: Number(e.target.value) || 1 })} />
               </div>
             </div>
-            {/* Flags: popular, recommended, customizations, variants, active */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-gray-100">
+              <div className="sm:col-span-2">
+                <div className="flex items-center justify-between gap-3 max-w-md">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-gray-700">Packaging charge for this item</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Uses your store default from settings when you turn this on; you can change the amount for this item only.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!!formData.packaging_enabled}
+                    disabled={readOnly}
+                    onClick={() => {
+                      if (readOnly) return;
+                      const on = !formData.packaging_enabled;
+                      const defAmt = storeDefaults?.packaging_charge_amount;
+                      const fromStore =
+                        defAmt != null && Number.isFinite(Number(defAmt)) ? String(Number(defAmt)) : '';
+                      setFormData({
+                        ...formData,
+                        packaging_enabled: on,
+                        packaging_charges: on ? (fromStore !== '' ? fromStore : (formData.packaging_charges?.trim() || '')) : '',
+                      });
+                    }}
+                    className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
+                      formData.packaging_enabled ? 'bg-orange-500' : 'bg-gray-200'
+                    } ${readOnly ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-6 w-6 translate-y-px rounded-full bg-white shadow transition ${
+                        formData.packaging_enabled ? 'translate-x-[1.35rem]' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                {formData.packaging_enabled && (
+                  <div className="mt-1.5 flex flex-col gap-1 max-w-md">
+                    <label className="text-xs font-medium text-gray-600">Amount (₹)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      readOnly={readOnly}
+                      className={`w-full px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                      placeholder={
+                        storeDefaults?.packaging_charge_amount != null
+                          ? `e.g. ${Number(storeDefaults.packaging_charge_amount).toFixed(0)}`
+                          : 'Amount (₹)'
+                      }
+                      value={formData.packaging_charges ?? ''}
+                      onChange={(e) => !readOnly && setFormData({ ...formData, packaging_charges: e.target.value })}
+                    />
+                    {storeDefaults?.packaging_charge_amount != null && (
+                      <p className="text-[10px] text-gray-500">
+                        Store default: ₹{Number(storeDefaults.packaging_charge_amount).toFixed(2)} (merchant_stores) — saved on this item only
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <p className="text-xs font-semibold text-gray-800">Delivery & nutrition (optional)</p>
+              <div className="flex items-center justify-between gap-3 max-w-md">
+                <span className="text-xs font-medium text-gray-700">Available for delivery</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={formData.available_for_delivery !== false}
+                  disabled={readOnly}
+                  onClick={() => {
+                    if (readOnly) return;
+                    const cur = formData.available_for_delivery !== false;
+                    setFormData({ ...formData, available_for_delivery: !cur });
+                  }}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
+                    formData.available_for_delivery !== false ? 'bg-orange-500' : 'bg-gray-200'
+                  } ${readOnly ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 translate-y-px rounded-full bg-white shadow transition ${
+                      formData.available_for_delivery !== false ? 'translate-x-[1.35rem]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-500">Per serving ≈ one adult portion (aligned with merchant app).</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Weight per serving</label>
+                  <div className="flex gap-1.5 mt-0.5">
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      readOnly={readOnly}
+                      className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                      placeholder="e.g. 500"
+                      value={formData.weight_per_serving ?? ''}
+                      onChange={(e) => !readOnly && setFormData({ ...formData, weight_per_serving: e.target.value })}
+                    />
+                    <select
+                      className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                      value={formData.weight_per_serving_unit || 'grams'}
+                      disabled={readOnly}
+                      onChange={(e) => !readOnly && setFormData({ ...formData, weight_per_serving_unit: e.target.value })}
+                    >
+                      {WEIGHT_PER_SERVING_UNITS.map((u) => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Calories (kcal)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    readOnly={readOnly}
+                    className={`w-full px-2.5 py-1.5 border rounded text-sm mt-0.5 ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                    placeholder="e.g. 300"
+                    value={formData.calories_kcal ?? ''}
+                    onChange={(e) => !readOnly && setFormData({ ...formData, calories_kcal: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Protein</label>
+                  <div className="flex gap-1.5 mt-0.5">
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      readOnly={readOnly}
+                      className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                      placeholder="e.g. 50"
+                      value={formData.protein ?? ''}
+                      onChange={(e) => !readOnly && setFormData({ ...formData, protein: e.target.value })}
+                    />
+                    <select
+                      className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                      value={formData.protein_unit || 'mg'}
+                      disabled={readOnly}
+                      onChange={(e) => !readOnly && setFormData({ ...formData, protein_unit: e.target.value })}
+                    >
+                      {NUTRIENT_UNITS.map((u) => (
+                        <option key={u} value={u}>{u}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              {nutritionExpanded && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-medium text-gray-600">Carbohydrates</label>
+                    <div className="flex gap-1.5 mt-0.5">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        readOnly={readOnly}
+                        className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                        value={formData.carbohydrates ?? ''}
+                        onChange={(e) => !readOnly && setFormData({ ...formData, carbohydrates: e.target.value })}
+                      />
+                      <select
+                        className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                        value={formData.carbohydrates_unit || 'mg'}
+                        disabled={readOnly}
+                        onChange={(e) => !readOnly && setFormData({ ...formData, carbohydrates_unit: e.target.value })}
+                      >
+                        {NUTRIENT_UNITS.map((u) => (
+                          <option key={u} value={u}>{u}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-600">Fat</label>
+                    <div className="flex gap-1.5 mt-0.5">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        readOnly={readOnly}
+                        className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                        value={formData.fat ?? ''}
+                        onChange={(e) => !readOnly && setFormData({ ...formData, fat: e.target.value })}
+                      />
+                      <select
+                        className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                        value={formData.fat_unit || 'mg'}
+                        disabled={readOnly}
+                        onChange={(e) => !readOnly && setFormData({ ...formData, fat_unit: e.target.value })}
+                      >
+                        {NUTRIENT_UNITS.map((u) => (
+                          <option key={u} value={u}>{u}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-xs font-medium text-gray-600">Fibre</label>
+                    <div className="flex gap-1.5 mt-0.5 max-w-md">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        readOnly={readOnly}
+                        className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                        value={formData.fibre ?? ''}
+                        onChange={(e) => !readOnly && setFormData({ ...formData, fibre: e.target.value })}
+                      />
+                      <select
+                        className={`w-1/2 px-2.5 py-1.5 border rounded text-sm ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                        value={formData.fibre_unit || 'mg'}
+                        disabled={readOnly}
+                        onChange={(e) => !readOnly && setFormData({ ...formData, fibre_unit: e.target.value })}
+                      >
+                        {NUTRIENT_UNITS.map((u) => (
+                          <option key={u} value={u}>{u}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!nutritionExpanded && !readOnly && (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-orange-600 hover:text-orange-700"
+                  onClick={() => setNutritionExpanded(true)}
+                >
+                  View more (carbs, fat, fibre)
+                </button>
+              )}
+              <div>
+                <label className="text-xs font-medium text-gray-600">Item tags (comma-separated)</label>
+                <input
+                  type="text"
+                  readOnly={readOnly}
+                  className={`w-full px-2.5 py-1.5 border rounded text-sm mt-0.5 ${readOnly ? 'bg-gray-50 border-gray-200' : 'border-gray-200'}`}
+                  placeholder="e.g. High protein, Chef special"
+                  value={formData.item_tags ?? ''}
+                  onChange={(e) => !readOnly && setFormData({ ...formData, item_tags: e.target.value })}
+                />
+              </div>
+            </div>
             <div className="flex flex-wrap gap-4 pt-1 border-t border-gray-100">
+              <p className="w-full text-[10px] text-gray-500 -mb-1">
+                Customizations and variants are added in the next tab; flags below save with this step.
+              </p>
               <label className="flex items-center gap-1.5"><input type="checkbox" checked={formData.is_popular} disabled={readOnly} onChange={e => !readOnly && setFormData({ ...formData, is_popular: e.target.checked })} className="h-3.5 w-3.5 text-orange-500 rounded" /><span className="text-xs text-gray-700">Popular</span></label>
               <label className="flex items-center gap-1.5"><input type="checkbox" checked={formData.is_recommended} disabled={readOnly} onChange={e => !readOnly && setFormData({ ...formData, is_recommended: e.target.checked })} className="h-3.5 w-3.5 text-orange-500 rounded" /><span className="text-xs text-gray-700">Recommended</span></label>
-              <label className="flex items-center gap-1.5"><input type="checkbox" checked={formData.has_customizations} disabled={readOnly} onChange={e => !readOnly && setFormData({ ...formData, has_customizations: e.target.checked })} className="h-3.5 w-3.5 text-orange-500 rounded" /><span className="text-xs text-gray-700">Customizations</span></label>
-              <label className="flex items-center gap-1.5"><input type="checkbox" checked={formData.has_variants} disabled={readOnly} onChange={e => !readOnly && setFormData({ ...formData, has_variants: e.target.checked })} className="h-3.5 w-3.5 text-orange-500 rounded" /><span className="text-xs text-gray-700">Variants</span></label>
               <label className="flex items-center gap-1.5"><input type="checkbox" checked={formData.is_active} disabled={readOnly} onChange={e => !readOnly && setFormData({ ...formData, is_active: e.target.checked })} className="h-3.5 w-3.5 text-orange-500 rounded" /><span className="text-xs text-gray-700">Active</span></label>
             </div>
           </div>
@@ -1020,7 +1500,7 @@ function ItemForm(props: ItemFormProps) {
             <button
               type="submit"
               className="px-4 py-1.5 rounded-lg text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-60 flex items-center gap-2"
-              disabled={isSaving || !!imageValidationError || isOfferPercentInvalid || isTaxPercentInvalid || isBasePriceInvalid || isSellingPriceInvalid || !formData.base_price || !formData.discount_percentage || !formData.tax_percentage || !formData.selling_price}
+              disabled={isSaving || !!imageValidationError || isOfferPercentInvalid || isBasePriceInvalid || isSellingPriceInvalid || !formData.base_price || !formData.discount_percentage || !formData.selling_price}
             >
               {isSaving && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
               {isSaving ? 'Saving...' : (onSaveAndNext ? 'Save and Next' : (isEdit ? 'Save' : 'Add Item'))}
@@ -1055,16 +1535,60 @@ function MenuContent() {
     is_active: true,
   });
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [parentCategoryIdInForm, setParentCategoryIdInForm] = useState<number | null>(null);
   const [categoryError, setCategoryError] = useState<string | null>(null);
   const [categorySuggestionsOpen, setCategorySuggestionsOpen] = useState(false);
+  const [categoryPeerSuggestions, setCategoryPeerSuggestions] = useState<string[]>([]);
+  const [categoryPeerSuggestionsLoading, setCategoryPeerSuggestionsLoading] = useState(false);
   const categoryScrollRef = React.useRef<HTMLDivElement>(null);
+  const debouncedCategoryName = useDebouncedValue(categoryForm.category_name ?? '', 280);
+
+  const categoryNameConflictSet = React.useMemo(() => {
+    const set = new Set<string>();
+    const scopeParent = parentCategoryIdInForm ?? null;
+    for (const c of categories) {
+      if (categoryModalMode === 'edit' && editingCategoryId != null && c.id === editingCategoryId) continue;
+      const rowParent = c.parent_category_id ?? null;
+      if (rowParent !== scopeParent) continue;
+      const n = (c.category_name ?? '').toLowerCase().trim();
+      if (n) set.add(n);
+    }
+    return set;
+  }, [categories, categoryModalMode, editingCategoryId, parentCategoryIdInForm]);
+
+  const useSubcategoryPeerSuggestions = parentCategoryIdInForm != null;
 
   const searchParams = useSearchParams();
   const [store, setStore] = useState<MerchantStore | null>(null);
+  const itemFormStoreDefaults = useMemo(
+    () => ({
+      avg_preparation_time_minutes: store?.avg_preparation_time_minutes ?? null,
+      packaging_charge_amount: store?.packaging_charge_amount ?? null,
+    }),
+    [store]
+  );
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [cuisineOptions, setCuisineOptions] = useState<string[]>(CUISINE_TYPES);
+
+  const refreshCuisineOptionsFromApi = useCallback(async () => {
+    if (!storeId) return;
+    try {
+      const res = await fetch(`/api/merchant/store-cuisines?storeId=${encodeURIComponent(storeId)}`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const apiCuisines: string[] = Array.isArray((data as { cuisines?: unknown }).cuisines)
+        ? (data as { cuisines: unknown[] }).cuisines.filter((c: unknown) => typeof c === 'string')
+        : [];
+      if (apiCuisines.length > 0) {
+        const merged = Array.from(new Set([...apiCuisines, ...CUISINE_TYPES]));
+        setCuisineOptions(merged);
+      }
+    } catch (e) {
+      console.error('[menu] refreshCuisineOptionsFromApi', e);
+    }
+  }, [storeId]);
 
   // Modal states
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1086,7 +1610,7 @@ function MenuContent() {
     base_price: '',
     selling_price: '',
     discount_percentage: '0',
-    tax_percentage: '5',
+    tax_percentage: '0',
     in_stock: true,
     available_quantity: '',
     low_stock_threshold: '',
@@ -1096,9 +1620,24 @@ function MenuContent() {
     is_popular: false,
     is_recommended: false,
     preparation_time_minutes: 15,
+    packaging_enabled: false,
+    packaging_charges: '',
     serves: 1,
     is_active: true,
     allergens: '',
+    available_for_delivery: true,
+    weight_per_serving: '',
+    weight_per_serving_unit: 'grams',
+    calories_kcal: '',
+    protein: '',
+    protein_unit: 'mg',
+    carbohydrates: '',
+    carbohydrates_unit: 'mg',
+    fat: '',
+    fat_unit: 'mg',
+    fibre: '',
+    fibre_unit: 'mg',
+    item_tags: '',
     category_id: null as number | null,
     customizations: [] as Customization[],
     variants: [] as Variant[],
@@ -1115,7 +1654,7 @@ function MenuContent() {
     base_price: '',
     selling_price: '',
     discount_percentage: '0',
-    tax_percentage: '5',
+    tax_percentage: '0',
     in_stock: true,
     available_quantity: '',
     low_stock_threshold: '',
@@ -1125,9 +1664,24 @@ function MenuContent() {
     is_popular: false,
     is_recommended: false,
     preparation_time_minutes: 25,
+    packaging_enabled: false,
+    packaging_charges: '',
     serves: 1,
     is_active: true,
     allergens: '',
+    available_for_delivery: true,
+    weight_per_serving: '',
+    weight_per_serving_unit: 'grams',
+    calories_kcal: '',
+    protein: '',
+    protein_unit: 'mg',
+    carbohydrates: '',
+    carbohydrates_unit: 'mg',
+    fat: '',
+    fat_unit: 'mg',
+    fibre: '',
+    fibre_unit: 'mg',
+    item_tags: '',
     category_id: null as number | null,
     customizations: [] as Customization[],
     variants: [] as Variant[],
@@ -1139,6 +1693,8 @@ function MenuContent() {
   const [editImageValidationError, setEditImageValidationError] = useState('');
   const [addImageValidating, setAddImageValidating] = useState(false);
   const [editImageValidating, setEditImageValidating] = useState(false);
+  const addImagePendingFileRef = useRef<File | null>(null);
+  const editImagePendingFileRef = useRef<File | null>(null);
   const [addError, setAddError] = useState('');
   const [editError, setEditError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -1296,25 +1852,14 @@ function MenuContent() {
   useEffect(() => {
     if (!storeId) return;
     let cancelled = false;
-    const loadCuisines = async () => {
-      try {
-        const res = await fetch(`/api/merchant/store-cuisines?storeId=${encodeURIComponent(storeId)}`);
-        if (!res.ok) return;
-        const data = await res.json().catch(() => ({}));
-        const apiCuisines: string[] = Array.isArray((data as any).cuisines)
-          ? (data as any).cuisines.filter((c: unknown) => typeof c === 'string')
-          : [];
-        if (!cancelled && apiCuisines.length > 0) {
-          const merged = Array.from(new Set([...apiCuisines, ...CUISINE_TYPES]));
-          setCuisineOptions(merged);
-        }
-      } catch (e) {
-        console.error('[menu] Failed to load cuisines for store', e);
-      }
+    void (async () => {
+      await refreshCuisineOptionsFromApi();
+      if (cancelled) return;
+    })();
+    return () => {
+      cancelled = true;
     };
-    loadCuisines();
-    return () => { cancelled = true; };
-  }, [storeId]);
+  }, [storeId, refreshCuisineOptionsFromApi]);
 
   // Fetch store and menu items
   useEffect(() => {
@@ -1414,6 +1959,51 @@ function MenuContent() {
     loadData();
   }, [storeId]);
 
+  useEffect(() => {
+    if (!showCategoryModal || !storeId) {
+      setCategoryPeerSuggestions([]);
+      setCategoryPeerSuggestionsLoading(false);
+      return;
+    }
+    const ac = new AbortController();
+    (async () => {
+      setCategoryPeerSuggestionsLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set('q', debouncedCategoryName.trim().slice(0, 30));
+        if (categoryModalMode === 'edit' && editingCategoryId != null) {
+          params.set('editingCategoryId', String(editingCategoryId));
+        }
+        let url: string;
+        if (useSubcategoryPeerSuggestions && parentCategoryIdInForm != null) {
+          params.set('parentCategoryId', String(parentCategoryIdInForm));
+          url = `/api/merchant/subcategory-name-suggestions?storeId=${encodeURIComponent(storeId)}&${params.toString()}`;
+        } else {
+          url = `/api/merchant/category-name-suggestions?storeId=${encodeURIComponent(storeId)}&${params.toString()}`;
+        }
+        const res = await fetch(url, { signal: ac.signal, credentials: 'include' });
+        const j = (await res.json().catch(() => ({}))) as { suggestions?: unknown };
+        const list = Array.isArray(j.suggestions)
+          ? j.suggestions.filter((x): x is string => typeof x === 'string')
+          : [];
+        if (!ac.signal.aborted) setCategoryPeerSuggestions(list);
+      } catch {
+        if (!ac.signal.aborted) setCategoryPeerSuggestions([]);
+      } finally {
+        if (!ac.signal.aborted) setCategoryPeerSuggestionsLoading(false);
+      }
+    })();
+    return () => ac.abort();
+  }, [
+    showCategoryModal,
+    storeId,
+    debouncedCategoryName,
+    categoryModalMode,
+    editingCategoryId,
+    parentCategoryIdInForm,
+    useSubcategoryPeerSuggestions,
+  ]);
+
   // Add or Edit category
   const handleSaveCategory = async () => {
     setCategoryError(null);
@@ -1435,6 +2025,9 @@ function MenuContent() {
       const payload = {
         category_name: name,
         is_active: categoryForm.is_active ?? true,
+        ...(categoryModalMode === 'add' && parentCategoryIdInForm != null
+          ? { parent_category_id: parentCategoryIdInForm }
+          : {}),
       };
       if (categoryModalMode === 'add') {
         const newCat = await createMenuCategory(storeId!, payload);
@@ -1446,6 +2039,7 @@ function MenuContent() {
       setShowCategoryModal(false);
       setCategoryForm({ category_name: '', is_active: true });
       setEditingCategoryId(null);
+      setParentCategoryIdInForm(null);
     } catch (e) {
       setCategoryError('Error saving category');
     }
@@ -1481,12 +2075,14 @@ function MenuContent() {
     if (isEdit) {
       setEditImageValidationError('');
       setEditImageValidating(true);
+      editImagePendingFileRef.current = file;
     } else {
       setAddImageValidationError('');
       setAddImageValidating(true);
+      addImagePendingFileRef.current = file;
     }
 
-    const result = await validateMenuItemImage(file);
+    const result = await validateMenuItemImageFile(file);
     if (isEdit) {
       setEditImageValidating(false);
     } else {
@@ -1502,6 +2098,12 @@ function MenuContent() {
         setAddForm(prev => ({ ...prev, image: null }));
       }
       return;
+    }
+
+    if (isEdit) {
+      editImagePendingFileRef.current = null;
+    } else {
+      addImagePendingFileRef.current = null;
     }
 
     const reader = new FileReader();
@@ -1532,6 +2134,34 @@ function MenuContent() {
     }
   };
 
+  const handleNormalizeMenuItemImage = async (isEdit: boolean) => {
+    const pending = isEdit ? editImagePendingFileRef.current : addImagePendingFileRef.current;
+    if (!pending) {
+      toast.error('Choose an image first.');
+      return;
+    }
+    if (isEdit) {
+      setEditImageValidationError('');
+      setEditImageValidating(true);
+    } else {
+      setAddImageValidationError('');
+      setAddImageValidating(true);
+    }
+    const normalized = await normalizeMenuItemImageFile(pending);
+    if (isEdit) {
+      setEditImageValidating(false);
+    } else {
+      setAddImageValidating(false);
+    }
+    if (!normalized.ok) {
+      if (isEdit) setEditImageValidationError(normalized.error);
+      else setAddImageValidationError(normalized.error);
+      toast.error(normalized.error);
+      return;
+    }
+    await processImageFile(normalized.file, isEdit);
+  };
+
   async function handleAddItem() {
     if (!storeId) {
       toast.error('Please select a store first');
@@ -1554,10 +2184,16 @@ function MenuContent() {
     if (addForm.discount_percentage && (isNaN(Number(addForm.discount_percentage)) || Number(addForm.discount_percentage) < 0 || Number(addForm.discount_percentage) > 100)) {
       return setAddError("Discount % must be between 0 and 100");
     }
-    if (addForm.tax_percentage && (isNaN(Number(addForm.tax_percentage)) || Number(addForm.tax_percentage) < 0 || Number(addForm.tax_percentage) > 100)) {
-      return setAddError("Tax % must be between 0 and 100");
+    if (addForm.packaging_enabled) {
+      const raw = String(addForm.packaging_charges ?? "").replace(/,/g, "").trim();
+      const n = raw !== "" ? Number(raw) : NaN;
+      const def = itemFormStoreDefaults.packaging_charge_amount;
+      const hasAmount = raw !== "" && Number.isFinite(n) && n >= 0;
+      const hasStoreDefault = def != null && Number.isFinite(Number(def)) && Number(def) >= 0;
+      if (!hasAmount && !hasStoreDefault) {
+        return setAddError("Enter packaging amount (₹) or turn off packaging.");
+      }
     }
-
     setIsSaving(true);
     try {
       let itemImageUrl = addForm.item_image_url;
@@ -1576,7 +2212,7 @@ function MenuContent() {
           return;
         }
         const uploadData = await uploadRes.json();
-        itemImageUrl = uploadData.key ?? addForm.item_image_url;
+        itemImageUrl = uploadData.image_url ?? uploadData.key ?? addForm.item_image_url;
         setImagePreview(itemImageUrl);
       }
 
@@ -1602,6 +2238,19 @@ function MenuContent() {
         return;
       }
 
+      const packagingPayload = (() => {
+        if (!addForm.packaging_enabled) return null;
+        const raw = String(addForm.packaging_charges ?? "").replace(/,/g, "").trim();
+        if (raw !== "") {
+          const n = Number(raw);
+          return Number.isFinite(n) && n >= 0 ? n : null;
+        }
+        const def = itemFormStoreDefaults.packaging_charge_amount;
+        if (def != null && Number.isFinite(Number(def)) && Number(def) >= 0) {
+          return Number(def);
+        }
+        return null;
+      })();
       const newItem = {
         item_name: addForm.item_name,
         item_description: addForm.item_description,
@@ -1612,7 +2261,7 @@ function MenuContent() {
         base_price: Number(addForm.base_price),
         selling_price: Number(addForm.selling_price),
         discount_percentage: addForm.discount_percentage ? Number(addForm.discount_percentage) : 0,
-        tax_percentage: addForm.tax_percentage ? Number(addForm.tax_percentage) : 0,
+        tax_percentage: 0,
         in_stock: addForm.in_stock,
         available_quantity: addForm.available_quantity ? Number(addForm.available_quantity) : null,
         low_stock_threshold: addForm.low_stock_threshold ? Number(addForm.low_stock_threshold) : null,
@@ -1622,12 +2271,14 @@ function MenuContent() {
         is_popular: addForm.is_popular,
         is_recommended: addForm.is_recommended,
         preparation_time_minutes: addForm.preparation_time_minutes,
+        packaging_charges: packagingPayload,
         serves: addForm.serves,
         is_active: addForm.is_active,
         allergens: allergensArray,
         category_id: addForm.category_id,
         customizations: addForm.customizations || [],
         restaurant_id: storeId,
+        ...mxNutritionPayloadFromForm(addForm as unknown as Record<string, unknown>),
       };
 
       const res = await fetch('/api/merchant/menu-items', {
@@ -1641,22 +2292,12 @@ function MenuContent() {
       }
       const result = await res.json();
       if (result && result.item_id) {
-        // Sync store cuisines (limit handled by plan; backend enforces actual caps)
         try {
-          const cuisinesFromItem = (newItem.cuisine_type || '')
-            .split(',')
-            .map((s: string) => s.trim())
-            .filter(Boolean);
-          if (storeId && cuisinesFromItem.length > 0) {
-            const mergedCuisines = Array.from(new Set([...(cuisineOptions || []), ...cuisinesFromItem]));
-            await fetch('/api/merchant/store-cuisines', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ storeId, cuisines: mergedCuisines }),
-            }).catch(() => {});
-          }
+          const { linked, errors } = await linkItemCuisineSelectionsToStoreProfile(storeId, newItem.cuisine_type);
+          if (linked > 0) await refreshCuisineOptionsFromApi();
+          if (errors.length > 0) toast.error(errors.slice(0, 2).join(' '));
         } catch (e) {
-          console.error('[menu] Failed to sync store cuisines for new item', e);
+          console.error('[menu] Failed to link cuisines to store profile', e);
         }
         // API already created customizations/addons/variants server-side (bypasses RLS)
         setMenuItems((prev) => [result, ...prev]);
@@ -1673,7 +2314,7 @@ function MenuContent() {
           base_price: '',
           selling_price: '',
           discount_percentage: '0',
-          tax_percentage: '5',
+          tax_percentage: '0',
           in_stock: true,
           available_quantity: '',
           low_stock_threshold: '',
@@ -1683,9 +2324,24 @@ function MenuContent() {
           is_popular: false,
           is_recommended: false,
           preparation_time_minutes: 15,
+          packaging_enabled: false,
+          packaging_charges: '',
           serves: 1,
           is_active: true,
           allergens: '',
+          available_for_delivery: true,
+          weight_per_serving: '',
+          weight_per_serving_unit: 'grams',
+          calories_kcal: '',
+          protein: '',
+          protein_unit: 'mg',
+          carbohydrates: '',
+          carbohydrates_unit: 'mg',
+          fat: '',
+          fat_unit: 'mg',
+          fibre: '',
+          fibre_unit: 'mg',
+          item_tags: '',
           category_id: null,
           customizations: [],
           variants: [],
@@ -1705,23 +2361,38 @@ function MenuContent() {
   async function handleAddSaveAndNext() {
     if (!storeId) {
       toast.error('Please select a store first');
-      return;
+      throw new Error('No store');
     }
     if (!canAddItem) {
       toast.error('Menu item limit reached for your plan. Upgrade to add more items.');
-      return;
+      throw new Error('Limit');
     }
     setAddError('');
-    if (!addForm.item_name.trim()) return setAddError('Name is required');
-    if (!addForm.category_id) return setAddError('Category is required');
-    if (!addForm.base_price || isNaN(Number(addForm.base_price)) || Number(addForm.base_price) <= 0)
-      return setAddError('Valid base price is required (greater than 0)');
-    if (!addForm.selling_price || isNaN(Number(addForm.selling_price)) || Number(addForm.selling_price) <= 0)
-      return setAddError('Valid selling price is required (greater than 0)');
-    if (addForm.discount_percentage && (isNaN(Number(addForm.discount_percentage)) || Number(addForm.discount_percentage) < 0 || Number(addForm.discount_percentage) > 100))
-      return setAddError('Discount % must be between 0 and 100');
-    if (addForm.tax_percentage && (isNaN(Number(addForm.tax_percentage)) || Number(addForm.tax_percentage) < 0 || Number(addForm.tax_percentage) > 100))
-      return setAddError('Tax % must be between 0 and 100');
+    if (!addForm.item_name.trim()) {
+      setAddError('Name is required');
+      throw new Error('Name is required');
+    }
+    if (!addForm.category_id) {
+      setAddError('Category is required');
+      throw new Error('Category is required');
+    }
+    if (!addForm.base_price || isNaN(Number(addForm.base_price)) || Number(addForm.base_price) <= 0) {
+      setAddError('Valid base price is required (greater than 0)');
+      throw new Error('Base price');
+    }
+    if (!addForm.selling_price || isNaN(Number(addForm.selling_price)) || Number(addForm.selling_price) <= 0) {
+      setAddError('Valid selling price is required (greater than 0)');
+      throw new Error('Selling price');
+    }
+    if (
+      addForm.discount_percentage &&
+      (isNaN(Number(addForm.discount_percentage)) ||
+        Number(addForm.discount_percentage) < 0 ||
+        Number(addForm.discount_percentage) > 100)
+    ) {
+      setAddError('Discount % must be between 0 and 100');
+      throw new Error('Discount');
+    }
 
     setIsSaving(true);
     try {
@@ -1733,12 +2404,12 @@ function MenuContent() {
         const uploadRes = await fetch('/api/merchant/menu-items/upload-image', { method: 'POST', body: formData });
         if (!uploadRes.ok) {
           const err = await uploadRes.json().catch(() => ({}));
-          setAddError(err?.error || 'Image upload failed.');
-          setIsSaving(false);
-          return;
+          const msg = err?.error || 'Image upload failed.';
+          setAddError(msg);
+          throw new Error(msg);
         }
         const uploadData = await uploadRes.json();
-        itemImageUrl = uploadData.key ?? addForm.item_image_url;
+        itemImageUrl = uploadData.image_url ?? uploadData.key ?? addForm.item_image_url;
         setImagePreview(itemImageUrl);
       }
       const allergensArray = addForm.allergens
@@ -1746,8 +2417,22 @@ function MenuContent() {
         : [];
       if (!addForm.category_id || !storeId) {
         setAddError('Category and store are required.');
-        setIsSaving(false);
-        return;
+        throw new Error('Category and store');
+      }
+      const packagingPayloadSn = (() => {
+        if (!addForm.packaging_enabled) return null;
+        const raw = String(addForm.packaging_charges ?? '').replace(/,/g, '').trim();
+        if (raw !== '') {
+          const n = Number(raw);
+          return Number.isFinite(n) && n >= 0 ? n : null;
+        }
+        const def = itemFormStoreDefaults?.packaging_charge_amount;
+        if (def != null && Number.isFinite(Number(def)) && Number(def) >= 0) return Number(def);
+        return null;
+      })();
+      if (addForm.packaging_enabled && packagingPayloadSn == null) {
+        setAddError('Enter packaging amount (₹) or turn off packaging.');
+        throw new Error('Packaging');
       }
       const newItem = {
         item_name: addForm.item_name,
@@ -1759,7 +2444,7 @@ function MenuContent() {
         base_price: Number(addForm.base_price),
         selling_price: Number(addForm.selling_price),
         discount_percentage: addForm.discount_percentage ? Number(addForm.discount_percentage) : 0,
-        tax_percentage: addForm.tax_percentage ? Number(addForm.tax_percentage) : 0,
+        tax_percentage: 0,
         in_stock: addForm.in_stock,
         available_quantity: addForm.available_quantity ? Number(addForm.available_quantity) : null,
         low_stock_threshold: addForm.low_stock_threshold ? Number(addForm.low_stock_threshold) : null,
@@ -1769,12 +2454,14 @@ function MenuContent() {
         is_popular: addForm.is_popular,
         is_recommended: addForm.is_recommended,
         preparation_time_minutes: addForm.preparation_time_minutes,
+        packaging_charges: packagingPayloadSn,
         serves: addForm.serves,
         is_active: addForm.is_active,
         allergens: allergensArray,
         category_id: addForm.category_id,
         customizations: [],
         restaurant_id: storeId,
+        ...mxNutritionPayloadFromForm(addForm as unknown as Record<string, unknown>),
       };
       const res = await fetch('/api/merchant/menu-items', {
         method: 'POST',
@@ -1787,40 +2474,35 @@ function MenuContent() {
       }
       const result = await res.json();
       if (result?.item_id) {
-        // Sync store cuisines for this save
         try {
-          const cuisinesFromItem = (newItem.cuisine_type || '')
-            .split(',')
-            .map((s: string) => s.trim())
-            .filter(Boolean);
-          if (storeId && cuisinesFromItem.length > 0) {
-            const mergedCuisines = Array.from(new Set([...(cuisineOptions || []), ...cuisinesFromItem]));
-            await fetch('/api/merchant/store-cuisines', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ storeId, cuisines: mergedCuisines }),
-            }).catch(() => {});
-          }
+          const { linked, errors } = await linkItemCuisineSelectionsToStoreProfile(storeId, newItem.cuisine_type);
+          if (linked > 0) await refreshCuisineOptionsFromApi();
+          if (errors.length > 0) toast.error(errors.slice(0, 2).join(' '));
         } catch (e) {
-          console.error('[menu] Failed to sync store cuisines on Save & Next', e);
+          console.error('[menu] Failed to link cuisines to store profile', e);
         }
         setAddItemSaved({ item_id: result.item_id, id: result.id });
         setMenuItems((prev) => [result, ...prev]);
         toast.success('Item saved. Add customizations/variants or click Submit.');
       } else {
         setAddError('Failed to save item.');
+        throw new Error('Failed to save item.');
       }
     } catch (e) {
       console.error('Error saving item:', e);
-      setAddError('Error saving item.');
+      if (e instanceof Error && !['Name is required', 'Category is required', 'Base price', 'Selling price', 'Discount', 'Packaging', 'No store', 'Limit', 'Category and store'].includes(e.message)) {
+        setAddError(e.message || 'Error saving item.');
+      }
+      throw e;
+    } finally {
+      setIsSaving(false);
     }
-    setIsSaving(false);
   }
 
   async function handleAddSubmitOptions() {
     if (!addItemSaved || !storeId) {
       toast.error('Save the item first (Save and Next).');
-      return;
+      throw new Error('No item');
     }
     setIsSaving(true);
     setAddError('');
@@ -1858,7 +2540,7 @@ function MenuContent() {
         base_price: '',
         selling_price: '',
         discount_percentage: '0',
-        tax_percentage: '5',
+        tax_percentage: '0',
         in_stock: true,
         available_quantity: '',
         low_stock_threshold: '',
@@ -1868,9 +2550,24 @@ function MenuContent() {
         is_popular: false,
         is_recommended: false,
         preparation_time_minutes: 15,
+        packaging_enabled: false,
+        packaging_charges: '',
         serves: 1,
         is_active: true,
         allergens: '',
+        available_for_delivery: true,
+        weight_per_serving: '',
+        weight_per_serving_unit: 'grams',
+        calories_kcal: '',
+        protein: '',
+        protein_unit: 'mg',
+        carbohydrates: '',
+        carbohydrates_unit: 'mg',
+        fat: '',
+        fat_unit: 'mg',
+        fibre: '',
+        fibre_unit: 'mg',
+        item_tags: '',
         category_id: null,
         customizations: [],
         variants: [],
@@ -1882,9 +2579,11 @@ function MenuContent() {
       setMenuItems(refreshRes.ok && Array.isArray(json) ? json : []);
     } catch (e) {
       console.error('Error saving options:', e);
-      setAddError('Error saving options.');
+      setAddError(e instanceof Error ? e.message : 'Error saving options.');
+      throw e;
+    } finally {
+      setIsSaving(false);
     }
-    setIsSaving(false);
   }
 
   const handleOpenEditModal = async (item: MenuItem) => {
@@ -1988,6 +2687,8 @@ function MenuContent() {
     
     const basePriceStr = item.base_price != null ? (typeof item.base_price === 'number' ? item.base_price.toFixed(2) : String(item.base_price)) : '';
     const sellingPriceStr = item.selling_price != null ? (typeof item.selling_price === 'number' ? item.selling_price.toFixed(2) : String(item.selling_price)) : '';
+    const pkgNum = item.packaging_charges != null ? Number(item.packaging_charges) : NaN;
+    const packaging_enabled = Number.isFinite(pkgNum) && pkgNum > 0;
     setEditForm({
       item_name: item.item_name || '',
       item_description: item.item_description || '',
@@ -1999,7 +2700,7 @@ function MenuContent() {
       base_price: basePriceStr,
       selling_price: sellingPriceStr,
       discount_percentage: item.discount_percentage?.toString() ?? '0',
-      tax_percentage: item.tax_percentage?.toString() ?? '5',
+      tax_percentage: item.tax_percentage?.toString() ?? '0',
       in_stock: item.in_stock ?? true,
       available_quantity: item.available_quantity?.toString() || '',
       low_stock_threshold: item.low_stock_threshold?.toString() || '',
@@ -2009,9 +2710,24 @@ function MenuContent() {
       is_popular: item.is_popular ?? false,
       is_recommended: item.is_recommended ?? false,
       preparation_time_minutes: item.preparation_time_minutes || 15,
+      packaging_enabled,
+      packaging_charges: packaging_enabled ? String(pkgNum) : '',
       serves: item.serves || 1,
       is_active: item.is_active ?? true,
       allergens: allergensString,
+      available_for_delivery: item.available_for_delivery ?? true,
+      weight_per_serving: item.weight_per_serving != null ? String(item.weight_per_serving) : '',
+      weight_per_serving_unit: item.weight_per_serving_unit ?? 'grams',
+      calories_kcal: item.calories_kcal != null ? String(item.calories_kcal) : '',
+      protein: item.protein != null ? String(item.protein) : '',
+      protein_unit: item.protein_unit ?? 'mg',
+      carbohydrates: item.carbohydrates != null ? String(item.carbohydrates) : '',
+      carbohydrates_unit: item.carbohydrates_unit ?? 'mg',
+      fat: item.fat != null ? String(item.fat) : '',
+      fat_unit: item.fat_unit ?? 'mg',
+      fibre: item.fibre != null ? String(item.fibre) : '',
+      fibre_unit: item.fibre_unit ?? 'mg',
+      item_tags: Array.isArray(item.item_tags) ? item.item_tags.join(', ') : '',
       category_id: item.category_id ?? null,
       customizations: customizationsWithAddons,
       variants: variantsList,
@@ -2031,8 +2747,6 @@ function MenuContent() {
       return 'Valid selling price is required (greater than 0)';
     if (editForm.discount_percentage && (isNaN(Number(editForm.discount_percentage)) || Number(editForm.discount_percentage) < 0 || Number(editForm.discount_percentage) > 100))
       return 'Discount % must be between 0 and 100';
-    if (editForm.tax_percentage && (isNaN(Number(editForm.tax_percentage)) || Number(editForm.tax_percentage) < 0 || Number(editForm.tax_percentage) > 100))
-      return 'Tax % must be between 0 and 100';
     return null;
   }
 
@@ -2058,7 +2772,7 @@ function MenuContent() {
           return;
         }
         const uploadData = await uploadRes.json();
-        itemImageUrl = uploadData.key ?? editForm.item_image_url;
+        itemImageUrl = uploadData.image_url ?? uploadData.key ?? editForm.item_image_url;
         setEditImagePreview(itemImageUrl);
       }
       const allergensArray = editForm.allergens
@@ -2066,6 +2780,11 @@ function MenuContent() {
         : [];
       const hasCustomizations = Array.isArray(editForm.customizations) && editForm.customizations.length > 0;
       const hasAddons = Array.isArray(editForm.customizations) && editForm.customizations.some((c: any) => Array.isArray(c.addons) && c.addons.length > 0);
+      const packagingPatch = (() => {
+        if (!editForm.packaging_enabled) return null;
+        const n = Number(String(editForm.packaging_charges ?? '').replace(/,/g, ''));
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      })();
       const patchBody = {
         itemId: editingId,
         storeId,
@@ -2078,7 +2797,7 @@ function MenuContent() {
         base_price: Number(editForm.base_price),
         selling_price: Number(editForm.selling_price),
         discount_percentage: editForm.discount_percentage ? Number(editForm.discount_percentage) : 0,
-        tax_percentage: editForm.tax_percentage ? Number(editForm.tax_percentage) : 0,
+        tax_percentage: 0,
         in_stock: editForm.in_stock,
         available_quantity: editForm.available_quantity ? Number(editForm.available_quantity) : null,
         low_stock_threshold: editForm.low_stock_threshold ? Number(editForm.low_stock_threshold) : null,
@@ -2088,10 +2807,12 @@ function MenuContent() {
         is_popular: editForm.is_popular,
         is_recommended: editForm.is_recommended,
         preparation_time_minutes: editForm.preparation_time_minutes,
+        packaging_charges: packagingPatch,
         serves: editForm.serves,
         is_active: editForm.is_active,
         allergens: allergensArray,
         category_id: editForm.category_id,
+        ...mxNutritionPayloadFromForm(editForm as unknown as Record<string, unknown>),
         // Do NOT send customizations/variants - save item only, switch to options tab
       };
       const res = await fetch('/api/merchant/menu-items', {
@@ -2103,22 +2824,12 @@ function MenuContent() {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson?.error || 'Failed to update item');
       }
-      // Sync store cuisines from edited item (if cuisine_type changed / has values)
       try {
-        const cuisinesFromItem = (editForm.cuisine_type || '')
-          .split(',')
-          .map((s: string) => s.trim())
-          .filter(Boolean);
-        if (storeId && cuisinesFromItem.length > 0) {
-          const mergedCuisines = Array.from(new Set([...(cuisineOptions || []), ...cuisinesFromItem]));
-          await fetch('/api/merchant/store-cuisines', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ storeId, cuisines: mergedCuisines }),
-          }).catch(() => {});
-        }
+        const { linked, errors } = await linkItemCuisineSelectionsToStoreProfile(storeId!, editForm.cuisine_type);
+        if (linked > 0) await refreshCuisineOptionsFromApi();
+        if (errors.length > 0) toast.error(errors.slice(0, 2).join(' '));
       } catch (e) {
-        console.error('[menu] Failed to sync store cuisines on edit Save & Next', e);
+        console.error('[menu] Failed to link cuisines to store profile', e);
       }
       toast.success('Item saved. Add or edit customizations/variants, then click Submit.');
     } catch (e) {
@@ -2201,7 +2912,7 @@ function MenuContent() {
           return;
         }
         const uploadData = await uploadRes.json();
-        itemImageUrl = uploadData.key ?? editForm.item_image_url;
+        itemImageUrl = uploadData.image_url ?? uploadData.key ?? editForm.item_image_url;
         setEditImagePreview(itemImageUrl);
       }
       const allergensArray = editForm.allergens
@@ -2226,7 +2937,7 @@ function MenuContent() {
           base_price: Number(editForm.base_price),
           selling_price: Number(editForm.selling_price),
           discount_percentage: editForm.discount_percentage ? Number(editForm.discount_percentage) : 0,
-          tax_percentage: editForm.tax_percentage ? Number(editForm.tax_percentage) : 0,
+          tax_percentage: 0,
           in_stock: editForm.in_stock,
           available_quantity: editForm.available_quantity ? Number(editForm.available_quantity) : null,
           low_stock_threshold: editForm.low_stock_threshold ? Number(editForm.low_stock_threshold) : null,
@@ -2236,10 +2947,16 @@ function MenuContent() {
           is_popular: editForm.is_popular,
           is_recommended: editForm.is_recommended,
           preparation_time_minutes: editForm.preparation_time_minutes,
+          packaging_charges: (() => {
+            if (!editForm.packaging_enabled) return null;
+            const n = Number(String(editForm.packaging_charges ?? '').replace(/,/g, ''));
+            return Number.isFinite(n) && n >= 0 ? n : null;
+          })(),
           serves: editForm.serves,
           is_active: editForm.is_active,
           allergens: allergensArray,
           category_id: editForm.category_id,
+          ...mxNutritionPayloadFromForm(editForm as unknown as Record<string, unknown>),
           customizations: custs,
           variants: vars.map((v: any) => ({
             variant_name: v.variant_name,
@@ -2263,22 +2980,15 @@ function MenuContent() {
         } else {
           setMenuItems((prev) => prev.map((item) => (item.item_id === editingId ? { ...item, ...result, item_image_url: itemImageUrl } : item)));
         }
-        // Sync store cuisines after full edit save
         try {
-          const cuisinesFromItem = (result.cuisine_type || editForm.cuisine_type || '')
-            .split(',')
-            .map((s: string) => s.trim())
-            .filter(Boolean);
-          if (storeId && cuisinesFromItem.length > 0) {
-            const mergedCuisines = Array.from(new Set([...(cuisineOptions || []), ...cuisinesFromItem]));
-            await fetch('/api/merchant/store-cuisines', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ storeId, cuisines: mergedCuisines }),
-            }).catch(() => {});
-          }
+          const { linked, errors } = await linkItemCuisineSelectionsToStoreProfile(
+            storeId!,
+            (result.cuisine_type as string) || editForm.cuisine_type
+          );
+          if (linked > 0) await refreshCuisineOptionsFromApi();
+          if (errors.length > 0) toast.error(errors.slice(0, 2).join(' '));
         } catch (e) {
-          console.error('[menu] Failed to sync store cuisines on Save', e);
+          console.error('[menu] Failed to link cuisines to store profile', e);
         }
         setShowEditModal(false);
         await refetchImageCount();
@@ -2962,13 +3672,19 @@ function MenuContent() {
             setShowAddModal(false);
             setAddImageValidationError('');
             setAddImageValidating(false);
+            addImagePendingFileRef.current = null;
             setAddForm({
               item_name: '', item_description: '', item_image_url: '', image: null,
               food_type: '', spice_level: '', cuisine_type: '', base_price: '', selling_price: '',
-              discount_percentage: '0', tax_percentage: '5', in_stock: true, available_quantity: '',
+              discount_percentage: '0', tax_percentage: '0', in_stock: true, available_quantity: '',
               low_stock_threshold: '', has_customizations: false, has_addons: false, has_variants: false,
-              is_popular: false, is_recommended: false, preparation_time_minutes: 15, serves: 1,
-              is_active: true, allergens: '', category_id: null, customizations: [], variants: [],
+              is_popular: false, is_recommended: false, preparation_time_minutes: 15,
+              packaging_enabled: false, packaging_charges: '', serves: 1,
+              is_active: true, allergens: '',
+              available_for_delivery: true, weight_per_serving: '', weight_per_serving_unit: 'grams',
+              calories_kcal: '', protein: '', protein_unit: 'mg', carbohydrates: '', carbohydrates_unit: 'mg',
+              fat: '', fat_unit: 'mg', fibre: '', fibre_unit: 'mg', item_tags: '',
+              category_id: null, customizations: [], variants: [],
             });
             setImagePreview('');
           }}
@@ -2982,7 +3698,8 @@ function MenuContent() {
               setImagePreview={setImagePreview}
               onProcessImage={(file) => processImageFile(file, false)}
               onSaveAndNext={handleAddSaveAndNext}
-              onSubmitOptions={handleAddSubmitOptions}
+              onSubmitOptions={addItemSaved != null ? handleAddSubmitOptions : undefined}
+              currentItemId={addItemSaved != null ? String(addItemSaved.id) : undefined}
               imageUploadAllowed={imageUploadAllowed}
               imageLimitReached={imageLimitReached}
               imageUsed={imageUsed}
@@ -2991,12 +3708,14 @@ function MenuContent() {
               maxCuisinesPerItem={planLimits?.maxCuisinesPerItem ?? null}
               imageValidationError={addImageValidationError}
               imageValidating={addImageValidating}
+              onNormalizeMenuItemImage={() => handleNormalizeMenuItemImage(false)}
               cuisineOptions={cuisineOptions}
               onCancel={() => {
                 setAddItemSaved(null);
                 setShowAddModal(false);
                 setAddImageValidationError('');
                 setAddImageValidating(false);
+                addImagePendingFileRef.current = null;
                 setAddForm({
                   item_name: '',
                   item_description: '',
@@ -3008,7 +3727,7 @@ function MenuContent() {
                   base_price: '',
                   selling_price: '',
                   discount_percentage: '0',
-                  tax_percentage: '5',
+                  tax_percentage: '0',
                   in_stock: true,
                   available_quantity: '',
                   low_stock_threshold: '',
@@ -3018,9 +3737,24 @@ function MenuContent() {
                   is_popular: false,
                   is_recommended: false,
                   preparation_time_minutes: 15,
+                  packaging_enabled: false,
+                  packaging_charges: '',
                   serves: 1,
                   is_active: true,
                   allergens: '',
+                  available_for_delivery: true,
+                  weight_per_serving: '',
+                  weight_per_serving_unit: 'grams',
+                  calories_kcal: '',
+                  protein: '',
+                  protein_unit: 'mg',
+                  carbohydrates: '',
+                  carbohydrates_unit: 'mg',
+                  fat: '',
+                  fat_unit: 'mg',
+                  fibre: '',
+                  fibre_unit: 'mg',
+                  item_tags: '',
                   category_id: null,
                   customizations: [],
                   variants: [],
@@ -3031,6 +3765,7 @@ function MenuContent() {
               error={addError}
               title="Add New Menu Item"
               categories={categories}
+              storeDefaults={itemFormStoreDefaults}
             />
           </div>
         </div>,
@@ -3090,7 +3825,7 @@ function MenuContent() {
                   base_price: '',
                   selling_price: '',
                   discount_percentage: '0',
-                  tax_percentage: '5',
+                  tax_percentage: '0',
                   in_stock: true,
                   available_quantity: '',
                   low_stock_threshold: '',
@@ -3100,9 +3835,24 @@ function MenuContent() {
                   is_popular: false,
                   is_recommended: false,
                   preparation_time_minutes: 15,
+                  packaging_enabled: false,
+                  packaging_charges: '',
                   serves: 1,
                   is_active: true,
                   allergens: '',
+                  available_for_delivery: true,
+                  weight_per_serving: '',
+                  weight_per_serving_unit: 'grams',
+                  calories_kcal: '',
+                  protein: '',
+                  protein_unit: 'mg',
+                  carbohydrates: '',
+                  carbohydrates_unit: 'mg',
+                  fat: '',
+                  fat_unit: 'mg',
+                  fibre: '',
+                  fibre_unit: 'mg',
+                  item_tags: '',
                   category_id: null,
                   customizations: [],
                   variants: [],
@@ -3114,6 +3864,7 @@ function MenuContent() {
               title="Edit Menu Item"
               categories={categories}
               currentItemId={editingId || ''}
+              storeDefaults={itemFormStoreDefaults}
             />
           </div>
         </div>,
@@ -3320,19 +4071,25 @@ function MenuContent() {
             setShowCategoryModal(false);
             setCategoryForm({ category_name: '', is_active: true });
             setEditingCategoryId(null);
+            setParentCategoryIdInForm(null);
           }}
         >
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-bold text-gray-900">
-                  {categoryModalMode === 'add' ? 'Add New Category' : 'Edit Category'}
+                  {categoryModalMode === 'add'
+                    ? parentCategoryIdInForm != null
+                      ? 'Add Subcategory'
+                      : 'Add New Category'
+                    : 'Edit Category'}
                 </h2>
                 <button
                   onClick={() => {
                     setShowCategoryModal(false);
                     setCategoryForm({ category_name: '', is_active: true });
                     setEditingCategoryId(null);
+                    setParentCategoryIdInForm(null);
                   }}
                   className="p-2 hover:bg-gray-100 rounded-lg"
                   aria-label="Close"
@@ -3341,8 +4098,18 @@ function MenuContent() {
                 </button>
               </div>
               <div className="space-y-4">
+                {categoryModalMode === 'add' && parentCategoryIdInForm != null && (
+                  <div className="rounded-lg bg-orange-50 border border-orange-100 px-3 py-2 text-sm text-gray-800">
+                    <span className="font-medium">Subcategory under </span>
+                    {categories.find((c) => c.id === parentCategoryIdInForm)?.category_name ?? 'parent'}
+                  </div>
+                )}
                 <div className="relative">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Category Name * (max 30 characters)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {useSubcategoryPeerSuggestions
+                      ? 'Subcategory name * (max 30 characters)'
+                      : 'Category name * (max 30 characters)'}
+                  </label>
                   <input
                     type="text"
                     maxLength={30}
@@ -3355,48 +4122,84 @@ function MenuContent() {
                     }}
                     onFocus={() => setCategorySuggestionsOpen(true)}
                     onBlur={() => setTimeout(() => setCategorySuggestionsOpen(false), 180)}
-                    placeholder="Start typing for suggestions..."
+                    placeholder={
+                      useSubcategoryPeerSuggestions
+                        ? 'Start typing — subcategory names from other stores'
+                        : 'Start typing — category names from other stores'
+                    }
                   />
                   {(categoryForm.category_name?.length ?? 0) > 0 && (
                     <span className="absolute right-3 top-9 text-xs text-gray-400">{(categoryForm.category_name?.length ?? 0)}/30</span>
                   )}
                   {categorySuggestionsOpen && (
-                    <div className="absolute z-10 left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg py-1">
-                      {(() => {
-                        const q = (categoryForm.category_name ?? '').toLowerCase().trim();
-                        const matched = q.length === 0
-                          ? CATEGORY_SUGGESTIONS.slice(0, 12)
-                          : CATEGORY_SUGGESTIONS.filter(c => c.toLowerCase().includes(q)).slice(0, 12);
-                        const exactMatch = q && CATEGORY_SUGGESTIONS.some(c => c.toLowerCase() === q);
-                        return (
-                          <>
-                            {matched.map((s) => (
-                              <button
-                                key={s}
-                                type="button"
-                                className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-orange-50"
-                                onMouseDown={(e) => { e.preventDefault(); setCategoryForm({ ...categoryForm, category_name: s }); setCategorySuggestionsOpen(false); }}
-                              >
-                                {s}
-                              </button>
-                            ))}
-                            {q && !exactMatch && (
-                              <div className="border-t border-gray-100 mt-1 pt-1">
-                                <button
-                                  type="button"
-                                  className="w-full text-left px-3 py-2 text-sm text-orange-600 font-medium hover:bg-orange-50"
-                                  onMouseDown={(e) => { e.preventDefault(); setCategorySuggestionsOpen(false); }}
-                                >
-                                  Add &quot;{categoryForm.category_name}&quot; as custom category
-                                </button>
-                              </div>
-                            )}
-                            {matched.length === 0 && !q && (
-                              <p className="px-3 py-2 text-sm text-gray-500">Start typing to see suggestions</p>
-                            )}
-                          </>
-                        );
-                      })()}
+                    <div className="absolute z-10 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                      {categoryPeerSuggestionsLoading ? (
+                        <p className="px-3 py-2 text-sm text-gray-500">
+                          {useSubcategoryPeerSuggestions
+                            ? 'Loading subcategory suggestions from other stores…'
+                            : 'Loading suggestions from other stores…'}
+                        </p>
+                      ) : (
+                        (() => {
+                          const q = (categoryForm.category_name ?? '').trim();
+                          const qLower = q.toLowerCase();
+                          const matched = categoryPeerSuggestions.filter(
+                            (s) => !categoryNameConflictSet.has(String(s).toLowerCase().trim())
+                          );
+                          const exactInList =
+                            qLower.length > 0 &&
+                            matched.some((s) => s.toLowerCase().trim() === qLower);
+                          const duplicateOnStore =
+                            qLower.length > 0 && categoryNameConflictSet.has(qLower);
+                          return (
+                            <>
+                              {matched.length > 0 ? (
+                                matched.map((s) => (
+                                  <button
+                                    key={s}
+                                    type="button"
+                                    className="w-full text-left px-3 py-2 text-sm text-gray-800 hover:bg-orange-50"
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      setCategoryForm({ ...categoryForm, category_name: s.slice(0, 30) });
+                                      setCategorySuggestionsOpen(false);
+                                    }}
+                                  >
+                                    {s}
+                                  </button>
+                                ))
+                              ) : (
+                                <p className="px-3 py-2 text-sm text-gray-500">
+                                  {q.length > 0
+                                    ? 'No matching names from other stores yet. You can still use your own name.'
+                                    : useSubcategoryPeerSuggestions
+                                      ? 'Popular subcategory names from other stores.'
+                                      : 'Popular names from other stores on the platform.'}
+                                </p>
+                              )}
+                              {q.length > 0 && !exactInList && !duplicateOnStore && (
+                                <div className="border-t border-gray-100 mt-1 pt-1">
+                                  <button
+                                    type="button"
+                                    className="w-full text-left px-3 py-2 text-sm text-orange-600 font-medium hover:bg-orange-50"
+                                    onMouseDown={(e) => { e.preventDefault(); setCategorySuggestionsOpen(false); }}
+                                  >
+                                    Use &quot;{categoryForm.category_name}&quot; as new{' '}
+                                    {useSubcategoryPeerSuggestions ? 'subcategory' : 'category'}
+                                  </button>
+                                </div>
+                              )}
+                              {duplicateOnStore && (
+                                <p className="px-3 py-2 text-xs text-red-600 border-t border-gray-100">
+                                  {useSubcategoryPeerSuggestions
+                                    ? 'This name is already used under this category.'
+                                    : 'This store already has a category with this name.'}
+                                </p>
+                              )}
+                            </>
+                          );
+                        })()
+                      )}
                     </div>
                   )}
                 </div>
@@ -3418,6 +4221,7 @@ function MenuContent() {
                     setShowCategoryModal(false);
                     setCategoryForm({ category_name: '', is_active: true });
                     setEditingCategoryId(null);
+                    setParentCategoryIdInForm(null);
                   }}
                   className="flex-1 px-4 py-2.5 rounded-lg font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 transition-all"
                   disabled={categoryLoading}
@@ -3429,7 +4233,13 @@ function MenuContent() {
                   className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-orange-500 hover:bg-orange-600 transition-all"
                   disabled={categoryLoading}
                 >
-                  {categoryLoading ? 'Saving...' : (categoryModalMode === 'add' ? 'Add Category' : 'Save Changes')}
+                  {categoryLoading
+                    ? 'Saving...'
+                    : categoryModalMode === 'add'
+                      ? parentCategoryIdInForm != null
+                        ? 'Add Subcategory'
+                        : 'Add Category'
+                      : 'Save Changes'}
                 </button>
               </div>
               {categoryModalMode === 'edit' && editingCategoryId && (

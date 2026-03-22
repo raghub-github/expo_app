@@ -14,7 +14,15 @@ import {
   ensureOrderEtaWhenAccepted,
   type OrderSearchType,
   type OrderStatusFilter,
+  type OrdersCoreRow,
 } from "@/lib/db/operations/orders-core";
+
+/** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
+type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
+  storeId: string | null;
+  deliveryInstructions?: string | null;
+  estimatedDeliveryTime?: Date | string | null;
+};
 import {
   getMerchantStoreSummaryByStoreId,
   getStoreIdsByInternalIds,
@@ -116,7 +124,7 @@ export async function GET(request: NextRequest) {
         .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
         .filter((id): id is number => id != null && Number.isFinite(id))
     );
-    let data = result.orders.map((order) => {
+    let data: OrderCoreApiListItem[] = result.orders.map((order) => {
       const o = order as { merchantStoreId?: number | null };
       const storeIdDisplay =
         o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;

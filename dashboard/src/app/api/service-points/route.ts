@@ -94,10 +94,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const userEmail = user.email?.trim();
+    if (!userEmail) {
+      return NextResponse.json(
+        { success: false, error: "Authenticated user has no email; cannot resolve system user" },
+        { status: 400 }
+      );
+    }
+
     // Get system user ID for created_by
     const sql = getSql();
     const [systemUser] = await sql`
-      SELECT id FROM system_users WHERE email = ${user.email}
+      SELECT id FROM system_users WHERE email = ${userEmail}
     `;
 
     if (!systemUser) {
@@ -211,11 +219,14 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // Combine update parts
-    const updateClause = sql.join(updateParts, sql`, `);
+    // Combine update parts (postgres.js provides sql.join; typings may omit it on Sql<{}>)
+    const updateClause = (
+      sql as unknown as { join: (parts: unknown[], sep: unknown) => unknown }
+    ).join(updateParts, sql`, `);
+    // Fragment from sql.join is valid at runtime; postgres.js typings use never for dynamic fragments
     const [updatedServicePoint] = await sql`
       UPDATE service_points
-      SET ${updateClause}, updated_at = NOW()
+      SET ${updateClause as never}, updated_at = NOW()
       WHERE id = ${id}
       RETURNING id, name, city, latitude, longitude, address, is_active, created_at, updated_at
     `;

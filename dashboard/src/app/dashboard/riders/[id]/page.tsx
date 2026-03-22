@@ -213,7 +213,6 @@ export default function RiderDetailsPage() {
   ) ?? false;
 
   const handleRetryAccess = () => {
-    setSlowPermissionCheck(false);
     queryClient.invalidateQueries({ queryKey: queryKeys.permissions() });
     queryClient.invalidateQueries({ queryKey: queryKeys.dashboardAccess() });
   };
@@ -470,7 +469,7 @@ export default function RiderDetailsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <InfoCard icon={<User className="h-4 w-4" />} label="Full Name" value={rider.name || "—"} highlight />
             <InfoCard icon={<IdCard className="h-4 w-4" />} label="Rider ID" value={`GMR${rider.id}`} highlight className="font-mono" />
-            <InfoCard icon={<Phone className="h-4 w-4" />} label="Mobile" value={`${rider.countryCode} ${rider.mobile}`} />
+            <InfoCard icon={<Phone className="h-4 w-4" />} label="Mobile" value={`${rider.countryCode ?? ""} ${rider.mobile}`.trim()} />
             <InfoCard icon={<Calendar className="h-4 w-4" />} label="Date of Birth" value={rider.dob ? new Date(rider.dob).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : "—"} />
             <InfoCard icon={<IdCard className="h-4 w-4" />} label="Aadhaar Number" value={maskDocumentNumber(rider.aadhaarNumber)} />
             <InfoCard icon={<IdCard className="h-4 w-4" />} label="PAN Number" value={maskDocumentNumber(rider.panNumber)} />
@@ -500,7 +499,7 @@ export default function RiderDetailsPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <InfoCard icon={<IdCard className="h-4 w-4" />} label="Referral Code" value={rider.referralCode || "—"} />
             <InfoCard icon={<User className="h-4 w-4" />} label="Referred By" value={rider.referredBy ? `GMR${rider.referredBy}` : "—"} />
-            <InfoCard icon={<Settings className="h-4 w-4" />} label="Language" value={rider.defaultLanguage.toUpperCase()} />
+            <InfoCard icon={<Settings className="h-4 w-4" />} label="Language" value={(rider.defaultLanguage ?? "—").toUpperCase()} />
             <InfoCard icon={<Calendar className="h-4 w-4" />} label="Created" value={rider.createdAt ? new Date(rider.createdAt).toLocaleDateString('en-IN') : "—"} />
             <InfoCard icon={<Clock className="h-4 w-4" />} label="Last Updated" value={rider.updatedAt ? new Date(rider.updatedAt).toLocaleDateString('en-IN') : "—"} />
           </div>
