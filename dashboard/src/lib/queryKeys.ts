@@ -131,6 +131,14 @@ export const queryKeys = {
       ["merchant-wallet-requests-summary", storeId ?? "global"] as const,
   },
 
+  offers: {
+    merchant: {
+      list: (filters: Record<string, unknown>) =>
+        ["offers", "merchant", "list", stableSerialize(filters)] as const,
+    },
+    stores: () => ["offers", "stores"] as const,
+  },
+
   // Rider Dashboard
   rider: {
     summary: (riderId: number | null, params: RiderSummaryParams) =>

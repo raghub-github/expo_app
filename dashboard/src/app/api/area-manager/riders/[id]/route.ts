@@ -6,7 +6,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { requireAreaManagerApiAuth, requireRiderManager } from "@/lib/area-manager/auth";
-import { getRiderByIdScoped, updateRiderScoped } from "@/lib/area-manager/queries";
+import {
+  getRiderByIdScoped,
+  updateRiderScoped,
+  type RiderScopedUpdate,
+} from "@/lib/area-manager/queries";
 import { logAreaManagerActivity } from "@/lib/area-manager/activity";
 import { apiErrorResponse } from "@/lib/api-errors";
 
@@ -78,14 +82,22 @@ export async function PATCH(
     const { resolved } = authResult;
     const areaManagerId = resolved.isSuperAdmin ? null : resolved.areaManager.id;
 
-    const updateData: {
-      status?: string;
-      availabilityStatus?: string;
-      localityCode?: string | null;
-      updatedBy?: number;
-    } = { updatedBy: resolved.systemUserId };
-    if (riderStatus !== undefined) updateData.status = riderStatus;
-    if (availabilityStatus !== undefined) updateData.availabilityStatus = availabilityStatus;
+    const RIDER_STATUSES = ["INACTIVE", "ACTIVE", "BLOCKED", "BANNED"] as const;
+    const AVAIL_STATUSES = ["ONLINE", "BUSY", "OFFLINE"] as const;
+
+    const updateData: RiderScopedUpdate = { updatedBy: resolved.systemUserId };
+    if (riderStatus !== undefined) {
+      if (!RIDER_STATUSES.includes(riderStatus)) {
+        return NextResponse.json({ success: false, error: "Invalid status" }, { status: 400 });
+      }
+      updateData.status = riderStatus;
+    }
+    if (availabilityStatus !== undefined) {
+      if (!AVAIL_STATUSES.includes(availabilityStatus)) {
+        return NextResponse.json({ success: false, error: "Invalid availability status" }, { status: 400 });
+      }
+      updateData.availabilityStatus = availabilityStatus;
+    }
     if (localityCode !== undefined) updateData.localityCode = localityCode?.trim() ?? null;
 
     const updated = await updateRiderScoped(riderId, areaManagerId, updateData);

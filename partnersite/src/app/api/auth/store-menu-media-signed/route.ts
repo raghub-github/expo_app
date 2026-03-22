@@ -3,7 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { createClient } from "@supabase/supabase-js";
 import { extractR2KeyFromUrl } from "@/lib/r2";
-import { entriesWithRowMetaFromImageRows } from "@/lib/menu-reference-image-bundle";
+import { entriesWithRowMetaFromImageRows, fileNameFromMenuStoredUrl } from "@/lib/menu-reference-image-bundle";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -132,13 +132,17 @@ export async function GET(req: NextRequest) {
         original_file_name?: string | null;
       }[]
     );
-    const menuImageItems = imageWithMeta.map((m) => {
+    const menuImageItems = imageWithMeta.map((m, i) => {
       const u = toProxyUrl(m.url) ?? m.url;
+      const named =
+        (m.file_name && String(m.file_name).trim()) ||
+        fileNameFromMenuStoredUrl(m.url) ||
+        `Menu image ${i + 1}`;
       return {
         rowId: m.rowId,
         entryId: m.id,
         url: u,
-        fileName: (m.file_name && String(m.file_name).trim()) || "Menu image",
+        fileName: named,
       };
     });
 
@@ -164,10 +168,9 @@ export async function GET(req: NextRequest) {
       menuImageIds: menuImageItems.map((i) => i.rowId),
       menuPdfIds: pdfRows.map((r) => r.id),
       menuSpreadsheetVerificationStatus: sheetRow?.verification_status ?? null,
-      menuImageVerificationStatuses: menuImageItems.map((i) => {
-        const row = imageRows.find((r) => r.id === i.rowId);
-        return row?.verification_status ?? "PENDING";
-      }),
+      menuImageVerificationStatuses: imageWithMeta.map((m) =>
+        String(m.verification_status ?? "PENDING").toUpperCase()
+      ),
       menuPdfVerificationStatuses: pdfRows.map((r) => r.verification_status ?? "PENDING"),
       menuSpreadsheetUploadedAt: sheetRow?.created_at ?? null,
     });

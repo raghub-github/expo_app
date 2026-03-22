@@ -77,10 +77,22 @@ export async function POST(
       );
     }
 
+    const description =
+      body.description != null && String(body.description).trim() !== ""
+        ? String(body.description)
+        : null;
+    const isRequired = typeof body.is_required === "boolean" ? body.is_required : false;
+    const minSelRaw = Number(body.min_selection);
+    const minSelection = Number.isFinite(minSelRaw) ? minSelRaw : 0;
+    const maxSelRaw = Number(body.max_selection);
+    const maxSelection = Number.isFinite(maxSelRaw) && maxSelRaw >= 1 ? maxSelRaw : 1;
+    const displayOrderRaw = Number(body.display_order);
+    const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
+
     const groupCode = genId("MG_");
     const [row] = await sql`
       INSERT INTO merchant_modifier_groups (store_id, group_code, title, description, is_required, min_selection, max_selection, display_order)
-      VALUES (${storeId}, ${groupCode}, ${title}, ${body.description ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
+      VALUES (${storeId}, ${groupCode}, ${title}, ${description}, ${isRequired}, ${minSelection}, ${maxSelection}, ${displayOrder})
       RETURNING id, group_code
     `;
     const r = row as any;

@@ -105,13 +105,13 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         (payload as Record<string, unknown>)[field] = (editData as Record<string, unknown>)[field];
       }
       await updateStore.mutateAsync(payload);
-      toast?.("Saved successfully", { type: "success" });
+      toast("Saved successfully");
       setEditingField(null);
       queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
       queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
       router.refresh();
     } catch (e) {
-      toast?.(e instanceof Error ? e.message : "Failed to save", { type: "error" });
+      toast(e instanceof Error ? e.message : "Failed to save");
     } finally {
       setSavingField(null);
     }
@@ -143,7 +143,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         const next = { ...editData, banner_url: url };
         setEditData(next);
         await updateStore.mutateAsync(next);
-        toast?.("Banner updated", { type: "success" });
+        toast("Banner updated");
         queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
         queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
         router.refresh();
@@ -157,13 +157,13 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         const next = { ...editData, gallery_images: newGallery };
         setEditData(next);
         await updateStore.mutateAsync(next);
-        toast?.("Gallery updated", { type: "success" });
+        toast("Gallery updated");
         queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
         queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
         router.refresh();
       }
     } catch (err) {
-      toast?.(err instanceof Error ? err.message : "Upload failed", { type: "error" });
+      toast(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploadingImages([]);
     }
@@ -177,12 +177,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
     setEditData(nextData);
     try {
       await updateStore.mutateAsync(nextData);
-      toast?.("Image removed", { type: "success" });
+      toast("Image removed");
       queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
       queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
       router.refresh();
     } catch {
-      toast?.("Failed to remove image", { type: "error" });
+      toast("Failed to remove image");
     }
   };
 
@@ -370,44 +370,46 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                         <Shield size={16} className="text-blue-600" />
                         Legal Documents
                       </h3>
-                      {doc.pan_document_number || doc.gst_document_number || doc.fssai_document_number ? (
+                      {Boolean(
+                        doc.pan_document_number || doc.gst_document_number || doc.fssai_document_number
+                      ) ? (
                         <div className="space-y-2 text-xs">
-                          {doc.pan_document_number && (
+                          {!!doc.pan_document_number && (
                             <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">PAN</span>
                               <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.pan_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
                                 {doc.pan_is_verified ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.pan_document_number)}</span></div>
-                              {doc.pan_document_url && (
+                              {!!doc.pan_document_url && (
                                 <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {doc.gst_document_number && (
+                          {!!doc.gst_document_number && (
                             <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">GST</span>
                               <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.gst_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
                                 {doc.gst_is_verified ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.gst_document_number)}</span></div>
-                              {doc.gst_document_url && (
+                              {!!doc.gst_document_url && (
                                 <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {doc.fssai_document_number && (
+                          {!!doc.fssai_document_number && (
                             <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">FSSAI</span>
                               <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.fssai_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
                                 {doc.fssai_is_verified ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.fssai_document_number)}</span></div>
-                              {doc.fssai_document_url && (
+                              {!!doc.fssai_document_url && (
                                 <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -490,7 +492,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                           <FileCheck size={16} className="text-blue-600" />
                           Agreement
                         </h3>
-                        {agreement.contract_pdf_url && (
+                        {!!agreement.contract_pdf_url && (
                           <a
                             href={String(agreement.contract_pdf_url)}
                             target="_blank"
@@ -513,7 +515,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                               {agreement.accepted_at ? formatDate(String(agreement.accepted_at)) : "—"}
                             </span>
                           </div>
-                          {agreement.contract_pdf_url && (
+                          {!!agreement.contract_pdf_url && (
                             <div className="flex gap-2 mt-2">
                               <a
                                 href={String(agreement.contract_pdf_url)}
@@ -546,44 +548,46 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                         <Shield size={16} className="text-blue-600" />
                         Legal Documents
                       </h3>
-                      {doc.pan_document_number || doc.gst_document_number || doc.fssai_document_number ? (
+                      {Boolean(
+                        doc.pan_document_number || doc.gst_document_number || doc.fssai_document_number
+                      ) ? (
                         <div className="space-y-2 text-xs">
-                          {doc.pan_document_number && (
+                          {!!doc.pan_document_number && (
                             <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">PAN</span>
                               <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.pan_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
                                 {doc.pan_is_verified ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.pan_document_number)}</span></div>
-                              {doc.pan_document_url && (
+                              {!!doc.pan_document_url && (
                                 <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {doc.gst_document_number && (
+                          {!!doc.gst_document_number && (
                             <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">GST</span>
                               <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.gst_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
                                 {doc.gst_is_verified ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.gst_document_number)}</span></div>
-                              {doc.gst_document_url && (
+                              {!!doc.gst_document_url && (
                                 <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {doc.fssai_document_number && (
+                          {!!doc.fssai_document_number && (
                             <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">FSSAI</span>
                               <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.fssai_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
                                 {doc.fssai_is_verified ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.fssai_document_number)}</span></div>
-                              {doc.fssai_document_url && (
+                              {!!doc.fssai_document_url && (
                                 <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -767,7 +771,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
           queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
           queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
           router.refresh();
-          toast?.("Address updated successfully", { type: "success" });
+          toast("Address updated successfully");
         }}
       />
     </div>

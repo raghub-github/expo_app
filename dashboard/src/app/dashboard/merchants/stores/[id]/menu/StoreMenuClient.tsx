@@ -519,7 +519,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         tax_percentage: String(taxNum),
         in_stock: data.in_stock ?? true,
         has_customizations: customizations.length > 0,
-        has_addons: customizations.some((c) => (c.addons?.length ?? 0) > 0),
+        has_addons: customizations.some((c: Customization) => (c.addons?.length ?? 0) > 0),
         has_variants: variants.length > 0,
         is_popular: data.is_popular ?? false,
         is_recommended: data.is_recommended ?? false,

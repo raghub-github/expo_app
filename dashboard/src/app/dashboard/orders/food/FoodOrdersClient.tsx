@@ -141,11 +141,11 @@ function useFoodOrdersQuery(
   snapshotKey: string | null,
   initialSnapshot: Awaited<ReturnType<typeof fetchFoodOrders>> | null
 ) {
-  return useQuery({
-    queryKey: queryKeys.ordersCore.foodList(filters as Record<string, unknown>),
+  const query = useQuery({
+    queryKey: queryKeys.ordersCore.foodList(filters as unknown as Record<string, unknown>),
     queryFn: ({ signal }) => fetchFoodOrders(filters, signal),
     enabled,
-    initialData: initialSnapshot ?? undefined,
+    ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
@@ -153,11 +153,14 @@ function useFoodOrdersQuery(
     placeholderData: (prev) => prev,
     // SWR: show snapshot immediately, then refresh in background.
     refetchOnMount: true,
-    onSuccess: (data) => {
-      if (!snapshotKey) return;
-      saveClientSnapshot(snapshotKey, data);
-    },
   });
+
+  useEffect(() => {
+    if (!snapshotKey || query.data == null) return;
+    saveClientSnapshot(snapshotKey, query.data);
+  }, [snapshotKey, query.data]);
+
+  return query;
 }
 
 export default function FoodOrdersClient() {

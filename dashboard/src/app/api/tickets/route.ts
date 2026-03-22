@@ -205,9 +205,9 @@ export async function GET(request: NextRequest) {
 
     try {
       if (whereClause) {
-        countResult = await sqlClient`
-          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause}
-        `;
+        countResult = (await sqlClient`
+          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as any}
+        `) as unknown as { count: number }[];
         try {
           ticketRows = await sqlClient`
             SELECT
@@ -219,8 +219,8 @@ export async function GET(request: NextRequest) {
               ut.group_id, tg.group_code as group_code, tg.group_name as group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-            WHERE ${whereClause}
-            ORDER BY ${sql.raw(orderByClause)}
+            WHERE ${whereClause as any}
+            ORDER BY ${sql.raw(orderByClause) as any}
             LIMIT ${limit}
             OFFSET ${offset}
           `;
@@ -233,14 +233,16 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
             FROM public.unified_tickets ut
-            WHERE ${whereClause}
-            ORDER BY ${sql.raw(orderByClause)}
+            WHERE ${whereClause as any}
+            ORDER BY ${sql.raw(orderByClause) as any}
             LIMIT ${limit}
             OFFSET ${offset}
           `;
         }
       } else {
-        countResult = await sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`;
+        countResult = (await sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`) as unknown as {
+          count: number;
+        }[];
         try {
           ticketRows = await sqlClient`
             SELECT
@@ -252,7 +254,7 @@ export async function GET(request: NextRequest) {
               ut.group_id, tg.group_code as group_code, tg.group_name as group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-            ORDER BY ${sql.raw(orderByClause)}
+            ORDER BY ${sql.raw(orderByClause) as any}
             LIMIT ${limit}
             OFFSET ${offset}
           `;
@@ -265,7 +267,7 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
             FROM public.unified_tickets ut
-            ORDER BY ${sql.raw(orderByClause)}
+            ORDER BY ${sql.raw(orderByClause) as any}
             LIMIT ${limit}
             OFFSET ${offset}
           `;
@@ -402,11 +404,11 @@ export async function POST(request: NextRequest) {
 
     // Generate ticket number
     const year = new Date().getFullYear();
-    const countResult = await sqlClient`
+    const countResult = (await sqlClient`
       SELECT COUNT(*)::int as count
       FROM tickets
       WHERE EXTRACT(YEAR FROM created_at) = ${year}
-    `;
+    `) as unknown as { count: number }[];
     const ticketCount = countResult[0]?.count || 0;
     const ticketNumber = `TKT-${year}-${String(ticketCount + 1).padStart(6, "0")}`;
 

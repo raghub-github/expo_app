@@ -44,7 +44,7 @@ export async function GET() {
     }
 
     const authId = user.id;
-    const email = user.email;
+    const email = user.email ?? "";
 
     const systemUserId = await getSystemUserIdFromAuthUser(authId, email);
     if (!systemUserId) {

@@ -226,13 +226,19 @@ export async function GET(request: NextRequest) {
         reconsCount = recons;
         statusHistory = history;
         if (deliveryInstructions !== undefined) {
-          data = [{ ...data[0], deliveryInstructions: deliveryInstructions ?? null }];
+          data = [{ ...(data[0] as Record<string, unknown>), deliveryInstructions: deliveryInstructions ?? null }] as unknown as typeof data;
         }
         if (etaSet != null) {
-          data = [{ ...data[0], estimatedDeliveryTime: etaSet.estimatedDeliveryTime.toISOString() }];
+          data = [{ ...(data[0] as Record<string, unknown>), estimatedDeliveryTime: etaSet.estimatedDeliveryTime.toISOString() }] as unknown as typeof data;
         }
         if (etaBreach != null) {
-          data = [{ ...data[0], etaBreachedAt: etaBreach.etaBreachedAt, etaBreachedTimelineId: etaBreach.etaBreachedTimelineId }];
+          data = [
+            {
+              ...(data[0] as Record<string, unknown>),
+              etaBreachedAt: etaBreach.etaBreachedAt,
+              etaBreachedTimelineId: etaBreach.etaBreachedTimelineId,
+            },
+          ] as unknown as typeof data;
         }
       }
     }

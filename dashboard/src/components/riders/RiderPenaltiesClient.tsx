@@ -26,12 +26,12 @@ interface Penalty {
   serviceType: string | null;
   penaltyType: string;
   amount: string;
-  reason: string;
+  reason: string | null;
   status: string;
   orderId: number | null;
   source?: string;
   resolutionNotes?: string | null;
-  imposedAt: string;
+  imposedAt: string | null;
   resolvedAt: string | null;
   imposedByUser?: { email: string; fullName: string | null } | null;
   reversedByUser?: { email: string; fullName: string | null } | null;
@@ -63,6 +63,7 @@ export function RiderPenaltiesClient() {
   const searchParams = useSearchParams();
   const searchValue = (searchParams.get("search") || "").trim();
   const riderContext = useRiderDashboardOptional();
+  const riderFromContext = riderContext?.currentRiderInfo ?? null;
 
   const [rider, setRider] = useState<RiderSummaryInfo | null>(null);
   const [resolvingRider, setResolvingRider] = useState(false);
@@ -315,9 +316,6 @@ export function RiderPenaltiesClient() {
     [riderId, queryClient, addPenaltyForm, addPenaltyMutation, refetchPenalties]
   );
 
-  // Rider from context (persists when navigating from Rider Information to Penalties)
-  const riderFromContext = riderContext?.currentRiderInfo ?? null;
-
   // Resolve rider: prefer URL search param; if none, use rider from context so data persists
   useEffect(() => {
     if (hasSearch) {
@@ -427,7 +425,7 @@ export function RiderPenaltiesClient() {
           rider ? (
             <button
               type="button"
-              onClick={() => fetchPenalties(rider)}
+              onClick={() => void refetchPenalties()}
               disabled={loading}
               className="p-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-gray-900 disabled:opacity-50 shrink-0"
               title="Refresh penalties"
@@ -591,7 +589,7 @@ export function RiderPenaltiesClient() {
                               key={p.id}
                               penalty={p}
                               riderId={rider.id}
-                              onReverted={fetchPenalties.bind(null, rider)}
+                              onReverted={() => void refetchPenalties()}
                               revertingId={revertingId}
                               onRevert={openRevertModal}
                               canRevert={canRevertForService(p.serviceType ?? "parcel")}
@@ -860,7 +858,9 @@ function PenaltyRow({
         {penalty.penaltyType.replace("_", " ")}
       </td>
       <td className="px-4 py-3.5 text-gray-700 align-middle max-w-[180px]">
-        <span className="block text-[14px] leading-snug line-clamp-2" title={penalty.reason}>{penalty.reason}</span>
+        <span className="block text-[14px] leading-snug line-clamp-2" title={penalty.reason ?? undefined}>
+          {penalty.reason ?? "—"}
+        </span>
         {penalty.status === "reversed" && penalty.resolutionNotes && (
           <span className="block text-[13px] text-gray-500 mt-0.5 line-clamp-1" title={penalty.resolutionNotes}>
             Revert: {penalty.resolutionNotes}

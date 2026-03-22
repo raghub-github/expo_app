@@ -1,10 +1,47 @@
 import { createHash, randomUUID } from "crypto";
+import { extractR2KeyFromUrl } from "@/lib/r2";
+
+/**
+ * Display filename for menu thumbnails when JSONB bundle has no file_name — avoids stale names from registration_progress JSON.
+ */
+export function fileNameFromMenuStoredUrl(storedUrlOrKey: string | null | undefined): string | null {
+  if (!storedUrlOrKey || typeof storedUrlOrKey !== "string") return null;
+  const key =
+    extractR2KeyFromUrl(storedUrlOrKey) ||
+    (storedUrlOrKey.includes("://") ? null : storedUrlOrKey.replace(/^\/+/, ""));
+  let path = key || "";
+  if (!path && storedUrlOrKey.includes("://")) {
+    try {
+      path = new URL(storedUrlOrKey).pathname;
+    } catch {
+      path = storedUrlOrKey;
+    }
+  }
+  if (!path) return null;
+  const seg = path.split("/").filter(Boolean).pop();
+  if (!seg) return null;
+  const base = seg.split("?")[0];
+  try {
+    return decodeURIComponent(base);
+  } catch {
+    return base;
+  }
+}
+
+export type MenuReferenceVerificationStatus = "PENDING" | "VERIFIED" | "REJECTED" | "REUPLOADED";
 
 export type MenuReferenceImageEntry = {
   id: string;
   url: string;
   file_name?: string | null;
+  verification_status?: MenuReferenceVerificationStatus | null;
 };
+
+export function normalizeMenuReferenceVerificationStatus(raw: unknown): MenuReferenceVerificationStatus {
+  const u = String(raw ?? "").toUpperCase();
+  if (u === "VERIFIED" || u === "REJECTED" || u === "REUPLOADED") return u;
+  return "PENDING";
+}
 
 export function stableEntryIdForUrl(url: string): string {
   return createHash("sha256").update(url).digest("hex").slice(0, 32);
@@ -17,7 +54,13 @@ export function parseMenuReferenceImageUrls(raw: unknown): MenuReferenceImageEnt
   for (const item of raw) {
     if (typeof item === "string") {
       const u = item.trim();
-      if (u) out.push({ id: stableEntryIdForUrl(u), url: u });
+      if (u) {
+        out.push({
+          id: stableEntryIdForUrl(u),
+          url: u,
+          verification_status: "PENDING",
+        });
+      }
       continue;
     }
     if (item && typeof item === "object") {
@@ -32,6 +75,7 @@ export function parseMenuReferenceImageUrls(raw: unknown): MenuReferenceImageEnt
         id,
         url: u,
         file_name: typeof o.file_name === "string" ? o.file_name : null,
+        verification_status: normalizeMenuReferenceVerificationStatus(o.verification_status),
       });
     }
   }
@@ -54,6 +98,8 @@ export type MenuReferenceMediaImageRow = {
   public_url?: string | null;
   r2_key?: string | null;
   original_file_name?: string | null;
+  /** Row-level status when there is no JSONB bundle (single URL columns). */
+  verification_status?: string | null;
 };
 
 /** Flatten one or more DB rows (legacy per-image rows or jsonb bundle) into deduped entries. */
@@ -71,6 +117,7 @@ export function entriesFromImageMediaRows(rows: MenuReferenceMediaImageRow[]): M
         id: stableEntryIdForUrl(u),
         url: u,
         file_name: r.original_file_name ?? null,
+        verification_status: normalizeMenuReferenceVerificationStatus(r.verification_status),
       });
     }
   }
@@ -82,6 +129,7 @@ export function newImageEntry(url: string, fileName: string | null | undefined):
     id: randomUUID(),
     url,
     file_name: fileName ?? null,
+    verification_status: "PENDING",
   };
 }
 
@@ -126,6 +174,7 @@ export function entriesWithRowMetaFromImageRows(rows: MenuReferenceMediaImageRow
           id: stableEntryIdForUrl(u),
           url: u,
           file_name: r.original_file_name ?? null,
+          verification_status: normalizeMenuReferenceVerificationStatus(r.verification_status),
         });
       }
     }

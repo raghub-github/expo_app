@@ -97,7 +97,10 @@ export function useUrlFilters(
             params.delete(config.paramName);
             hasUrlChanges = true;
           }
-        } else if (config.validValues.includes(value)) {
+        } else if (
+          typeof value === "string" &&
+          config.validValues.includes(value)
+        ) {
           if (params.get(config.paramName) !== value) {
             params.set(config.paramName, value);
             hasUrlChanges = true;

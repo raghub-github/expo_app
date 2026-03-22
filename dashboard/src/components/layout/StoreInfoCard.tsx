@@ -3,6 +3,9 @@
 import { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle, Clock, X, XCircle, Loader2, ExternalLink } from "lucide-react";
+import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
+import { summarizeMenuRejectionDetail } from "@/lib/store-verification-menu-rejection-detail-shared";
+import type { MenuMediaFile } from "@/lib/merchant-menu-media";
 
 export type StoreInfoCardData = {
   storeId: number;
@@ -31,6 +34,16 @@ type StepVerification = {
   verified_by: number | null;
   verified_by_name: string | null;
   notes: string | null;
+  rejection?: {
+    rejected_at: string;
+    rejection_reason: string;
+    step_label?: string | null;
+    rejected_by_name?: string | null;
+    email_sent?: boolean;
+    email_skip_reason?: string | null;
+    merchant_resubmitted_at?: string | null;
+    rejection_detail?: unknown | null;
+  } | null;
 };
 
 interface StoreInfoCardProps {
@@ -39,15 +52,6 @@ interface StoreInfoCardProps {
 }
 
 // ----- Step details modal: render verified content per step (from verification-data) -----
-type MenuMediaFile = {
-  id: number;
-  original_file_name: string | null;
-  r2_key: string;
-  public_url: string | null;
-  verification_status: string;
-  created_at: string;
-};
-
 type VerificationData = {
   store: Record<string, unknown>;
   documents: Record<string, unknown> | null;
@@ -151,38 +155,12 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
       <div className="space-y-2">
         <p className="text-[10px] font-semibold uppercase text-gray-500">Menu setup</p>
         {row("Cuisine types", Array.isArray(store.cuisine_types) ? (store.cuisine_types as string[]).join(", ") : null)}
-        {menuFiles.length > 0 && (
-          <div className="mt-3 border-t border-gray-100 pt-2">
-            <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Menu media files</p>
-            <ul className="space-y-1.5">
-              {menuFiles.map((f) => (
-                <li key={f.id} className="flex flex-wrap items-center justify-between gap-2 rounded border border-gray-200 bg-gray-50/50 px-2 py-1.5 text-xs">
-                  <span className="min-w-0 truncate font-medium text-gray-700">
-                    {f.original_file_name || f.r2_key || `File ${f.id}`}
-                  </span>
-                  <span className="flex items-center gap-2 shrink-0">
-                    {(f.verification_status || "").toUpperCase() === "VERIFIED" && (
-                      <span className="inline-flex items-center gap-0.5 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
-                        <CheckCircle className="h-3 w-3" /> Verified
-                      </span>
-                    )}
-                    {f.public_url ? (
-                      <a
-                        href={f.public_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex cursor-pointer items-center gap-1 rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-700"
-                      >
-                        <ExternalLink className="h-3 w-3" /> Open
-                      </a>
-                    ) : (
-                      <span className="text-[10px] text-gray-400">No link</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+        {menuFiles.length > 0 && menuFiles[0]?.store_id != null && (
+          <MenuReferenceReviewBlock
+            storeId={menuFiles[0].store_id}
+            files={menuFiles}
+            interactive={false}
+          />
         )}
         <p className="mt-1 text-[10px] text-gray-500">Menu items are managed in the store dashboard.</p>
       </div>
@@ -197,7 +175,10 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
       { label: "FSSAI number", numberKey: "fssai_document_number", urlKey: "fssai_document_url", verifiedKey: "fssai_is_verified" },
       { label: "Drug license", numberKey: "drug_license_document_number", urlKey: "drug_license_document_url", verifiedKey: "drug_license_is_verified" },
     ];
-    const dynamicEntries = entries.filter((e) => (doc[e.numberKey] != null && String(doc[e.numberKey]).trim() !== "") || doc[e.urlKey]);
+    const dynamicEntries = entries.filter(
+      (e) =>
+        (doc[e.numberKey] != null && String(doc[e.numberKey]).trim() !== "") || !!doc[e.urlKey]
+    );
     return (
       <div className="space-y-2">
         <p className="text-[10px] font-semibold uppercase text-gray-500">Restaurant documents</p>
@@ -208,16 +189,22 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
                 <div className="flex gap-2 text-xs min-w-0 flex-1">
                   <span className="w-28 shrink-0 font-medium text-gray-500">{e.label}</span>
                   <span className="text-gray-900">{(doc[e.numberKey] as string) ?? "—"}</span>
-                  {doc[e.verifiedKey] && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-emerald-100 px-1 py-0.5 text-[10px] font-medium text-emerald-800">Verified</span>}
+                  {!!doc[e.verifiedKey] && (
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-emerald-100 px-1 py-0.5 text-[10px] font-medium text-emerald-800">
+                      Verified
+                    </span>
+                  )}
                 </div>
-                {doc[e.urlKey] && (
+                {!!doc[e.urlKey] && (
                   <a href={doc[e.urlKey] as string} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700">
                     <ExternalLink className="h-2.5 w-2.5" /> Open
                   </a>
                 )}
               </div>
             ))}
-            {doc.fssai_expiry_date && dynamicEntries.some((e) => e.numberKey === "fssai_document_number") && row("FSSAI expiry", new Date(doc.fssai_expiry_date as string).toLocaleDateString())}
+            {!!doc.fssai_expiry_date &&
+              dynamicEntries.some((e) => e.numberKey === "fssai_document_number") &&
+              row("FSSAI expiry", new Date(doc.fssai_expiry_date as string).toLocaleDateString())}
           </>
         )}
       </div>
@@ -398,8 +385,11 @@ export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
   const pendingSteps = steps
     ? (Object.entries(steps) as [string, StepVerification][])
         .filter(([, s]) => !s?.verified_at)
-        .map(([stepNum]) => parseInt(stepNum, 10))
-        .sort((a, b) => a - b)
+        .map(([stepNum, s]) => ({
+          stepNum: parseInt(stepNum, 10),
+          rejection: s?.rejection ?? null,
+        }))
+        .sort((a, b) => a.stepNum - b.stepNum)
     : [];
 
   const anyModalOpen = modalOpen || viewDetailsStep != null;
@@ -556,12 +546,39 @@ export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
                           <Clock className="h-4 w-4 text-amber-600" /> Pending ({pendingSteps.length})
                         </h3>
                         <ul className="space-y-1.5">
-                          {pendingSteps.map((stepNum) => (
-                            <li key={stepNum} className="flex items-center gap-2 text-sm text-gray-700">
+                          {pendingSteps.map(({ stepNum, rejection }) => {
+                            const menuStepSummary =
+                              stepNum === 3
+                                ? summarizeMenuRejectionDetail(rejection?.rejection_detail ?? null)
+                                : null;
+                            return (
+                            <li key={stepNum} className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
                               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 text-xs font-medium">{stepNum}</span>
                               {VERIFICATION_STEP_LABELS[stepNum] ?? `Step ${stepNum}`}
+                              {rejection && (
+                                <span
+                                  className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800"
+                                  title={rejection.rejection_reason}
+                                >
+                                  Rejected
+                                </span>
+                              )}
+                              {menuStepSummary ? (
+                                <span className="w-full text-[10px] leading-tight text-red-800/90 sm:w-auto">
+                                  {menuStepSummary}
+                                </span>
+                              ) : null}
+                              {rejection?.merchant_resubmitted_at && (
+                                <span
+                                  className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-900"
+                                  title={`Partner updated ${new Date(rejection.merchant_resubmitted_at).toLocaleString()}`}
+                                >
+                                  Resubmitted
+                                </span>
+                              )}
                             </li>
-                          ))}
+                            );
+                          })}
                         </ul>
                       </div>
                     )}

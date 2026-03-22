@@ -113,7 +113,7 @@ export function StatusChangeModal({
       });
     } else {
       onConfirm({
-        reason: reason.trim() || null,
+        reason: reason.trim() || "",
         isTemporary: false,
       });
     }

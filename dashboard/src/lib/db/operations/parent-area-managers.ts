@@ -320,6 +320,73 @@ export async function listAssignedAreaManagers(
   }));
 }
 
+/**
+ * Area managers linked to this store in `parent_area_managers` (rows where store_id matches).
+ */
+export async function listAreaManagersForStore(storeInternalId: number): Promise<AssignedAreaManagerInfo[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT am.id,
+           su.full_name,
+           su.email,
+           su.mobile
+    FROM parent_area_managers pam
+    JOIN area_managers am ON am.id = pam.area_manager_id
+    JOIN system_users su ON su.id = am.user_id
+    WHERE pam.store_id = ${storeInternalId}
+    ORDER BY pam.assigned_at DESC NULLS LAST, su.full_name NULLS LAST, su.email NULLS LAST
+  `;
+  const list = Array.isArray(rows) ? rows : [rows];
+  return list.filter(Boolean).map((r: any) => ({
+    id: Number(r.id),
+    full_name: r.full_name ?? null,
+    email: r.email ?? null,
+    mobile: r.mobile ?? null,
+  }));
+}
+
+/** Resolve system user profile for one area_managers.id (for fallback when store has area_manager_id). */
+export async function getAreaManagerUserProfileById(
+  areaManagerId: number
+): Promise<AssignedAreaManagerInfo | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT am.id,
+           su.full_name,
+           su.email,
+           su.mobile
+    FROM area_managers am
+    JOIN system_users su ON su.id = am.user_id
+    WHERE am.id = ${areaManagerId}
+    LIMIT 1
+  `;
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  if (!row) return null;
+  const r = row as Record<string, unknown>;
+  return {
+    id: Number(r.id),
+    full_name: (r.full_name as string) ?? null,
+    email: (r.email as string) ?? null,
+    mobile: (r.mobile as string) ?? null,
+  };
+}
+
+/**
+ * AMs from parent_area_managers for this store; if none, fall back to merchant_stores.area_manager_id.
+ */
+export async function resolveAssignedAreaManagersForStoreVerification(
+  storeInternalId: number,
+  storeAreaManagerId: number | null
+): Promise<AssignedAreaManagerInfo[]> {
+  const mapped = await listAreaManagersForStore(storeInternalId);
+  if (mapped.length > 0) return mapped;
+  if (storeAreaManagerId != null && Number.isFinite(storeAreaManagerId)) {
+    const one = await getAreaManagerUserProfileById(Number(storeAreaManagerId));
+    return one ? [one] : [];
+  }
+  return [];
+}
+
 export async function countDistinctAssignedAreaManagersForParent(parentId: number): Promise<number> {
   const sql = getSql();
   const rows = await sql`

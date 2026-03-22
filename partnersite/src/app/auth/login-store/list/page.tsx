@@ -1,8 +1,11 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { StoreVerificationRejectionsBadge } from "@/components/partner/StoreVerificationRejectionsBadge";
+import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
 
 type StoreItem = {
+  id?: number;
   store_id: string;
   store_name: string | null;
   full_address: string | null;
@@ -11,6 +14,7 @@ type StoreItem = {
   is_active: boolean | null;
   current_onboarding_step?: number | null;
   onboarding_completed?: boolean | null;
+  verification_step_rejections?: PartnerVerificationStepRejection[];
 };
 
 type ParentPayload = {
@@ -82,7 +86,15 @@ export default function StoreListPage() {
 
   const goToOnboarding = (storeId?: string) => {
     const parentId = parentInfo.parentId ?? onboardingProgress?.parent_id ?? 0;
-    const query = storeId ? `?parent_id=${parentId}&store_id=${encodeURIComponent(storeId)}` : `?parent_id=${parentId}`;
+    const store = storeId ? stores.find((s) => s.store_id === storeId) : undefined;
+    const rej = store?.verification_step_rejections;
+    const fixParam =
+      Array.isArray(rej) && rej.length > 0
+        ? `&verification_fix_step=${Math.min(...rej.map((r) => Number(r.step_number)))}`
+        : "";
+    const query = storeId
+      ? `?parent_id=${parentId}&store_id=${encodeURIComponent(storeId)}${fixParam}`
+      : `?parent_id=${parentId}`;
     router.push(`/auth/register-store${query}`);
   };
 
@@ -111,9 +123,27 @@ export default function StoreListPage() {
         disabled: false,
       };
     }
-    if (status === "DRAFT" || status === "REJECTED" || (store.current_onboarding_step && store.current_onboarding_step < 9)) {
+    const hasStepRejections =
+      Array.isArray(store.verification_step_rejections) &&
+      store.verification_step_rejections.length > 0;
+    const anyResubmitted =
+      hasStepRejections &&
+      (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
+    if (
+      status === "DRAFT" ||
+      status === "REJECTED" ||
+      hasStepRejections ||
+      (store.current_onboarding_step && store.current_onboarding_step < 9)
+    ) {
+      if (hasStepRejections && anyResubmitted) {
+        return {
+          label: "Resubmitted",
+          onClick: () => {},
+          disabled: true,
+        };
+      }
       return {
-        label: "Continue onboarding",
+        label: hasStepRejections ? "Review & fix steps" : "Continue onboarding",
         onClick: () => goToOnboarding(store.store_id),
         disabled: false,
       };
@@ -210,15 +240,22 @@ export default function StoreListPage() {
                         {store.full_address && (
                           <p className="mt-1 truncate text-xs text-slate-500">{store.full_address}</p>
                         )}
+                        <StoreVerificationRejectionsBadge
+                          rejections={store.verification_step_rejections}
+                          variant="panel"
+                          className="mt-2 max-w-xl"
+                        />
                       </div>
                       <button
                         type="button"
                         disabled={action.disabled}
                         onClick={action.onClick}
                         className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                          action.disabled
-                            ? "cursor-not-allowed bg-slate-100 text-slate-500"
-                            : "bg-indigo-600 text-white hover:bg-indigo-700"
+                          action.label === "Resubmitted"
+                            ? "cursor-default border border-sky-200 bg-sky-50 text-sky-900"
+                            : action.disabled
+                              ? "cursor-not-allowed bg-slate-100 text-slate-500"
+                              : "bg-indigo-600 text-white hover:bg-indigo-700"
                         }`}
                       >
                         {action.label}

@@ -8,7 +8,9 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
+import { resolveAssignedAreaManagersForStoreVerification } from "@/lib/db/operations/parent-area-managers";
 import { getSql } from "@/lib/db/client";
+import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
 
 export const runtime = "nodejs";
 
@@ -86,11 +88,11 @@ export async function GET(
       country: store.country ?? null,
       latitude: store.latitude ?? null,
       longitude: store.longitude ?? null,
-      logo_url: store.logo_url ?? null,
+      logo_url: null,
       banner_url: store.banner_url ?? null,
       gallery_images: store.gallery_images ?? null,
       cuisine_types: store.cuisine_types ?? null,
-      food_categories: store.food_categories ?? null,
+      food_categories: null,
       avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
       min_order_amount: store.min_order_amount ?? null,
       delivery_radius_km: store.delivery_radius_km ?? null,
@@ -285,11 +287,12 @@ export async function GET(
       // table may not exist or RLS
     }
 
-    let menuMediaFiles: Array<{ id: number; original_file_name: string | null; r2_key: string; public_url: string | null; verification_status: string; created_at: string }> = [];
+    let menuMediaFiles: MenuMediaFile[] = [];
     try {
       const sql = getSql();
       const mediaRows = await sql`
-        SELECT id, original_file_name, r2_key, public_url, verification_status, created_at
+        SELECT id, store_id, media_scope, source_entity, original_file_name, r2_key, public_url, menu_url,
+               mime_type, file_size_bytes, verification_status, created_at, menu_reference_image_urls
         FROM merchant_store_media_files
         WHERE store_id = ${storeId}
           AND media_scope = 'MENU_REFERENCE'
@@ -298,16 +301,51 @@ export async function GET(
         ORDER BY created_at DESC
       `;
       const rows = Array.isArray(mediaRows) ? mediaRows : [mediaRows];
-      menuMediaFiles = rows.map((r: Record<string, unknown>) => ({
-        id: Number(r.id),
-        original_file_name: r.original_file_name != null ? String(r.original_file_name) : null,
-        r2_key: String(r.r2_key),
-        public_url: r.public_url != null ? String(r.public_url) : null,
-        verification_status: String(r.verification_status ?? "PENDING"),
-        created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
-      }));
+      menuMediaFiles = rows.map((r: Record<string, unknown>) => mapRowToMenuMediaFile(r));
     } catch (e) {
       console.warn("[verification-data] merchant_store_media_files:", e);
+    }
+
+    let bankAccounts: Record<string, unknown>[] = [];
+    try {
+      const sql = getSql();
+      const bankRows = await sql`
+        SELECT
+          id, store_id, account_holder_name, account_number, ifsc_code, bank_name, branch_name, account_type,
+          is_verified, verified_by, verified_at, verification_method, upi_id, upi_verified,
+          is_primary, is_active, payout_method, bank_proof_type, bank_proof_file_url, upi_qr_screenshot_url,
+          verification_status, is_disabled, beneficiary_name, razorpay_fund_account_id, razorpay_validation_id,
+          created_at, updated_at
+        FROM merchant_store_bank_accounts
+        WHERE store_id = ${storeId}
+        ORDER BY COALESCE(is_primary, false) DESC, id ASC
+      `;
+      const rows = Array.isArray(bankRows) ? bankRows : [bankRows];
+      bankAccounts = rows
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          const o = r as Record<string, unknown>;
+          ["verified_at", "created_at", "updated_at", "last_attempt_at"].forEach((k) => {
+            const v = o[k];
+            if (v instanceof Date) o[k] = v.toISOString();
+          });
+          return o;
+        });
+    } catch (e) {
+      console.warn("[verification-data] merchant_store_bank_accounts:", e);
+    }
+
+    let assignedAreaManagers: {
+      id: number;
+      full_name: string | null;
+      email: string | null;
+      mobile: string | null;
+    }[] = [];
+    try {
+      const amId = (store as { area_manager_id?: number | null }).area_manager_id ?? null;
+      assignedAreaManagers = await resolveAssignedAreaManagersForStoreVerification(storeId, amId);
+    } catch (e) {
+      console.warn("[verification-data] assignedAreaManagers:", e);
     }
 
     return NextResponse.json({
@@ -318,6 +356,8 @@ export async function GET(
       onboardingPayments,
       agreementAcceptance,
       menuMediaFiles,
+      bankAccounts,
+      assignedAreaManagers,
     });
   } catch (e) {
     console.error("[GET /api/merchant/stores/[id]/verification-data]", e);

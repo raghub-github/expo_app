@@ -252,8 +252,9 @@ export default function RiderDashboardPage() {
             msOverflowStyle: 'none',
           }}
         >
-          <style jsx global>{`
-            /* Hide all scrollbars */
+          <style
+            dangerouslySetInnerHTML={{
+              __html: `
             * {
               scrollbar-width: none !important;
               -ms-overflow-style: none !important;
@@ -264,7 +265,9 @@ export default function RiderDashboardPage() {
             body {
               overflow: hidden !important;
             }
-          `}</style>
+          `,
+            }}
+          />
           
           {/* Container - No red border, clean design */}
           <div className="w-full h-full bg-white p-6 md:p-8 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', boxShadow: 'none', borderRadius: 0 }}>
@@ -321,7 +324,9 @@ function FlowerSpinner() {
           />
         </svg>
       ))}
-      <style jsx>{`
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
         @keyframes arrow-spin {
           100% {
             transform: rotate(360deg);
@@ -330,7 +335,9 @@ function FlowerSpinner() {
         .animate-arrow-spin {
           animation: arrow-spin 1.1s linear infinite;
         }
-      `}</style>
+      `,
+        }}
+      />
     </div>
   );
 }

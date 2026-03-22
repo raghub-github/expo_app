@@ -152,8 +152,7 @@ export async function POST(
       `;
     }
 
-    const sqlUnsafe = sqlClient as { unsafe: (q: string, v: unknown[]) => Promise<unknown[]> };
-    await insertTicketActivityAudit(sqlUnsafe, {
+    await insertTicketActivityAudit(sqlClient, {
       ticket_id: ticketId,
       activity_type: isInternalNote ? "internal_note" : "response",
       activity_category: isInternalNote ? "note" : "response",

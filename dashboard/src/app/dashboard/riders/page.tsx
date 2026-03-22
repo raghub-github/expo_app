@@ -843,7 +843,11 @@ export default function RidersPage() {
                 <div className="relative shrink-0">
                   <div className="w-11 h-11 rounded-full overflow-hidden ring-2 ring-white shadow-sm bg-gray-100 flex items-center justify-center">
                     {(riderSummary?.rider as { selfieUrl?: string | null })?.selfieUrl ? (
-                      <img src={(riderSummary.rider as { selfieUrl?: string | null }).selfieUrl!} alt="" className="w-full h-full object-cover" />
+                      <img
+                        src={(riderSummary?.rider as { selfieUrl?: string | null })?.selfieUrl ?? ""}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
                     ) : rider.name?.trim() ? (
                       <span className="text-sm font-semibold text-gray-400">{rider.name.trim().split(/\s+/).map(n => n[0]).slice(0, 2).join("").toUpperCase()}</span>
                     ) : (
@@ -1523,7 +1527,7 @@ export default function RidersPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                           {displayedPenalties.map((penalty: { id: number; orderId?: number | null; serviceType: string | null; penaltyType: string; amount: string; reason: string; status: string; imposedAt: string; resolvedAt?: string | null; imposedByEmail?: string | null; reversedByEmail?: string | null }) => {
-                            const canRevert = (penalty.status === 'active' || penalty.status === 'paid') && penalty.status !== 'reversed';
+                            const canRevert = penalty.status === "active" || penalty.status === "paid";
                             const imposedDate = penalty.imposedAt ? new Date(penalty.imposedAt).toLocaleDateString() : '—';
                             const resolvedDate = penalty.resolvedAt ? new Date(penalty.resolvedAt).toLocaleDateString() : null;
                             const isReversed = penalty.status === 'reversed';
@@ -1715,7 +1719,9 @@ export default function RidersPage() {
             const wallet = summary?.wallet ?? null;
             const isFrozen = Boolean(wallet?.isFrozen);
             const latestFreeze = wallet?.latestFreezeAction != null && typeof wallet.latestFreezeAction === 'object' ? wallet.latestFreezeAction : null;
-            const latestFreezeDate = latestFreeze?.createdAt != null ? (typeof latestFreeze.createdAt === 'string' ? new Date(latestFreeze.createdAt) : latestFreeze.createdAt instanceof Date ? latestFreeze.createdAt : null) : null;
+            const createdAtRaw = latestFreeze?.createdAt;
+            const latestFreezeDate =
+              createdAtRaw != null ? new Date(createdAtRaw as string | number | Date) : null;
 
             const negativeWalletBlocks = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
             const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;

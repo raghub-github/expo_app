@@ -341,7 +341,8 @@ export function MerchantsSearchClient() {
     [searchParams]
   );
 
-  const portal = searchParams.get("portal") || "admin";
+  const portal: "admin" | "merchant" =
+    searchParams.get("portal") === "merchant" ? "merchant" : "admin";
 
   /** When merchant portal has an active list search, show skeleton until API completes. Never show "Not Found" before loading finishes. */
   const hasActiveListSearch = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");

@@ -8,13 +8,18 @@ function clampStoreDeliveryRadiusKm(v: number): number {
   return Math.min(MAX_STORE_DELIVERY_RADIUS_KM, Math.max(MIN_STORE_DELIVERY_RADIUS_KM, v));
 }
 
-import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, Suspense } from 'react';
 import dynamic from 'next/dynamic';
 import axios from 'axios';
-import { Loader2, Menu, X, HelpCircle } from 'lucide-react';
+import { Loader2, Menu, X, HelpCircle, CheckCircle2 } from 'lucide-react';
 import MerchantHelpTicket from '@/components/MerchantHelpTicket';
 import { createClient } from '@/lib/supabase/client';
 import { useSearchParams } from 'next/navigation';
+import { verificationStepToPartnerStep } from '@/lib/onboarding/verification-step-map';
+import {
+  menuReferenceEntryStatusesFromRejectionDetail,
+  resolvePartnerMenuImageVerificationTag,
+} from '@/lib/store-verification-menu-rejection-detail-shared';
 import { handleAuthError, isAuthError, refreshAuthIfNeeded } from '@/lib/auth/client-auth-handler';
 import CombinedDocumentStoreSetup from './doc';
 import Step3MenuUpload from './Step3MenuUpload';
@@ -209,14 +214,30 @@ const supabase = createClient();
 
 const StoreRegistrationForm = () => {
   // Step state: always start at 1; DB is source of truth after progress is hydrated (no localStorage init).
-  const [step, setStepState] = useState(1);
+  const [step, setStepStateOnly] = useState(1);
+  /** When set, merchant may only view/edit this partner onboarding step until GatiMitra clears the rejection. */
+  const [verificationLock, setVerificationLock] = useState<{
+    partnerStep: number;
+    verificationStep: number;
+  } | null>(null);
+  /** Step 3 `step_rejection_detail` from API (per menu image entry_id → verified/rejected/pending). */
+  const [menuStep3RejectionDetail, setMenuStep3RejectionDetail] = useState<unknown>(null);
+  /** Step 6 (bank) `rejection_reason` from `store_verification_step_rejections` (not always copied to `bank_proof_rejection_reason`). */
+  const [verificationBankRejectionReason, setVerificationBankRejectionReason] = useState<string | null>(null);
   const stepRestoredRef = useRef(false); // Track if step has been restored from DB
-  const setStep = useCallback((newStep: number | ((prev: number) => number)) => {
-    setStepState((prev) => {
-      const next = typeof newStep === 'function' ? newStep(prev) : newStep;
-      return Math.min(Math.max(next, 1), 9);
-    });
-  }, []);
+  const setStep = useCallback(
+    (newStep: number | ((prev: number) => number)) => {
+      setStepStateOnly((prev) => {
+        const next = typeof newStep === 'function' ? newStep(prev) : newStep;
+        const clamped = Math.min(Math.max(next, 1), 9);
+        if (verificationLock != null && clamped !== verificationLock.partnerStep) {
+          return prev;
+        }
+        return clamped;
+      });
+    },
+    [verificationLock]
+  );
   const [isClient, setIsClient] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -246,6 +267,20 @@ const StoreRegistrationForm = () => {
   const searchParams = useSearchParams();
   const selectedStorePublicId = searchParams?.get('store_id');
   const forceNewOnboarding = searchParams?.get('new') === '1';
+  const urlWantsVerificationFix =
+    !!selectedStorePublicId &&
+    !forceNewOnboarding &&
+    (() => {
+      const raw = searchParams?.get('verification_fix_step');
+      return raw != null && String(raw).trim() !== '';
+    })();
+
+  const verificationSaveThanksTitle = 'Updates saved';
+  const verificationSaveThanksMessage =
+    'Thank you for updating your details. Our team will review and verify the information shortly. After successful verification, the next steps in your store onboarding process will be initiated.';
+  const verificationNavLockTitle = 'This step is locked';
+  const verificationNavLockMessage =
+    'You can only work on the step our team flagged for now. Other steps unlock after they finish review.';
 
   const [formData, setFormData] = useState<FormData>({
     store_name: '',
@@ -327,18 +362,26 @@ const StoreRegistrationForm = () => {
   const [menuPdfFile, setMenuPdfFile] = useState<File | null>(null);
   const [menuUploadedPdfUrl, setMenuUploadedPdfUrl] = useState<string | null>(null);
   const [menuUploadedPdfFileName, setMenuUploadedPdfFileName] = useState<string | null>(null);
+  /** `merchant_store_media_files.verification_status` for menu PDF (from progress GET / DB). */
+  const [menuPdfVerificationStatus, setMenuPdfVerificationStatus] = useState<string | null>(null);
   const [menuUploadIds, setMenuUploadIds] = useState<number[]>([]);
   const [menuImageEntryIds, setMenuImageEntryIds] = useState<string[]>([]);
+  /** Aligns with menuUploadedImageUrls[i] — from DB via store-menu-media-signed (e.g. REJECTED after agent rejects menu step). */
+  const [menuImageVerificationStatuses, setMenuImageVerificationStatuses] = useState<string[]>([]);
   const [menuImageUploading, setMenuImageUploading] = useState(false);
+  /** Slot index in `menuUploadedImageUrls` during per-image re-upload (rejected → new file). */
+  const [menuImageReuploadingIndex, setMenuImageReuploadingIndex] = useState<number | null>(null);
   const [menuUploadError, setMenuUploadError] = useState('');
   const [confirmModal, setConfirmModal] = useState<{
     title: string;
     message: string;
-    variant?: 'warning' | 'error' | 'info';
+    variant?: 'warning' | 'error' | 'info' | 'success';
     confirmLabel?: string;
     onConfirm: () => Promise<void> | void;
     onCancel?: () => void;
     isLoading?: boolean;
+    /** Single OK button — no Cancel (in-app notice, not window.alert) */
+    notice?: boolean;
   } | null>(null);
   const [isImageDragActive, setIsImageDragActive] = useState(false);
   const [isCsvDragActive, setIsCsvDragActive] = useState(false);
@@ -352,6 +395,37 @@ const StoreRegistrationForm = () => {
   const [contractTextForSignature, setContractTextForSignature] = useState<string>('');
   const [agreementReadConfirmed, setAgreementReadConfirmed] = useState(false);
   const [agreementTemplate, setAgreementTemplate] = useState<{ id?: number; template_key: string; title: string; version: string; content_markdown: string; pdf_url: string | null } | null>(null);
+
+  const buildPostLoginVerificationSubmittedUrl = useCallback(() => {
+    const sid = (selectedStorePublicId || currentStoreId || draftStorePublicId || '').trim();
+    const q = new URLSearchParams();
+    q.set('verification_updates_submitted', '1');
+    if (sid) q.set('highlight_store', sid);
+    return `/auth/post-login?${q.toString()}`;
+  }, [selectedStorePublicId, currentStoreId, draftStorePublicId]);
+
+  const showVerificationNotice = useCallback(
+    (
+      title: string,
+      message: string,
+      variant: 'warning' | 'success' = 'warning',
+      options?: { redirectToAfterOk?: string }
+    ) => {
+      setConfirmModal({
+        title,
+        message,
+        variant,
+        notice: true,
+        confirmLabel: 'OK',
+        onConfirm: () => {
+          if (options?.redirectToAfterOk) {
+            window.location.assign(options.redirectToAfterOk);
+          }
+        },
+      });
+    },
+    []
+  );
 
   const normalizeStoreHours = (incoming: any, fallback: StoreSetupData["store_hours"]) => {
     const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
@@ -386,11 +460,14 @@ const StoreRegistrationForm = () => {
     if (saved.step1) {
       const step1 = saved.step1 as Record<string, unknown>;
       const displayName = (step1.store_display_name as string) ?? '';
-      setFormData((prev): FormData => ({
-        ...prev,
-        ...step1,
-        legal_business_name: displayName,
-      } as FormData));
+      setFormData((prev): FormData => {
+        const merged = { ...prev, ...step1, legal_business_name: displayName } as FormData;
+        const o = merged.owner_full_name;
+        return {
+          ...merged,
+          owner_full_name: o != null && String(o).trim() !== '' ? String(o).trim() : '',
+        };
+      });
       if (saved.step1.store_phones && Array.isArray(saved.step1.store_phones)) {
         setStorePhonesInput(saved.step1.store_phones.join(', '));
       }
@@ -411,12 +488,25 @@ const StoreRegistrationForm = () => {
       setMenuUploadedSpreadsheetFileName(saved.step3.menuSpreadsheetName ?? null);
       setMenuUploadedPdfUrl(saved.step3.menuPdfUrl ?? null);
       setMenuUploadedPdfFileName(saved.step3.menuPdfFileName ?? null);
+      const pdfVs = (saved.step3 as { menuPdfVerificationStatus?: unknown }).menuPdfVerificationStatus;
+      setMenuPdfVerificationStatus(
+        mode === "PDF" && typeof pdfVs === "string" && pdfVs.trim() ? pdfVs.trim().toUpperCase() : null
+      );
       setMenuUploadIds(Array.isArray(saved.step3.menuUploadIds) ? saved.step3.menuUploadIds : []);
       setMenuImageEntryIds(
         Array.isArray(saved.step3.menuImageEntryIds)
           ? saved.step3.menuImageEntryIds.map((x: unknown) => String(x))
           : []
       );
+      const urlsForSt = Array.isArray(saved.step3.menuImageUrls) ? saved.step3.menuImageUrls : [];
+      const st = saved.step3.menuImageVerificationStatuses;
+      if (Array.isArray(st) && st.length === urlsForSt.length) {
+        setMenuImageVerificationStatuses(st.map((x: unknown) => String(x ?? "PENDING")));
+      } else if (urlsForSt.length > 0) {
+        setMenuImageVerificationStatuses(urlsForSt.map(() => "PENDING"));
+      } else {
+        setMenuImageVerificationStatuses([]);
+      }
     }
 
     // Step 4 data — always set from saved so UI matches DB (clear URLs when null after remove or manual DB delete)
@@ -445,6 +535,23 @@ const StoreRegistrationForm = () => {
         other_document_number: saved.step4.other_document_number ?? prev.other_document_number,
         other_document_name: saved.step4.other_document_name ?? prev.other_document_name,
         other_document_expiry_date: saved.step4.other_document_expiry_date ?? prev.other_document_expiry_date,
+        pan_rejection_reason: (s4.pan_rejection_reason as string | null | undefined) ?? (prev as any).pan_rejection_reason ?? null,
+        gst_rejection_reason: (s4.gst_rejection_reason as string | null | undefined) ?? (prev as any).gst_rejection_reason ?? null,
+        aadhaar_rejection_reason: (s4.aadhaar_rejection_reason as string | null | undefined) ?? (prev as any).aadhaar_rejection_reason ?? null,
+        fssai_rejection_reason: (s4.fssai_rejection_reason as string | null | undefined) ?? (prev as any).fssai_rejection_reason ?? null,
+        drug_license_rejection_reason: (s4.drug_license_rejection_reason as string | null | undefined) ?? (prev as any).drug_license_rejection_reason ?? null,
+        pharmacist_certificate_rejection_reason:
+          (s4.pharmacist_certificate_rejection_reason as string | null | undefined) ?? (prev as any).pharmacist_certificate_rejection_reason ?? null,
+        pharmacy_council_registration_rejection_reason:
+          (s4.pharmacy_council_registration_rejection_reason as string | null | undefined) ??
+          (prev as any).pharmacy_council_registration_rejection_reason ??
+          null,
+        trade_license_rejection_reason: (s4.trade_license_rejection_reason as string | null | undefined) ?? (prev as any).trade_license_rejection_reason ?? null,
+        shop_establishment_rejection_reason:
+          (s4.shop_establishment_rejection_reason as string | null | undefined) ?? (prev as any).shop_establishment_rejection_reason ?? null,
+        udyam_rejection_reason: (s4.udyam_rejection_reason as string | null | undefined) ?? (prev as any).udyam_rejection_reason ?? null,
+        other_rejection_reason: (s4.other_rejection_reason as string | null | undefined) ?? (prev as any).other_rejection_reason ?? null,
+        bank_proof_rejection_reason: (s4.bank_proof_rejection_reason as string | null | undefined) ?? (prev as any).bank_proof_rejection_reason ?? null,
         pan_image_url: (typeof s4.pan_image_url === 'string' ? s4.pan_image_url : null) ?? null,
         aadhar_front_url: (typeof s4.aadhar_front_url === 'string' ? s4.aadhar_front_url : null) ?? null,
         aadhar_back_url: (typeof s4.aadhar_back_url === 'string' ? s4.aadhar_back_url : null) ?? null,
@@ -596,6 +703,7 @@ const StoreRegistrationForm = () => {
           menuImageItems?: { rowId: number; entryId: string; url: string; fileName: string }[];
           menuImageFileNames?: string[];
           menuImageIds?: number[];
+          menuImageVerificationStatuses?: string[];
         };
         if (!res.ok || !j.success || cancelled) return;
 
@@ -617,6 +725,7 @@ const StoreRegistrationForm = () => {
           setMenuUploadedSpreadsheetFileName(null);
           setMenuUploadedImageUrls([]);
           setMenuUploadedImageNames([]);
+          setMenuImageVerificationStatuses([]);
           setMenuUploadIds(Array.isArray(j.menuPdfIds) && j.menuPdfIds.length > 0 ? [j.menuPdfIds[0]] : []);
           setMenuImageEntryIds([]);
           return;
@@ -629,6 +738,7 @@ const StoreRegistrationForm = () => {
           setMenuUploadedPdfFileName(null);
           setMenuUploadedImageUrls([]);
           setMenuUploadedImageNames([]);
+          setMenuImageVerificationStatuses([]);
           setMenuUploadIds(j.menuSpreadsheetId != null ? [j.menuSpreadsheetId] : []);
           setMenuImageEntryIds([]);
           return;
@@ -654,6 +764,12 @@ const StoreRegistrationForm = () => {
           setMenuUploadedPdfFileName(null);
           setMenuUploadIds(items.length > 0 ? items.map((i) => i.rowId) : j.menuImageIds || []);
           setMenuImageEntryIds(items.length > 0 ? items.map((i) => i.entryId) : []);
+          const vss = j.menuImageVerificationStatuses;
+          if (Array.isArray(vss) && vss.length === urls.length) {
+            setMenuImageVerificationStatuses(vss.map((x) => String(x ?? "PENDING")));
+          } else {
+            setMenuImageVerificationStatuses(urls.map(() => "PENDING"));
+          }
           return;
         }
 
@@ -666,6 +782,7 @@ const StoreRegistrationForm = () => {
         setMenuUploadedPdfFileName(null);
         setMenuUploadIds([]);
         setMenuImageEntryIds([]);
+        setMenuImageVerificationStatuses([]);
       } catch {
         // keep existing state on fetch errors
       }
@@ -707,7 +824,9 @@ const StoreRegistrationForm = () => {
           if (Number.isFinite(Number(progress.current_step))) {
             const restoredStep = Math.min(Math.max(Number(progress.current_step), 1), 9);
             console.log('Restoring step from DB:', restoredStep, 'current_step:', progress.current_step);
-            setStep(restoredStep);
+            if (!urlWantsVerificationFix) {
+              setStepStateOnly(restoredStep);
+            }
             stepRestoredRef.current = true; // Mark restored BEFORE hydration
           }
           
@@ -726,6 +845,7 @@ const StoreRegistrationForm = () => {
               id,
               store_id,
               store_name,
+              owner_full_name,
               store_display_name,
               store_description,
               store_type,
@@ -760,9 +880,12 @@ const StoreRegistrationForm = () => {
             
             // Load Step 1 & 2 data (legal_business_name = store_display_name)
             const displayName = existingStore.store_display_name ?? '';
+            const ownerFromDb = (existingStore as { owner_full_name?: string | null }).owner_full_name;
             setFormData((prev) => ({
               ...prev,
               store_name: existingStore.store_name ?? prev.store_name,
+              owner_full_name:
+                typeof ownerFromDb === 'string' && ownerFromDb.trim() ? ownerFromDb.trim() : prev.owner_full_name,
               store_display_name: displayName,
               legal_business_name: displayName,
               store_description: existingStore.store_description ?? prev.store_description,
@@ -855,6 +978,22 @@ const StoreRegistrationForm = () => {
                 shop_establishment_document_url: storeDocuments.shop_establishment_document_url ?? (prev as any).shop_establishment_document_url,
                 udyam_document_url: storeDocuments.udyam_document_url ?? (prev as any).udyam_document_url,
                 other_document_file_url: storeDocuments.other_document_url ?? (prev as any).other_document_file_url,
+                pan_rejection_reason: storeDocuments.pan_rejection_reason ?? (prev as any).pan_rejection_reason,
+                gst_rejection_reason: storeDocuments.gst_rejection_reason ?? (prev as any).gst_rejection_reason,
+                aadhaar_rejection_reason: storeDocuments.aadhaar_rejection_reason ?? (prev as any).aadhaar_rejection_reason,
+                fssai_rejection_reason: storeDocuments.fssai_rejection_reason ?? (prev as any).fssai_rejection_reason,
+                drug_license_rejection_reason: storeDocuments.drug_license_rejection_reason ?? (prev as any).drug_license_rejection_reason,
+                pharmacist_certificate_rejection_reason:
+                  storeDocuments.pharmacist_certificate_rejection_reason ?? (prev as any).pharmacist_certificate_rejection_reason,
+                pharmacy_council_registration_rejection_reason:
+                  storeDocuments.pharmacy_council_registration_rejection_reason ??
+                  (prev as any).pharmacy_council_registration_rejection_reason,
+                trade_license_rejection_reason: storeDocuments.trade_license_rejection_reason ?? (prev as any).trade_license_rejection_reason,
+                shop_establishment_rejection_reason:
+                  storeDocuments.shop_establishment_rejection_reason ?? (prev as any).shop_establishment_rejection_reason,
+                udyam_rejection_reason: storeDocuments.udyam_rejection_reason ?? (prev as any).udyam_rejection_reason,
+                other_rejection_reason: storeDocuments.other_rejection_reason ?? (prev as any).other_rejection_reason,
+                bank_proof_rejection_reason: storeDocuments.bank_proof_rejection_reason ?? (prev as any).bank_proof_rejection_reason,
               }));
               
               // Load bank account data
@@ -928,13 +1067,27 @@ const StoreRegistrationForm = () => {
                 const items = (menuData as { menuImageItems?: { rowId: number; entryId: string; url: string; fileName: string }[] })
                   .menuImageItems;
                 if (Array.isArray(items) && items.length > 0) {
-                  setMenuUploadedImageUrls(items.map((i) => i.url));
+                  const urls = items.map((i) => i.url);
+                  setMenuUploadedImageUrls(urls);
                   setMenuUploadedImageNames(items.map((i) => i.fileName));
                   setMenuUploadIds(items.map((i) => i.rowId));
                   setMenuImageEntryIds(items.map((i) => i.entryId));
+                  const vss = (menuData as { menuImageVerificationStatuses?: string[] }).menuImageVerificationStatuses;
+                  if (Array.isArray(vss) && vss.length === items.length) {
+                    setMenuImageVerificationStatuses(vss.map((x) => String(x ?? "PENDING")));
+                  } else {
+                    setMenuImageVerificationStatuses(urls.map(() => "PENDING"));
+                  }
                   setMenuUploadMode("IMAGE");
                 } else if (Array.isArray(menuData.menuImageUrls) && menuData.menuImageUrls.length > 0) {
-                  setMenuUploadedImageUrls(menuData.menuImageUrls);
+                  const u = menuData.menuImageUrls;
+                  setMenuUploadedImageUrls(u);
+                  const vss = (menuData as { menuImageVerificationStatuses?: string[] }).menuImageVerificationStatuses;
+                  if (Array.isArray(vss) && vss.length === u.length) {
+                    setMenuImageVerificationStatuses(vss.map((x) => String(x ?? "PENDING")));
+                  } else {
+                    setMenuImageVerificationStatuses(u.map(() => "PENDING"));
+                  }
                   setMenuUploadMode("IMAGE");
                 }
                 if (menuData.menuSpreadsheetUrl) {
@@ -983,7 +1136,9 @@ const StoreRegistrationForm = () => {
             }
             
             if (typeof existingStore.current_onboarding_step === 'number') {
-              setStep(Math.min(Math.max(existingStore.current_onboarding_step, 1), 9));
+              if (!urlWantsVerificationFix) {
+                setStepStateOnly(Math.min(Math.max(existingStore.current_onboarding_step, 1), 9));
+              }
               stepRestoredRef.current = true;
             }
           }
@@ -1001,7 +1156,70 @@ const StoreRegistrationForm = () => {
 
     hydrateProgress();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intended: run on mount and when store/forceNew change only
-  }, [forceNewOnboarding, selectedStorePublicId]);
+  }, [forceNewOnboarding, selectedStorePublicId, urlWantsVerificationFix]);
+
+  useEffect(() => {
+    if (!urlWantsVerificationFix) {
+      setVerificationLock(null);
+      setMenuStep3RejectionDetail(null);
+      setVerificationBankRejectionReason(null);
+    }
+  }, [urlWantsVerificationFix]);
+
+  const menuEntryRejectionStatuses = useMemo(
+    () => menuReferenceEntryStatusesFromRejectionDetail(menuStep3RejectionDetail),
+    [menuStep3RejectionDetail]
+  );
+  const hasMenuRejectionEntrySnapshot = useMemo(
+    () => Object.keys(menuEntryRejectionStatuses).length > 0,
+    [menuEntryRejectionStatuses]
+  );
+
+  useEffect(() => {
+    if (!progressHydrated || !urlWantsVerificationFix || !selectedStorePublicId) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/auth/store-verification-rejections?store_public_id=${encodeURIComponent(selectedStorePublicId)}`,
+          { credentials: 'include' }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !data?.success) return;
+        const rej = Array.isArray(data.rejections) ? data.rejections : [];
+        if (rej.length === 0) {
+          setVerificationLock(null);
+          setMenuStep3RejectionDetail(null);
+          setVerificationBankRejectionReason(null);
+          if (typeof window !== 'undefined') {
+            const u = new URL(window.location.href);
+            u.searchParams.delete('verification_fix_step');
+            window.history.replaceState({}, '', `${u.pathname}${u.search}${u.hash}`);
+          }
+          return;
+        }
+        const r6 = rej.find((r: { step_number: number; rejection_reason?: string }) => Number(r.step_number) === 6);
+        const r6Reason =
+          r6 && typeof (r6 as { rejection_reason?: unknown }).rejection_reason === 'string'
+            ? String((r6 as { rejection_reason: string }).rejection_reason).trim()
+            : '';
+        setVerificationBankRejectionReason(r6Reason.length > 0 ? r6Reason : null);
+        const r3 = rej.find((r: { step_number: number; step_rejection_detail?: unknown }) => Number(r.step_number) === 3);
+        setMenuStep3RejectionDetail(r3?.step_rejection_detail ?? null);
+        const minV = Math.min(...rej.map((r: { step_number: number }) => Number(r.step_number)));
+        const ps = verificationStepToPartnerStep(minV);
+        setVerificationLock({ partnerStep: ps, verificationStep: minV });
+        setStepStateOnly(ps);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [progressHydrated, urlWantsVerificationFix, selectedStorePublicId]);
 
   useEffect(() => {
     if (step < 6) return;
@@ -1039,15 +1257,47 @@ const StoreRegistrationForm = () => {
         const res = await fetch(`/api/auth/register-store-menu-uploads?${params.toString()}`, { credentials: 'include' });
         const data = await res.json();
         if (cancelled || !res.ok) return;
+        if (data?.success && Array.isArray(data?.files) && data.files.length === 0) {
+          setMenuUploadedImageUrls([]);
+          setMenuUploadedImageNames([]);
+          setMenuUploadIds([]);
+          setMenuImageEntryIds([]);
+          setMenuImageVerificationStatuses([]);
+          setMenuUploadedPdfUrl(null);
+          setMenuUploadedPdfFileName(null);
+          setMenuUploadedSpreadsheetUrl(null);
+          setMenuUploadedSpreadsheetFileName(null);
+          return;
+        }
         if (data?.success && Array.isArray(data?.files) && data.files.length > 0) {
-          const urls = data.files.map((f: { file_url?: string }) => f.file_url).filter(Boolean);
-          const names = data.files.map((f: { file_name?: string | null }) => f.file_name ?? '').filter(Boolean);
-          const ids = data.files.map((f: { id?: number }) => f.id).filter((n: number) => Number.isFinite(n));
+          const rawFiles = data.files as Array<{
+            file_url?: string | null;
+            file_name?: string | null;
+            id?: number;
+            entry_id?: string;
+            verification_status?: string | null;
+          }>;
+          const urls = rawFiles.map((f) => f.file_url).filter(Boolean) as string[];
+          const names = rawFiles.map((f) => f.file_name ?? '').filter(Boolean);
+          const ids = rawFiles
+            .map((f) => f.id)
+            .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
           const at = data.attachment_type;
           if (at === 'images') {
-            setMenuUploadedImageUrls(urls);
-            setMenuUploadedImageNames(names);
-            setMenuUploadIds(ids);
+            const imgRows = rawFiles.filter((f) => f.file_url);
+            setMenuUploadedImageUrls(imgRows.map((f) => String(f.file_url)));
+            setMenuUploadedImageNames(imgRows.map((f) => f.file_name ?? ''));
+            setMenuUploadIds(
+              imgRows
+                .map((f) => f.id)
+                .filter((n): n is number => typeof n === "number" && Number.isFinite(n))
+            );
+            setMenuImageEntryIds(
+              imgRows.map((f) => (typeof f.entry_id === 'string' && f.entry_id.trim() ? f.entry_id : ''))
+            );
+            setMenuImageVerificationStatuses(
+              imgRows.map((f) => (f.verification_status && String(f.verification_status).trim()) || 'PENDING')
+            );
             setMenuUploadMode('IMAGE');
           } else if (at === 'pdf') {
             setMenuUploadedPdfUrl(urls[0] ?? null);
@@ -1473,6 +1723,7 @@ const StoreRegistrationForm = () => {
         if (kind === "pdf") {
           setMenuUploadedPdfUrl(urls[0] ?? null);
           setMenuUploadedPdfFileName(names[0] ?? null);
+          setMenuPdfVerificationStatus("PENDING");
           setMenuUploadIds(ids);
           setMenuImageEntryIds([]);
           setMenuPdfFile(null);
@@ -1516,7 +1767,13 @@ const StoreRegistrationForm = () => {
         });
         const data = (await res.json().catch(() => ({}))) as {
           error?: string;
-          files?: { id: number; file_url: string; file_name: string | null; entry_id?: string }[];
+          files?: {
+            id: number;
+            file_url: string;
+            file_name: string | null;
+            entry_id?: string;
+            verification_status?: string | null;
+          }[];
           r2_bucket?: string | null;
           r2_objects_prefix?: string | null;
         };
@@ -1537,10 +1794,16 @@ const StoreRegistrationForm = () => {
         const urls = rows.map((r) => r.file_url).filter(Boolean) as string[];
         const names = rows.map((r) => r.file_name ?? "");
         const eids = rows.map((r) => (typeof r.entry_id === "string" ? r.entry_id : ""));
+        const vss = rows.map((r) =>
+          r.verification_status && String(r.verification_status).trim()
+            ? String(r.verification_status).trim().toUpperCase()
+            : "PENDING"
+        );
         setMenuUploadedImageUrls(urls);
         setMenuUploadedImageNames(names);
         setMenuUploadIds(ids);
         setMenuImageEntryIds(eids);
+        setMenuImageVerificationStatuses(vss);
         setMenuUploadError("");
         return { ok: true };
       } catch (e) {
@@ -1631,6 +1894,7 @@ const StoreRegistrationForm = () => {
           setMenuImageFiles([]);
           setMenuUploadedImageUrls([]);
           setMenuUploadedImageNames([]);
+          setMenuImageVerificationStatuses([]);
           setConfirmModal(null);
           void syncPdfOrCsvMenuToR2("csv", file).then((r) => {
             if ("skipped" in r) return;
@@ -1648,6 +1912,7 @@ const StoreRegistrationForm = () => {
     setMenuImageFiles([]);
     setMenuUploadedImageUrls([]);
     setMenuUploadedImageNames([]);
+    setMenuImageVerificationStatuses([]);
     void syncPdfOrCsvMenuToR2("csv", file).then((r) => {
       if ("skipped" in r) return;
       if (!r.ok) setMenuUploadError(r.error);
@@ -1668,10 +1933,12 @@ const StoreRegistrationForm = () => {
     setMenuPdfFile(file);
     setMenuUploadedPdfUrl(null);
     setMenuUploadedPdfFileName(null);
+    setMenuPdfVerificationStatus(null);
     setMenuUploadMode('PDF');
     setMenuImageFiles([]);
     setMenuUploadedImageUrls([]);
     setMenuUploadedImageNames([]);
+    setMenuImageVerificationStatuses([]);
     setMenuSpreadsheetFile(null);
     setMenuUploadedSpreadsheetUrl(null);
     setMenuUploadedSpreadsheetFileName(null);
@@ -1695,6 +1962,18 @@ const StoreRegistrationForm = () => {
   };
 
   const handleRemoveUploadedImage = async (idx: number) => {
+    const entryIdTrim = String(menuImageEntryIds[idx] ?? "").trim();
+    const tag = resolvePartnerMenuImageVerificationTag({
+      entryId: entryIdTrim,
+      menuEntryRejectionStatuses,
+      hasMenuRejectionEntrySnapshot,
+      rawDbStatus: menuImageVerificationStatuses[idx],
+      menuStepVerificationFixActive: verificationLock != null && verificationLock.partnerStep === 3,
+    });
+    if (tag === "VERIFIED") {
+      setMenuUploadError("Verified menu images cannot be removed or replaced.");
+      return;
+    }
     const id = menuUploadIds[idx];
     const entryId = menuImageEntryIds[idx];
     if (draftStoreDbId && id) {
@@ -1703,19 +1982,31 @@ const StoreRegistrationForm = () => {
           menuUploadMode === "IMAGE" && entryId
             ? `id=${String(id)}&entry_id=${encodeURIComponent(entryId)}`
             : `id=${String(id)}`;
-        await fetch("/api/auth/register-store-menu-uploads?" + q, { method: "DELETE", credentials: "include" });
+        const res = await fetch("/api/auth/register-store-menu-uploads?" + q, {
+          method: "DELETE",
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          setMenuUploadError(err?.error || "Could not remove image.");
+          return;
+        }
       } catch (e) {
         console.warn("Delete menu upload failed:", e);
+        setMenuUploadError("Could not remove image.");
+        return;
       }
     }
     const newUrls = menuUploadedImageUrls.filter((_, i) => i !== idx);
     const newNames = menuUploadedImageNames.filter((_, i) => i !== idx);
     const newIds = menuUploadIds.filter((_, i) => i !== idx);
     const newEntryIds = menuImageEntryIds.filter((_, i) => i !== idx);
+    const newStatuses = menuImageVerificationStatuses.filter((_, i) => i !== idx);
     setMenuUploadedImageUrls(newUrls);
     setMenuUploadedImageNames(newNames);
     setMenuUploadIds(newIds);
     setMenuImageEntryIds(newEntryIds);
+    setMenuImageVerificationStatuses(newStatuses);
     await saveStepData(3, false, {
       step3: {
         menuUploadMode,
@@ -1723,43 +2014,189 @@ const StoreRegistrationForm = () => {
         menuImageUrls: newUrls,
         menuUploadIds: newIds,
         menuImageEntryIds: newEntryIds,
+        menuImageVerificationStatuses: newStatuses,
         menuSpreadsheetName: menuUploadedSpreadsheetFileName ?? null,
         menuSpreadsheetUrl: menuUploadedSpreadsheetUrl ?? null,
         menuPdfUrl: menuUploadedPdfUrl ?? null,
         menuPdfFileName: menuUploadedPdfFileName ?? null,
+        menuPdfVerificationStatus: menuPdfVerificationStatus ?? null,
       },
     }, true);
   };
 
+  const handleReuploadRejectedMenuImage = async (idx: number, file: File) => {
+    const validImageTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+    if (!validImageTypes.includes(file.type)) {
+      setMenuUploadError("Only JPG, PNG, WEBP allowed.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setMenuUploadError("Image must be under 5 MB.");
+      return;
+    }
+    const entryId = String(menuImageEntryIds[idx] ?? "").trim();
+    const tag = resolvePartnerMenuImageVerificationTag({
+      entryId,
+      menuEntryRejectionStatuses,
+      hasMenuRejectionEntrySnapshot,
+      rawDbStatus: menuImageVerificationStatuses[idx],
+      menuStepVerificationFixActive: verificationLock != null && verificationLock.partnerStep === 3,
+    });
+    if (tag !== "REJECTED") {
+      setMenuUploadError("Use Re-upload only for images marked rejected.");
+      return;
+    }
+    const dbId = draftStoreDbId;
+    const storePublicForMenu = (currentStoreId || draftStorePublicId || "").trim();
+    if (!((dbId != null && dbId > 0) || storePublicForMenu)) {
+      setMenuUploadError("Store is not ready. Complete Steps 1–2 first.");
+      return;
+    }
+    if (!entryId) {
+      setMenuUploadError("Missing image id. Refresh the page and try again.");
+      return;
+    }
+    setMenuImageReuploadingIndex(idx);
+    setMenuUploadError("");
+    try {
+      const form = new FormData();
+      if (dbId != null && dbId > 0) form.append("store_id", String(dbId));
+      if (storePublicForMenu) form.append("store_public_id", storePublicForMenu);
+      form.append("attachment_type", "images");
+      form.append("file", file);
+      form.append("replace_menu_image_entry_id", entryId);
+      const res = await fetch("/api/auth/register-store-menu-uploads", {
+        method: "POST",
+        credentials: "include",
+        body: form,
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        files?: {
+          id: number;
+          file_url: string;
+          file_name: string | null;
+          entry_id?: string;
+          verification_status?: string | null;
+        }[];
+      };
+      if (!res.ok) {
+        setMenuUploadError(data?.error || "Re-upload failed.");
+        return;
+      }
+      const rows = data.files || [];
+      const urls = rows.map((r) => r.file_url).filter(Boolean) as string[];
+      const names = rows.map((r) => r.file_name ?? "");
+      const ids = rows.map((r) => r.id);
+      const eids = rows.map((r) => (typeof r.entry_id === "string" ? r.entry_id : ""));
+      const vss = rows.map((r) =>
+        r.verification_status && String(r.verification_status).trim()
+          ? String(r.verification_status).trim().toUpperCase()
+          : "PENDING"
+      );
+      setMenuUploadedImageUrls(urls);
+      setMenuUploadedImageNames(names);
+      setMenuUploadIds(ids);
+      setMenuImageEntryIds(eids);
+      setMenuImageVerificationStatuses(vss);
+      await saveStepData(3, false, {
+        step3: {
+          menuUploadMode: "IMAGE",
+          menuImageUrls: urls,
+          menuImageNames: names,
+          menuUploadIds: ids,
+          menuImageEntryIds: eids,
+          menuImageVerificationStatuses: vss,
+          menuSpreadsheetName: menuUploadedSpreadsheetFileName ?? null,
+          menuSpreadsheetUrl: menuUploadedSpreadsheetUrl ?? null,
+          menuPdfUrl: menuUploadedPdfUrl ?? null,
+          menuPdfFileName: menuUploadedPdfFileName ?? null,
+          menuPdfVerificationStatus: menuPdfVerificationStatus ?? null,
+        },
+      }, true);
+    } catch (e) {
+      console.warn("Menu re-upload failed:", e);
+      setMenuUploadError("Re-upload failed.");
+    } finally {
+      setMenuImageReuploadingIndex(null);
+    }
+  };
+
   const handleRemoveAllMenuImages = async () => {
-    const uniqueRowIds = [...new Set(menuUploadIds)];
-    if (draftStoreDbId && uniqueRowIds.length > 0) {
-      await Promise.all(
-        uniqueRowIds.map((id) =>
-          fetch("/api/auth/register-store-menu-uploads?id=" + String(id), {
+    setMenuImageFiles([]);
+    const fixActive = verificationLock != null && verificationLock.partnerStep === 3;
+    const toRemoveIdx: number[] = [];
+    for (let i = 0; i < menuUploadedImageUrls.length; i++) {
+      const entryIdTrim = String(menuImageEntryIds[i] ?? "").trim();
+      const tag = resolvePartnerMenuImageVerificationTag({
+        entryId: entryIdTrim,
+        menuEntryRejectionStatuses,
+        hasMenuRejectionEntrySnapshot,
+        rawDbStatus: menuImageVerificationStatuses[i],
+        menuStepVerificationFixActive: fixActive,
+      });
+      if (tag !== "VERIFIED") toRemoveIdx.push(i);
+    }
+    toRemoveIdx.sort((a, b) => b - a);
+
+    let urls = [...menuUploadedImageUrls];
+    let names = [...menuUploadedImageNames];
+    let ids = [...menuUploadIds];
+    let eids = [...menuImageEntryIds];
+    let vss = [...menuImageVerificationStatuses];
+
+    for (const idx of toRemoveIdx) {
+      const rowId = ids[idx];
+      const entryId = eids[idx];
+      if (draftStoreDbId && rowId) {
+        const q =
+          menuUploadMode === "IMAGE" && entryId
+            ? `id=${String(rowId)}&entry_id=${encodeURIComponent(entryId)}`
+            : `id=${String(rowId)}`;
+        try {
+          const res = await fetch("/api/auth/register-store-menu-uploads?" + q, {
             method: "DELETE",
             credentials: "include",
-          }).catch((e) => console.warn("Delete menu upload failed:", e))
-        )
-      );
+          });
+          if (!res.ok) {
+            const err = (await res.json().catch(() => ({}))) as { error?: string };
+            setMenuUploadError(err?.error || "Some images could not be removed.");
+            break;
+          }
+        } catch (e) {
+          console.warn("Delete menu upload failed:", e);
+          setMenuUploadError("Some images could not be removed.");
+          break;
+        }
+      }
+      urls = urls.filter((_, i) => i !== idx);
+      names = names.filter((_, i) => i !== idx);
+      ids = ids.filter((_, i) => i !== idx);
+      eids = eids.filter((_, i) => i !== idx);
+      vss = vss.filter((_, i) => i !== idx);
     }
-    setMenuImageFiles([]);
-    setMenuUploadedImageUrls([]);
-    setMenuUploadedImageNames([]);
-    setMenuUploadIds([]);
-    setMenuImageEntryIds([]);
-    setMenuUploadError("");
+
+    setMenuUploadedImageUrls(urls);
+    setMenuUploadedImageNames(names);
+    setMenuUploadIds(ids);
+    setMenuImageEntryIds(eids);
+    setMenuImageVerificationStatuses(vss);
+    if (toRemoveIdx.length > 0) {
+      setMenuUploadError("");
+    }
     await saveStepData(3, false, {
       step3: {
         menuUploadMode,
-        menuImageNames: [],
-        menuImageUrls: [],
-        menuUploadIds: [],
-        menuImageEntryIds: [],
+        menuImageNames: names,
+        menuImageUrls: urls,
+        menuUploadIds: ids,
+        menuImageEntryIds: eids,
+        menuImageVerificationStatuses: vss,
         menuSpreadsheetName: menuUploadedSpreadsheetFileName ?? null,
         menuSpreadsheetUrl: menuUploadedSpreadsheetUrl ?? null,
         menuPdfUrl: menuUploadedPdfUrl ?? null,
         menuPdfFileName: menuUploadedPdfFileName ?? null,
+        menuPdfVerificationStatus: menuPdfVerificationStatus ?? null,
       },
     }, true);
   };
@@ -1788,6 +2225,7 @@ const StoreRegistrationForm = () => {
         menuImageEntryIds,
         menuPdfUrl: menuUploadedPdfUrl ?? null,
         menuPdfFileName: menuUploadedPdfFileName ?? null,
+        menuPdfVerificationStatus: menuPdfVerificationStatus ?? null,
       },
     }, true);
   };
@@ -1804,12 +2242,14 @@ const StoreRegistrationForm = () => {
     setMenuPdfFile(null);
     setMenuUploadedPdfUrl(null);
     setMenuUploadedPdfFileName(null);
+    setMenuPdfVerificationStatus(null);
     setMenuUploadIds([]);
     await saveStepData(3, false, {
       step3: {
         menuUploadMode,
         menuPdfUrl: null,
         menuPdfFileName: null,
+        menuPdfVerificationStatus: null,
         menuUploadIds: [],
         menuImageEntryIds,
         menuImageNames: menuUploadedImageNames,
@@ -1858,8 +2298,10 @@ const StoreRegistrationForm = () => {
             setMenuPdfFile(null);
             setMenuUploadedPdfUrl(null);
             setMenuUploadedPdfFileName(null);
+            setMenuPdfVerificationStatus(null);
             setMenuUploadIds([]);
             setMenuImageEntryIds([]);
+            setMenuImageVerificationStatuses([]);
           } catch (e) {
             console.warn('Switch-type API failed:', e);
           }
@@ -2024,8 +2466,16 @@ const StoreRegistrationForm = () => {
           menuSpreadsheetUrl: menuUploadedSpreadsheetUrl,
           menuPdfFileName: menuPdfFile?.name ?? menuUploadedPdfFileName ?? null,
           menuPdfUrl: menuUploadedPdfUrl,
+          menuPdfVerificationStatus:
+            menuUploadMode === "PDF" && (!!menuUploadedPdfUrl || !!menuPdfFile)
+              ? (menuPdfVerificationStatus && menuPdfVerificationStatus.trim()) || "PENDING"
+              : null,
           menuUploadIds,
           menuImageEntryIds,
+          menuImageVerificationStatuses:
+            menuUploadMode === "IMAGE" && menuUploadedImageUrls.length > 0
+              ? menuUploadedImageUrls.map((_, i) => menuImageVerificationStatuses[i] ?? "PENDING")
+              : [],
         },
       };
     }
@@ -2060,14 +2510,30 @@ const StoreRegistrationForm = () => {
 
           const stepPatch = formDataPatchOverride ?? getStepPatch(currentStep);
 
+          const verificationFixSave =
+            verificationLock != null && verificationLock.partnerStep === currentStep;
+          const markStepCompleteEffective = verificationFixSave ? false : isComplete;
+          const nextStepEffective = verificationFixSave
+            ? currentStep
+            : isComplete
+              ? currentStep + 1
+              : currentStep;
+
           // Save to progress table (single source of truth; no duplicates)
           const progressRes = await fetch('/api/auth/register-store-progress', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               currentStep: currentStep,
-              nextStep: isComplete ? currentStep + 1 : currentStep,
-              markStepComplete: isComplete,
+              nextStep: nextStepEffective,
+              markStepComplete: markStepCompleteEffective,
+              preserveProgressPosition: verificationFixSave,
+              /** Partner finished fixing this locked step — notify ops (merchant_resubmitted_at). Not sent on intermediate uploads. */
+              signalVerificationResubmission: verificationFixSave && isComplete,
+              verificationResubmitSteps:
+                verificationFixSave && isComplete && verificationLock != null
+                  ? [verificationLock.verificationStep]
+                  : undefined,
               formDataPatch: stepPatch,
               storePublicId: currentStoreId || draftStorePublicId || (typeof searchParams?.get === 'function' ? searchParams.get('store_id') ?? undefined : undefined) || undefined,
               registrationStatus: 'IN_PROGRESS',
@@ -2119,7 +2585,7 @@ const StoreRegistrationForm = () => {
         return { success: true }; // Optimistic return
       }
     },
-    [currentStoreId, draftStorePublicId, draftStoreDbId, getStepPatch, refreshAuthIfNeeded, handleAuthError, searchParams]
+    [currentStoreId, draftStorePublicId, draftStoreDbId, getStepPatch, refreshAuthIfNeeded, handleAuthError, searchParams, verificationLock]
   );
 
   // Wrapper for steps 5–9 that saves with explicit nextStep (e.g. when going back or to agreement/signature).
@@ -2128,13 +2594,21 @@ const StoreRegistrationForm = () => {
       const authOk = await refreshAuthIfNeeded();
       if (!authOk) return { success: false, error: 'Authentication required' };
       try {
+        const verificationFixSave =
+          verificationLock != null && verificationLock.partnerStep === opts.currentStep;
         const res = await fetch('/api/auth/register-store-progress', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             currentStep: opts.currentStep,
-            nextStep: opts.nextStep,
-            markStepComplete: opts.markStepComplete,
+            nextStep: verificationFixSave ? opts.currentStep : opts.nextStep,
+            markStepComplete: verificationFixSave ? false : opts.markStepComplete,
+            preserveProgressPosition: verificationFixSave,
+            signalVerificationResubmission: verificationFixSave && opts.markStepComplete,
+            verificationResubmitSteps:
+              verificationFixSave && opts.markStepComplete && verificationLock != null
+                ? [verificationLock.verificationStep]
+                : undefined,
             formDataPatch: opts.formDataPatch,
             storePublicId: currentStoreId || draftStorePublicId || undefined,
             registrationStatus: 'IN_PROGRESS',
@@ -2195,7 +2669,7 @@ const StoreRegistrationForm = () => {
         return { success: false, error: errorMessage };
       }
     },
-    [currentStoreId, draftStorePublicId, draftStoreDbId]
+    [currentStoreId, draftStorePublicId, draftStoreDbId, verificationLock]
   );
 
   const validateStep = (stepNumber: number): boolean => {
@@ -2290,16 +2764,23 @@ const StoreRegistrationForm = () => {
               file_name: string | null;
               file_size: number | null;
               entry_id?: string;
+              verification_status?: string | null;
             }[];
             const ids = files.map((f) => f.id);
             const urls = files.map((f) => f.file_url).filter(Boolean) as string[];
             const names = files.map((f) => f.file_name ?? "");
             const entryIds = files.map((f) => (typeof f.entry_id === "string" ? f.entry_id : ""));
             if (menuUploadMode === "IMAGE") {
+              const pendingStatuses = files.map((f) =>
+                f.verification_status && String(f.verification_status).trim()
+                  ? String(f.verification_status).trim().toUpperCase()
+                  : "PENDING"
+              );
               setMenuUploadedImageUrls(urls);
               setMenuUploadedImageNames(names);
               setMenuUploadIds(ids);
               setMenuImageEntryIds(entryIds);
+              setMenuImageVerificationStatuses(pendingStatuses);
               setMenuImageFiles([]);
               step3Patch = {
                 step3: {
@@ -2308,10 +2789,12 @@ const StoreRegistrationForm = () => {
                   menuImageNames: names,
                   menuUploadIds: ids,
                   menuImageEntryIds: entryIds,
+                  menuImageVerificationStatuses: pendingStatuses,
                   menuSpreadsheetUrl: null,
                   menuSpreadsheetName: null,
                   menuPdfUrl: null,
                   menuPdfFileName: null,
+                  menuPdfVerificationStatus: null,
                 },
               };
             } else if (menuUploadMode === "CSV") {
@@ -2329,13 +2812,16 @@ const StoreRegistrationForm = () => {
                   menuImageEntryIds: [],
                   menuImageUrls: [],
                   menuImageNames: [],
+                  menuImageVerificationStatuses: [],
                   menuPdfUrl: null,
                   menuPdfFileName: null,
+                  menuPdfVerificationStatus: null,
                 },
               };
             } else {
               setMenuUploadedPdfUrl(urls[0] ?? null);
               setMenuUploadedPdfFileName(names[0] ?? null);
+              setMenuPdfVerificationStatus("PENDING");
               setMenuUploadIds(ids);
               setMenuImageEntryIds([]);
               setMenuPdfFile(null);
@@ -2344,10 +2830,12 @@ const StoreRegistrationForm = () => {
                   menuUploadMode: "PDF",
                   menuPdfUrl: urls[0] ?? null,
                   menuPdfFileName: names[0] ?? null,
+                  menuPdfVerificationStatus: "PENDING",
                   menuUploadIds: ids,
                   menuImageEntryIds: [],
                   menuImageUrls: [],
                   menuImageNames: [],
+                  menuImageVerificationStatuses: [],
                   menuSpreadsheetUrl: null,
                   menuSpreadsheetName: null,
                 },
@@ -2360,6 +2848,12 @@ const StoreRegistrationForm = () => {
           const result = await saveStepData(step, true, step3Patch, true);
           if (!result?.success) {
             alert(result?.error || "Data could not be saved. Please try again.");
+            return;
+          }
+          if (verificationLock && verificationLock.partnerStep === step) {
+            showVerificationNotice(verificationSaveThanksTitle, verificationSaveThanksMessage, 'success', {
+              redirectToAfterOk: buildPostLoginVerificationSubmittedUrl(),
+            });
             return;
           }
           setStep((prev) => prev + 1);
@@ -2380,6 +2874,12 @@ const StoreRegistrationForm = () => {
           const result = await saveStepData(currentStep, true, undefined, true);
           if (!result?.success) {
             alert(result?.error || 'Data could not be saved. Please try again.');
+            return;
+          }
+          if (verificationLock && verificationLock.partnerStep === currentStep) {
+            showVerificationNotice(verificationSaveThanksTitle, verificationSaveThanksMessage, 'success', {
+              redirectToAfterOk: buildPostLoginVerificationSubmittedUrl(),
+            });
             return;
           }
           setStep(prev => prev + 1);
@@ -2406,6 +2906,10 @@ const StoreRegistrationForm = () => {
   };
 
   const prevStep = async () => {
+    if (verificationLock) {
+      showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+      return;
+    }
     const currentStep = step;
     setActionLoading(true);
     try {
@@ -2577,6 +3081,12 @@ const StoreRegistrationForm = () => {
       const docsPatch = savedPatch ?? (await buildDocumentStep4Patch(docs));
       setDocuments((prev) => applyDocPatchToDocuments(prev, docsPatch));
       await saveStepData(4, true, { step4: docsPatch }, true);
+      if (verificationLock?.partnerStep === 4) {
+        showVerificationNotice(verificationSaveThanksTitle, verificationSaveThanksMessage, 'success', {
+          redirectToAfterOk: buildPostLoginVerificationSubmittedUrl(),
+        });
+        return;
+      }
       setStep(5);
     } catch (err: any) {
       alert(err?.message || 'Failed to upload document files. Please try again.');
@@ -2719,6 +3229,12 @@ const StoreRegistrationForm = () => {
         alert(result.error || 'Failed to save Store Configuration. Please try again.');
         return;
       }
+      if (verificationLock?.partnerStep === 5) {
+        showVerificationNotice(verificationSaveThanksTitle, verificationSaveThanksMessage, 'success', {
+          redirectToAfterOk: buildPostLoginVerificationSubmittedUrl(),
+        });
+        return;
+      }
       setStep(6);
     } catch (err: any) {
       console.error('Store setup save failed:', err);
@@ -2746,6 +3262,8 @@ const StoreRegistrationForm = () => {
   };
 
   const handleRegisterNewStore = () => {
+    setVerificationLock(null);
+    setMenuStep3RejectionDetail(null);
     setFormData({
       store_name: '',
       owner_full_name: '',
@@ -2822,6 +3340,7 @@ const StoreRegistrationForm = () => {
     setMenuPdfFile(null);
     setMenuUploadedPdfUrl(null);
     setMenuUploadedPdfFileName(null);
+    setMenuImageVerificationStatuses([]);
     setMenuUploadIds([]);
     setDraftStoreDbId(null);
     setDraftStorePublicId(null);
@@ -2831,7 +3350,7 @@ const StoreRegistrationForm = () => {
     setMenuUploadError('');
     setShowSuccess(false);
     setStorePhonesInput('');
-    setStep(1);
+    setStepStateOnly(1);
   };
 
   const handleViewStore = () => {
@@ -2994,6 +3513,10 @@ const StoreRegistrationForm = () => {
     menuUploadedImageNames,
     menuUploadIds,
     menuImageEntryIds,
+    menuImageVerificationStatuses,
+    menuEntryRejectionStatuses,
+    menuStepVerificationFixActive:
+      verificationLock != null && verificationLock.partnerStep === 3,
     menuSpreadsheetFile,
     menuUploadedSpreadsheetUrl,
     menuUploadedSpreadsheetFileName,
@@ -3018,8 +3541,12 @@ const StoreRegistrationForm = () => {
     onRemovePendingImage: handleRemovePendingImage,
     onRemoveUploadedImage: handleRemoveUploadedImage,
     onRemoveAllMenuImages: handleRemoveAllMenuImages,
+    onReuploadRejectedMenuImage: handleReuploadRejectedMenuImage,
+    menuImageReuploadingIndex,
     onRemoveCsvFile: handleRemoveCsvFile,
     onRemovePdfFile: handleRemovePdfFile,
+    menuPdfVerificationStatus,
+    menuStep3RejectionDetail,
   };
 
   return (
@@ -3162,8 +3689,9 @@ const StoreRegistrationForm = () => {
               const stepNum = idx + 1;
               const isCurrent = stepNum === step;
               const isDone = stepNum < step;
-              // Only allow going to steps up to and including current: can go back to any completed step, or stay on current; cannot skip ahead
-              const canGoTo = stepNum <= step;
+              const canGoTo = verificationLock
+                ? stepNum === verificationLock.partnerStep
+                : stepNum <= step;
               return (
                 <button
                   key={stepNum}
@@ -3212,6 +3740,18 @@ const StoreRegistrationForm = () => {
 
         {/* Main content area - only this scrolls; margin-left for fixed sidebar */}
         <main className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden ml-14 sm:ml-52 md:ml-56 lg:ml-60">
+      {verificationLock && (
+        <div
+          className="flex-none border-b border-red-200 bg-red-50 px-3 py-3 sm:px-4"
+          role="alert"
+        >
+          <p className="text-sm font-bold text-red-800">Verification correction required</p>
+          <p className="mt-1.5 text-xs sm:text-sm leading-relaxed text-red-900">
+            Please review and update the required details in this step to proceed with the verification process.
+            Once updated, submit the information for re-evaluation by our team.
+          </p>
+        </div>
+      )}
 
       {/* Logout confirmation modal */}
       {showLogoutConfirm && (
@@ -3241,69 +3781,121 @@ const StoreRegistrationForm = () => {
         </div>
       )}
 
-      {/* Centralized confirmation / warning modal (GatiMitra style, centered) */}
+      {/* Centralized confirmation / notice modal (GatiMitra style, centered — not window.alert) */}
       {confirmModal && (
         <div className="fixed inset-0 z-[2210] flex items-center justify-center p-4 bg-black/50" aria-modal="true" role="dialog">
-          <div className={`relative z-[2211] w-full max-w-md rounded-xl bg-white shadow-xl border p-6 text-center ${
-            confirmModal.variant === 'error' ? 'border-red-200' : confirmModal.variant === 'warning' ? 'border-amber-200' : 'border-slate-200'
-          }`}>
-            {(confirmModal.variant === 'warning' || confirmModal.variant === 'error') && (
+          <div
+            className={`relative z-[2211] w-full max-w-md rounded-xl bg-white shadow-xl border p-6 text-center ${
+              confirmModal.variant === 'error'
+                ? 'border-red-200'
+                : confirmModal.variant === 'warning'
+                  ? 'border-amber-200'
+                  : confirmModal.variant === 'success'
+                    ? 'border-emerald-200'
+                    : 'border-slate-200'
+            }`}
+          >
+            {confirmModal.variant === 'success' && (
               <div className="flex justify-center mb-4">
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                  confirmModal.variant === 'error' ? 'bg-red-100' : 'bg-amber-100'
-                }`}>
-                  <span className={`text-2xl font-bold ${
-                    confirmModal.variant === 'error' ? 'text-red-600' : 'text-amber-600'
-                  }`}>!</span>
+                <div className="w-12 h-12 rounded-full flex items-center justify-center bg-emerald-100">
+                  <CheckCircle2 className="h-7 w-7 text-emerald-600" strokeWidth={2} aria-hidden />
                 </div>
               </div>
             )}
-            <h3 className={`text-lg font-bold mb-2 ${
-              confirmModal.variant === 'error' ? 'text-red-800' : confirmModal.variant === 'warning' ? 'text-slate-800' : 'text-slate-800'
-            }`}>
+            {(confirmModal.variant === 'warning' || confirmModal.variant === 'error') && (
+              <div className="flex justify-center mb-4">
+                <div
+                  className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                    confirmModal.variant === 'error' ? 'bg-red-100' : 'bg-amber-100'
+                  }`}
+                >
+                  <span
+                    className={`text-2xl font-bold ${
+                      confirmModal.variant === 'error' ? 'text-red-600' : 'text-amber-600'
+                    }`}
+                  >
+                    !
+                  </span>
+                </div>
+              </div>
+            )}
+            <h3
+              className={`text-lg font-bold mb-2 ${
+                confirmModal.variant === 'error'
+                  ? 'text-red-800'
+                  : confirmModal.variant === 'warning'
+                    ? 'text-amber-900'
+                    : confirmModal.variant === 'success'
+                      ? 'text-emerald-900'
+                      : 'text-slate-800'
+              }`}
+            >
               {confirmModal.title}
             </h3>
-            <p className="text-sm text-slate-600 mb-6">{confirmModal.message}</p>
-            <div className="flex gap-3 justify-center">
-              <button
-                type="button"
-                disabled={!!confirmModal.isLoading}
-                onClick={() => {
-                  if (confirmModal.isLoading) return;
-                  confirmModal.onCancel?.();
-                  setConfirmModal(null);
-                }}
-                className="px-4 py-2.5 rounded-lg border-2 border-indigo-500 bg-white text-indigo-600 font-medium hover:bg-indigo-50 disabled:opacity-50 disabled:pointer-events-none"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!!confirmModal.isLoading}
-                onClick={async () => {
-                  if (confirmModal.isLoading) return;
-                  setConfirmModal((prev) => (prev ? { ...prev, isLoading: true } : prev));
-                  try {
-                    await Promise.resolve(confirmModal.onConfirm());
-                  } finally {
+            <p className="text-sm text-slate-600 mb-6 leading-relaxed">{confirmModal.message}</p>
+            {confirmModal.notice ? (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void Promise.resolve(confirmModal.onConfirm());
                     setConfirmModal(null);
+                  }}
+                  className={
+                    confirmModal.variant === 'success'
+                      ? 'px-6 py-2.5 rounded-lg font-medium text-white bg-emerald-600 hover:bg-emerald-700 min-w-[7.5rem]'
+                      : confirmModal.variant === 'warning'
+                        ? 'px-6 py-2.5 rounded-lg font-medium text-white bg-amber-600 hover:bg-amber-700 min-w-[7.5rem]'
+                        : confirmModal.variant === 'error'
+                          ? 'px-6 py-2.5 rounded-lg font-medium text-white bg-red-600 hover:bg-red-700 min-w-[7.5rem]'
+                          : 'px-6 py-2.5 rounded-lg font-medium text-white bg-indigo-600 hover:bg-indigo-700 min-w-[7.5rem]'
                   }
-                }}
-                className={`px-4 py-2.5 rounded-lg font-medium text-white inline-flex items-center justify-center gap-2 min-w-[7.5rem] ${
-                  confirmModal.variant === 'error'
-                    ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-400'
-                    : 'bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400'
-                }`}
-              >
-                {confirmModal.isLoading && (
-                  <span
-                    className="h-4 w-4 shrink-0 border-2 border-white/60 border-t-transparent rounded-full animate-spin"
-                    aria-hidden
-                  />
-                )}
-                <span>{confirmModal.confirmLabel ?? 'Confirm'}</span>
-              </button>
-            </div>
+                >
+                  {confirmModal.confirmLabel ?? 'OK'}
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-3 justify-center">
+                <button
+                  type="button"
+                  disabled={!!confirmModal.isLoading}
+                  onClick={() => {
+                    if (confirmModal.isLoading) return;
+                    confirmModal.onCancel?.();
+                    setConfirmModal(null);
+                  }}
+                  className="px-4 py-2.5 rounded-lg border-2 border-indigo-500 bg-white text-indigo-600 font-medium hover:bg-indigo-50 disabled:opacity-50 disabled:pointer-events-none"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!!confirmModal.isLoading}
+                  onClick={async () => {
+                    if (confirmModal.isLoading) return;
+                    setConfirmModal((prev) => (prev ? { ...prev, isLoading: true } : prev));
+                    try {
+                      await Promise.resolve(confirmModal.onConfirm());
+                    } finally {
+                      setConfirmModal(null);
+                    }
+                  }}
+                  className={`px-4 py-2.5 rounded-lg font-medium text-white inline-flex items-center justify-center gap-2 min-w-[7.5rem] ${
+                    confirmModal.variant === 'error'
+                      ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-400'
+                      : 'bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400'
+                  }`}
+                >
+                  {confirmModal.isLoading && (
+                    <span
+                      className="h-4 w-4 shrink-0 border-2 border-white/60 border-t-transparent rounded-full animate-spin"
+                      aria-hidden
+                    />
+                  )}
+                  <span>{confirmModal.confirmLabel ?? 'Confirm'}</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -3919,6 +4511,7 @@ const StoreRegistrationForm = () => {
             <CombinedDocumentStoreSetup
               key={`step-4-docs-${selectedStorePublicId || draftStorePublicId || 'new'}`}
               initialDocuments={documents}
+              verificationBankRejectionReason={verificationBankRejectionReason}
               onDocumentComplete={(docs, savedPatch) =>
                 void handleDocumentUploadComplete(docs as unknown as DocumentData, savedPatch)
               }
@@ -3941,6 +4534,10 @@ const StoreRegistrationForm = () => {
               onStoreHoursSave={(hours) => saveStoreHoursProgress(hours)}
               onStoreFeaturesSave={saveStoreFeaturesProgress}
               onBack={async () => {
+                if (verificationLock) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 5, nextStep: 4, markStepComplete: false, formDataPatch: getStepPatch(5) });
@@ -4056,6 +4653,10 @@ const StoreRegistrationForm = () => {
               }}
               parentInfo={parentInfo}
               onBack={async () => {
+                if (verificationLock?.partnerStep === 6) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 6, nextStep: 5, markStepComplete: false, formDataPatch: getStepPatch(6) });
@@ -4068,6 +4669,10 @@ const StoreRegistrationForm = () => {
                 }
               }}
               onContinueToPlans={async () => {
+                if (verificationLock?.partnerStep === 6) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 6, nextStep: 7, markStepComplete: true, formDataPatch: getStepPatch(6) });
@@ -4093,6 +4698,10 @@ const StoreRegistrationForm = () => {
               parentInfo={parentInfo}
               step1={formData}
               onBack={async () => {
+                if (verificationLock?.partnerStep === 7) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 7, nextStep: 6, markStepComplete: false, formDataPatch: { step7: { selectedPlanId: selectedPlanId || 'FREE' } } });
@@ -4105,6 +4714,10 @@ const StoreRegistrationForm = () => {
                 }
               }}
               onContinue={async () => {
+                if (verificationLock?.partnerStep === 7) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 7, nextStep: 8, markStepComplete: true, formDataPatch: { step7: { selectedPlanId: selectedPlanId || 'FREE' } } });
@@ -4132,6 +4745,10 @@ const StoreRegistrationForm = () => {
               termsContent={agreementTemplate?.content_markdown || MERCHANT_PARTNERSHIP_TERMS}
               logoUrl={typeof process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL === "string" && process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL ? process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL : "/logo.png"}
               onBack={async () => {
+                if (verificationLock?.partnerStep === 8) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 8, nextStep: 7, markStepComplete: false, formDataPatch: {} });
@@ -4144,6 +4761,10 @@ const StoreRegistrationForm = () => {
                 }
               }}
               onContinue={async ({ contractText, agreedToRead }) => {
+                if (verificationLock?.partnerStep === 8) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({
@@ -4199,6 +4820,10 @@ const StoreRegistrationForm = () => {
               agreementReadConfirmed={agreementReadConfirmed}
               logoUrl={typeof process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL === "string" && process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL ? process.env.NEXT_PUBLIC_PLATFORM_LOGO_URL : "/logo.png"}
               onBack={async () => {
+                if (verificationLock?.partnerStep === 9) {
+                  showVerificationNotice(verificationNavLockTitle, verificationNavLockMessage, 'warning');
+                  return;
+                }
                 setActionLoading(true);
                 try {
                   await saveProgress({ currentStep: 9, nextStep: 8, markStepComplete: false, formDataPatch: {} });

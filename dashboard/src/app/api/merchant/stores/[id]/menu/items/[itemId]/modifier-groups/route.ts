@@ -104,9 +104,11 @@ export async function POST(
     `;
     if (existing) return NextResponse.json({ success: false, error: "ALREADY_LINKED" }, { status: 409 });
 
+    const displayOrderRaw = Number(body.display_order);
+    const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_item_modifier_groups (menu_item_id, modifier_group_id, display_order)
-      VALUES (${menuItemId}, ${modifier_group_id}, ${body.display_order ?? 0})
+      VALUES (${menuItemId}, ${modifier_group_id}, ${displayOrder})
       RETURNING id
     `;
     try {

@@ -19,8 +19,22 @@ import {
   Save,
   FileText,
   ExternalLink,
+  Eye,
+  UserCircle,
 } from "lucide-react";
+import {
+  DOCUMENT_REJECTION_ISSUE_CODES,
+  DOCUMENT_REJECTION_ISSUE_ACTIONS,
+  DOCUMENT_REJECTION_ISSUE_LABELS,
+  type DocumentRejectionIssueCode,
+  rejectionDetailForDocType,
+  rejectionRequiresNewFileUpload,
+} from "@/lib/merchant-store-document-rejection";
 import { VerificationPageSkeleton } from "./VerificationPageSkeleton";
+import { Toaster, toast } from "sonner";
+import { MenuReferenceReviewBlock } from "@/components/verification/MenuReferenceReviewBlock";
+import { MenuReferenceRejectionSnapshot } from "@/components/verification/MenuReferenceRejectionSnapshot";
+import type { MenuMediaFile } from "@/lib/merchant-menu-media";
 
 const VerificationLocationMap = dynamic(
   () =>
@@ -36,9 +50,156 @@ const ONBOARDING_STEP_LABELS: Record<number, string> = {
   3: "Menu setup",
   4: "Restaurant documents",
   5: "Operational details",
-  6: "Commission plan",
-  7: "Sign & submit",
+  6: "Bank account",
+  7: "Commission plan",
+  8: "Sign & submit",
 };
+
+function formatBankAccountNumberFull(n: unknown): string {
+  if (n == null || n === "") return "—";
+  return String(n).trim() || "—";
+}
+
+function BankAccountsVerificationPanel({
+  accounts,
+}: {
+  accounts: Record<string, unknown>[] | null | undefined;
+}) {
+  const list = Array.isArray(accounts) && accounts.length > 0 ? accounts : [];
+  if (list.length === 0) {
+    return (
+      <p className="text-xs text-gray-600">
+        No payout bank / UPI account on file for this store yet. The merchant adds this during onboarding (store setup /
+        bank details).
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {list.map((acc) => {
+        const id = acc.id as number;
+        const primary = acc.is_primary === true;
+        const payout = (acc.payout_method as string) || "—";
+        const verified = acc.is_verified === true;
+        const upi = typeof acc.upi_id === "string" && acc.upi_id.trim() ? acc.upi_id.trim() : null;
+        const upiVerified = acc.upi_verified;
+        const proofBank = (acc.bank_proof_file_url as string) || null;
+        const proofQr = (acc.upi_qr_screenshot_url as string) || null;
+        const vStatus = (acc.verification_status as string) || null;
+        const hasUpiDetails =
+          !!upi || upiVerified === true || upiVerified === false || !!proofQr;
+        return (
+          <div
+            key={id}
+            className="rounded-lg border border-gray-200 bg-gray-50/50 p-3 text-xs text-gray-900"
+          >
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium text-gray-800">
+                Account #{id}
+                {primary ? (
+                  <span className="ml-2 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800">
+                    Primary
+                  </span>
+                ) : null}
+              </span>
+              {verified ? (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
+                  Marked verified
+                </span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                  Not verified
+                </span>
+              )}
+            </div>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              <div>
+                <span className="text-[10px] font-medium uppercase text-gray-500">Holder</span>
+                <p className="break-words">{(acc.account_holder_name as string) || "—"}</p>
+              </div>
+              <div>
+                <span className="text-[10px] font-medium uppercase text-gray-500">Beneficiary</span>
+                <p className="break-words">{(acc.beneficiary_name as string) || "—"}</p>
+              </div>
+              <div className="sm:col-span-2">
+                <span className="text-[10px] font-medium uppercase text-gray-500">Account no. (full)</span>
+                <p className="break-all font-mono text-[13px] tracking-tight">
+                  {formatBankAccountNumberFull(acc.account_number)}
+                </p>
+              </div>
+              <div>
+                <span className="text-[10px] font-medium uppercase text-gray-500">IFSC</span>
+                <p>{(acc.ifsc_code as string) || "—"}</p>
+              </div>
+              <div>
+                <span className="text-[10px] font-medium uppercase text-gray-500">Bank / branch</span>
+                <p className="break-words">
+                  {(acc.bank_name as string) || "—"}
+                  {(acc.branch_name as string) ? ` · ${acc.branch_name as string}` : ""}
+                </p>
+              </div>
+              <div>
+                <span className="text-[10px] font-medium uppercase text-gray-500">Payout method</span>
+                <p>{payout}</p>
+              </div>
+              {hasUpiDetails ? (
+                <div className="sm:col-span-2 rounded-md border border-indigo-100 bg-indigo-50/40 p-2.5">
+                  <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-indigo-900">
+                    UPI details
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <span className="text-[10px] font-medium uppercase text-gray-500">UPI ID</span>
+                      <p className="break-all">{upi ?? "—"}</p>
+                    </div>
+                    {upiVerified === true || upiVerified === false ? (
+                      <div>
+                        <span className="text-[10px] font-medium uppercase text-gray-500">UPI verified</span>
+                        <p>{upiVerified ? "Yes" : "No"}</p>
+                      </div>
+                    ) : null}
+                    {proofQr ? (
+                      <div className="sm:col-span-2">
+                        <a
+                          href={proofQr}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded border border-indigo-200 bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          UPI QR screenshot
+                        </a>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {vStatus ? (
+                <div className="sm:col-span-2">
+                  <span className="text-[10px] font-medium uppercase text-gray-500">Verification status (record)</span>
+                  <p>{vStatus}</p>
+                </div>
+              ) : null}
+            </div>
+            {proofBank ? (
+              <div className="mt-2 flex flex-wrap gap-2 border-t border-gray-100 pt-2">
+                <a
+                  href={proofBank}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded border border-indigo-200 bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  Bank proof
+                </a>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 interface StoreDetail {
   id: number;
@@ -90,6 +251,18 @@ type StepVerification = {
   verified_by: number | null;
   verified_by_name: string | null;
   notes: string | null;
+  rejection?: {
+    rejected_at: string;
+    rejection_reason: string;
+    step_label?: string | null;
+    rejected_by?: number | null;
+    rejected_by_name?: string | null;
+    email_sent?: boolean;
+    email_skip_reason?: string | null;
+    merchant_resubmitted_at?: string | null;
+    /** Step 3: snapshot of menu PDF/sheet/photo statuses at rejection. */
+    rejection_detail?: unknown | null;
+  } | null;
 };
 
 type StepEditRecord = {
@@ -101,40 +274,210 @@ type StepEditRecord = {
   edited_at: string;
 };
 
-export type MenuMediaFile = {
-  id: number;
-  store_id: number;
-  media_scope: string;
-  original_file_name: string | null;
-  r2_key: string;
-  public_url: string | null;
-  mime_type: string | null;
-  file_size_bytes: number | null;
-  verification_status: string;
-  created_at: string;
-};
+export type { MenuMediaFile };
 
-const DOC_TYPES = ["pan", "gst", "aadhaar", "fssai", "drug_license"] as const;
+/** Must match POST /api/merchant/stores/[id]/documents/verify docType values. */
+const DOC_TYPES = [
+  "pan",
+  "gst",
+  "aadhaar",
+  "fssai",
+  "drug_license",
+  "trade_license",
+  "shop_establishment",
+  "udyam",
+  "pharmacist_certificate",
+  "pharmacy_council_registration",
+  "bank_proof",
+  "other",
+] as const;
+
 const DOC_TYPE_LABELS: Record<(typeof DOC_TYPES)[number], string> = {
   pan: "PAN",
   gst: "GST",
   aadhaar: "Aadhaar",
   fssai: "FSSAI",
   drug_license: "Drug license",
+  trade_license: "Trade license",
+  shop_establishment: "Shop establishment",
+  udyam: "Udyam",
+  pharmacist_certificate: "Pharmacist certificate",
+  pharmacy_council_registration: "Pharmacy council registration",
+  bank_proof: "Bank proof",
+  other: "Other document",
 };
+
+/** Single source for step 4 list, verify gating, and PATCH /documents number fields. */
+const STEP4_DOCUMENT_ROWS = [
+  { docType: "pan", summary: "PAN", listLabel: "PAN number", numberKey: "pan_document_number", urlKey: "pan_document_url", verifiedKey: "pan_is_verified", rejectionKey: "pan_rejection_reason" },
+  { docType: "gst", summary: "GST", listLabel: "GST number", numberKey: "gst_document_number", urlKey: "gst_document_url", verifiedKey: "gst_is_verified", rejectionKey: "gst_rejection_reason" },
+  { docType: "aadhaar", summary: "Aadhaar", listLabel: "Aadhaar number", numberKey: "aadhaar_document_number", urlKey: "aadhaar_document_url", verifiedKey: "aadhaar_is_verified", rejectionKey: "aadhaar_rejection_reason" },
+  { docType: "fssai", summary: "FSSAI", listLabel: "FSSAI number", numberKey: "fssai_document_number", urlKey: "fssai_document_url", verifiedKey: "fssai_is_verified", rejectionKey: "fssai_rejection_reason" },
+  { docType: "drug_license", summary: "Drug license", listLabel: "Drug license", numberKey: "drug_license_document_number", urlKey: "drug_license_document_url", verifiedKey: "drug_license_is_verified", rejectionKey: "drug_license_rejection_reason" },
+  { docType: "trade_license", summary: "Trade license", listLabel: "Trade license number", numberKey: "trade_license_document_number", urlKey: "trade_license_document_url", verifiedKey: "trade_license_is_verified", rejectionKey: "trade_license_rejection_reason" },
+  { docType: "shop_establishment", summary: "Shop establishment", listLabel: "Shop establishment number", numberKey: "shop_establishment_document_number", urlKey: "shop_establishment_document_url", verifiedKey: "shop_establishment_is_verified", rejectionKey: "shop_establishment_rejection_reason" },
+  { docType: "udyam", summary: "Udyam", listLabel: "Udyam number", numberKey: "udyam_document_number", urlKey: "udyam_document_url", verifiedKey: "udyam_is_verified", rejectionKey: "udyam_rejection_reason" },
+  { docType: "other", summary: "Other", listLabel: "Other document number", numberKey: "other_document_number", urlKey: "other_document_url", verifiedKey: "other_is_verified", rejectionKey: "other_rejection_reason" },
+  { docType: "bank_proof", summary: "Bank proof", listLabel: "Bank proof number", numberKey: "bank_proof_document_number", urlKey: "bank_proof_document_url", verifiedKey: "bank_proof_is_verified", rejectionKey: "bank_proof_rejection_reason" },
+  { docType: "pharmacist_certificate", summary: "Pharmacist cert.", listLabel: "Pharmacist certificate number", numberKey: "pharmacist_certificate_document_number", urlKey: "pharmacist_certificate_document_url", verifiedKey: "pharmacist_certificate_is_verified", rejectionKey: "pharmacist_certificate_rejection_reason" },
+  { docType: "pharmacy_council_registration", summary: "Pharmacy council", listLabel: "Pharmacy council registration number", numberKey: "pharmacy_council_registration_document_number", urlKey: "pharmacy_council_registration_document_url", verifiedKey: "pharmacy_council_registration_is_verified", rejectionKey: "pharmacy_council_registration_rejection_reason" },
+] as const;
+
+type Step4DocRow = (typeof STEP4_DOCUMENT_ROWS)[number];
+
+type Step4DocPreviewPayload = {
+  url: string;
+  title: string;
+  metaLines?: { label: string; value: string }[];
+};
+
+/** Aadhaar back image URL is stored in `aadhaar_document_metadata` (e.g. `back_url`). */
+function getAadhaarBackUrl(doc: Record<string, unknown>): string {
+  const raw = doc.aadhaar_document_metadata;
+  if (raw == null) return "";
+  if (typeof raw === "string") {
+    const s = raw.trim();
+    if (!s) return "";
+    try {
+      const o = JSON.parse(s) as Record<string, unknown>;
+      const u = o.back_url;
+      return typeof u === "string" ? u.trim() : "";
+    } catch {
+      return "";
+    }
+  }
+  if (typeof raw === "object" && raw !== null) {
+    const u = (raw as Record<string, unknown>).back_url;
+    return typeof u === "string" ? u.trim() : "";
+  }
+  return "";
+}
+
+function formatDocMetaDate(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  const s = String(v);
+  if (s.includes("T") && s.length > 10) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? s : d.toLocaleString();
+  }
+  if (s.length >= 10) {
+    const d = new Date(s.slice(0, 10));
+    return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString();
+  }
+  return s;
+}
+
+function buildStep4DocumentPreviewMeta(
+  doc: Record<string, unknown>,
+  row: Step4DocRow,
+  opts?: { aadhaarSide?: "front" | "back" }
+): { label: string; value: string }[] {
+  const p = row.docType;
+  const lines: { label: string; value: string }[] = [];
+
+  const pushIf = (label: string, key: string) => {
+    const v = doc[key];
+    if (v == null || v === "") return;
+    const str = typeof v === "string" ? v.trim() : String(v);
+    if (!str) return;
+    lines.push({ label, value: str });
+  };
+
+  if (p === "aadhaar") {
+    const side = opts?.aadhaarSide ?? "front";
+    lines.push({ label: "Side", value: side === "back" ? "Back of card" : "Front" });
+  }
+
+  pushIf("Document number", `${p}_document_number`);
+  if (p === "pan") pushIf("Holder name", "pan_holder_name");
+  if (p === "aadhaar") pushIf("Holder name", "aadhaar_holder_name");
+  pushIf("File name", `${p}_document_name`);
+  if (p === "drug_license") pushIf("License type", "drug_license_type");
+  if (p === "pharmacy_council_registration") pushIf("Registration type", "pharmacy_council_registration_type");
+  if (p === "other") pushIf("Other type", "other_document_type");
+  pushIf("Issued date", `${p}_issued_date`);
+  pushIf("Expiry date", `${p}_expiry_date`);
+
+  const isExpired = doc[`${p}_is_expired`];
+  if (isExpired === true) lines.push({ label: "Marked expired", value: "Yes" });
+  else if (isExpired === false) lines.push({ label: "Marked expired", value: "No" });
+
+  const ver = doc[`${p}_is_verified`];
+  if (ver === true) lines.push({ label: "Verification", value: "Verified" });
+  else if (ver === false) lines.push({ label: "Verification", value: "Not verified" });
+
+  const vAt = formatDocMetaDate(doc[`${p}_verified_at`]);
+  if (vAt) lines.push({ label: "Verified at", value: vAt });
+
+  const rr = doc[`${p}_rejection_reason`];
+  if (typeof rr === "string" && rr.trim()) {
+    lines.push({ label: "Rejection reason", value: rr.trim() });
+  }
+
+  const dv = doc[`${p}_document_version`];
+  if (dv != null && dv !== "") lines.push({ label: "Version", value: String(dv) });
+
+  return lines;
+}
+
+function step4DocResubmitted(flags: unknown, docType: string): boolean {
+  if (!flags || typeof flags !== "object" || flags === null) return false;
+  const v = (flags as Record<string, unknown>)[docType];
+  return v === true || v === "true";
+}
+
+/** True if any document row is still rejected but has a partner/dashboard re-upload pending review. */
+function step4AnyResubmittedAfterReject(documents: unknown): boolean {
+  if (!documents || typeof documents !== "object" || documents === null) return false;
+  const doc = documents as Record<string, unknown>;
+  const flags = doc.step4_resubmission_flags;
+  for (const row of STEP4_DOCUMENT_ROWS) {
+    const rr = doc[row.rejectionKey];
+    if (typeof rr !== "string" || rr.trim() === "") continue;
+    const det = rejectionDetailForDocType(doc.step4_rejection_details, row.docType);
+    if (!rejectionRequiresNewFileUpload(det)) continue;
+    if (step4DocResubmitted(flags, row.docType)) return true;
+  }
+  return false;
+}
+
+function Step4RejectionBreakdown({ detailsRoot, docType }: { detailsRoot: unknown; docType: string }) {
+  const d = rejectionDetailForDocType(detailsRoot, docType);
+  if (!d) return null;
+  return (
+    <ul className="mt-1 max-w-[min(100%,280px)] list-inside list-disc space-y-1.5 text-[10px] text-red-900">
+      {d.issues.map((code) => (
+        <li key={code} className="leading-snug">
+          <span className="font-semibold">{DOCUMENT_REJECTION_ISSUE_LABELS[code]}</span>
+          <span className="block pl-3.5 font-normal text-red-800/90">{DOCUMENT_REJECTION_ISSUE_ACTIONS[code]}</span>
+        </li>
+      ))}
+      {d.note ? <li className="list-none pl-0 italic text-red-800/85">Note: {d.note}</li> : null}
+    </ul>
+  );
+}
 
 function DocVerifyButton({
   storeId,
   docType,
   isVerified,
+  isRejected,
+  hasResubmittedAfterReject,
+  step4RejectionDetailsRoot,
   onSuccess,
 }: {
   storeId: number;
   docType: (typeof DOC_TYPES)[number];
   isVerified: boolean;
+  isRejected: boolean;
+  hasResubmittedAfterReject: boolean;
+  step4RejectionDetailsRoot: unknown;
   onSuccess: () => void;
 }) {
   const [loading, setLoading] = useState(false);
+  const structured = rejectionDetailForDocType(step4RejectionDetailsRoot, docType);
+  const needsFileReupload = rejectionRequiresNewFileUpload(structured);
+  const canVerifyWhileRejected = !needsFileReupload || hasResubmittedAfterReject;
 
   const handleVerify = async () => {
     setLoading(true);
@@ -159,6 +502,45 @@ function DocVerifyButton({
       </span>
     );
   }
+  if (isRejected && canVerifyWhileRejected) {
+    return (
+      <div className="flex max-w-[260px] flex-col gap-1">
+        {!needsFileReupload ? (
+          <p className="text-[10px] leading-snug text-gray-600">
+            Rejection did not require a new image. After the partner updates text/expiry/details (or you edit here), verify again.
+          </p>
+        ) : hasResubmittedAfterReject ? (
+          <p className="text-[10px] leading-snug text-gray-600">New file uploaded — review and verify.</p>
+        ) : null}
+        <button
+          type="button"
+          disabled={loading}
+          onClick={handleVerify}
+          className="inline-flex w-fit cursor-pointer items-center gap-1 rounded border border-amber-500 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+        >
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3" />}
+          Verify again
+        </button>
+      </div>
+    );
+  }
+  if (isRejected) {
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="max-w-[260px] text-[10px] leading-snug text-gray-500">
+          The document image was rejected. The store must upload a new file on the partner portal before you can verify again.
+        </p>
+        <button
+          type="button"
+          disabled
+          title="Available after a new document file is uploaded from the partner portal"
+          className="inline-flex w-fit cursor-not-allowed items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-0.5 text-[10px] font-semibold text-gray-400"
+        >
+          Verify again
+        </button>
+      </div>
+    );
+  }
   return (
     <button
       type="button"
@@ -177,6 +559,7 @@ function DocRejectButton({
   docType,
   isRejected,
   rejectionReason,
+  rejectionDetailsRoot,
   docLabel,
   onSuccess,
 }: {
@@ -184,20 +567,26 @@ function DocRejectButton({
   docType: (typeof DOC_TYPES)[number];
   isRejected: boolean;
   rejectionReason: string | null;
+  rejectionDetailsRoot: unknown;
   docLabel: string;
   onSuccess: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [reason, setReason] = useState("");
+  const [selectedIssues, setSelectedIssues] = useState<DocumentRejectionIssueCode[]>([]);
+  const [extraNote, setExtraNote] = useState("");
+
+  const toggleIssue = (code: DocumentRejectionIssueCode) => {
+    setSelectedIssues((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
+  };
 
   const handleRejectClick = () => {
-    setReason("");
+    setSelectedIssues([]);
+    setExtraNote("");
     setModalOpen(true);
   };
 
   const handleRejectSubmit = async () => {
-    const trimmed = reason.trim();
     setLoading(true);
     try {
       const res = await fetch(`/api/merchant/stores/${storeId}/documents/verify`, {
@@ -206,7 +595,8 @@ function DocRejectButton({
         body: JSON.stringify({
           docType,
           action: "reject",
-          rejection_reason: trimmed || null,
+          rejection_issues: selectedIssues,
+          rejection_note: extraNote.trim() || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -226,9 +616,10 @@ function DocRejectButton({
           <XCircle className="h-3 w-3" />
           Rejected
         </span>
+        <Step4RejectionBreakdown detailsRoot={rejectionDetailsRoot} docType={docType} />
         {rejectionReason && (
-          <span className="max-w-[220px] text-[10px] text-red-700" title={rejectionReason}>
-            Reason: {rejectionReason}
+          <span className="max-w-[min(100%,280px)] text-[10px] text-red-800/90" title={rejectionReason}>
+            Summary: {rejectionReason}
           </span>
         )}
       </span>
@@ -247,16 +638,34 @@ function DocRejectButton({
       </button>
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !loading && setModalOpen(false)}>
-          <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
-            <p className="mb-2 text-sm font-medium text-gray-900">Reject {docLabel}</p>
-            <p className="mb-2 text-xs text-gray-500">Reason will be saved and shown to the store. (Required so they know why it was rejected.)</p>
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <p className="mb-1 text-sm font-medium text-gray-900">Reject {docLabel}</p>
+            <p className="mb-3 text-xs text-gray-500">
+              Select everything that is wrong. The store will only be asked to fix what you select (e.g. number only vs new image).
+            </p>
+            <div className="mb-3 space-y-2">
+              {DOCUMENT_REJECTION_ISSUE_CODES.map((code) => (
+                <label key={code} className="flex cursor-pointer items-start gap-2 rounded border border-gray-100 bg-gray-50/80 px-2 py-1.5 text-xs hover:bg-gray-50">
+                  <input
+                    type="checkbox"
+                    checked={selectedIssues.includes(code)}
+                    onChange={() => toggleIssue(code)}
+                    className="mt-0.5 h-3.5 w-3.5 rounded border-gray-300"
+                  />
+                  <span>
+                    <span className="font-medium text-gray-900">{DOCUMENT_REJECTION_ISSUE_LABELS[code]}</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-gray-500">{DOCUMENT_REJECTION_ISSUE_ACTIONS[code]}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Optional note</p>
             <textarea
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="e.g. Document unclear, wrong type, expired..."
+              value={extraNote}
+              onChange={(e) => setExtraNote(e.target.value)}
+              placeholder="Extra context for the store (optional)…"
               className="mb-3 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-              rows={3}
-              autoFocus
+              rows={2}
             />
             <div className="flex justify-end gap-2">
               <button
@@ -268,7 +677,7 @@ function DocRejectButton({
               </button>
               <button
                 type="button"
-                disabled={loading || !reason.trim()}
+                disabled={loading || selectedIssues.length === 0}
                 onClick={handleRejectSubmit}
                 className="rounded bg-red-600 px-3 py-1 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
@@ -282,74 +691,34 @@ function DocRejectButton({
   );
 }
 
+function docAttachmentLooksPdf(url: string): boolean {
+  const u = url.split("?")[0]?.toLowerCase() ?? "";
+  return u.endsWith(".pdf");
+}
+
+/** Step 4 modal: preview only (merchants replace files on the partner site). */
 function DocFileUpload({
-  storeId,
-  docType,
   currentUrl,
-  onSuccess,
+  onPreview,
 }: {
-  storeId: number;
-  docType: (typeof DOC_TYPES)[number];
   currentUrl: string | null | undefined;
-  onSuccess: () => void;
+  onPreview?: () => void;
 }) {
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inputRef = React.useRef<HTMLInputElement>(null);
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError(null);
-    setUploading(true);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("docType", docType);
-      const res = await fetch(`/api/merchant/stores/${storeId}/documents/upload`, {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success) {
-        onSuccess();
-        if (inputRef.current) inputRef.current.value = "";
-      } else {
-        setError(data?.error || "Upload failed");
-      }
-    } catch {
-      setError("Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  };
-
+  const url = typeof currentUrl === "string" ? currentUrl.trim() : "";
+  if (!url) {
+    return <span className="text-[10px] text-gray-500">No document file on record.</span>;
+  }
+  if (!onPreview) return null;
   return (
     <div className="flex flex-wrap items-center gap-2 py-0.5">
-      {currentUrl && (
-        <a
-          href={currentUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-indigo-700"
-        >
-          <ExternalLink className="h-3 w-3" />
-          Open
-        </a>
-      )}
-      <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-gray-300 bg-gray-50 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-100">
-        {uploading ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
-        <span>{currentUrl ? "Replace" : "Upload"} image/PDF</span>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf,.png,.jpg,.jpeg,.webp,image/*,application/pdf"
-          onChange={handleFile}
-          disabled={uploading}
-          className="hidden"
-        />
-      </label>
-      {error && <span className="text-[10px] text-red-600">{error}</span>}
+      <button
+        type="button"
+        onClick={onPreview}
+        className="inline-flex items-center gap-1 rounded border border-indigo-200 bg-white px-2 py-0.5 text-[11px] font-medium text-indigo-700 shadow-sm hover:bg-indigo-50"
+      >
+        <Eye className="h-3 w-3" />
+        Preview
+      </button>
     </div>
   );
 }
@@ -548,17 +917,25 @@ function StepDetailContent({
   store,
   documents,
   menuFiles,
+  menuReviewStoreId,
+  menuReviewInteractive,
+  onMenuMediaUpdated,
   operatingHours,
   onboardingPayments,
   agreementAcceptance,
+  bankAccounts,
 }: {
   stepNum: number;
   store: VerificationDataStore;
   documents: Record<string, unknown> | null;
   menuFiles?: MenuMediaFile[];
+  menuReviewStoreId?: number;
+  menuReviewInteractive?: boolean;
+  onMenuMediaUpdated?: () => void;
   operatingHours?: Record<string, unknown> | null;
   onboardingPayments?: Record<string, unknown>[];
   agreementAcceptance?: Record<string, unknown> | null;
+  bankAccounts?: Record<string, unknown>[] | null;
 }) {
   const row = (label: string, value: React.ReactNode) => (
     <div key={label} className="flex gap-2 py-0.5 text-xs">
@@ -631,29 +1008,13 @@ function StepDetailContent({
       <div className="mt-2 border-t border-gray-200 pt-2">
         <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Menu setup</p>
         {row("Cuisine types", Array.isArray(store.cuisine_types) ? store.cuisine_types.join(", ") : null)}
-        {menuFiles && menuFiles.length > 0 && (
-          <div className="mt-3 border-t border-gray-100 pt-2">
-            <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Menu files (images, CSV, XLS)</p>
-            <ul className="space-y-1.5">
-              {menuFiles.map((f) => (
-                <li key={f.id} className="flex items-center justify-between gap-2 rounded border border-gray-200 bg-gray-50/50 px-2 py-1.5 text-xs">
-                  <span className="min-w-0 truncate font-medium text-gray-700">
-                    {f.original_file_name || f.r2_key || `File ${f.id}`}
-                  </span>
-                  <a
-                    href={f.public_url || "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-700 disabled:pointer-events-none disabled:opacity-50"
-                    onClick={(e) => !f.public_url && e.preventDefault()}
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    Open
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
+        {menuFiles && menuFiles.length > 0 && menuReviewStoreId != null && (
+          <MenuReferenceReviewBlock
+            storeId={menuReviewStoreId}
+            files={menuFiles}
+            onUpdated={onMenuMediaUpdated}
+            interactive={!!menuReviewInteractive}
+          />
         )}
         <p className="mt-1 text-[10px] text-gray-500">Menu items are managed in the store dashboard.</p>
       </div>
@@ -661,16 +1022,21 @@ function StepDetailContent({
   }
   if (stepNum === 4) {
     const doc = documents || {};
-    const entries: Array<{ label: string; numberKey: string; urlKey: string; verifiedKey: string }> = [
-      { label: "PAN number", numberKey: "pan_document_number", urlKey: "pan_document_url", verifiedKey: "pan_is_verified" },
-      { label: "GST number", numberKey: "gst_document_number", urlKey: "gst_document_url", verifiedKey: "gst_is_verified" },
-      { label: "Aadhaar number", numberKey: "aadhaar_document_number", urlKey: "aadhaar_document_url", verifiedKey: "aadhaar_is_verified" },
-      { label: "FSSAI number", numberKey: "fssai_document_number", urlKey: "fssai_document_url", verifiedKey: "fssai_is_verified" },
-      { label: "Drug license", numberKey: "drug_license_document_number", urlKey: "drug_license_document_url", verifiedKey: "drug_license_is_verified" },
-    ];
-    const dynamicEntries = entries.filter(
-      (e) => (doc[e.numberKey] != null && String(doc[e.numberKey]).trim() !== "") || doc[e.urlKey]
-    );
+    const docRec = doc as Record<string, unknown>;
+    type RoStep4Entry = { row: Step4DocRow; aadhaarSide?: "front" | "back" };
+    const dynamicEntries: RoStep4Entry[] = [];
+    for (const e of STEP4_DOCUMENT_ROWS) {
+      const hasNumber = doc[e.numberKey] != null && String(doc[e.numberKey]).trim() !== "";
+      const frontUrl = String(doc[e.urlKey] ?? "").trim();
+      const hasFrontUrl = !!frontUrl;
+      const hasBackUrl = e.docType === "aadhaar" ? !!getAadhaarBackUrl(docRec) : false;
+      if (e.docType === "aadhaar") {
+        if (hasNumber || hasFrontUrl) dynamicEntries.push({ row: e, aadhaarSide: "front" });
+        if (hasBackUrl) dynamicEntries.push({ row: e, aadhaarSide: "back" });
+        continue;
+      }
+      if (hasNumber || hasFrontUrl) dynamicEntries.push({ row: e });
+    }
     return (
       <div className="mt-2 border-t border-gray-200 pt-2">
         <p className="mb-1 text-[10px] font-semibold uppercase text-gray-500">Restaurant documents</p>
@@ -678,36 +1044,64 @@ function StepDetailContent({
           <p className="py-1 text-xs text-gray-500">No document records for this store.</p>
         ) : (
           <>
-            {dynamicEntries.map((e) => (
-              <div key={e.numberKey} className="flex flex-wrap items-center gap-2 py-0.5">
-                <div className="flex gap-2 text-xs min-w-0 flex-1">
-                  <span className="w-28 shrink-0 font-medium text-gray-500">{e.label}</span>
-                  <span className="text-gray-900">{(doc[e.numberKey] as string) ?? "—"}</span>
-                  {doc[e.verifiedKey] && (
-                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-emerald-100 px-1 py-0.5 text-[10px] font-medium text-emerald-800">
-                      Verified
-                    </span>
+            {dynamicEntries.map((item) => {
+              const e = item.row;
+              const isAadhaarBack = e.docType === "aadhaar" && item.aadhaarSide === "back";
+              const key = `${e.numberKey}${item.aadhaarSide ? `-${item.aadhaarSide}` : ""}`;
+              const listLabel = isAadhaarBack ? "Aadhaar (back)" : e.listLabel;
+              const fileHref = isAadhaarBack ? getAadhaarBackUrl(docRec) : (doc[e.urlKey] as string) || "";
+              return (
+                <div key={key} className="flex flex-col gap-1 border-b border-gray-100 py-1 last:border-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex min-w-0 flex-1 gap-2 text-xs">
+                      <span className="w-28 shrink-0 font-medium text-gray-500">{listLabel}</span>
+                      <span className="text-gray-900">{(doc[e.numberKey] as string) ?? "—"}</span>
+                      {!isAadhaarBack && !!doc[e.verifiedKey] && (
+                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-emerald-100 px-1 py-0.5 text-[10px] font-medium text-emerald-800">
+                          Verified
+                        </span>
+                      )}
+                      {!isAadhaarBack &&
+                        !!doc[e.rejectionKey] &&
+                        rejectionRequiresNewFileUpload(rejectionDetailForDocType(doc.step4_rejection_details, e.docType)) &&
+                        step4DocResubmitted(doc.step4_resubmission_flags, e.docType) && (
+                          <span className="inline-flex shrink-0 items-center rounded bg-sky-100 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-900">
+                            Resubmitted
+                          </span>
+                        )}
+                    </div>
+                    {fileHref ? (
+                      <a
+                        href={fileHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700"
+                      >
+                        <ExternalLink className="h-2.5 w-2.5" />
+                        Open
+                      </a>
+                    ) : null}
+                  </div>
+                  {e.docType === "fssai" && !!doc.fssai_expiry_date && (
+                    <div className="flex gap-2 py-0.5 text-xs">
+                      <span className="w-28 shrink-0 font-medium text-gray-500">FSSAI expiry</span>
+                      <span className="text-gray-900">
+                        {new Date(doc.fssai_expiry_date as string).toLocaleDateString()}
+                      </span>
+                    </div>
+                  )}
+                  {!isAadhaarBack && !!doc[e.rejectionKey] && (
+                    <div className="ml-[7.5rem] min-w-0 rounded border border-red-100 bg-red-50/40 px-2 py-1.5">
+                      <p className="text-[10px] font-semibold text-red-900">What was rejected</p>
+                      <Step4RejectionBreakdown detailsRoot={doc.step4_rejection_details} docType={e.docType} />
+                      <p className="mt-1 text-[10px] text-red-800/90">
+                        {(doc[e.rejectionKey] as string) ?? ""}
+                      </p>
+                    </div>
                   )}
                 </div>
-                {doc[e.urlKey] && (
-                  <a
-                    href={doc[e.urlKey] as string}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700"
-                  >
-                    <ExternalLink className="h-2.5 w-2.5" />
-                    Open
-                  </a>
-                )}
-              </div>
-            ))}
-            {doc.fssai_expiry_date && dynamicEntries.some((e) => e.numberKey === "fssai_document_number") && (
-              <div className="flex gap-2 py-0.5 text-xs">
-                <span className="w-28 shrink-0 font-medium text-gray-500">FSSAI expiry</span>
-                <span className="text-gray-900">{new Date(doc.fssai_expiry_date as string).toLocaleDateString()}</span>
-              </div>
-            )}
+              );
+            })}
           </>
         )}
       </div>
@@ -733,6 +1127,14 @@ function StepDetailContent({
     );
   }
   if (stepNum === 6) {
+    return (
+      <div className="mt-2 border-t border-gray-200 pt-2">
+        <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Bank account — payout details</p>
+        <BankAccountsVerificationPanel accounts={bankAccounts} />
+      </div>
+    );
+  }
+  if (stepNum === 7) {
     const payments = onboardingPayments ?? [];
     const statusBadge = (status: string) => {
       const s = (status || "").toLowerCase();
@@ -796,7 +1198,7 @@ function StepDetailContent({
       </div>
     );
   }
-  if (stepNum === 7) {
+  if (stepNum === 8) {
     const agg = agreementAcceptance ?? null;
     return (
       <div className="mt-2 border-t border-gray-200 pt-2">
@@ -908,11 +1310,15 @@ function StepDetailContentEditable({
   menuFiles,
   storeIdForUpload,
   onMenuUploadComplete,
+  menuReviewInteractive,
+  onMenuMediaUpdated,
   storeIdForDocUpload,
   onDocumentsUpdated,
+  onDocumentPreview,
   operatingHours,
   onboardingPayments,
   agreementAcceptance,
+  bankAccounts,
 }: {
   stepNum: number;
   form: VerificationDataStore & { documents?: Record<string, unknown> | null };
@@ -924,11 +1330,15 @@ function StepDetailContentEditable({
   menuFiles?: MenuMediaFile[];
   storeIdForUpload?: number;
   onMenuUploadComplete?: () => void;
+  menuReviewInteractive?: boolean;
+  onMenuMediaUpdated?: () => void;
   storeIdForDocUpload?: number;
   onDocumentsUpdated?: () => void;
+  onDocumentPreview?: (payload: Step4DocPreviewPayload) => void;
   operatingHours?: Record<string, unknown> | null;
   onboardingPayments?: Record<string, unknown>[];
   agreementAcceptance?: Record<string, unknown> | null;
+  bankAccounts?: Record<string, unknown>[] | null;
 }) {
   const set = (key: keyof VerificationDataStore, value: unknown) => {
     onChange({ [key]: value });
@@ -1117,29 +1527,13 @@ function StepDetailContentEditable({
         {fields.map((f) => (
           <FieldWithEditSave key={f.key} fieldKey={f.key} label={f.label} displayValue={f.display} isEditing={editingField === f.key} onStartEdit={() => onStartEdit(f.key)} onSave={() => onSaveField(f.key)} saving={savingField === f.key} editNode={f.editNode} />
         ))}
-        {menuFiles && menuFiles.length > 0 && (
-          <div className="mt-3 border-t border-gray-100 pt-2">
-            <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Menu files (images, CSV, XLS)</p>
-            <ul className="space-y-1.5">
-              {menuFiles.map((f) => (
-                <li key={f.id} className="flex items-center justify-between gap-2 rounded border border-gray-200 bg-gray-50/50 px-2 py-1.5 text-xs">
-                  <span className="min-w-0 truncate font-medium text-gray-700">
-                    {f.original_file_name || f.r2_key || `File ${f.id}`}
-                  </span>
-                  <a
-                    href={f.public_url || "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-700 disabled:pointer-events-none disabled:opacity-50"
-                    onClick={(e) => !f.public_url && e.preventDefault()}
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    Open
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </div>
+        {menuFiles && menuFiles.length > 0 && storeIdForUpload != null && (
+          <MenuReferenceReviewBlock
+            storeId={storeIdForUpload}
+            files={menuFiles}
+            onUpdated={onMenuMediaUpdated}
+            interactive={!!menuReviewInteractive}
+          />
         )}
         {stepNum === 3 && storeIdForUpload != null && onMenuUploadComplete && (
           <MenuFileUpload
@@ -1154,103 +1548,172 @@ function StepDetailContentEditable({
   }
   if (stepNum === 4) {
     const doc = form.documents ?? {};
+    const docRec = doc as Record<string, unknown>;
     const updateDoc = (key: string, value: string) => {
       onChange({ documents: { ...doc, [key]: value || null } } as Partial<VerificationDataStore>);
     };
-    const docKeys = ["pan_document_number", "gst_document_number", "aadhaar_document_number", "fssai_document_number", "drug_license_document_number"] as const;
-    const labels: Record<string, string> = { pan_document_number: "PAN number", gst_document_number: "GST number", aadhaar_document_number: "Aadhaar number", fssai_document_number: "FSSAI number", drug_license_document_number: "Drug license" };
-    const numberKeyToDocType: Record<string, (typeof DOC_TYPES)[number]> = {
-      pan_document_number: "pan",
-      gst_document_number: "gst",
-      aadhaar_document_number: "aadhaar",
-      fssai_document_number: "fssai",
-      drug_license_document_number: "drug_license",
-    };
-    const docTypeToUrlKey: Record<(typeof DOC_TYPES)[number], string> = {
-      pan: "pan_document_url",
-      gst: "gst_document_url",
-      aadhaar: "aadhaar_document_url",
-      fssai: "fssai_document_url",
-      drug_license: "drug_license_document_url",
-    };
-    const docTypeToVerifiedKey: Record<(typeof DOC_TYPES)[number], string> = {
-      pan: "pan_is_verified",
-      gst: "gst_is_verified",
-      aadhaar: "aadhaar_is_verified",
-      fssai: "fssai_is_verified",
-      drug_license: "drug_license_is_verified",
-    };
-    const docTypeToRejectionKey: Record<(typeof DOC_TYPES)[number], string> = {
-      pan: "pan_rejection_reason",
-      gst: "gst_rejection_reason",
-      aadhaar: "aadhaar_rejection_reason",
-      fssai: "fssai_rejection_reason",
-      drug_license: "drug_license_rejection_reason",
-    };
-    const dynamicEntries = docKeys.filter((key) => {
-      const docType = numberKeyToDocType[key];
-      const urlKey = docType ? docTypeToUrlKey[docType] : null;
-      const hasNumber = doc[key] != null && String(doc[key]).trim() !== "";
-      const hasUrl = urlKey && doc[urlKey];
-      return hasNumber || hasUrl;
-    });
+    type Step4ExpandedEntry = { row: Step4DocRow; aadhaarSide?: "front" | "back" };
+    const dynamicEntries: Step4ExpandedEntry[] = [];
+    for (const row of STEP4_DOCUMENT_ROWS) {
+      const hasNumber = doc[row.numberKey] != null && String(doc[row.numberKey]).trim() !== "";
+      const frontUrl = String(doc[row.urlKey] ?? "").trim();
+      const hasFrontUrl = !!frontUrl;
+      const backUrl = row.docType === "aadhaar" ? getAadhaarBackUrl(docRec) : "";
+      const hasBackUrl = !!backUrl;
+
+      if (row.docType === "aadhaar") {
+        if (hasNumber || hasFrontUrl) dynamicEntries.push({ row, aadhaarSide: "front" });
+        if (hasBackUrl) dynamicEntries.push({ row, aadhaarSide: "back" });
+        continue;
+      }
+      if (hasNumber || hasFrontUrl) dynamicEntries.push({ row });
+    }
     return (
       <div className="mt-2 border-t border-gray-200 pt-2">
-        <p className="mb-1 text-[10px] font-semibold uppercase text-gray-500">Restaurant documents (only documents with data for this store)</p>
+        <p className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+          Restaurant documents (only documents with data for this store)
+        </p>
         {dynamicEntries.length === 0 ? (
           <p className="py-2 text-xs text-gray-500">No document records for this store yet. Add numbers or upload files to verify.</p>
         ) : (
-          dynamicEntries.map((key) => {
-            const docType = numberKeyToDocType[key];
-            const urlKey = docType ? docTypeToUrlKey[docType] : null;
-            const verifiedKey = docType ? docTypeToVerifiedKey[docType] : null;
-            const rejectionKey = docType ? docTypeToRejectionKey[docType] : null;
-            const isVerified = verifiedKey ? !!doc[verifiedKey] : false;
-            const isRejected = rejectionKey ? !!doc[rejectionKey] : false;
-            return (
-              <div key={key} className="border-b border-gray-100 pb-1.5 last:border-0">
-                <FieldWithEditSave
-                  fieldKey={key}
-                  label={labels[key]}
-                  displayValue={(doc[key] as string) ?? "—"}
-                  isEditing={editingField === key}
-                  onStartEdit={() => onStartEdit(key)}
-                  onSave={() => onSaveField(key)}
-                  saving={savingField === key}
-                  editNode={<input type="text" value={(doc[key] as string) ?? ""} onChange={(e) => updateDoc(key, e.target.value)} className={inputCls} />}
-                />
-                {storeIdForDocUpload != null && onDocumentsUpdated && docType && urlKey && (
-                  <div className="ml-[5.5rem] mt-0.5 flex flex-wrap items-center gap-2">
-                    <DocFileUpload
-                      storeId={storeIdForDocUpload}
-                      docType={docType}
-                      currentUrl={(doc[urlKey] as string) ?? null}
-                      onSuccess={onDocumentsUpdated}
-                    />
-                    <DocVerifyButton
-                      storeId={storeIdForDocUpload}
-                      docType={docType}
-                      isVerified={isVerified}
-                      onSuccess={onDocumentsUpdated}
-                    />
-                    <DocRejectButton
-                      storeId={storeIdForDocUpload}
-                      docType={docType}
-                      isRejected={isRejected}
-                      rejectionReason={rejectionKey ? (doc[rejectionKey] as string) ?? null : null}
-                      docLabel={labels[key]}
-                      onSuccess={onDocumentsUpdated}
-                    />
+          <div className="space-y-3">
+            {dynamicEntries.map((entry) => {
+              const { row, aadhaarSide } = entry;
+              const isAadhaarBack = row.docType === "aadhaar" && aadhaarSide === "back";
+              const key = `${row.numberKey}${aadhaarSide ? `-${aadhaarSide}` : ""}`;
+              const isVerified = !!doc[row.verifiedKey];
+              const isRejected = !!doc[row.rejectionKey];
+              const rejectionStructured = rejectionDetailForDocType(doc.step4_rejection_details, row.docType);
+              const needsImageResubmission = rejectionRequiresNewFileUpload(rejectionStructured);
+              const hasResubmittedAfterReject =
+                isRejected && step4DocResubmitted(doc.step4_resubmission_flags, row.docType);
+              const fileUrl = isAadhaarBack
+                ? getAadhaarBackUrl(docRec)
+                : (doc[row.urlKey] as string) || "";
+              const hasFile = !!String(fileUrl).trim();
+              const listLabel = isAadhaarBack ? "Aadhaar (back)" : row.listLabel;
+              const openPreview = () =>
+                onDocumentPreview?.({
+                  url: fileUrl,
+                  title: listLabel,
+                  metaLines: buildStep4DocumentPreviewMeta(docRec, row, {
+                    aadhaarSide: row.docType === "aadhaar" ? (isAadhaarBack ? "back" : "front") : undefined,
+                  }),
+                });
+              return (
+                <div
+                  key={key}
+                  className="overflow-hidden rounded-xl border border-gray-200/90 bg-gradient-to-b from-white to-slate-50/80 shadow-sm ring-1 ring-gray-100"
+                >
+                  <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-start">
+                    {hasFile && (
+                      <button
+                        type="button"
+                        onClick={openPreview}
+                        className="group relative mx-auto h-28 w-full max-w-[7.5rem] shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100 shadow-inner sm:mx-0"
+                        title="Open preview"
+                      >
+                        {docAttachmentLooksPdf(fileUrl) ? (
+                          <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-gray-500">
+                            <FileText className="h-8 w-8 text-indigo-400 transition group-hover:text-indigo-600" />
+                            <span className="text-[9px] font-medium uppercase tracking-wide">PDF</span>
+                          </div>
+                        ) : (
+                          <img
+                            src={fileUrl}
+                            alt=""
+                            className="h-full w-full object-cover transition group-hover:opacity-95"
+                          />
+                        )}
+                        <span className="absolute inset-x-0 bottom-0 bg-black/55 py-0.5 text-center text-[9px] font-medium text-white opacity-0 transition group-hover:opacity-100">
+                          Tap to preview
+                        </span>
+                      </button>
+                    )}
+                    <div className="min-w-0 flex-1 space-y-2">
+                      {isAadhaarBack ? (
+                        <div className="flex flex-col gap-1 rounded border border-gray-100 bg-white/80 px-2 py-1.5">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                            {listLabel}
+                          </span>
+                          <p className="text-xs text-gray-800">
+                            <span className="font-medium text-gray-500">Aadhaar number: </span>
+                            {(doc[row.numberKey] as string) ?? "—"}
+                          </p>
+                          <p className="text-[10px] leading-snug text-gray-500">
+                            Verification uses the same Aadhaar record as the front image. Use the front card for verify /
+                            reject and edits.
+                          </p>
+                        </div>
+                      ) : (
+                        <FieldWithEditSave
+                          fieldKey={row.numberKey}
+                          label={row.listLabel}
+                          displayValue={(doc[row.numberKey] as string) ?? "—"}
+                          isEditing={editingField === row.numberKey}
+                          onStartEdit={() => onStartEdit(row.numberKey)}
+                          onSave={() => onSaveField(row.numberKey)}
+                          saving={savingField === row.numberKey}
+                          editNode={
+                            <input
+                              type="text"
+                              value={(doc[row.numberKey] as string) ?? ""}
+                              onChange={(e) => updateDoc(row.numberKey, e.target.value)}
+                              className={inputCls}
+                            />
+                          }
+                        />
+                      )}
+                      {row.docType === "fssai" && !!doc.fssai_expiry_date && (
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-t border-gray-100 pt-2 text-xs">
+                          <span className="font-medium text-gray-500">FSSAI expiry</span>
+                          <span className="text-gray-900">
+                            {new Date(doc.fssai_expiry_date as string).toLocaleDateString()}
+                          </span>
+                        </div>
+                      )}
+                      {storeIdForDocUpload != null && onDocumentsUpdated && !isAadhaarBack && (
+                        <div className="flex flex-col gap-2 border-t border-gray-100 pt-2">
+                          {hasResubmittedAfterReject && needsImageResubmission && (
+                            <span className="inline-flex w-fit items-center rounded bg-sky-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-900">
+                              Resubmitted
+                            </span>
+                          )}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <DocFileUpload
+                              currentUrl={hasFile ? fileUrl : null}
+                              onPreview={hasFile && onDocumentPreview ? openPreview : undefined}
+                            />
+                          </div>
+                          <div className="flex flex-wrap items-start gap-2">
+                            <DocVerifyButton
+                              storeId={storeIdForDocUpload}
+                              docType={row.docType}
+                              isVerified={isVerified}
+                              isRejected={isRejected}
+                              hasResubmittedAfterReject={hasResubmittedAfterReject}
+                              step4RejectionDetailsRoot={doc.step4_rejection_details}
+                              onSuccess={onDocumentsUpdated}
+                            />
+                            {!isVerified && (
+                              <DocRejectButton
+                                storeId={storeIdForDocUpload}
+                                docType={row.docType}
+                                isRejected={isRejected}
+                                rejectionReason={(doc[row.rejectionKey] as string) ?? null}
+                                rejectionDetailsRoot={doc.step4_rejection_details}
+                                docLabel={row.listLabel}
+                                onSuccess={onDocumentsUpdated}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
-            );
-          })
-        )}
-        {doc.fssai_expiry_date && (doc.fssai_document_number || doc.fssai_document_url) && (
-          <div className="flex gap-2 py-0.5 text-xs">
-            <span className="w-36 shrink-0 font-medium text-gray-500">FSSAI expiry</span>
-            <span className="text-gray-900">{new Date(doc.fssai_expiry_date as string).toLocaleDateString()}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -1289,6 +1752,18 @@ function StepDetailContentEditable({
     );
   }
   if (stepNum === 6) {
+    return (
+      <div className="mt-2 border-t border-gray-200 pt-2">
+        <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Bank account — payout details</p>
+        <p className="mb-2 text-[11px] text-gray-600">
+          Review IFSC, account holder, and proof / UPI. Marking this step verified also marks the primary payout account as
+          verified for ops.
+        </p>
+        <BankAccountsVerificationPanel accounts={bankAccounts} />
+      </div>
+    );
+  }
+  if (stepNum === 7) {
     const payments = onboardingPayments ?? [];
     const rowEd = (label: string, value: React.ReactNode) => (
       <div key={label} className="flex gap-2 py-0.5 text-xs">
@@ -1358,7 +1833,7 @@ function StepDetailContentEditable({
       </div>
     );
   }
-  if (stepNum === 7) {
+  if (stepNum === 8) {
     const agg = agreementAcceptance ?? null;
     const rowEd = (label: string, value: React.ReactNode) => (
       <div key={label} className="flex gap-2 py-0.5 text-xs">
@@ -1432,6 +1907,13 @@ export function StoreVerificationInner({
     operatingHours: Record<string, unknown> | null;
     onboardingPayments: Record<string, unknown>[];
     agreementAcceptance: Record<string, unknown> | null;
+    bankAccounts: Record<string, unknown>[];
+    assignedAreaManagers: {
+      id: number;
+      full_name: string | null;
+      email: string | null;
+      mobile: string | null;
+    }[];
   } | null>(null);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
   const [verifyModalStep, setVerifyModalStep] = useState<number | null>(null);
@@ -1449,11 +1931,14 @@ export function StoreVerificationInner({
     action: "verify" | "pending" | "reject";
   } | null>(null);
   const [unverifyingStep, setUnverifyingStep] = useState<number | null>(null);
+  /** Required when rejecting a step — emailed to the store owner. */
+  const [stepRejectReasonDraft, setStepRejectReasonDraft] = useState("");
   const [saveConfirm, setSaveConfirm] = useState<
     { type: "location" } | { type: "field"; fieldKey: string } | null
   >(null);
   const [editConfirmField, setEditConfirmField] = useState<string | null>(null);
   const [menuMediaFiles, setMenuMediaFiles] = useState<MenuMediaFile[]>([]);
+  const [docPreview, setDocPreview] = useState<Step4DocPreviewPayload | null>(null);
 
   useEffect(() => {
     if (verifyModalStep != null && verificationData) {
@@ -1474,7 +1959,7 @@ export function StoreVerificationInner({
 
   const refetchMenuMedia = () => {
     if (!store?.id) return;
-    fetch(`/api/merchant/stores/${store.id}/media?scope=MENU_REFERENCE`)
+    fetch(`/api/merchant/stores/${store.id}/media?scope=MENU_REFERENCE`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.success && Array.isArray(data.files)) setMenuMediaFiles(data.files);
@@ -1486,7 +1971,7 @@ export function StoreVerificationInner({
     if (!store?.id) return;
     const step3Open = verifyModalStep === 3 || expandedStep === 3;
     if (!step3Open) return;
-    fetch(`/api/merchant/stores/${store.id}/media?scope=MENU_REFERENCE`)
+    fetch(`/api/merchant/stores/${store.id}/media?scope=MENU_REFERENCE`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.success && Array.isArray(data.files)) setMenuMediaFiles(data.files);
@@ -1501,14 +1986,20 @@ export function StoreVerificationInner({
   }, [store?.id, verifyModalStep]);
 
   const getDocSummaryForStore = (): string[] => {
-    const doc = verificationData?.documents;
+    const doc = verificationData?.documents as Record<string, unknown> | undefined;
     if (!doc) return [];
     const out: string[] = [];
-    if (doc.pan_document_number || doc.pan_document_url) out.push("PAN");
-    if (doc.gst_document_number || doc.gst_document_url) out.push("GST");
-    if (doc.aadhaar_document_number || doc.aadhaar_document_url) out.push("Aadhaar");
-    if (doc.fssai_document_number || doc.fssai_document_url) out.push("FSSAI");
-    if (doc.drug_license_document_number || doc.drug_license_document_url) out.push("Drug license");
+    for (const r of STEP4_DOCUMENT_ROWS) {
+      if (doc[r.numberKey] || doc[r.urlKey]) {
+        const rr = doc[r.rejectionKey];
+        const rejected = typeof rr === "string" && rr.trim() !== "";
+        const resub =
+          rejected &&
+          rejectionRequiresNewFileUpload(rejectionDetailForDocType(doc.step4_rejection_details, r.docType)) &&
+          step4DocResubmitted(doc.step4_resubmission_flags, r.docType);
+        out.push(resub ? `${r.summary} (Resubmitted)` : r.summary);
+      }
+    }
     return out;
   };
 
@@ -1516,31 +2007,28 @@ export function StoreVerificationInner({
   const allStep4DocumentsVerified = (documents: Record<string, unknown> | null | undefined): boolean => {
     if (!documents) return false;
     const doc = documents as Record<string, unknown>;
-    const checks: Array<{ hasData: boolean; verified: boolean }> = [
-      {
-        hasData: !!(doc.pan_document_number && String(doc.pan_document_number).trim()) || !!doc.pan_document_url,
-        verified: !!doc.pan_is_verified,
-      },
-      {
-        hasData: !!(doc.gst_document_number && String(doc.gst_document_number).trim()) || !!doc.gst_document_url,
-        verified: !!doc.gst_is_verified,
-      },
-      {
-        hasData: !!(doc.aadhaar_document_number && String(doc.aadhaar_document_number).trim()) || !!doc.aadhaar_document_url,
-        verified: !!doc.aadhaar_is_verified,
-      },
-      {
-        hasData: !!(doc.fssai_document_number && String(doc.fssai_document_number).trim()) || !!doc.fssai_document_url,
-        verified: !!doc.fssai_is_verified,
-      },
-      {
-        hasData: !!(doc.drug_license_document_number && String(doc.drug_license_document_number).trim()) || !!doc.drug_license_document_url,
-        verified: !!doc.drug_license_is_verified,
-      },
-    ];
-    const withData = checks.filter((c) => c.hasData);
+    const withData = STEP4_DOCUMENT_ROWS.filter(
+      (r) => !!(doc[r.numberKey] && String(doc[r.numberKey]).trim()) || !!doc[r.urlKey]
+    );
     if (withData.length === 0) return true;
-    return withData.every((c) => c.verified);
+    return withData.every((r) => !!doc[r.verifiedKey]);
+  };
+
+  /** Step 3: every MENU_REFERENCE row and each image bundle entry is VERIFIED (no pending/rejected). */
+  const menuStepAllItemsAccepted = (files: MenuMediaFile[]): boolean => {
+    if (!files.length) return false;
+    for (const f of files) {
+      if (f.reference_images && f.reference_images.length > 0) {
+        for (const e of f.reference_images) {
+          const s = (e.verification_status || "PENDING").toUpperCase();
+          if (s !== "VERIFIED") return false;
+        }
+      } else {
+        const s = (f.verification_status || "PENDING").toUpperCase();
+        if (s !== "VERIFIED") return false;
+      }
+    }
+    return true;
   };
 
   const copyEmail = () => {
@@ -1643,6 +2131,8 @@ export function StoreVerificationInner({
             operatingHours: data.operatingHours ?? null,
             onboardingPayments: Array.isArray(data.onboardingPayments) ? data.onboardingPayments : [],
             agreementAcceptance: data.agreementAcceptance ?? null,
+            bankAccounts: Array.isArray(data.bankAccounts) ? data.bankAccounts : [],
+            assignedAreaManagers: Array.isArray(data.assignedAreaManagers) ? data.assignedAreaManagers : [],
           });
         }
       })
@@ -1664,6 +2154,8 @@ export function StoreVerificationInner({
             operatingHours: data.operatingHours ?? null,
             onboardingPayments: Array.isArray(data.onboardingPayments) ? data.onboardingPayments : [],
             agreementAcceptance: data.agreementAcceptance ?? null,
+            bankAccounts: Array.isArray(data.bankAccounts) ? data.bankAccounts : [],
+            assignedAreaManagers: Array.isArray(data.assignedAreaManagers) ? data.assignedAreaManagers : [],
           });
         }
       })
@@ -1695,14 +2187,25 @@ export function StoreVerificationInner({
     }
   };
 
-  const handleSetStepPending = async (stepNumber: number): Promise<void> => {
+  const handleSetStepPending = async (
+    stepNumber: number,
+    rejectionReason?: string
+  ): Promise<void> => {
     if (!store) return;
+    const trimmed = rejectionReason?.trim() ?? "";
+    if (trimmed && trimmed.length < 3) {
+      setError("Please enter a clearer rejection reason (at least a few characters).");
+      return;
+    }
     setUnverifyingStep(stepNumber);
     try {
       const res = await fetch(`/api/merchant/stores/${store.id}/verification-steps`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ step: stepNumber }),
+        body: JSON.stringify({
+          step: stepNumber,
+          ...(trimmed.length >= 3 ? { rejection_reason: trimmed } : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (data.success && data.steps) {
@@ -1710,6 +2213,25 @@ export function StoreVerificationInner({
         if (data.edits) setStepEdits(data.edits);
         setVerifyModalStep((prev) => (prev === stepNumber ? null : prev));
         setActionConfirm(null);
+        setStepRejectReasonDraft("");
+        const em = data.email as
+          | { attempted?: boolean; sent?: boolean; skippedReason?: string }
+          | undefined;
+        if (em?.attempted && !em.sent) {
+          if (em.skippedReason === "NOT_CONFIGURED") {
+            toast.warning(
+              "Step reset, but email was not sent. Configure EMAIL_ID + EMAIL_APP_PASSWORD in dashboard .env.local and restart dev."
+            );
+          } else if (em.skippedReason === "SMTP_AUTH_FAILED") {
+            toast.warning("Step reset, but Zoho rejected SMTP login. Check app password in .env.local.");
+          } else if (em.skippedReason === "NO_RECIPIENT") {
+            toast.warning("Step reset, but no store email found to notify the merchant.");
+          } else if (em.skippedReason === "SMTP_ERROR" || em.skippedReason === "RESEND_ERROR") {
+            toast.warning("Step reset, but sending the email failed. Check server logs.");
+          }
+        } else if (em?.sent) {
+          toast.success("Rejection reason emailed to the store contact.");
+        }
       } else {
         setError(data.error || "Failed to set step to pending");
       }
@@ -1769,16 +2291,9 @@ export function StoreVerificationInner({
     if (!store || !stepEditForm) return false;
     if (step === 4 && stepEditForm.documents) {
       const docPayload: Record<string, string | null> = {};
-      const docKeys = [
-        "pan_document_number",
-        "gst_document_number",
-        "aadhaar_document_number",
-        "fssai_document_number",
-        "drug_license_document_number",
-      ] as const;
-      for (const k of docKeys) {
-        const v = stepEditForm.documents[k];
-        docPayload[k] = v == null || v === "" ? null : String(v);
+      for (const r of STEP4_DOCUMENT_ROWS) {
+        const v = stepEditForm.documents[r.numberKey];
+        docPayload[r.numberKey] = v == null || v === "" ? null : String(v);
       }
       const docRes = await fetch(`/api/merchant/stores/${store.id}/documents`, {
         method: "PATCH",
@@ -1971,8 +2486,40 @@ export function StoreVerificationInner({
           s ? { ...s, approval_status: action === "approve" ? "APPROVED" : "REJECTED" } : null
         );
         setShowFinalDecisionModal(false);
+        const em = data.email as
+          | { attempted?: boolean; sent?: boolean; skippedReason?: string }
+          | undefined;
+        if (em?.attempted && !em.sent) {
+          if (em.skippedReason === "NOT_CONFIGURED") {
+            toast.warning(
+              "Saved, but no email was sent. Add EMAIL_ID + EMAIL_APP_PASSWORD (Zoho) or RESEND_API_KEY to dashboard .env.local — the partner site .env is separate — then restart npm run dev."
+            );
+          } else if (em.skippedReason === "SMTP_AUTH_FAILED") {
+            toast.warning(
+              "Zoho rejected login (535). Use the same App Password as partnersite: Zoho Mail → Security → App Password, update EMAIL_APP_PASSWORD in dashboard .env.local, restart dev. Default SMTP is smtp.zoho.in (same as partnersite)."
+            );
+          } else if (em.skippedReason === "SMTP_ERROR" || em.skippedReason === "RESEND_ERROR") {
+            toast.warning(
+              "Saved, but the email failed to send. Check the terminal for [email] errors and verify SMTP host/port/password or Resend API key."
+            );
+          }
+        } else if (em && !em.attempted && em.skippedReason === "NO_RECIPIENT") {
+          toast.warning(
+            "Saved, but no email address found for this store. Add store email in merchant data or ensure the onboarding agreement has a signer email."
+          );
+        } else if (em?.sent) {
+          toast.success("Notification email sent to the store contact.");
+        }
         if (returnTo) {
-          router.push(returnTo);
+          const warnNav =
+            em &&
+            ((em.attempted && !em.sent) ||
+              (!em.attempted && em.skippedReason === "NO_RECIPIENT"));
+          if (warnNav) {
+            setTimeout(() => router.push(returnTo), 2200);
+          } else {
+            router.push(returnTo);
+          }
         }
       } else {
         setError(data.error || "Action failed");
@@ -2011,7 +2558,7 @@ export function StoreVerificationInner({
   const isDelisted = statusUpper === "DELISTED";
   const canVerify = !isApproved && !isRejected && !isDelisted;
   const onboardingStep = store.current_onboarding_step ?? 0;
-  const step7Verified = !!(stepVerifications[7]?.verified_at);
+  const step8Verified = !!(stepVerifications[8]?.verified_at);
   const canVerifyStep = (stepNum: number) =>
     stepNum === 1 ? true : !!(stepVerifications[stepNum - 1]?.verified_at);
 
@@ -2024,11 +2571,8 @@ export function StoreVerificationInner({
     verificationData?.store?.full_address ||
     store.full_address ||
     null;
-  const headerAddress =
-    verificationData?.store?.full_address ||
-    verificationData?.store?.city ||
-    store.city ||
-    null;
+
+  const assignedAreaManagers = verificationData?.assignedAreaManagers ?? [];
 
   return (
     <div className="space-y-2">
@@ -2040,7 +2584,7 @@ export function StoreVerificationInner({
           <ArrowLeft className="h-3 w-3" />
           Back to Verifications
         </Link>
-        {step7Verified && canVerify && (
+        {step8Verified && canVerify && (
           <button
             type="button"
             onClick={() => setShowFinalDecisionModal(true)}
@@ -2087,9 +2631,37 @@ export function StoreVerificationInner({
                     </span>
                   )}
                 </div>
+                <div className="mt-1 flex flex-wrap items-start gap-1.5 text-[11px] text-gray-600">
+                  <UserCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-600" aria-hidden />
+                  <div className="min-w-0">
+                    <span className="font-medium text-gray-700">Area manager</span>
+                    {assignedAreaManagers.length > 0 ? (
+                      <ul className="mt-0.5 list-none space-y-0.5">
+                        {assignedAreaManagers.map((am) => (
+                          <li key={am.id} className="break-words">
+                            <span className="font-medium text-gray-800">{am.full_name?.trim() || "—"}</span>
+                            {am.email ? (
+                              <span className="text-gray-600">
+                                {" "}
+                                · {am.email}
+                              </span>
+                            ) : null}
+                            {am.mobile ? (
+                              <span className="text-gray-600">
+                                {" "}
+                                · {String(am.mobile)}
+                              </span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-0.5 text-gray-500">None assigned</p>
+                    )}
+                  </div>
+                </div>
                 <p className="mt-0.5 overflow-x-auto whitespace-nowrap text-[11px] text-gray-500">
                   {store.store_id}
-                  {headerAddress ? ` · ${headerAddress}` : ""}
                 </p>
               </div>
             </div>
@@ -2153,16 +2725,20 @@ export function StoreVerificationInner({
           {canVerify && (
             <>
               <p className="mb-1.5 text-[11px] text-gray-500">
-                Verify steps in order; step 7 must be verified before you can approve or reject.
+                Verify steps in order; step 8 must be verified before you can approve or reject.
               </p>
 
-              {/* Vertical timeline: 7 steps (6=Commission plan, 7=Sign & submit) */}
+              {/* Vertical timeline: 8 steps (6=Bank, 7=Commission, 8=Sign & submit) */}
               <div className="relative space-y-0">
-                {[1, 2, 3, 4, 5, 6, 7].map((stepNum) => {
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((stepNum) => {
                   const label = ONBOARDING_STEP_LABELS[stepNum] ?? `Step ${stepNum}`;
                   const agentVerified = stepVerifications[stepNum]?.verified_at ? stepVerifications[stepNum] : null;
-                  const merchantCompleted = onboardingStep >= stepNum;
-                  const isLast = stepNum === 7;
+                  const stepRejection = stepVerifications[stepNum]?.rejection ?? null;
+                  const merchantCompleted =
+                    stepNum === 6
+                      ? (verificationData?.bankAccounts?.length ?? 0) > 0 || onboardingStep >= 6
+                      : onboardingStep >= stepNum;
+                  const isLast = stepNum === 8;
                   const status =
                     agentVerified ? "verified"
                     : !merchantCompleted ? "pending_merchant"
@@ -2229,6 +2805,32 @@ export function StoreVerificationInner({
                                   Action required
                                 </span>
                               )}
+                              {!agentVerified && stepRejection && (
+                                <span
+                                  className="rounded bg-red-100 px-1 py-0.5 text-[10px] font-medium text-red-800"
+                                  title={stepRejection.rejection_reason}
+                                >
+                                  Rejected
+                                </span>
+                              )}
+                              {!agentVerified && stepRejection?.merchant_resubmitted_at && (
+                                <span
+                                  className="rounded bg-sky-100 px-1 py-0.5 text-[10px] font-medium text-sky-900"
+                                  title={`Partner saved new data: ${new Date(stepRejection.merchant_resubmitted_at).toLocaleString()}`}
+                                >
+                                  Store resubmitted
+                                </span>
+                              )}
+                              {!agentVerified &&
+                                stepNum === 4 &&
+                                step4AnyResubmittedAfterReject(verificationData?.documents) && (
+                                  <span
+                                    className="rounded bg-sky-100 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-900"
+                                    title="At least one rejected document has a new file from the partner portal (or dashboard upload)."
+                                  >
+                                    Resubmitted
+                                  </span>
+                                )}
                               {status === "pending_merchant" && (
                                 <span className="rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500">
                                   Not filled by store
@@ -2251,13 +2853,20 @@ export function StoreVerificationInner({
                                     (!agentVerified && !showVerifyButton)
                                   }
                                   onClick={async () => {
-                                    if (stepNum === 6 || stepNum === 7) await refetchVerificationData();
+                                    if (stepNum === 6 || stepNum === 7 || stepNum === 8)
+                                      await refetchVerificationData();
                                     setVerifyModalStep(stepNum);
                                   }}
                                   className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-indigo-600 bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   <CheckCircle className="h-3.5 w-3.5" />
-                                  {agentVerified ? "View" : "View & verify"}
+                                  {agentVerified
+                                    ? "View"
+                                    : stepRejection?.merchant_resubmitted_at ||
+                                        (stepNum === 4 &&
+                                          step4AnyResubmittedAfterReject(verificationData?.documents))
+                                      ? "Verify again"
+                                      : "View & verify"}
                                 </button>
                               </div>
                             )}
@@ -2267,7 +2876,9 @@ export function StoreVerificationInner({
                             {agentVerified ? (
                               <span>
                                 Verified by {agentVerified.verified_by_name ?? "—"} ·{" "}
-                                {new Date(agentVerified.verified_at).toLocaleString()}
+                                {agentVerified.verified_at != null
+                                  ? new Date(agentVerified.verified_at).toLocaleString()
+                                  : "—"}
                               </span>
                             ) : status === "pending_merchant" ? (
                               <span>Contact merchant (call / email) to complete this step.</span>
@@ -2282,6 +2893,43 @@ export function StoreVerificationInner({
                                 </span>
                               ) : null;
                             })()}
+                            {!agentVerified && stepRejection && (
+                              <div className="mt-1.5 rounded border border-red-100 bg-red-50/60 px-2 py-1.5 text-[10px] leading-snug text-red-950">
+                                <p className="font-semibold text-red-900">Rejection record</p>
+                                <p>
+                                  <span className="text-red-800/75">What:</span>{" "}
+                                  {stepRejection.step_label ?? label}
+                                </p>
+                                <p>
+                                  <span className="text-red-800/75">Why:</span>{" "}
+                                  {stepRejection.rejection_reason}
+                                </p>
+                                <p>
+                                  <span className="text-red-800/75">Who:</span>{" "}
+                                  {stepRejection.rejected_by_name ?? "—"} ·{" "}
+                                  {new Date(stepRejection.rejected_at).toLocaleString()}
+                                </p>
+                                <p>
+                                  <span className="text-red-800/75">Email to partner:</span>{" "}
+                                  {stepRejection.email_sent
+                                    ? "Sent"
+                                    : `Not sent${stepRejection.email_skip_reason ? ` (${stepRejection.email_skip_reason})` : ""}`}
+                                </p>
+                                {stepRejection.merchant_resubmitted_at ? (
+                                  <p className="mt-0.5 text-sky-900">
+                                    <span className="text-sky-800/80">Partner dashboard update:</span>{" "}
+                                    {new Date(stepRejection.merchant_resubmitted_at).toLocaleString()}
+                                  </p>
+                                ) : (
+                                  <p className="mt-0.5 text-amber-800/90">
+                                    Waiting for partner to update this step on the partner portal.
+                                  </p>
+                                )}
+                                {stepNum === 3 && stepRejection.rejection_detail != null && (
+                                  <MenuReferenceRejectionSnapshot detail={stepRejection.rejection_detail} />
+                                )}
+                              </div>
+                            )}
                           </div>
                           {/* Row 3: Edits — centered */}
                           {stepEdits[stepNum]?.length > 0 && (
@@ -2309,9 +2957,13 @@ export function StoreVerificationInner({
                               store={verificationData.store}
                               documents={verificationData.documents}
                               menuFiles={stepNum === 3 ? menuMediaFiles : undefined}
+                              menuReviewStoreId={store?.id}
+                              menuReviewInteractive={canVerify}
+                              onMenuMediaUpdated={refetchMenuMedia}
                               operatingHours={verificationData.operatingHours ?? null}
                               onboardingPayments={verificationData.onboardingPayments}
                               agreementAcceptance={verificationData.agreementAcceptance ?? null}
+                              bankAccounts={verificationData.bankAccounts}
                             />
                           )}
                         </div>
@@ -2415,24 +3067,57 @@ export function StoreVerificationInner({
           aria-modal="true"
           aria-labelledby="action-confirm-title"
         >
-          <div className="relative w-full max-w-sm rounded-xl border border-gray-200 bg-white shadow-xl">
+          <div
+            className={`relative w-full rounded-xl border border-gray-200 bg-white shadow-xl ${
+              actionConfirm.action === "reject" ? "max-w-md" : "max-w-sm"
+            }`}
+          >
             <div className="border-b border-gray-100 px-4 py-3">
               <h2 id="action-confirm-title" className="text-base font-semibold text-gray-900">
-                Step {actionConfirm.stepNum}: {ONBOARDING_STEP_LABELS[actionConfirm.stepNum] ?? `Step ${actionConfirm.stepNum}`}
+                {actionConfirm.action === "reject"
+                  ? `Reject step ${actionConfirm.stepNum}: ${ONBOARDING_STEP_LABELS[actionConfirm.stepNum] ?? `Step ${actionConfirm.stepNum}`}`
+                  : `Step ${actionConfirm.stepNum}: ${ONBOARDING_STEP_LABELS[actionConfirm.stepNum] ?? `Step ${actionConfirm.stepNum}`}`}
               </h2>
-              <p className="mt-2 text-sm font-medium text-amber-800">
-                Proceeding without store authorization will hold you accountable for this action. Once completed, this operation audit will be tracked.
-              </p>
-              <p className="mt-1 text-sm text-gray-600">
-                {actionConfirm.action === "verify" && "Open this step to review and mark as verified."}
-                {(actionConfirm.action === "pending" || actionConfirm.action === "reject") &&
-                  "This step will be set back to pending. Are you sure?"}
-              </p>
+              {actionConfirm.action === "verify" && (
+                <p className="mt-2 text-sm text-gray-600">
+                  Open this step to review and mark as verified.
+                </p>
+              )}
+              {actionConfirm.action === "pending" && (
+                <>
+                  <p className="mt-2 text-sm font-medium text-amber-800">
+                    This step will be set back to pending for the merchant to update. No email is sent.
+                  </p>
+                  <p className="mt-1 text-sm text-gray-600">Continue?</p>
+                </>
+              )}
+              {actionConfirm.action === "reject" && (
+                <p className="mt-2 text-sm text-gray-600">
+                  Enter a <strong>reason for rejection</strong> below. The store owner receives this by email, and this step is marked not verified.
+                </p>
+              )}
             </div>
+            {actionConfirm.action === "reject" && (
+              <div className="px-4 py-3 border-b border-gray-100">
+                <label className="mb-1 block text-xs font-medium text-gray-500">
+                  Reason for rejection (required) — sent to the store by email
+                </label>
+                <textarea
+                  value={stepRejectReasonDraft}
+                  onChange={(e) => setStepRejectReasonDraft(e.target.value)}
+                  placeholder="Explain what the merchant must fix…"
+                  rows={4}
+                  className="w-full resize-y rounded border border-gray-300 px-2.5 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+            )}
             <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-3">
               <button
                 type="button"
-                onClick={() => setActionConfirm(null)}
+                onClick={() => {
+                  setActionConfirm(null);
+                  setStepRejectReasonDraft("");
+                }}
                 className="cursor-pointer rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Cancel
@@ -2452,9 +3137,17 @@ export function StoreVerificationInner({
               ) : (
                 <button
                   type="button"
-                  disabled={unverifyingStep === actionConfirm.stepNum}
-                  onClick={() => handleSetStepPending(actionConfirm.stepNum)}
-                  className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                  disabled={
+                    unverifyingStep === actionConfirm.stepNum ||
+                    (actionConfirm.action === "reject" &&
+                      stepRejectReasonDraft.trim().length < 3)
+                  }
+                  onClick={() =>
+                    actionConfirm.action === "reject"
+                      ? handleSetStepPending(actionConfirm.stepNum, stepRejectReasonDraft)
+                      : handleSetStepPending(actionConfirm.stepNum)
+                  }
+                  className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {unverifyingStep === actionConfirm.stepNum ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -2463,7 +3156,7 @@ export function StoreVerificationInner({
                   ) : (
                     <Clock className="h-4 w-4" />
                   )}
-                  {actionConfirm.action === "reject" ? "Reject (set pending)" : "Set to Pending"}
+                  {actionConfirm.action === "reject" ? "Send email & reset step" : "Set to Pending"}
                 </button>
               )}
             </div>
@@ -2589,16 +3282,32 @@ export function StoreVerificationInner({
           aria-modal="true"
           aria-labelledby="verify-step-modal-title"
         >
-          <div className="relative w-full max-w-lg rounded-xl border border-gray-200 bg-white shadow-xl">
-            <div className="border-b border-gray-100 px-4 py-3">
-              <h2 id="verify-step-modal-title" className="text-base font-semibold text-gray-900">
+          <div
+            className={`relative w-full rounded-xl border border-gray-200 bg-white shadow-xl ${
+              verifyModalStep === 3 ||
+              verifyModalStep === 4 ||
+              verifyModalStep === 6 ||
+              verifyModalStep === 7 ||
+              verifyModalStep === 8
+                ? "max-w-4xl"
+                : "max-w-lg"
+            }`}
+          >
+            <div className="border-b border-gray-100 bg-slate-50/60 px-5 py-4">
+              <h2 id="verify-step-modal-title" className="text-lg font-semibold text-gray-900">
                 Verify step {verifyModalStep}: {ONBOARDING_STEP_LABELS[verifyModalStep] ?? `Step ${verifyModalStep}`}
               </h2>
-              <p className="mt-0.5 text-xs text-gray-500">
+              <p className="mt-1 text-xs text-gray-600">
                 Review the details below and mark as verified when done.
               </p>
             </div>
-            <div className="max-h-[60vh] overflow-y-auto px-4 py-3">
+            <div
+              className={`overflow-y-auto px-5 py-4 ${
+                verifyModalStep === 4 || verifyModalStep === 6
+                  ? "max-h-[min(72vh,820px)]"
+                  : "max-h-[60vh]"
+              }`}
+            >
               {stepEditForm ? (
                 <StepDetailContentEditable
                   stepNum={verifyModalStep}
@@ -2613,11 +3322,15 @@ export function StoreVerificationInner({
                   menuFiles={verifyModalStep === 3 ? menuMediaFiles : undefined}
                   storeIdForUpload={store?.id}
                   onMenuUploadComplete={refetchMenuMedia}
+                  menuReviewInteractive={canVerify}
+                  onMenuMediaUpdated={refetchMenuMedia}
                   storeIdForDocUpload={store?.id}
                   onDocumentsUpdated={refetchVerificationData}
+                  onDocumentPreview={setDocPreview}
                   operatingHours={verificationData?.operatingHours ?? null}
                   onboardingPayments={verificationData?.onboardingPayments}
                   agreementAcceptance={verificationData?.agreementAcceptance ?? null}
+                  bankAccounts={verificationData?.bankAccounts}
                 />
               ) : verificationData?.store ? (
                 <p className="text-sm text-gray-500">Loading step data...</p>
@@ -2625,91 +3338,168 @@ export function StoreVerificationInner({
                 <p className="text-sm text-gray-500">Loading step data...</p>
               )}
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 px-4 py-3">
-              {verifyModalStep === 2 && (() => {
-                const savedLat = verificationData?.store?.latitude ?? null;
-                const savedLng = verificationData?.store?.longitude ?? null;
-                const formLat = stepEditForm?.latitude ?? null;
-                const formLng = stepEditForm?.longitude ?? null;
-                const coordsEqual = (a: number | null, b: number | null) =>
-                  a === b || (a != null && b != null && Math.abs(a - b) < 1e-9);
-                const locationDirty =
-                  !coordsEqual(savedLat, formLat) || !coordsEqual(savedLng, formLng);
-                return locationDirty ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 bg-slate-50/40 px-5 py-4">
+              <div className="flex flex-wrap items-center gap-2">
+                {verifyModalStep === 2 && (() => {
+                  const savedLat = verificationData?.store?.latitude ?? null;
+                  const savedLng = verificationData?.store?.longitude ?? null;
+                  const formLat = stepEditForm?.latitude ?? null;
+                  const formLng = stepEditForm?.longitude ?? null;
+                  const coordsEqual = (a: number | null, b: number | null) =>
+                    a === b || (a != null && b != null && Math.abs(a - b) < 1e-9);
+                  const locationDirty =
+                    !coordsEqual(savedLat, formLat) || !coordsEqual(savedLng, formLng);
+                  return locationDirty ? (
+                    <button
+                      type="button"
+                      disabled={savingLocation || verifyingStep !== null}
+                      onClick={() => setSaveConfirm({ type: "location" })}
+                      className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-indigo-600 bg-white px-3 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+                    >
+                      {savingLocation ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4" />
+                      )}
+                      Save location
+                    </button>
+                  ) : null;
+                })()}
+                {verifyModalStep !== 3 && verifyModalStep !== 4 && verifyModalStep !== 6 && (
                   <button
                     type="button"
-                    disabled={savingLocation || verifyingStep !== null}
-                    onClick={() => setSaveConfirm({ type: "location" })}
-                    className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-indigo-600 bg-white px-3 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+                    title="Set to Pending"
+                    disabled={verifyingStep !== null || unverifyingStep !== null}
+                    onClick={() => {
+                      if (verifyModalStep == null) return;
+                      setStepRejectReasonDraft("");
+                      setActionConfirm({ stepNum: verifyModalStep, action: "pending" });
+                    }}
+                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-amber-600 bg-amber-50 px-2.5 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
                   >
-                    {savingLocation ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Save className="h-4 w-4" />
-                    )}
-                    Save location
+                    <Clock className="h-4 w-4" />
+                    Pending
                   </button>
-                ) : null;
-              })()}
+                )}
+                {(verifyModalStep !== 3 || !menuStepAllItemsAccepted(menuMediaFiles)) &&
+                  (verifyModalStep !== 4 ||
+                    !allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents)) && (
+                    <button
+                      type="button"
+                      title="Reject step — email reason to store"
+                      disabled={verifyingStep !== null || unverifyingStep !== null}
+                      onClick={() => {
+                        if (verifyModalStep == null) return;
+                        setStepRejectReasonDraft("");
+                        setActionConfirm({ stepNum: verifyModalStep, action: "reject" });
+                      }}
+                      className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-red-600 bg-red-50 px-2.5 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
+                    >
+                      <XCircle className="h-4 w-4" />
+                      Reject
+                    </button>
+                  )}
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setVerifyModalStep(null)}
+                  className="cursor-pointer rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Close
+                </button>
+                {(verifyModalStep !== 3 || menuStepAllItemsAccepted(menuMediaFiles)) &&
+                  (verifyModalStep !== 4 ||
+                    allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents)) &&
+                  (verifyModalStep !== 6 || (verificationData?.bankAccounts?.length ?? 0) > 0) &&
+                  (() => {
+                    const stepVerified = verifyModalStep != null && !!(stepVerifications[verifyModalStep]?.verified_at);
+                    const hasEditsForStep = (stepEdits[verifyModalStep!]?.length ?? 0) > 0;
+                    const stepAlreadyVerified = stepVerified && !hasEditsForStep;
+                    return (
+                      <button
+                        type="button"
+                        disabled={
+                          stepAlreadyVerified ||
+                          verifyingStep !== null ||
+                          (verifyModalStep === 4 && !allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents))
+                        }
+                        onClick={stepAlreadyVerified ? undefined : handleModalMarkVerified}
+                        className={
+                          stepAlreadyVerified
+                            ? "inline-flex cursor-default items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white"
+                            : "inline-flex cursor-pointer items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                        }
+                      >
+                        {verifyingStep === verifyModalStep ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <CheckCircle className="h-4 w-4" />
+                        )}
+                        {stepAlreadyVerified ? "Verified" : "Mark as verified"}
+                      </button>
+                    );
+                  })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 4 — full-size document preview (above verify modal) */}
+      {docPreview != null && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-3 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="doc-preview-title"
+          onClick={() => setDocPreview(null)}
+        >
+          <div
+            className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-100 bg-slate-50 px-4 py-3">
+              <h3 id="doc-preview-title" className="truncate text-sm font-semibold text-gray-900">
+                {docPreview.title}
+              </h3>
               <button
                 type="button"
-                title="Set to Pending"
-                disabled={verifyingStep !== null || unverifyingStep !== null}
-                onClick={() =>
-                  verifyModalStep != null && setActionConfirm({ stepNum: verifyModalStep, action: "pending" })
-                }
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-amber-600 bg-amber-50 px-2.5 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
-              >
-                <Clock className="h-4 w-4" />
-                Pending
-              </button>
-              <button
-                type="button"
-                title="Reject (set to pending)"
-                disabled={verifyingStep !== null || unverifyingStep !== null}
-                onClick={() =>
-                  verifyModalStep != null && setActionConfirm({ stepNum: verifyModalStep, action: "reject" })
-                }
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-red-600 bg-red-50 px-2.5 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50"
-              >
-                <XCircle className="h-4 w-4" />
-                Reject
-              </button>
-              <button
-                type="button"
-                onClick={() => setVerifyModalStep(null)}
-                className="cursor-pointer rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                onClick={() => setDocPreview(null)}
+                className="shrink-0 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
               >
                 Close
               </button>
-              {(() => {
-                const stepVerified = verifyModalStep != null && !!(stepVerifications[verifyModalStep]?.verified_at);
-                const hasEditsForStep = (stepEdits[verifyModalStep!]?.length ?? 0) > 0;
-                const stepAlreadyVerified = stepVerified && !hasEditsForStep;
-                return (
-                  <button
-                    type="button"
-                    disabled={
-                      stepAlreadyVerified ||
-                      verifyingStep !== null ||
-                      (verifyModalStep === 4 && !allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents))
-                    }
-                    onClick={stepAlreadyVerified ? undefined : handleModalMarkVerified}
-                    className={
-                      stepAlreadyVerified
-                        ? "inline-flex cursor-default items-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white"
-                        : "inline-flex cursor-pointer items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                    }
-                  >
-                    {verifyingStep === verifyModalStep ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <CheckCircle className="h-4 w-4" />
-                    )}
-                    {stepAlreadyVerified ? "Verified" : "Mark as verified"}
-                  </button>
-                );
-              })()}
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto bg-gray-100 p-4 lg:flex-row lg:items-start">
+              <div className="min-h-0 min-w-0 flex-1">
+                {docAttachmentLooksPdf(docPreview.url) ? (
+                  <iframe
+                    src={docPreview.url}
+                    className="h-[min(78vh,720px)] w-full rounded-lg border border-gray-200 bg-white"
+                    title={docPreview.title}
+                  />
+                ) : (
+                  <img
+                    src={docPreview.url}
+                    alt=""
+                    className="mx-auto max-h-[min(78vh,720px)] w-auto max-w-full rounded-lg border border-gray-200 bg-white object-contain shadow-sm"
+                  />
+                )}
+              </div>
+              {docPreview.metaLines != null && docPreview.metaLines.length > 0 && (
+                <aside className="w-full shrink-0 overflow-auto rounded-lg border border-gray-200 bg-white p-3 shadow-sm lg:max-w-sm">
+                  <p className="mb-2 text-xs font-semibold text-gray-800">Document details</p>
+                  <dl className="space-y-2 text-xs">
+                    {docPreview.metaLines.map((m, mi) => (
+                      <div key={`${mi}-${m.label}`} className="border-b border-gray-50 pb-2 last:border-0 last:pb-0">
+                        <dt className="text-[10px] font-medium uppercase tracking-wide text-gray-500">{m.label}</dt>
+                        <dd className="mt-0.5 break-words text-gray-900">{m.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </aside>
+              )}
             </div>
           </div>
         </div>
@@ -2774,6 +3564,7 @@ export function StoreVerificationInner({
           </div>
         </div>
       )}
+      <Toaster position="top-right" richColors />
     </div>
   );
 }

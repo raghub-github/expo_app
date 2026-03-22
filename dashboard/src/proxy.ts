@@ -8,6 +8,28 @@ import {
   expireSession,
 } from "@/lib/auth/session-manager";
 
+/** Normalize cookie options so `sameSite` matches Next.js ResponseCookie (not plain string). */
+function setSafeResponseCookie(
+  response: NextResponse,
+  name: string,
+  value: string,
+  options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }
+) {
+  const sameSite =
+    options.sameSite === "lax" ||
+    options.sameSite === "strict" ||
+    options.sameSite === "none"
+      ? options.sameSite
+      : undefined;
+  response.cookies.set(name, value, {
+    maxAge: options.maxAge,
+    path: options.path,
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite,
+  });
+}
+
 // Throttle audit tracking per route to avoid spamming /api/audit/track.
 // Keyed by pathname + method; value is last-sent timestamp (ms).
 const auditLastSent = new Map<string, number>();
@@ -40,7 +62,15 @@ export async function proxy(request: NextRequest) {
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
               request.cookies.set(name, value);
-              response.cookies.set(name, value, options);
+              if (options) {
+                setSafeResponseCookie(response, name, value, {
+                  maxAge: options.maxAge ?? 0,
+                  path: options.path ?? "/",
+                  httpOnly: options.httpOnly,
+                  sameSite: options.sameSite as string | undefined,
+                  secure: options.secure,
+                });
+              }
             });
           },
         },
@@ -70,7 +100,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options);
+            setSafeResponseCookie(response, name, value, options);
           },
         };
         updateActivity(cookieManager);
@@ -88,12 +118,18 @@ export async function proxy(request: NextRequest) {
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ]) as { data?: { user?: { id: string; email?: string } }; error?: { message?: string; code?: string } };
+        ]) as unknown as {
+          data?: { user?: { id: string; email?: string } | null };
+          error?: { message?: string; code?: string };
+        };
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
 
         if (user) {
-          session = { user: { id: user.id, email: user.email }, ...user } as typeof session;
+          session = {
+            user: { id: user.id, email: user.email },
+            ...user,
+          } as unknown as typeof session;
         } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
@@ -165,7 +201,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options);
+            setSafeResponseCookie(response, name, value, options);
           },
         };
         updateActivity(cookieManager);
@@ -209,8 +245,8 @@ export async function proxy(request: NextRequest) {
       if (!validity.isValid) {
         if (debugProxy) console.log("[proxy] Session expired:", validity.reason);
         const cookieSetter = {
-          set: (name: string, value: string, options: any) => {
-            response.cookies.set(name, value, options);
+          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+            setSafeResponseCookie(response, name, value, options);
           },
         };
         expireSession(cookieSetter);
@@ -237,8 +273,8 @@ export async function proxy(request: NextRequest) {
       // Session is valid - update last activity time
       const cookieManager = {
         get: (name: string) => request.cookies.get(name),
-        set: (name: string, value: string, options: any) => {
-          response.cookies.set(name, value, options);
+        set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+          setSafeResponseCookie(response, name, value, options);
         },
       };
       updateActivity(cookieManager);

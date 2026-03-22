@@ -120,7 +120,7 @@ export async function PUT(
 
     // Prepare update object
     const updates: {
-      docNumber?: string | null;
+      docNumber?: string;
       fileUrl?: string;
       r2Key?: string;
     } = {};
@@ -133,7 +133,7 @@ export async function PUT(
 
     // Update document number only when client sent it (avoid overwriting with null on image-only update)
     if (docNumberSent) {
-      updates.docNumber = docNumber != null && String(docNumber).trim() ? String(docNumber).trim() : null;
+      updates.docNumber = docNumber != null && String(docNumber).trim() ? String(docNumber).trim() : undefined;
     }
 
     // Handle file upload if provided
