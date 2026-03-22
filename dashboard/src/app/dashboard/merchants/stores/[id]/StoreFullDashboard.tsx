@@ -365,8 +365,9 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     setLastToggledAt(d.last_toggled_at ?? null);
     setManualActivationLock(d.block_auto_open === true);
     setIsTodayScheduledClosed(d.is_today_scheduled_closed === true);
-    if ((d.today_slots?.length ?? 0) > 0) {
-      const first = d.today_slots[0];
+    const todaySlots = d.today_slots ?? [];
+    if (todaySlots.length > 0) {
+      const first = todaySlots[0];
       setOpeningTime(first.start || "09:00");
       setClosingTime(first.end || "23:00");
     }

@@ -301,11 +301,12 @@ export async function DELETE(
     `) as { id: number; r2_key: string | null }[];
 
     await sql.begin(async (trx) => {
-      await trx`
+      const run = trx as unknown as typeof sql;
+      await run`
         DELETE FROM merchant_menu_item_images
         WHERE menu_item_id = ${menuItemId}
       `;
-      await trx`
+      await run`
         DELETE FROM merchant_menu_items
         WHERE id = ${menuItemId} AND store_id = ${storeId}
       `;

@@ -76,6 +76,7 @@ export async function GET(
             actorName: null,
             statusMessage: null,
             occurredAt: createdAt,
+            expectedByAt: null,
           },
         ];
       }

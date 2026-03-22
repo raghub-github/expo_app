@@ -498,7 +498,7 @@ export async function checkAllRequiredDocumentsVerified(
   // Aadhaar is always mandatory
   // PAN is optional
   // Selfie is always required
-  const mandatoryTypes = ["aadhaar", "selfie"];
+  const mandatoryTypes = ["aadhaar", "selfie"] as const;
   
   // Determine vehicle choice if not provided
   let vehicleType = vehicleChoice;

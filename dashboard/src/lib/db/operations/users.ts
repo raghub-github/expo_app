@@ -30,6 +30,7 @@ export interface CreateUserData {
 }
 
 export interface UpdateUserData {
+  system_user_id?: string;
   full_name?: string;
   first_name?: string;
   last_name?: string;
@@ -282,7 +283,7 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   const limit = filters.limit || 20;
   const offset = (page - 1) * limit;
   
-  let query = db.select().from(systemUsers);
+  let query = db.select().from(systemUsers).$dynamic();
   
   // Build where conditions
   const conditions = [];
@@ -337,14 +338,15 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   }
   
   // Get total count for pagination
-  const countQuery = db
+  let countQuery = db
     .select({ count: sql<number>`count(*)::int` })
-    .from(systemUsers);
-  
+    .from(systemUsers)
+    .$dynamic();
+
   if (conditions.length > 0) {
-    countQuery.where(and(...conditions));
+    countQuery = countQuery.where(and(...conditions));
   }
-  
+
   const [{ count: total }] = await countQuery;
   
   // Apply pagination
@@ -450,7 +452,7 @@ export async function incrementFailedLoginAttempts(id: number) {
     .returning();
   
   // Lock account after 5 failed attempts
-  if (updated && updated.failedLoginAttempts >= 5) {
+  if (updated && (updated.failedLoginAttempts ?? 0) >= 5) {
     await db
       .update(systemUsers)
       .set({
@@ -493,8 +495,9 @@ export async function getUniqueRoles(): Promise<string[]> {
       sql`SELECT DISTINCT primary_role as role FROM system_users WHERE deleted_at IS NULL ORDER BY role`
     );
     
-    // Extract roles
-    const roles = result.rows.map((row: any) => row.role as string).filter(Boolean);
+    // Extract roles (execute() returns RowList / iterable, not node-pg { rows })
+    const rows = Array.from(result as Iterable<Record<string, unknown>>);
+    const roles = rows.map((row) => row.role as string).filter(Boolean);
     
     // Sort roles alphabetically, but put SUPER_ADMIN first if it exists
     return roles.sort((a, b) => {

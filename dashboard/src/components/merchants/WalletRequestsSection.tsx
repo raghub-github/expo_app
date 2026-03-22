@@ -96,7 +96,7 @@ export function WalletRequestsSection({
         direction: formDirection,
         amount,
         reason,
-        order_id: Number.isFinite(orderId) ? orderId : undefined,
+        order_id: typeof orderId === "number" && Number.isFinite(orderId) ? orderId : undefined,
       }).unwrap();
       if (res.success) {
         toast("Request submitted");

@@ -9,6 +9,7 @@ import {
 } from '@/lib/r2-paths';
 import { upsertStoreCuisines } from '@/lib/cuisines';
 import { parseMenuReferenceImageUrls, stableEntryIdForUrl } from '@/lib/menu-reference-image-bundle';
+import { markMerchantResubmittedForRejectedSteps } from '@/lib/onboarding/verification-resubmission';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -19,6 +20,24 @@ function getSupabaseAdmin() {
   });
 }
 
+/** First non-empty trimmed string, or null. */
+function pickFirstString(...candidates: Array<string | null | undefined>): string | null {
+  for (const c of candidates) {
+    if (typeof c !== 'string') continue;
+    const t = c.trim();
+    if (t) return t;
+  }
+  return null;
+}
+
+/** First value that looks like an email (basic check). */
+function pickRecipientEmail(...candidates: Array<string | null | undefined>): string | null {
+  const s = pickFirstString(...candidates);
+  if (!s) return null;
+  if (!s.includes('@') || s.length < 5) return null;
+  return s;
+}
+
 async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEmail: string | null; storePublicId: string | null }) {
   const { ownerName, ownerEmail, storePublicId } = args;
   if (!ownerEmail) return;
@@ -27,7 +46,12 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
   const smtpPass = process.env.EMAIL_APP_PASSWORD || process.env.SMTP_PASS;
   const smtpHost = process.env.SMTP_HOST || 'smtp.zoho.in';
   const smtpPort = Number(process.env.SMTP_PORT || 465);
-  const smtpSecure = String(process.env.SMTP_SECURE || 'true').toLowerCase() !== 'false';
+  // Zoho: 465 = SSL (secure: true), 587 = STARTTLS (secure: false). Mis-matched defaults often prevent send.
+  const smtpSecureEnv = process.env.SMTP_SECURE;
+  const smtpSecure =
+    smtpSecureEnv != null && String(smtpSecureEnv).trim() !== ''
+      ? String(smtpSecureEnv).toLowerCase() !== 'false'
+      : smtpPort === 465;
   const fromEmail = process.env.SMTP_FROM_EMAIL || smtpUser;
   const fromName = process.env.SMTP_FROM_NAME || 'GatiMitra Team';
 
@@ -43,10 +67,13 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
     host: smtpHost,
     port: smtpPort,
     secure: smtpSecure,
+    requireTLS: !smtpSecure && smtpPort === 587,
     auth: {
       user: smtpUser,
       pass: smtpPass,
     },
+    connectionTimeout: 25_000,
+    greetingTimeout: 25_000,
   });
 
   const safeName = (ownerName || '').toString().trim() || 'Partner';
@@ -515,6 +542,10 @@ export async function POST(req: NextRequest) {
         .single();
       if (error) throw new Error(error.message);
       storeData = data;
+    }
+
+    if (storeData?.id) {
+      await markMerchantResubmittedForRejectedSteps(db, storeData.id as number, [1, 2, 3, 4, 5, 6, 7]);
     }
 
     // 2.a Ensure cuisines are stored in cuisine_master + merchant_store_cuisines
@@ -1106,20 +1137,32 @@ export async function POST(req: NextRequest) {
 
     // 7. Send welcome email in-request so it reliably executes on serverless runtimes
     try {
-      const ownerEmail =
-        (storeData as any)?.store_email ||
-        (typeof step1?.store_email === 'string' ? step1.store_email : null);
+      // Prefer agreement signer email — that is what the partner entered on the signature step and may differ from step1.
+      const ownerEmail = pickRecipientEmail(
+        agreementAcceptance?.signerEmail,
+        (storeData as any)?.store_email,
+        step1?.store_email
+      );
       const ownerName =
-        (storeData as any)?.owner_full_name ||
-        (typeof step1?.owner_full_name === 'string' ? step1.owner_full_name : null) ||
-        (storeData as any)?.store_name ||
-        (typeof step1?.store_name === 'string' ? step1.store_name : null);
+        pickFirstString(
+          agreementAcceptance?.signerName,
+          (storeData as any)?.owner_full_name,
+          step1?.owner_full_name,
+          (storeData as any)?.store_name,
+          step1?.store_name
+        ) || null;
 
-      await sendWelcomeEmailToOwner({
-        ownerName,
-        ownerEmail,
-        storePublicId: storeId || null,
-      });
+      if (!ownerEmail) {
+        console.warn(
+          '[register-store] No recipient email (signerEmail / store_email empty); skipping welcome email'
+        );
+      } else {
+        await sendWelcomeEmailToOwner({
+          ownerName,
+          ownerEmail,
+          storePublicId: storeId || null,
+        });
+      }
     } catch (emailErr) {
       console.warn('[register-store] Failed to send welcome email:', emailErr);
     }

@@ -26,7 +26,7 @@ export async function GET() {
       LIMIT 500
     `;
 
-    const stores = (rows as { id: number; store_id: string; store_name: string; store_display_name: string | null }[]).map(
+    const stores = (rows as unknown as { id: number; store_id: string; store_name: string; store_display_name: string | null }[]).map(
       (r) => ({
         id: r.id,
         storeId: r.store_id,

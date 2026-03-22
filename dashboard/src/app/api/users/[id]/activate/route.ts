@@ -57,7 +57,7 @@ export async function POST(
     }
 
     // Get system user ID for logging
-    const systemUser = await getSystemUserByEmail(session.user.email!);
+    const systemUser = await getSystemUserByEmail(user.email ?? "");
     if (!systemUser) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },

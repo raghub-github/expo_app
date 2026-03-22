@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
     const parentId = body.parentId != null ? Number(body.parentId) : null;
     const areaManagerIds = Array.isArray(body.areaManagerIds)
-      ? body.areaManagerIds.map((id: unknown) => Number(id)).filter((n) => Number.isFinite(n))
+      ? body.areaManagerIds.map((id: unknown) => Number(id)).filter((n: number) => Number.isFinite(n))
       : [];
     const storeInternalId =
       body.storeInternalId != null && body.storeInternalId !== ""

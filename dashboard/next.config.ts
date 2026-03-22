@@ -24,6 +24,15 @@ const nextConfig: NextConfig = {
   },
   // Mapbox is loaded from CDN, no webpack config needed
 
+  webpack: (config, { dev }) => {
+    if (dev) {
+      // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
+      // "rename ... 0.pack.gz_" webpack cache errors. Memory-only avoids corrupt .next/dev.
+      config.cache = false;
+    }
+    return config;
+  },
+
   // In dev, disable browser cache for dashboard so HTML/JS updates show after code changes.
   // Default dev uses webpack (npm run dev --webpack) to avoid Turbopack ChunkLoadError; use npm run dev:turbopack for Turbopack.
   // If UI still doesn't update, run: npm run dev:clean to clear .next cache.

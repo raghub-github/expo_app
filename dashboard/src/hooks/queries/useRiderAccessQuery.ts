@@ -51,7 +51,10 @@ async function fetchRiderAccess(): Promise<RiderAccessData> {
   return result.data;
 }
 
-const riderAccessCacheConfig = getCacheConfig(CacheTier.SESSION, { staleTime: 60_000 });
+const riderAccessCacheConfig = {
+  ...getCacheConfig(CacheTier.MEDIUM),
+  staleTime: 60_000,
+};
 
 export function useRiderAccessQuery() {
   return useQuery({

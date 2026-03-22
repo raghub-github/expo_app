@@ -33,9 +33,20 @@ export async function POST(
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
     const customizationId = genId("CUST_");
+    const customizationType =
+      body.customization_type != null && String(body.customization_type).trim() !== ""
+        ? String(body.customization_type)
+        : null;
+    const isRequired = body.is_required === true;
+    const minSelRaw = Number(body.min_selection);
+    const minSelection = Number.isFinite(minSelRaw) ? minSelRaw : 0;
+    const maxSelRaw = Number(body.max_selection);
+    const maxSelection = Number.isFinite(maxSelRaw) && maxSelRaw >= 1 ? maxSelRaw : 1;
+    const displayOrderRaw = Number(body.display_order);
+    const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_menu_item_customizations (menu_item_id, customization_id, customization_title, customization_type, is_required, min_selection, max_selection, display_order)
-      VALUES (${menuItemId}, ${customizationId}, ${customization_title}, ${body.customization_type ?? null}, ${body.is_required ?? false}, ${body.min_selection ?? 0}, ${body.max_selection ?? 1}, ${body.display_order ?? 0})
+      VALUES (${menuItemId}, ${customizationId}, ${customization_title}, ${customizationType}, ${isRequired}, ${minSelection}, ${maxSelection}, ${displayOrder})
       RETURNING id, customization_id
     `;
     try {

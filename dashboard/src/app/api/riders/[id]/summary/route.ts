@@ -114,16 +114,6 @@ export async function GET(
 
     // Per‑rider summary cache (30s) – keyed by rider + filters to avoid
     // recalculating heavy aggregates on quick tab switches.
-    const riderIdParam = await params;
-    const riderIdRaw = riderIdParam.id;
-    const riderId = parseInt(riderIdRaw);
-    if (isNaN(riderId)) {
-      return NextResponse.json(
-        { success: false, error: "Invalid rider ID" },
-        { status: 400 }
-      );
-    }
-
     const cacheKey = riderId ? `rider_summary:${riderId}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
@@ -177,7 +167,9 @@ export async function GET(
           ordersConditions.push(eq(ordersCore.orderType, params_obj.ordersOrderType as "food" | "parcel" | "person_ride"));
         }
         if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-          ordersConditions.push(eq(ordersCore.status, params_obj.ordersStatus));
+          ordersConditions.push(
+            eq(ordersCore.status, params_obj.ordersStatus as (typeof ordersCore.$inferSelect)["status"])
+          );
         }
         if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
           const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -191,24 +183,36 @@ export async function GET(
           .where(ordersConditions.length > 1 ? and(...ordersConditions) : ordersConditions[0])
           .orderBy(desc(ordersCore.createdAt))
           .limit(params_obj.ordersLimit || 10);
-        recentOrders = rows.map((row) => ({
-          id: row.id,
-          orderType: row.orderType,
-          riderId: row.riderId,
-          customerId: row.customerId,
-          pickupAddress: (row as { pickupAddressRaw?: string }).pickupAddressRaw,
-          dropAddress: (row as { dropAddressRaw?: string }).dropAddressRaw,
-          pickupLat: (row as { pickupLat?: number }).pickupLat,
-          pickupLon: (row as { pickupLon?: number }).pickupLon,
-          dropLat: (row as { dropLat?: number }).dropLat,
-          dropLon: (row as { dropLon?: number }).dropLon,
-          distanceKm: (row as { distanceKm?: number }).distanceKm,
-          fareAmount: row.fareAmount,
-          riderEarning: row.riderEarning,
-          status: row.status,
-          createdAt: row.createdAt,
-          updatedAt: (row as { updatedAt?: Date }).updatedAt,
-        }));
+        recentOrders = rows.map((row) => {
+          const r = row as unknown as {
+            pickupAddressRaw?: string;
+            dropAddressRaw?: string;
+            pickupLat?: number;
+            pickupLon?: number;
+            dropLat?: number;
+            dropLon?: number;
+            distanceKm?: number;
+            updatedAt?: Date;
+          };
+          return {
+            id: row.id,
+            orderType: row.orderType,
+            riderId: row.riderId,
+            customerId: row.customerId,
+            pickupAddress: r.pickupAddressRaw,
+            dropAddress: r.dropAddressRaw,
+            pickupLat: r.pickupLat,
+            pickupLon: r.pickupLon,
+            dropLat: r.dropLat,
+            dropLon: r.dropLon,
+            distanceKm: r.distanceKm,
+            fareAmount: row.fareAmount,
+            riderEarning: row.riderEarning,
+            status: row.status,
+            createdAt: row.createdAt,
+            updatedAt: r.updatedAt,
+          };
+        });
       } catch {
         // Fallback to orders table if orders_core fails (e.g. table missing)
         const ordersConditions: any[] = [eq(orders.riderId, riderId)];
@@ -222,7 +226,9 @@ export async function GET(
           ordersConditions.push(eq(orders.orderType, params_obj.ordersOrderType as "food" | "parcel" | "person_ride"));
         }
         if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-          ordersConditions.push(eq(orders.status, params_obj.ordersStatus));
+          ordersConditions.push(
+            eq(orders.status, params_obj.ordersStatus as (typeof orders.$inferSelect)["status"])
+          );
         }
         if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
           const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -249,7 +255,9 @@ export async function GET(
         ordersConditions.push(eq(orders.orderType, params_obj.ordersOrderType as "food" | "parcel" | "person_ride"));
       }
       if (params_obj.ordersStatus && params_obj.ordersStatus !== "all") {
-        ordersConditions.push(eq(orders.status, params_obj.ordersStatus));
+        ordersConditions.push(
+          eq(orders.status, params_obj.ordersStatus as (typeof orders.$inferSelect)["status"])
+        );
       }
       if (params_obj.ordersOrderId && params_obj.ordersOrderId.trim() !== "") {
         const orderIdNum = parseInt(params_obj.ordersOrderId.trim(), 10);
@@ -405,7 +413,8 @@ export async function GET(
 
     // When "All Services" is banned but at least one individual service is whitelisted, show "Partially allowed" so UI is consistent
     const allStatus = toStatus(effectiveAll);
-    let allStatusAdjusted = allStatus;
+    type AllStatusRow = NonNullable<typeof allStatus> & { partiallyAllowedServices?: string[] };
+    let allStatusAdjusted: AllStatusRow | null = allStatus;
     if (allStatus?.isBanned) {
       const foodAllowed = !effectiveFood?.isBanned;
       const parcelAllowed = !effectiveParcel?.isBanned;

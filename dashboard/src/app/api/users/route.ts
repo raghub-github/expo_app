@@ -12,7 +12,7 @@ import { logAPICall, logUserAction } from "@/lib/auth/activity-tracker";
 import { logUserCreation } from "@/lib/audit/audit-logger";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints, areaManagers } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, areaManagers, type DashboardType } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 
@@ -298,7 +298,7 @@ export async function POST(request: NextRequest) {
       const db = getDb();
       for (const access of dashboardAccessData) {
         // Determine orderType for order, customer, and ticket dashboards
-        let orderType: string | undefined = undefined;
+        let orderType: string | null | undefined = undefined;
         if (access.dashboardType === "ORDER_FOOD" || access.dashboardType === "CUSTOMER_FOOD" || 
             access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("FOOD")) {
           orderType = "food";
@@ -364,8 +364,9 @@ export async function POST(request: NextRequest) {
         let allowedActions: string[] = [];
         let context: Record<string, any> = {};
 
-        if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[accessPoint.dashboardType]) {
-          const def = DASHBOARD_DEFINITIONS[accessPoint.dashboardType].accessPoints.find(
+        const dashType = accessPoint.dashboardType as DashboardType;
+        if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
+          const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
             (ap: any) => ap.group === accessPoint.accessPointGroup
           );
           if (def) {

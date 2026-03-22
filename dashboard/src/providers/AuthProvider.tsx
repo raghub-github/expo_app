@@ -126,7 +126,7 @@ export function AuthProvider({
       isLoading,
       isAuthenticated,
       isError,
-      error: error instanceof Error ? error : null,
+      error,
       logout,
       refetch,
     }),

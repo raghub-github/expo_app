@@ -329,7 +329,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     }
   };
 
-  const getStatusBadge = (status: string, suspensionExpiresAt?: string | null) => {
+  const getStatusBadge = (status: string | undefined, suspensionExpiresAt?: string | null) => {
     const statusColors: Record<string, { bg: string; text: string; label: string }> = {
       ACTIVE: { bg: "bg-green-100", text: "text-green-800", label: "Active" },
       SUSPENDED: { bg: "bg-yellow-100", text: "text-yellow-800", label: "Suspend" },
@@ -338,8 +338,9 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       LOCKED: { bg: "bg-orange-100", text: "text-orange-800", label: "Locked" },
     };
 
-    const statusConfig = statusColors[status] || statusColors.PENDING_ACTIVATION;
-    const timeRemaining = status === "SUSPENDED" ? formatTimeRemaining(suspensionExpiresAt) : null;
+    const s = status ?? "PENDING_ACTIVATION";
+    const statusConfig = statusColors[s] || statusColors.PENDING_ACTIVATION;
+    const timeRemaining = s === "SUSPENDED" ? formatTimeRemaining(suspensionExpiresAt) : null;
 
     return (
       <div className="flex items-center gap-2">
@@ -358,7 +359,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     );
   };
 
-  const getStatusButtonColor = (status: string) => {
+  const getStatusButtonColor = (status: string | undefined) => {
     const colors: Record<string, string> = {
       ACTIVE: "bg-green-50 text-green-700 hover:bg-green-100 border-green-200",
       PENDING_ACTIVATION: "bg-gray-50 text-gray-700 hover:bg-gray-100 border-gray-200",
@@ -366,7 +367,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       DISABLED: "bg-red-50 text-red-700 hover:bg-red-100 border-red-200",
       LOCKED: "bg-orange-50 text-orange-700 hover:bg-orange-100 border-orange-200",
     };
-    return colors[status] || colors.PENDING_ACTIVATION;
+    const s = status ?? "PENDING_ACTIVATION";
+    return colors[s] || colors.PENDING_ACTIVATION;
   };
 
   const generatePageNumbers = () => {
@@ -604,7 +606,8 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                 const isSuperAdminUser = user.primaryRole === "SUPER_ADMIN";
                 const canEdit = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
                 const canChangeStatus = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
-                  const isDropdownOpen = openDropdownId === user.id;
+                const userStatus = user.status ?? "PENDING_ACTIVATION";
+                const isDropdownOpen = openDropdownId === user.id;
 
                   return (
                     <tr key={user.id} className="hover:bg-gray-50 transition-colors">
@@ -683,7 +686,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   }
                                 }}
                                 disabled={permissionsLoading || !canChangeStatus}
-                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(user.status)} ${
+                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(userStatus)} ${
                                   permissionsLoading || !canChangeStatus 
                                     ? "opacity-50 cursor-not-allowed" 
                                     : ""
@@ -701,10 +704,11 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                 }
                               >
                                 <span className="capitalize hidden sm:inline">
-                                  {STATUS_OPTIONS.find(s => s.value === user.status)?.label || user.status.replace(/_/g, " ").toLowerCase()}
+                                  {STATUS_OPTIONS.find((s) => s.value === userStatus)?.label ||
+                                    userStatus.replace(/_/g, " ").toLowerCase()}
                                 </span>
                                 <span className="capitalize sm:hidden text-[10px]">
-                                  {STATUS_OPTIONS.find(s => s.value === user.status)?.label.substring(0, 4) || user.status.substring(0, 4)}
+                                  {(STATUS_OPTIONS.find((s) => s.value === userStatus)?.label ?? userStatus).substring(0, 4)}
                                 </span>
                                 <ChevronDown 
                                   className={`h-3 w-3 sm:h-3.5 sm:w-3.5 transition-transform duration-200 flex-shrink-0 ${
@@ -716,14 +720,14 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                 <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
                                   <div className="py-1">
                                     {STATUS_OPTIONS.map((status) => {
-                                      const isCurrentStatus = user.status === status.value;
+                                      const isCurrentStatus = userStatus === status.value;
                                       const isUpdating = updateUser.isPending && updateUser.variables?.id === user.id && updateUser.variables?.status === status.value;
                                       return (
                                         <button
                                           key={status.value}
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            handleStatusChangeClick(user.id, status.value, user.status, user.fullName);
+                                            handleStatusChangeClick(user.id, status.value, userStatus, user.fullName);
                                           }}
                                           disabled={isCurrentStatus || isUpdating}
                                           className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${

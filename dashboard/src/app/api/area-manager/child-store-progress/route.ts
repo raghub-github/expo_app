@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
     const progress = await getChildStoreProgress(effectiveParentId, storeInternalId);
     const formData = (progress?.form_data as Record<string, unknown>) ?? {};
     const stepStore = { storeDbId: storeInternalId, storePublicId: store.store_id };
-    let formDataWithStepStore = {
+    let formDataWithStepStore: Record<string, unknown> = {
       ...formData,
       step_store: { ...(formData.step_store as object ?? {}), ...stepStore },
     };

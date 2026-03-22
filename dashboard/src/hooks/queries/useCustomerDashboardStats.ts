@@ -58,10 +58,10 @@ export function useCustomerDashboardStats(
   const isAllowed = Boolean(authReady && sessionUser && permissions);
 
   return useQuery({
-    queryKey: queryKeys.customers.stats(filters),
+    queryKey: queryKeys.customers.stats(filters as unknown as Record<string, unknown>),
     queryFn: () => fetchDashboardStats(filters),
     enabled: isAllowed && options?.enabled !== false,
-    ...getCacheConfig(CacheTier.LOW), // Stats are low frequency, can cache longer
+    ...getCacheConfig(CacheTier.MEDIUM),
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
     refetchOnMount: false,

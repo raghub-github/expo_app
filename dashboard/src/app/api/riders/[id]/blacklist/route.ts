@@ -209,7 +209,7 @@ export async function POST(
           RETURNING id, rider_id, service_type, reason, banned, is_permanent, expires_at, admin_user_id, source, created_at
         `;
         const r = rawRow as { id: number; expires_at: Date | null; source: string; created_at: Date };
-        row = { ...r, expiresAt: r.expires_at, createdAt: r.created_at } as (typeof blacklistHistory.$inferSelect);
+        row = { ...r, expiresAt: r.expires_at, createdAt: r.created_at } as unknown as typeof blacklistHistory.$inferSelect;
       } else {
         throw err;
       }

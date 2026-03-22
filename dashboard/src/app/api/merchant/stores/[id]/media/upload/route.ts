@@ -9,7 +9,7 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
-import { uploadWithKey } from "@/lib/services/r2";
+import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
 
 export const runtime = "nodejs";
 

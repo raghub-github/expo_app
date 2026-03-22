@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, type ReactNode } from 'react';
 import { Loader2, ChevronDown } from 'lucide-react';
 import { R2Image } from "@/components/R2Image";
 
@@ -68,6 +68,49 @@ interface DocumentData {
 }
 
 const IMAGE_EXT_REGEX = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+/** Non-empty admin rejection reason from merchant_store_documents.*_rejection_reason */
+function adminRejectionText(d: Record<string, unknown>, key: string): string | null {
+  const v = d[key];
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
+}
+
+function SectionRejectedBadge({ active }: { active: boolean }) {
+  return (
+    <span
+      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        active ? 'bg-rose-400/95 text-white' : 'bg-rose-100 text-rose-800'
+      }`}
+    >
+      Rejected
+    </span>
+  );
+}
+
+function AdminRejectionBanner({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 shadow-sm">
+      <p className="text-sm font-semibold text-rose-900">{title}</p>
+      <div className="mt-1.5 text-xs text-rose-800 whitespace-pre-wrap break-words">{children}</div>
+    </div>
+  );
+}
+
+/** Mirrors merchant_store_documents.*_rejection_reason — hydrated from GET progress / parent. */
+const DOC_REJECTION_FIELDS = [
+  'pan_rejection_reason',
+  'gst_rejection_reason',
+  'aadhaar_rejection_reason',
+  'fssai_rejection_reason',
+  'drug_license_rejection_reason',
+  'pharmacist_certificate_rejection_reason',
+  'pharmacy_council_registration_rejection_reason',
+  'trade_license_rejection_reason',
+  'shop_establishment_rejection_reason',
+  'udyam_rejection_reason',
+  'other_rejection_reason',
+  'bank_proof_rejection_reason',
+] as const;
 
 const MIN_STORE_DELIVERY_RADIUS_KM = 1;
 const MAX_STORE_DELIVERY_RADIUS_KM = 8;
@@ -311,6 +354,8 @@ interface StoreSetupData {
 
 interface CombinedComponentProps {
   initialDocuments?: Partial<DocumentData> | null;
+  /** Active dashboard verification step 6 (bank) rejection text when not yet on `bank_proof_rejection_reason`. */
+  verificationBankRejectionReason?: string | null;
   initialStoreSetup?: Partial<StoreSetupData> | null;
   onDocumentComplete?: (documents: DocumentData, savedPatch?: Record<string, unknown>) => void | Promise<void>;
   /** Called on every "Save & Continue" to persist current doc data. Returns the built patch so completion can reuse it (avoids duplicate bank/doc uploads). */
@@ -355,6 +400,7 @@ const defaultStoreSetupData: StoreSetupData = {
 
 const CombinedDocumentStoreSetup: React.FC<CombinedComponentProps> = ({
   initialDocuments,
+  verificationBankRejectionReason = null,
   initialStoreSetup,
   onDocumentComplete,
   onDocumentSave,
@@ -571,6 +617,41 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
     is24Hours: false,
   });
 
+  const docRejection = useMemo(() => {
+    const d = documents as Record<string, unknown>;
+    const bankFromDoc = adminRejectionText(d, 'bank_proof_rejection_reason');
+    const bankFromVerification =
+      typeof verificationBankRejectionReason === 'string' && verificationBankRejectionReason.trim()
+        ? verificationBankRejectionReason.trim()
+        : null;
+    return {
+      pan: adminRejectionText(d, 'pan_rejection_reason'),
+      aadhaar: adminRejectionText(d, 'aadhaar_rejection_reason'),
+      bank_proof: bankFromDoc ?? bankFromVerification,
+    };
+  }, [documents, verificationBankRejectionReason]);
+
+  const optionalRejectionItems = useMemo(() => {
+    const d = documents as Record<string, unknown>;
+    const pairs: [string, string][] = [
+      ['GST', 'gst_rejection_reason'],
+      ['FSSAI', 'fssai_rejection_reason'],
+      ['Drug license', 'drug_license_rejection_reason'],
+      ['Pharmacist certificate', 'pharmacist_certificate_rejection_reason'],
+      ['Pharmacy council registration', 'pharmacy_council_registration_rejection_reason'],
+      ['Trade license', 'trade_license_rejection_reason'],
+      ['Shop & establishment', 'shop_establishment_rejection_reason'],
+      ['Udyam', 'udyam_rejection_reason'],
+      ['Other document', 'other_rejection_reason'],
+    ];
+    const out: { label: string; reason: string }[] = [];
+    for (const [label, key] of pairs) {
+      const r = adminRejectionText(d, key);
+      if (r) out.push({ label, reason: r });
+    }
+    return out;
+  }, [documents]);
+
   // Sync from parent when navigating back so saved data is shown (including persisted document URLs)
   // Track the last hydrated initialDocuments to detect when it changes
   const lastHydratedDocumentsRef = useRef<string>('');
@@ -600,6 +681,9 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
         shop_establishment_document_url: (initialDocuments as any).shop_establishment_document_url,
         udyam_document_url: (initialDocuments as any).udyam_document_url,
         other_document_file_url: (initialDocuments as any).other_document_file_url,
+        ...Object.fromEntries(
+          DOC_REJECTION_FIELDS.map((k) => [k, (initialDocuments as Record<string, unknown>)[k] ?? null])
+        ),
       });
       
       // Always hydrate when step changes to documents, or when documents data changes
@@ -657,6 +741,13 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             if (typeof (initialDocuments.bank as any).upi_qr_screenshot_url === 'string') {
               (next.bank as any).upi_qr_screenshot_url = (initialDocuments.bank as any).upi_qr_screenshot_url;
               (next.bank as any).upi_qr_file = null;
+            }
+          }
+          const init = initialDocuments as Record<string, unknown>;
+          for (const k of DOC_REJECTION_FIELDS) {
+            if (Object.prototype.hasOwnProperty.call(init, k)) {
+              const v = init[k];
+              (next as Record<string, unknown>)[k] = typeof v === 'string' ? v : null;
             }
           }
           return next;
@@ -1799,6 +1890,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderPanSection = () => (
     <div className="space-y-2">
+      {docRejection.pan && (
+        <AdminRejectionBanner title="Rejected by verification team — please update and save">
+          {docRejection.pan}
+        </AdminRejectionBanner>
+      )}
       <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
         <div className="flex items-start gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
@@ -1927,6 +2023,11 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderAadharSection = () => (
     <div className="space-y-3">
+      {docRejection.aadhaar && (
+        <AdminRejectionBanner title="Rejected by verification team — please update and save">
+          {docRejection.aadhaar}
+        </AdminRejectionBanner>
+      )}
       <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-3">
         <div className="flex items-start gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
@@ -2068,6 +2169,18 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
 
   const renderOptionalSection = () => (
     <div className="space-y-3">
+      {optionalRejectionItems.length > 0 && (
+        <AdminRejectionBanner title="Verification feedback — please fix the items below and save">
+          <ul className="list-disc space-y-1.5 pl-4">
+            {optionalRejectionItems.map((item) => (
+              <li key={item.label}>
+                <span className="font-semibold">{item.label}: </span>
+                {item.reason}
+              </li>
+            ))}
+          </ul>
+        </AdminRejectionBanner>
+      )}
       {/* Show banner only for Food/Pharma businesses (mandatory docs), hide for optional */}
       {(isFoodBusiness() || isPharmaBusiness()) && (
           <div className={`rounded-lg border p-2.5 ${
@@ -2583,13 +2696,21 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
       on ? 'border-rose-500 ring-1 ring-rose-200' : 'border-slate-300';
     return (
       <div className="space-y-3">
+        {docRejection.bank_proof && (
+          <AdminRejectionBanner title="Bank proof rejected — please upload a clearer proof and save">
+            {docRejection.bank_proof}
+          </AdminRejectionBanner>
+        )}
         <div className="rounded-xl bg-amber-50/80 border border-amber-100 p-3">
           <div className="flex items-start gap-2">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-600">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" /><path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" /></svg>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-amber-900">Payout details</p>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-amber-900">Payout details</p>
+                {docRejection.bank_proof ? <SectionRejectedBadge active={false} /> : null}
+              </div>
               <p className="text-xs text-amber-800 mt-0.5">Choose Bank account or UPI. Upload proof as required.</p>
             </div>
           </div>
@@ -3006,15 +3127,27 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
               <p className="px-2 py-1 text-xs font-medium text-slate-500">Sections</p>
-              {(['pan', 'aadhar', 'optional', 'bank'] as const).map((section) => (
+              {(['pan', 'aadhar', 'optional', 'bank'] as const).map((section) => {
+                const isActive = activeSection === section;
+                const showRejected =
+                  section === 'pan'
+                    ? !!docRejection.pan
+                    : section === 'aadhar'
+                      ? !!docRejection.aadhaar
+                      : section === 'optional'
+                        ? optionalRejectionItems.length > 0
+                        : !!docRejection.bank_proof;
+                return (
                 <button
                   key={section}
                   type="button"
                   onClick={() => setActiveSection(section)}
                   className={`w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-inset ${
-                    activeSection === section ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                    isActive ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
                   }`}
                 >
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span>
                   {section === 'pan'
                     ? 'PAN'
                     : section === 'aadhar'
@@ -3026,8 +3159,12 @@ const [storeSetup, setStoreSetup] = useState<StoreSetupData>(defaultStoreSetupDa
                       ? 'GST / FSSAI'
                       : 'GST / OTHERS'
                     : 'Bank'}
+                    </span>
+                    {showRejected ? <SectionRejectedBadge active={isActive} /> : null}
+                  </span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </aside>
 

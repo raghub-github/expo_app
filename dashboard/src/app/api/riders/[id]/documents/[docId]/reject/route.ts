@@ -112,7 +112,7 @@ export async function POST(
     }
 
     // Get agent information
-    const agent = await getSystemUserByEmail(session.user.email!);
+    const agent = await getSystemUserByEmail(user.email ?? "");
     if (!agent) {
       return NextResponse.json(
         { success: false, error: "Agent not found" },
@@ -140,7 +140,7 @@ export async function POST(
 
     // Log action
     await logActionFromRequest(
-      session.user.email!,
+      user.email ?? "",
       "RIDER",
       "RIDER_DOCUMENT_REJECTED",
       {

@@ -70,22 +70,22 @@ function SidebarComponent() {
 
       // Check dashboard access
       if (item.dashboardType) {
+        const dt = item.dashboardType;
         // Super admin has access to all dashboards
         if (isSuperAdmin) {
           return true;
         }
-        
+
         // Special handling for Orders - show if user has access to any order type
-        if (item.dashboardType === "ORDER_FOOD") {
-          return accessibleDashboards.has("ORDER_FOOD") || 
-                 accessibleDashboards.has("ORDER_PERSON_RIDE") || 
-                 accessibleDashboards.has("ORDER_PARCEL");
+        if (dt === "ORDER_FOOD") {
+          return (
+            accessibleDashboards.has("ORDER_FOOD") ||
+            accessibleDashboards.has("ORDER_PERSON_RIDE") ||
+            accessibleDashboards.has("ORDER_PARCEL")
+          );
         }
-        
-        // Check dashboard access directly (CUSTOMER and TICKET are now consolidated)
-        return accessibleDashboards.has(item.dashboardType);
-        
-        return accessibleDashboards.has(item.dashboardType);
+
+        return accessibleDashboards.has(dt);
       }
 
       // Default: show if no specific requirements

@@ -443,10 +443,11 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
                   (etaBreachedTimelineId != null
                     ? entry.id === etaBreachedTimelineId
                     : index === displayEntries.length - 1);
-                const isPastBreachPoint =
+                const isPastBreachPoint = Boolean(
                   showRedFromBreach &&
-                  !isPlaceholder &&
-                  index >= breachedIndexResolved;
+                    !isPlaceholder &&
+                    index >= breachedIndexResolved
+                );
                 const colors = isPlaceholder
                   ? { dot: "bg-slate-300", text: "text-slate-400" }
                   : getStageColor(index, entry.status, isPastBreachPoint);

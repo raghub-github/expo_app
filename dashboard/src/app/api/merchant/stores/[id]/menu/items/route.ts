@@ -67,6 +67,37 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid price" }, { status: 400 });
     }
 
+    const strOrNull = (v: unknown) =>
+      v != null && String(v).trim() !== "" ? String(v) : null;
+    const numOrNull = (v: unknown) => {
+      if (v == null || v === "") return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const boolOr = (v: unknown, def: boolean) => (typeof v === "boolean" ? v : def);
+    const numOr = (v: unknown, def: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : def;
+    };
+
+    const itemDescription = strOrNull(body.item_description);
+    const foodType = strOrNull(body.food_type);
+    const spiceLevel = strOrNull(body.spice_level);
+    const cuisineType = strOrNull(body.cuisine_type);
+    const preparationTimeMinutes = numOrNull(body.preparation_time_minutes);
+    const serves = numOrNull(body.serves);
+    const servesLabel = strOrNull(body.serves_label);
+    const shortName = strOrNull(body.short_name);
+    const displayOrder = numOr(body.display_order, 0);
+    const itemSizeValue = numOrNull(body.item_size_value);
+    const itemSizeUnit = strOrNull(body.item_size_unit);
+    const availableForDelivery = boolOr(body.available_for_delivery, true);
+    const inStock = boolOr(body.in_stock, true);
+    const isActive = boolOr(body.is_active, true);
+    const hasCustomizations = boolOr(body.has_customizations, false);
+    const hasAddons = boolOr(body.has_addons, false);
+    const hasVariants = boolOr(body.has_variants, false);
+
     const itemId = ulid();
     const sql = getSql();
     const [row] = await sql`
@@ -80,22 +111,22 @@ export async function POST(
         created_at, updated_at
       )
       VALUES (
-        ${storeId}, ${category_id}, ${itemId}, ${item_name}, ${body.item_description ?? null},
-        ${body.food_type ?? null}, ${body.spice_level ?? null}, ${body.cuisine_type ?? null},
+        ${storeId}, ${category_id}, ${itemId}, ${item_name}, ${itemDescription},
+        ${foodType}, ${spiceLevel}, ${cuisineType},
         ${base_price}, ${selling_price},
-        ${body.preparation_time_minutes ?? null},
-        ${body.serves ?? null},
-        ${body.serves_label ?? null},
-        ${body.short_name ?? null},
-        ${body.display_order ?? 0},
-        ${body.item_size_value ?? null},
-        ${body.item_size_unit ?? null},
-        ${body.available_for_delivery ?? true},
-        ${body.in_stock ?? true},
-        ${body.is_active ?? true},
-        ${body.has_customizations ?? false},
-        ${body.has_addons ?? false},
-        ${body.has_variants ?? false},
+        ${preparationTimeMinutes},
+        ${serves},
+        ${servesLabel},
+        ${shortName},
+        ${displayOrder},
+        ${itemSizeValue},
+        ${itemSizeUnit},
+        ${availableForDelivery},
+        ${inStock},
+        ${isActive},
+        ${hasCustomizations},
+        ${hasAddons},
+        ${hasVariants},
         'PENDING'::merchant_menu_item_approval_status,
         NULL,
         NULL,

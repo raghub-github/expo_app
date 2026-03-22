@@ -288,9 +288,9 @@ function HeaderComponent() {
         userMetadata?.picture,
         userMetadata?.avatar,
         userMetadata?.avatar_url,
-        sessionUser?.user_metadata?.avatar_url,
-        sessionUser?.user_metadata?.picture,
-        sessionUser?.user_metadata?.avatar,
+        (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar_url,
+        (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.picture,
+        (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar,
         // Also check app_metadata which sometimes contains Google profile data
         (sessionUser as any)?.app_metadata?.avatar_url,
         (sessionUser as any)?.app_metadata?.picture,

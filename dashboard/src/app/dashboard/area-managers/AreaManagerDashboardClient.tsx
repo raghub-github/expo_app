@@ -392,7 +392,9 @@ export function AreaManagerDashboardClient() {
   if (error) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-medium text-red-800">{error}</p>
+        <p className="text-sm font-medium text-red-800">
+          {error instanceof Error ? error.message : String(error)}
+        </p>
       </div>
     );
   }
@@ -501,7 +503,7 @@ export function AreaManagerDashboardClient() {
     );
   }
 
-  const riderData = data as RiderMetrics;
+  const riderData = data.data as RiderMetrics;
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">

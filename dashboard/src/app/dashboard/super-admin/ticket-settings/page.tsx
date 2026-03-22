@@ -15,7 +15,7 @@ import {
   useDeleteTicketTagMutation,
 } from "@/store/api/superAdminApi";
 
-type TitleRow = { id?: number; titleCode: string; titleText: string };
+type TitleRow = { id: number; titleCode: string; titleText: string; displayOrder: number | null };
 
 type Group = {
   id: number;
@@ -386,7 +386,13 @@ export default function TicketSettingsPage() {
                   <label className="block text-xs font-medium text-gray-600">Titles (multiple per group)</label>
                   <button
                     type="button"
-                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "" }] })}
+                    onClick={() =>
+                      setGroupForm((f) =>
+                        f && {
+                          ...f,
+                          titles: [...(f.titles ?? []), { id: 0, titleCode: "", titleText: "", displayOrder: null }],
+                        }
+                      )}
                     className="text-xs text-blue-600 hover:underline"
                   >
                     + Add title
@@ -487,7 +493,12 @@ export default function TicketSettingsPage() {
                             type="button"
                             onClick={() => setGroupForm({
                               ...g,
-                              titles: (g.titles ?? []).map((t) => ({ titleCode: t.titleCode, titleText: t.titleText })),
+                              titles: (g.titles ?? []).map((t) => ({
+                                id: t.id,
+                                titleCode: t.titleCode,
+                                titleText: t.titleText,
+                                displayOrder: t.displayOrder,
+                              })),
                             })}
                             className="p-1.5 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700"
                             title="Edit"
@@ -602,7 +613,13 @@ export default function TicketSettingsPage() {
                   <label className="block text-xs font-medium text-gray-600">Titles</label>
                   <button
                     type="button"
-                    onClick={() => setGroupForm((f) => f && { ...f, titles: [...(f.titles ?? []), { titleCode: "", titleText: "" }] })}
+                    onClick={() =>
+                      setGroupForm((f) =>
+                        f && {
+                          ...f,
+                          titles: [...(f.titles ?? []), { id: 0, titleCode: "", titleText: "", displayOrder: null }],
+                        }
+                      )}
                     className="text-xs text-blue-600 hover:underline"
                   >
                     + Add title

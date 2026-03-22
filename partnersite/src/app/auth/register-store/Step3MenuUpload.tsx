@@ -1,6 +1,77 @@
 "use client";
 
-import type { RefObject, Dispatch, SetStateAction } from 'react';
+import type { RefObject, Dispatch, SetStateAction } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Trash2, Upload } from "lucide-react";
+import {
+  type MenuEntryVerificationTag,
+  menuPdfStatusFromRejectionDetail,
+  resolvePartnerMenuImageVerificationTag,
+  resolvePartnerMenuPdfVerificationTag,
+} from "@/lib/store-verification-menu-rejection-detail-shared";
+
+/** Local file preview + object URL lifecycle for pending menu images. */
+function PendingMenuImageCell({
+  file,
+  fileIndex,
+  onRemove,
+}: {
+  file: File;
+  fileIndex: number;
+  onRemove: (idx: number) => void;
+}) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const u = URL.createObjectURL(file);
+    setObjectUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+
+  return (
+    <li className="relative flex w-[28vw] max-w-[9.5rem] shrink-0 flex-col gap-1 md:w-auto md:max-w-none md:min-w-0">
+      <div className="relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-100 shadow-sm">
+        {objectUrl ? (
+          <a
+            href={objectUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute inset-0 block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
+            aria-label={`Open ${file.name} in new tab`}
+          >
+            <img
+              src={objectUrl}
+              alt=""
+              className="h-full w-full object-cover transition hover:opacity-95"
+            />
+          </a>
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">…</div>
+        )}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRemove(fileIndex);
+          }}
+          className="absolute right-1 top-1 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-rose-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+          aria-label="Remove image"
+        >
+          <Trash2 className="h-4 w-4 shrink-0" strokeWidth={2} />
+        </button>
+      </div>
+      <p
+        className="truncate px-0.5 text-center text-[10px] leading-tight text-slate-600"
+        title={file.name}
+      >
+        {file.name}
+      </p>
+      <p className="text-center text-[9px] text-slate-400">
+        {(file.size / (1024 * 1024)).toFixed(2)} MB · not saved
+      </p>
+    </li>
+  );
+}
 
 export type MenuUploadMode = 'IMAGE' | 'PDF' | 'CSV';
 
@@ -13,6 +84,19 @@ export interface Step3MenuUploadProps {
   menuUploadIds: number[];
   /** Stable ids for DELETE ?entry_id= (menu image bundle rows). */
   menuImageEntryIds: string[];
+  /** Same length as menuUploadedImageUrls when from DB; e.g. REJECTED after verification step 3 rejection. */
+  menuImageVerificationStatuses: string[];
+  /**
+   * True when the merchant is in verification-fix mode on partner step 3 (menu).
+   * Fallback when no `menuEntryRejectionStatuses` snapshot exists.
+   */
+  menuStepVerificationFixActive?: boolean;
+  /** Step 3 rejection snapshot: `entry_id` → VERIFIED | REJECTED | PENDING (from `step_rejection_detail`). */
+  menuEntryRejectionStatuses?: Record<string, MenuEntryVerificationTag>;
+  /** DB `merchant_store_media_files.verification_status` for the menu PDF row (from progress merge). */
+  menuPdfVerificationStatus?: string | null;
+  /** Raw step-3 `step_rejection_detail` from verification API (MENU_REFERENCE snapshot includes PDF row). */
+  menuStep3RejectionDetail?: unknown;
   menuSpreadsheetFile: File | null;
   menuUploadedSpreadsheetUrl: string | null;
   menuUploadedSpreadsheetFileName: string | null;
@@ -49,6 +133,10 @@ export interface Step3MenuUploadProps {
   onRemoveUploadedImage: (idx: number) => void;
   /** Clears all pending local images and deletes every uploaded image from the server. */
   onRemoveAllMenuImages: () => void | Promise<void>;
+  /** Replace one rejected cloud image; server marks the new file REUPLOADED. */
+  onReuploadRejectedMenuImage?: (uploadedSlotIndex: number, file: File) => void | Promise<void>;
+  /** Index in `menuUploadedImageUrls` while a rejected-slot re-upload is running. */
+  menuImageReuploadingIndex?: number | null;
   onRemoveCsvFile: () => void;
   onRemovePdfFile: () => void;
 }
@@ -86,9 +174,42 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
     onRemovePendingImage,
     onRemoveUploadedImage,
     onRemoveAllMenuImages,
+    onReuploadRejectedMenuImage,
+    menuImageReuploadingIndex = null,
     onRemoveCsvFile,
     onRemovePdfFile,
+    menuStepVerificationFixActive = false,
+    menuEntryRejectionStatuses: menuEntryRejectionStatusesProp,
+    menuPdfVerificationStatus: menuPdfVerificationStatusProp,
+    menuStep3RejectionDetail: menuStep3RejectionDetailProp,
   } = props;
+
+  const reuploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [reuploadTargetIdx, setReuploadTargetIdx] = useState<number | null>(null);
+
+  /** Read from props (not a nested helper) so React Compiler / hoisting cannot drop the closure. */
+  const menuImageVerificationStatusesSafe = props.menuImageVerificationStatuses ?? [];
+  const menuEntryRejectionStatuses = menuEntryRejectionStatusesProp ?? {};
+  const hasMenuRejectionEntrySnapshot = Object.keys(menuEntryRejectionStatuses).length > 0;
+
+  const pdfVerificationTag = resolvePartnerMenuPdfVerificationTag({
+    rawDbStatus: menuPdfVerificationStatusProp ?? null,
+    snapshotPdfStatus: menuPdfStatusFromRejectionDetail(menuStep3RejectionDetailProp),
+    menuStepVerificationFixActive,
+  });
+
+  const uploadedHasRemovableSlot = menuUploadedImageUrls.some((_, idx) => {
+    const entryId = String(menuImageEntryIds[idx] ?? "").trim();
+    const tag = resolvePartnerMenuImageVerificationTag({
+      entryId,
+      menuEntryRejectionStatuses,
+      hasMenuRejectionEntrySnapshot,
+      rawDbStatus: menuImageVerificationStatusesSafe[idx],
+      menuStepVerificationFixActive,
+    });
+    return tag !== "VERIFIED";
+  });
+  const canRemoveAllMenuImages = menuImageFiles.length > 0 || uploadedHasRemovableSlot;
 
   return (
     <div className="h-full flex items-start justify-center">
@@ -131,6 +252,21 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
             {menuUploadError}
           </div>
         )}
+
+        <input
+          ref={reuploadInputRef}
+          type="file"
+          accept="image/jpeg,image/jpg,image/png,image/webp"
+          className="hidden"
+          onChange={(e) => {
+            const idx = reuploadTargetIdx;
+            const f = (e.target.files || [])[0] || null;
+            e.target.value = "";
+            setReuploadTargetIdx(null);
+            if (idx == null || !f || !onReuploadRejectedMenuImage) return;
+            void onReuploadRejectedMenuImage(idx, f);
+          }}
+        />
 
         <div className="mb-3 sm:mb-4 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
           <span className="font-medium text-slate-600">Attachments:</span>
@@ -255,78 +391,184 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                 <h3 className="text-sm font-semibold text-slate-700">Uploaded menu</h3>
                 <button
                   type="button"
-                  onClick={() =>
+                  disabled={!canRemoveAllMenuImages}
+                  onClick={() => {
+                    if (!canRemoveAllMenuImages) return;
                     setConfirmModal({
-                      title: 'Remove all menu images?',
+                      title: "Remove removable menu images?",
                       message:
-                        'This removes every image in the list. Files not yet saved will be cleared; images already stored in the cloud will be permanently deleted.',
-                      variant: 'warning',
-                      confirmLabel: 'Remove all',
+                        "This clears images that are not yet saved and deletes rejected or pending images from the server. Verified images stay on file.",
+                      variant: "warning",
+                      confirmLabel: "Remove all",
                       onConfirm: () => onRemoveAllMenuImages(),
                       onCancel: () => setConfirmModal(null),
-                    })
-                  }
-                  className="text-xs font-semibold text-rose-600 hover:text-rose-800 underline-offset-2 hover:underline min-h-[36px] px-1"
+                    });
+                  }}
+                  className={`text-xs font-semibold underline-offset-2 min-h-[36px] px-1 ${
+                    canRemoveAllMenuImages
+                      ? "text-rose-600 hover:text-rose-800 hover:underline"
+                      : "cursor-not-allowed text-slate-400"
+                  }`}
                 >
                   Remove all
                 </button>
               </div>
-              <ul className="list-none p-0 m-0 space-y-2">
+              <ul className="list-none m-0 flex w-full flex-nowrap gap-2 overflow-x-auto pb-1 sm:gap-3 md:grid md:max-w-full md:grid-cols-5 md:flex-none md:overflow-visible md:pb-0 [scrollbar-width:thin]">
                 {menuImageFiles.map((file, idx) => (
-                  <li
-                    key={`pending-${idx}`}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-slate-800 truncate">{file.name}</p>
-                      <p className="text-xs text-slate-500">{(file.size / (1024 * 1024)).toFixed(2)} MB · not saved yet</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onRemovePendingImage(idx)}
-                      className="text-xs font-medium text-rose-600 hover:text-rose-700 min-h-[36px] px-2"
+                  <PendingMenuImageCell
+                    key={`pending-${idx}-${file.name}-${file.size}`}
+                    file={file}
+                    fileIndex={idx}
+                    onRemove={onRemovePendingImage}
+                  />
+                ))}
+                {menuUploadedImageUrls.map((url, idx) => {
+                  const entryId = String(menuImageEntryIds[idx] ?? "").trim();
+                  const verificationTag = resolvePartnerMenuImageVerificationTag({
+                    entryId,
+                    menuEntryRejectionStatuses,
+                    hasMenuRejectionEntrySnapshot,
+                    rawDbStatus: menuImageVerificationStatusesSafe[idx],
+                    menuStepVerificationFixActive,
+                  });
+                  const isVerifiedLocked = verificationTag === "VERIFIED";
+                  const label = menuUploadedImageNames[idx] || `Menu image ${idx + 1}`;
+                  return (
+                    <li
+                      key={`uploaded-${menuImageEntryIds[idx] || String(menuUploadIds[idx] ?? idx)}`}
+                      className="relative flex w-[28vw] max-w-[9.5rem] shrink-0 flex-col gap-1 md:w-auto md:max-w-none md:min-w-0"
                     >
-                      Remove
-                    </button>
-                  </li>
-                ))}
-                {menuUploadedImageUrls.map((url, idx) => (
-                  <li
-                    key={`uploaded-${menuImageEntryIds[idx] || String(menuUploadIds[idx] ?? idx)}`}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5"
-                  >
-                    <p className="text-sm font-medium text-slate-800 truncate min-w-0 flex-1">
-                      {menuUploadedImageNames[idx] || `Menu image ${idx + 1}`}
-                    </p>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {url ? (
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center justify-center rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 min-h-[36px]"
-                        >
-                          View uploaded menu
-                        </a>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setConfirmModal({
-                            title: 'Remove uploaded image?',
-                            message: 'This will be deleted from the server.',
-                            variant: 'warning',
-                            onConfirm: () => onRemoveUploadedImage(idx),
-                            onCancel: () => setConfirmModal(null),
-                          })
-                        }
-                        className="text-xs font-medium text-rose-600 hover:text-rose-700 min-h-[36px] px-2"
+                      <div
+                        className={`relative aspect-square overflow-hidden rounded-lg border border-slate-200 bg-slate-100 shadow-sm ${
+                          isVerifiedLocked ? "ring-1 ring-emerald-200/80" : ""
+                        }`}
+                        title={isVerifiedLocked ? "Verified — cannot be changed" : undefined}
                       >
-                        Remove
-                      </button>
-                    </div>
-                  </li>
-                ))}
+                        {url ? (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="absolute inset-0 block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
+                            aria-label={`Open ${label} in new tab`}
+                          >
+                            <img
+                              src={url}
+                              alt={label}
+                              className="h-full w-full object-cover transition hover:opacity-95"
+                              loading="lazy"
+                            />
+                          </a>
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">
+                            No preview
+                          </div>
+                        )}
+                        {verificationTag === "REJECTED" ? (
+                          <span
+                            className="pointer-events-none absolute left-1 top-1 z-[15] max-w-[calc(100%-2.25rem)] truncate rounded-md bg-rose-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow-md ring-1 ring-rose-800/30"
+                            title="Rejected by verification — please update and resubmit"
+                          >
+                            Rejected
+                          </span>
+                        ) : null}
+                        {verificationTag === "VERIFIED" ? (
+                          <span
+                            className="pointer-events-none absolute left-1 top-1 z-[15] max-w-[calc(100%-2.25rem)] truncate rounded-md bg-emerald-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow-md ring-1 ring-emerald-800/30"
+                            title="Verified by verification team at last review"
+                          >
+                            Verified
+                          </span>
+                        ) : null}
+                        {verificationTag === "REUPLOADED" ? (
+                          <span
+                            className="pointer-events-none absolute left-1 top-1 z-[15] max-w-[calc(100%-2.25rem)] truncate rounded-md bg-indigo-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow-md ring-1 ring-indigo-900/30"
+                            title="You replaced this image — pending review"
+                          >
+                            Reuploaded
+                          </span>
+                        ) : null}
+                        {verificationTag === "PENDING" && hasMenuRejectionEntrySnapshot ? (
+                          <span
+                            className="pointer-events-none absolute left-1 top-1 z-[15] max-w-[calc(100%-2.25rem)] truncate rounded-md bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow-md ring-1 ring-amber-800/30"
+                            title="Awaiting verification review"
+                          >
+                            Pending
+                          </span>
+                        ) : null}
+                        {!isVerifiedLocked ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setConfirmModal({
+                                title: "Remove uploaded image?",
+                                message: "This will be deleted from the server.",
+                                variant: "warning",
+                                onConfirm: () => onRemoveUploadedImage(idx),
+                                onCancel: () => setConfirmModal(null),
+                              });
+                            }}
+                            className="absolute right-1 top-1 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white/95 text-rose-600 shadow-sm hover:bg-rose-50 hover:text-rose-700"
+                            aria-label="Remove image"
+                          >
+                            <Trash2 className="h-4 w-4 shrink-0" strokeWidth={2} />
+                          </button>
+                        ) : null}
+                      </div>
+                      <p
+                        className="truncate px-0.5 text-center text-[10px] leading-tight text-slate-600"
+                        title={label}
+                      >
+                        {label}
+                      </p>
+                      {verificationTag === "REJECTED" && onReuploadRejectedMenuImage ? (
+                        <button
+                          type="button"
+                          disabled={menuImageUploading || menuImageReuploadingIndex != null}
+                          onClick={() => {
+                            setReuploadTargetIdx(idx);
+                            reuploadInputRef.current?.click();
+                          }}
+                          className="mt-0.5 flex w-full min-h-[32px] items-center justify-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-semibold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {menuImageReuploadingIndex === idx ? (
+                            <>
+                              <svg
+                                className="h-3.5 w-3.5 shrink-0 animate-spin text-indigo-600"
+                                xmlns="http://www.w3.org/2000/svg"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                aria-hidden
+                              >
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                />
+                                <path
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                />
+                              </svg>
+                              Uploading…
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
+                              Re-upload
+                            </>
+                          )}
+                        </button>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             </>
           )}
@@ -377,7 +619,35 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
               <h3 className="text-sm font-semibold text-slate-700">Uploaded menu</h3>
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-slate-800 truncate">{menuPdfFile?.name ?? menuUploadedPdfFileName ?? 'PDF'}</p>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium text-slate-800 truncate">
+                      {menuPdfFile?.name ?? menuUploadedPdfFileName ?? "PDF"}
+                    </p>
+                    {pdfVerificationTag === "REJECTED" ? (
+                      <span
+                        className="shrink-0 rounded-md bg-rose-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm ring-1 ring-rose-800/30"
+                        title="Rejected by verification — please update and resubmit"
+                      >
+                        Rejected
+                      </span>
+                    ) : null}
+                    {pdfVerificationTag === "VERIFIED" ? (
+                      <span
+                        className="shrink-0 rounded-md bg-emerald-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm ring-1 ring-emerald-800/30"
+                        title="Verified by verification team at last review"
+                      >
+                        Verified
+                      </span>
+                    ) : null}
+                    {pdfVerificationTag === "REUPLOADED" ? (
+                      <span
+                        className="shrink-0 rounded-md bg-indigo-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm ring-1 ring-indigo-900/30"
+                        title="You replaced this file — pending review"
+                      >
+                        Reuploaded
+                      </span>
+                    ) : null}
+                  </div>
                   {menuPdfFile && <p className="text-xs text-slate-500">{(menuPdfFile.size / (1024 * 1024)).toFixed(2)} MB</p>}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

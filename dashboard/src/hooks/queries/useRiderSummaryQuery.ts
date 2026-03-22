@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys, type RiderSummaryParams } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
@@ -82,20 +82,16 @@ export function useRiderSummaryQuery(
     return loadClientSnapshot<RiderSummary>(snapshotKey, SNAPSHOT_TTL_MS);
   }, [snapshotKey]);
 
-  return useQuery({
+  const query = useQuery({
     queryKey: queryKeys.rider.summary(riderId, params),
     queryFn: ({ signal }) => fetchRiderSummary(riderId!, params, signal),
     enabled,
-    initialData: initialSnapshot ?? undefined,
+    ...(initialSnapshot !== null ? { initialData: initialSnapshot } : {}),
     ...cacheConfig,
     // Refetch when mounting so invalidated cache (e.g. after penalty/revert on another route) updates UI
     refetchOnMount: true,
     // Keep previous summary visible while refetching (filters/rider change) for smooth UX
     placeholderData: (previousData) => previousData,
-    onSuccess: (data) => {
-      if (!snapshotKey) return;
-      saveClientSnapshot(snapshotKey, data);
-    },
     retry: (failureCount, error) => {
       if (error instanceof Error) {
         if (error.message.includes("404") || error.message.includes("403")) return false;
@@ -104,4 +100,11 @@ export function useRiderSummaryQuery(
     },
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 3000),
   });
+
+  useEffect(() => {
+    if (!snapshotKey || !query.data) return;
+    saveClientSnapshot(snapshotKey, query.data);
+  }, [snapshotKey, query.data]);
+
+  return query;
 }

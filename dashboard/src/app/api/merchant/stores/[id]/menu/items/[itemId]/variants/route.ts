@@ -46,9 +46,16 @@ export async function POST(
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
     const variantId = genId("VAR_");
+    const variantType =
+      body.variant_type != null && String(body.variant_type).trim() !== ""
+        ? String(body.variant_type)
+        : null;
+    const isDefault = body.is_default === true;
+    const displayOrderRaw = Number(body.display_order);
+    const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_menu_item_variants (menu_item_id, variant_id, variant_name, variant_type, variant_price, is_default, display_order)
-      VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${body.variant_type ?? null}, ${variant_price}, ${body.is_default ?? false}, ${body.display_order ?? 0})
+      VALUES (${menuItemId}, ${variantId}, ${variant_name}, ${variantType}, ${variant_price}, ${isDefault}, ${displayOrder})
       RETURNING id
     `;
     try {

@@ -9,20 +9,8 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { mapRowToMenuMediaFile, type MenuMediaFile } from "@/lib/merchant-menu-media";
 export const runtime = "nodejs";
-
-export type MenuMediaFile = {
-  id: number;
-  store_id: number;
-  media_scope: string;
-  original_file_name: string | null;
-  r2_key: string;
-  public_url: string | null;
-  mime_type: string | null;
-  file_size_bytes: number | null;
-  verification_status: string;
-  created_at: string;
-};
 
 export async function GET(
   request: NextRequest,
@@ -88,8 +76,8 @@ export async function GET(
     try {
       const sql = getSql();
       const rows = await sql`
-        SELECT id, store_id, media_scope, original_file_name, r2_key, public_url,
-               mime_type, file_size_bytes, verification_status, created_at
+        SELECT id, store_id, media_scope, source_entity, original_file_name, r2_key, public_url, menu_url,
+               mime_type, file_size_bytes, verification_status, created_at, menu_reference_image_urls
         FROM merchant_store_media_files
         WHERE store_id = ${storeId}
           AND media_scope = ${scope}
@@ -97,18 +85,9 @@ export async function GET(
           AND deleted_at IS NULL
         ORDER BY created_at DESC
       `;
-      files = (Array.isArray(rows) ? rows : [rows]).map((r) => ({
-        id: Number(r.id),
-        store_id: Number(r.store_id),
-        media_scope: String(r.media_scope),
-        original_file_name: r.original_file_name != null ? String(r.original_file_name) : null,
-        r2_key: String(r.r2_key),
-        public_url: r.public_url != null ? String(r.public_url) : null,
-        mime_type: r.mime_type != null ? String(r.mime_type) : null,
-        file_size_bytes: r.file_size_bytes != null ? Number(r.file_size_bytes) : null,
-        verification_status: String(r.verification_status ?? "PENDING"),
-        created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
-      }));
+      files = (Array.isArray(rows) ? rows : [rows]).map((r) =>
+        mapRowToMenuMediaFile(r as Record<string, unknown>)
+      );
     } catch (e) {
       console.warn("[GET /api/merchant/stores/[id]/media] query failed (table may not exist):", e);
     }

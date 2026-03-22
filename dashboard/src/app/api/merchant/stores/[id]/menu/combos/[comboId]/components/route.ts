@@ -46,9 +46,13 @@ export async function POST(
     if (!item) return NextResponse.json({ success: false, error: "Menu item not found" }, { status: 404 });
 
     const variant_id = body.variant_id != null ? Number(body.variant_id) : null;
+    const quantityRaw = Number(body.quantity);
+    const quantity = Number.isFinite(quantityRaw) && quantityRaw > 0 ? quantityRaw : 1;
+    const displayOrderRaw = Number(body.display_order);
+    const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_menu_combo_components (combo_id, menu_item_id, variant_id, quantity, display_order)
-      VALUES (${cId}, ${menu_item_id}, ${variant_id}, ${body.quantity ?? 1}, ${body.display_order ?? 0})
+      VALUES (${cId}, ${menu_item_id}, ${variant_id}, ${quantity}, ${displayOrder})
       RETURNING id
     `;
     try {
@@ -59,7 +63,7 @@ export async function POST(
         changedSection: "menu_combo_components",
         fieldName: "combo_component",
         oldValue: null,
-        newValue: JSON.stringify({ combo_id: cId, menu_item_id, variant_id, quantity: body.quantity ?? 1 }),
+        newValue: JSON.stringify({ combo_id: cId, menu_item_id, variant_id, quantity }),
         actionType: "create",
       });
     } catch (_logErr) {}

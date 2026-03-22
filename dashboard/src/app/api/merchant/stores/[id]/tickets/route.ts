@@ -85,7 +85,7 @@ export async function GET(
         ORDER BY ut.updated_at DESC NULLS LAST, ut.created_at DESC
         LIMIT 500
       `;
-      rows = (result || []) as Row[];
+      rows = (result || []) as unknown as Row[];
     } catch (colErr) {
       try {
         const result = await sqlClient`

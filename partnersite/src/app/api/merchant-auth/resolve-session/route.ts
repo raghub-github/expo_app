@@ -6,6 +6,7 @@ import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 import { createClient } from "@supabase/supabase-js";
+import { fetchVerificationRejectionsByStoreIds } from "@/lib/onboarding/partner-verification-rejections";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -112,6 +113,9 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const rejectionByStore =
+      storeIds.length > 0 ? await fetchVerificationRejectionsByStoreIds(db, storeIds) : {};
+
     const { data: progress, error: progressError } = await db
       .from("merchant_store_registration_progress")
       .select("*")
@@ -132,6 +136,8 @@ export async function GET(request: NextRequest) {
     const storeList = (stores ?? []).map((s) => ({
       ...s,
       payment_status: (s.id != null ? (paymentByStoreId[s.id] ?? "pending") : "pending") as "pending" | "completed",
+      verification_step_rejections:
+        s.id != null ? (rejectionByStore[s.id] ?? []) : [],
     }));
     const verifiedStores = storeList.filter((s) => s.approval_status === "APPROVED");
     const hasDraftStore = storeList.some((s) => (s.approval_status || "").toUpperCase() === "DRAFT");

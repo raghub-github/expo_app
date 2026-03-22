@@ -14,6 +14,8 @@ export interface SystemUser {
   mobile: string;
   alternateMobile?: string;
   primaryRole: string;
+  /** Account status (ACTIVE, SUSPENDED, …); prefer over isActive when present */
+  status?: string;
   subrole?: string;
   subroleOther?: string;
   roleDisplayName?: string;

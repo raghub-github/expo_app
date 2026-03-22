@@ -29,7 +29,7 @@ export function usePermission() {
     }
     if (!permissionsData?.permissions?.length) return new Set<string>();
     const arr = permissionsData.permissions as Array<{ module: string; action: string; resourceType?: string }>;
-    if (typeof arr[0] === "string") return new Set(arr as string[]);
+    if (typeof arr[0] === "string") return new Set(arr as unknown as string[]);
     return new Set(toPermissionKeys(arr));
   }, [permissionsData?.permissionStrings, permissionsData?.permissions]);
 
@@ -43,9 +43,10 @@ export function usePermission() {
   }, [dashboardAccessData?.dashboards]);
 
   const accessPointsByDashboard = useMemo(() => {
-    if (!dashboardAccessData?.accessPoints?.length) return new Map<string, typeof dashboardAccessData.accessPoints>();
-    const map = new Map<string, typeof dashboardAccessData.accessPoints>();
-    for (const ap of dashboardAccessData.accessPoints) {
+    const points = dashboardAccessData?.accessPoints;
+    if (!points?.length) return new Map<string, NonNullable<typeof points>>();
+    const map = new Map<string, typeof points>();
+    for (const ap of points) {
       if (!ap.isActive) continue;
       const key = ap.dashboardType;
       if (!map.has(key)) map.set(key, []);

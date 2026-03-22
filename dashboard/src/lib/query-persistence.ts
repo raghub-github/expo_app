@@ -138,10 +138,12 @@ export function createPersister(): Persister {
           ...client,
           clientState: {
             ...client.clientState,
-            queries: client.clientState.queries.filter((query) => {
-              const queryKey = query.queryKey || [];
-              return shouldPersistQuery(queryKey);
-            }),
+            queries: client.clientState.queries.filter(
+              (query: { queryKey?: readonly unknown[] }) => {
+                const queryKey = query.queryKey || [];
+                return shouldPersistQuery(queryKey);
+              }
+            ),
           },
         };
         
@@ -181,9 +183,10 @@ export function createPersister(): Persister {
         // Filter out expired queries
         const now = Date.now();
         if (client.clientState?.queries) {
-          client.clientState.queries = client.clientState.queries.filter((query) => {
+          client.clientState.queries = client.clientState.queries.filter(
+            (query: { state?: { data?: unknown } }) => {
             // Check if query has expiry metadata
-            const queryData = query.state?.data as any;
+            const queryData = query.state?.data as { __expiresAt?: number } | undefined;
             if (queryData?.__expiresAt && queryData.__expiresAt < now) {
               return false;
             }

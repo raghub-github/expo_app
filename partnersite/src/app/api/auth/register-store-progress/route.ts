@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 import { logAuthError, shouldClearSession } from "@/lib/auth/auth-error-handler";
 import { extractR2KeyFromUrl, deleteFromR2, toStoredDocumentUrl } from "@/lib/r2";
 import { menuSpreadsheetMimeFromFileName } from "@/lib/r2-paths";
-import { entriesWithRowMetaFromImageRows } from "@/lib/menu-reference-image-bundle";
+import { entriesWithRowMetaFromImageRows, fileNameFromMenuStoredUrl } from "@/lib/menu-reference-image-bundle";
 import {
   deepMergeFormData,
   toFreshSignedUrl,
@@ -22,6 +22,53 @@ import {
   upsertStoreDraft,
   syncMerchantStoreFromStep5,
 } from "./helpers";
+import {
+  markMerchantResubmittedForRejectedSteps,
+  partnerOnboardingStepToVerificationResubmitSteps,
+  verificationStepsFromFormDataPatch,
+} from "@/lib/onboarding/verification-resubmission";
+import {
+  rejectionDetailForDocType,
+  rejectionRequiresNewFileUpload,
+} from "@/lib/merchant-store-document-rejection";
+
+const STEP4_PREFIX_WATCH_KEYS: Record<string, string[]> = {
+  pan: ["pan_document_number", "pan_holder_name"],
+  gst: ["gst_document_number"],
+  aadhaar: ["aadhaar_document_number", "aadhaar_holder_name"],
+  fssai: ["fssai_document_number", "fssai_expiry_date"],
+  drug_license: ["drug_license_document_number", "drug_license_expiry_date"],
+  trade_license: ["trade_license_document_number", "trade_license_expiry_date"],
+  shop_establishment: ["shop_establishment_document_number", "shop_establishment_expiry_date"],
+  udyam: ["udyam_document_number"],
+  pharmacist_certificate: ["pharmacist_certificate_document_number", "pharmacist_certificate_expiry_date"],
+  pharmacy_council_registration: ["pharmacy_council_registration_document_name"],
+  other: ["other_document_number", "other_document_type", "other_expiry_date"],
+  bank_proof: ["bank_proof_document_number"],
+};
+
+function normStep4Scalar(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (t.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+    return t;
+  }
+  return String(v);
+}
+
+function step4FieldsChangedForPrefix(
+  pfx: string,
+  ex: Record<string, unknown>,
+  row: Record<string, unknown>
+): boolean {
+  const ks = STEP4_PREFIX_WATCH_KEYS[pfx];
+  if (!ks) return false;
+  for (const k of ks) {
+    if (normStep4Scalar(ex[k]) !== normStep4Scalar(row[k])) return true;
+  }
+  return false;
+}
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -86,33 +133,99 @@ export async function GET(req: NextRequest) {
     let progress: ProgressRow | null = null;
     let err: { message?: string } | null = null;
 
-    // First try to find by storePublicId if provided
+    const parentId = validation.merchantParentId;
+
+    const assignProgressError = (e: { message?: string } | null) => {
+      if (e?.message) err = e;
+    };
+
+    // When opening a specific child store (e.g. Review & fix), resolve that store only.
+    // Do not fall back to "latest progress for parent" — that returns the wrong store when
+    // `.contains` on JSON fails or rows differ only by progress.store_id.
     if (storePublicId) {
-      const byStore = await db
+      const byContains = await db
         .from("merchant_store_registration_progress")
         .select("*")
-        .eq("parent_id", validation.merchantParentId)
+        .eq("parent_id", parentId)
         .neq("registration_status", "COMPLETED")
         .contains("form_data", { step_store: { storePublicId } })
+        .order("updated_at", { ascending: false })
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (byStore.error) err = byStore.error;
-      else if (byStore.data) progress = byStore.data as ProgressRow;
-    }
+      assignProgressError(byContains.error);
+      if (byContains.data) progress = byContains.data as ProgressRow;
 
-    // If not found by storePublicId, try to find the most recent active progress for this parent
-    if (!progress) {
+      if (!progress) {
+        const { data: storeRow } = await db
+          .from("merchant_stores")
+          .select("id")
+          .eq("parent_id", parentId)
+          .eq("store_id", storePublicId)
+          .maybeSingle();
+        if (storeRow?.id != null) {
+          const byProgressStoreId = await db
+            .from("merchant_store_registration_progress")
+            .select("*")
+            .eq("parent_id", parentId)
+            .eq("store_id", storeRow.id)
+            .neq("registration_status", "COMPLETED")
+            .order("updated_at", { ascending: false })
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          assignProgressError(byProgressStoreId.error);
+          if (byProgressStoreId.data) progress = byProgressStoreId.data as ProgressRow;
+        }
+      }
+
+      if (!progress) {
+        const byJsonPath = await db
+          .from("merchant_store_registration_progress")
+          .select("*")
+          .eq("parent_id", parentId)
+          .neq("registration_status", "COMPLETED")
+          .eq("form_data->step_store->>storePublicId", storePublicId)
+          .order("updated_at", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        assignProgressError(byJsonPath.error);
+        if (byJsonPath.data) progress = byJsonPath.data as ProgressRow;
+      }
+
+      if (!progress) {
+        const recent = await db
+          .from("merchant_store_registration_progress")
+          .select("*")
+          .eq("parent_id", parentId)
+          .neq("registration_status", "COMPLETED")
+          .order("updated_at", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(40);
+        assignProgressError(recent.error);
+        const rows = recent.data ?? [];
+        const fdMatch = rows.find((row) => {
+          const fd = row.form_data as ProgressFormData | null | undefined;
+          const pid = fd?.step_store?.storePublicId;
+          return typeof pid === "string" && pid === storePublicId;
+        });
+        if (fdMatch) progress = fdMatch as ProgressRow;
+      }
+
+      if (progress) err = null;
+    } else {
       const byParent = await db
         .from("merchant_store_registration_progress")
         .select("*")
-        .eq("parent_id", validation.merchantParentId)
+        .eq("parent_id", parentId)
         .neq("registration_status", "COMPLETED")
+        .order("updated_at", { ascending: false })
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (byParent.error) err = byParent.error;
-      else if (byParent.data) progress = byParent.data as ProgressRow;
+      assignProgressError(byParent.error);
+      if (byParent.data) progress = byParent.data as ProgressRow;
     }
 
     // If we found progress but no Store ID is generated yet, and step 1 is completed, generate it
@@ -180,6 +293,21 @@ export async function GET(req: NextRequest) {
         }
       }
     }
+    // Resolve internal store id when only public GMMC… id is in form_data (common for AM-created stores)
+    if (!progressStoreDbId && progressStorePublicId) {
+      const { data: rowByPublic } = await db
+        .from("merchant_stores")
+        .select("id, store_id")
+        .eq("store_id", progressStorePublicId)
+        .maybeSingle();
+      if (rowByPublic) {
+        stepStore = { ...(typeof stepStore === "object" && stepStore ? stepStore : {}), storeDbId: rowByPublic.id, storePublicId: rowByPublic.store_id };
+        progressStoreDbId = rowByPublic.id as number;
+        progressStorePublicId = rowByPublic.store_id as string;
+        const formData = ((progress.form_data as Record<string, unknown>) || {}) as Record<string, unknown>;
+        progress = { ...progress, form_data: { ...formData, step_store: stepStore } } as ProgressRow;
+      }
+    }
     if (progressStoreDbId) {
       const { data: storeExists } = await db
         .from("merchant_stores")
@@ -199,10 +327,17 @@ export async function GET(req: NextRequest) {
       if (storeRow) {
         const formData = (progress.form_data || {}) as Record<string, unknown>;
         const step1 = (formData.step1 || {}) as Record<string, unknown>;
+        const strOrEmpty = (v: unknown) => (typeof v === "string" ? v.trim() : v != null ? String(v).trim() : "");
+        const preferNonEmptyDb = (dbVal: unknown, progVal: unknown): string => {
+          const d = strOrEmpty(dbVal);
+          if (d) return typeof dbVal === "string" ? dbVal.trim() : String(dbVal).trim();
+          const p = strOrEmpty(progVal);
+          return p;
+        };
         const mergedStep1 = {
           ...step1,
           store_name: storeRow.store_name ?? step1.store_name,
-          owner_full_name: storeRow.owner_full_name ?? step1.owner_full_name,
+          owner_full_name: preferNonEmptyDb(storeRow.owner_full_name, step1.owner_full_name),
           store_display_name: storeRow.store_display_name ?? step1.store_display_name,
           store_description: storeRow.store_description ?? step1.store_description,
           store_email: storeRow.store_email ?? step1.store_email,
@@ -269,6 +404,18 @@ export async function GET(req: NextRequest) {
           ...step4,
           pan_number: docRow.pan_document_number ?? step4.pan_number,
           pan_holder_name: docRow.pan_holder_name ?? step4.pan_holder_name,
+          pan_rejection_reason: docRow.pan_rejection_reason ?? null,
+          gst_rejection_reason: docRow.gst_rejection_reason ?? null,
+          aadhaar_rejection_reason: docRow.aadhaar_rejection_reason ?? null,
+          fssai_rejection_reason: docRow.fssai_rejection_reason ?? null,
+          drug_license_rejection_reason: docRow.drug_license_rejection_reason ?? null,
+          pharmacist_certificate_rejection_reason: docRow.pharmacist_certificate_rejection_reason ?? null,
+          pharmacy_council_registration_rejection_reason: docRow.pharmacy_council_registration_rejection_reason ?? null,
+          trade_license_rejection_reason: docRow.trade_license_rejection_reason ?? null,
+          shop_establishment_rejection_reason: docRow.shop_establishment_rejection_reason ?? null,
+          udyam_rejection_reason: docRow.udyam_rejection_reason ?? null,
+          other_rejection_reason: docRow.other_rejection_reason ?? null,
+          bank_proof_rejection_reason: docRow.bank_proof_rejection_reason ?? null,
           pan_image_url: pan_image_url ?? rawPan,
           aadhar_number: docRow.aadhaar_document_number ?? step4.aadhar_number,
           aadhar_holder_name: docRow.aadhaar_holder_name ?? step4.aadhar_holder_name,
@@ -299,6 +446,7 @@ export async function GET(req: NextRequest) {
           other_document_name: docRow.other_document_name ?? step4.other_document_name,
           other_document_file_url: other_document_file_url ?? rawOther,
           other_document_expiry_date: docRow.other_expiry_date ?? step4.other_document_expiry_date,
+          step4_rejection_details: docRow.step4_rejection_details ?? (step4 as { step4_rejection_details?: unknown }).step4_rejection_details ?? null,
         };
         // Sign bank/UPI attachment URLs (R2 private URLs require signed URLs for viewing)
         const bankData = (step4.bank || {}) as Record<string, unknown>;
@@ -374,7 +522,7 @@ export async function GET(req: NextRequest) {
       const { data: menuMedia } = await db
         .from("merchant_store_media_files")
         .select(
-          "id, menu_url, public_url, r2_key, source_entity, original_file_name, created_at, menu_reference_image_urls"
+          "id, menu_url, public_url, r2_key, source_entity, original_file_name, created_at, menu_reference_image_urls, verification_status"
         )
         .eq("store_id", storeDbId)
         .eq("media_scope", "MENU_REFERENCE")
@@ -385,13 +533,14 @@ export async function GET(req: NextRequest) {
         const step3 = (formData.step3 || {}) as Record<string, unknown>;
         const pdfRow = menuMedia.find((m: { source_entity?: string }) => m.source_entity === "ONBOARDING_MENU_PDF");
         const sheetRow = menuMedia.find((m: { source_entity?: string }) => m.source_entity === "ONBOARDING_MENU_SHEET");
-        const imageRows = menuMedia.filter((m: { source_entity?: string }) => m.source_entity === "ONBOARDING_MENU_IMAGE");
+          const imageRows = menuMedia.filter((m: { source_entity?: string }) => m.source_entity === "ONBOARDING_MENU_IMAGE");
 
         type MenuRow = {
           menu_url?: string | null;
           public_url?: string | null;
           r2_key?: string | null;
           original_file_name?: string | null;
+          verification_status?: string | null;
         };
         const rowStoredUrl = (r: MenuRow) =>
           (r.menu_url && String(r.menu_url).trim()) || (r.public_url && String(r.public_url).trim()) || r.r2_key || null;
@@ -401,16 +550,19 @@ export async function GET(req: NextRequest) {
           const r = pdfRow as MenuRow;
           const rawPdf = (rowStoredUrl(r) || step3.menuPdfUrl) as string | null;
           const signedPdf = toMenuProxyUrl(rawPdf);
+          const pdfVs = String(r.verification_status ?? "PENDING").toUpperCase();
           mergedStep3 = {
             ...step3,
             menuUploadMode: "PDF",
             menuPdfUrl: signedPdf ?? rawPdf ?? step3.menuPdfUrl,
             menuPdfFileName: r.original_file_name ?? step3.menuPdfFileName ?? null,
+            menuPdfVerificationStatus: pdfVs,
             menuSpreadsheetUrl: null,
             menuSpreadsheetName: null,
             menuImageUrls: [],
             menuImageNames: [],
             menuImageEntryIds: [],
+            menuImageVerificationStatuses: [],
             menuUploadIds: [pdfRow.id as number],
           };
         } else if (sheetRow) {
@@ -424,9 +576,11 @@ export async function GET(req: NextRequest) {
             menuSpreadsheetName: r.original_file_name ?? step3.menuSpreadsheetName ?? null,
             menuPdfUrl: null,
             menuPdfFileName: null,
+            menuPdfVerificationStatus: null,
             menuImageUrls: [],
             menuImageNames: [],
             menuImageEntryIds: [],
+            menuImageVerificationStatuses: [],
             menuUploadIds: [sheetRow.id as number],
           };
         } else if (imageRows.length > 0) {
@@ -438,31 +592,36 @@ export async function GET(req: NextRequest) {
               public_url?: string | null;
               r2_key?: string | null;
               original_file_name?: string | null;
+              verification_status?: string | null;
             }[]
           );
           const rawImageUrls = withMeta.map((x) => x.url);
           const signedImageUrls = rawImageUrls
             .map((u) => toMenuProxyUrl(u))
             .filter((u: string | null): u is string => !!u);
-          const namesFromDb = withMeta
-            .map((x) => x.file_name)
-            .filter((n): n is string => typeof n === "string" && !!n.trim());
+          const menuImageNamesResolved = withMeta.map((x, i) => {
+            const fn = typeof x.file_name === "string" ? x.file_name.trim() : "";
+            if (fn) return fn;
+            const fromUrl = fileNameFromMenuStoredUrl(x.url);
+            if (fromUrl) return fromUrl;
+            return `Menu image ${i + 1}`;
+          });
+          const menuImageVerificationStatusesResolved = withMeta.map((x) =>
+            String(x.verification_status ?? "PENDING").toUpperCase()
+          );
           mergedStep3 = {
             ...step3,
             menuUploadMode: "IMAGE",
             menuImageUrls: signedImageUrls.length > 0 ? signedImageUrls : rawImageUrls,
-            menuImageNames:
-              namesFromDb.length > 0
-                ? namesFromDb
-                : Array.isArray(step3.menuImageNames)
-                  ? step3.menuImageNames
-                  : [],
+            menuImageNames: menuImageNamesResolved,
+            menuImageVerificationStatuses: menuImageVerificationStatusesResolved,
             menuUploadIds: withMeta.map((x) => x.rowId),
             menuImageEntryIds: withMeta.map((x) => x.id),
             menuSpreadsheetUrl: null,
             menuSpreadsheetName: null,
             menuPdfUrl: null,
             menuPdfFileName: null,
+            menuPdfVerificationStatus: null,
           };
         } else {
           mergedStep3 = { ...step3 };
@@ -480,9 +639,11 @@ export async function GET(req: NextRequest) {
           menuImageUrls: [],
           menuImageNames: [],
           menuImageEntryIds: [],
+          menuImageVerificationStatuses: [],
           menuUploadIds: [],
           menuPdfUrl: null,
           menuPdfFileName: null,
+          menuPdfVerificationStatus: null,
         };
         progress = { ...progress, form_data: { ...formData, step3: mergedStep3 } } as ProgressRow;
       }
@@ -638,7 +799,19 @@ export async function PUT(req: NextRequest) {
       formDataPatch = {},
       registrationStatus = "IN_PROGRESS",
       storePublicId,
+      preserveProgressPosition: preserveProgressRaw,
+      signalVerificationResubmission: signalResubmitRaw,
+      verificationResubmitSteps: verificationResubmitStepsRaw,
     } = body || {};
+
+    const preserveProgressPosition =
+      preserveProgressRaw === true || preserveProgressRaw === "true";
+    const signalVerificationResubmission =
+      signalResubmitRaw === true || signalResubmitRaw === "true";
+    /** During verification-fix saves we only notify ops after explicit "done" (client sends signal); intermediate uploads must not flip partner list UI. */
+    const shouldMarkVerificationResubmission =
+      !preserveProgressPosition || signalVerificationResubmission;
+    const effectiveMarkStepComplete = preserveProgressPosition ? false : !!markStepComplete;
 
     const stepNumber = Number(currentStep || 1);
     const normalizedCurrentStep = Number.isFinite(stepNumber) ? Math.min(Math.max(stepNumber, 1), 9) : 1;
@@ -657,16 +830,18 @@ export async function PUT(req: NextRequest) {
       existingQuery = existingQuery.contains("form_data", { step_store: { storePublicId } });
     }
 
-    const { data: existing, error: fetchError } = await existingQuery
+    const existingResult = await existingQuery
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (fetchError) {
+    if (existingResult.error) {
       return NextResponse.json({ success: false, error: "Failed to read progress" }, { status: 500 });
     }
 
-    const mergedFormData: any = deepMergeFormData(
+    let existing = existingResult.data;
+
+    let mergedFormData: any = deepMergeFormData(
       (existing?.form_data as Record<string, unknown>) || {},
       (formDataPatch as Record<string, unknown>) || {}
     );
@@ -683,14 +858,14 @@ export async function PUT(req: NextRequest) {
       if (!existingPid) ss.storePublicId = bodyStorePublicId;
     }
 
-    const nextFlags = buildReconciledFlags({
+    let nextFlags = buildReconciledFlags({
       existingFlags: existing,
       existingCurrentStep: Number(existing?.current_step || 1),
       normalizedCurrentStep,
       mergedFormData,
-      markStepComplete: !!markStepComplete,
+      markStepComplete: effectiveMarkStepComplete,
     });
-    const completedSteps = countCompletedSteps(nextFlags);
+    let completedSteps = countCompletedSteps(nextFlags);
 
     const toPositiveDbId = (raw: unknown): number | null => {
       if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
@@ -729,6 +904,66 @@ export async function PUT(req: NextRequest) {
           if (!mergedFormData.step_store) mergedFormData.step_store = {};
           (mergedFormData.step_store as Record<string, unknown>).storeDbId = rid;
           (mergedFormData.step_store as Record<string, unknown>).storePublicId = sid;
+        }
+      }
+    }
+
+    // Initial query excludes COMPLETED rows; contains() can miss stale form_data. If a row already exists
+    // for (parent_id, store_id), we must update it — otherwise INSERT hits unique constraint 23505.
+    if (!existing?.id && stepStore?.storeDbId && stepStore.storeDbId > 0) {
+      const { data: progressForStore } = await db
+        .from("merchant_store_registration_progress")
+        .select("*")
+        .eq("parent_id", validation.merchantParentId)
+        .eq("store_id", stepStore.storeDbId)
+        .maybeSingle();
+      if (progressForStore?.id) {
+        existing = progressForStore;
+        mergedFormData = deepMergeFormData(
+          (progressForStore.form_data as Record<string, unknown>) || {},
+          mergedFormData
+        );
+        if (!mergedFormData.step_store || typeof mergedFormData.step_store !== "object") {
+          mergedFormData.step_store = {};
+        }
+        const ss = mergedFormData.step_store as Record<string, unknown>;
+        ss.storeDbId = stepStore.storeDbId;
+        ss.storePublicId = stepStore.storePublicId;
+        nextFlags = buildReconciledFlags({
+          existingFlags: existing,
+          existingCurrentStep: Number(existing?.current_step || 1),
+          normalizedCurrentStep,
+          mergedFormData,
+          markStepComplete: effectiveMarkStepComplete,
+        });
+        completedSteps = countCompletedSteps(nextFlags);
+      }
+    }
+
+    const clampOnboardingStep = (n: number) =>
+      Math.min(Math.max(Math.floor(n), 1), 9);
+
+    let progressStepForPersistence = normalizedNextStep;
+    if (preserveProgressPosition) {
+      const fromProgress =
+        existing?.id != null ? Number(existing.current_step) : NaN;
+      if (Number.isFinite(fromProgress)) {
+        progressStepForPersistence = clampOnboardingStep(fromProgress);
+      } else {
+        const dbStoreId =
+          stepStore?.storeDbId && stepStore.storeDbId > 0
+            ? stepStore.storeDbId
+            : toPositiveDbId(existing?.store_id);
+        if (dbStoreId != null && dbStoreId > 0) {
+          const { data: storeProgressRow } = await db
+            .from("merchant_stores")
+            .select("current_onboarding_step")
+            .eq("id", dbStoreId)
+            .maybeSingle();
+          const fromStore = Number(storeProgressRow?.current_onboarding_step);
+          if (Number.isFinite(fromStore)) {
+            progressStepForPersistence = clampOnboardingStep(fromStore);
+          }
         }
       }
     }
@@ -844,14 +1079,15 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    if (normalizedCurrentStep >= 2) {
+    // Verification-fix saves must not re-run draft upsert — it forces DRAFT + onboarding_completed:false.
+    if (normalizedCurrentStep >= 2 && !preserveProgressPosition) {
       try {
         const draftResult = await upsertStoreDraft(db, {
           parentId: validation.merchantParentId,
           step1: mergedFormData?.step1,
           step2: mergedFormData?.step2,
           existingStoreDbId: stepStore?.storeDbId,
-          nextStep: normalizedNextStep,
+          nextStep: progressStepForPersistence,
         });
         if (draftResult) {
           stepStore = draftResult;
@@ -1075,7 +1311,9 @@ export async function PUT(req: NextRequest) {
       ];
       const { data: existingDocRow } = await db
         .from("merchant_store_documents")
-        .select("pan_document_url, aadhaar_document_url, aadhaar_document_metadata, gst_document_url, fssai_document_url, drug_license_document_url, pharmacist_certificate_document_url, pharmacy_council_registration_document_url, trade_license_document_url, shop_establishment_document_url, udyam_document_url, other_document_url")
+        .select(
+          "pan_document_url, aadhaar_document_url, aadhaar_document_metadata, gst_document_url, fssai_document_url, drug_license_document_url, pharmacist_certificate_document_url, pharmacy_council_registration_document_url, trade_license_document_url, shop_establishment_document_url, udyam_document_url, other_document_url, pan_rejection_reason, gst_rejection_reason, aadhaar_rejection_reason, fssai_rejection_reason, drug_license_rejection_reason, pharmacist_certificate_rejection_reason, pharmacy_council_registration_rejection_reason, trade_license_rejection_reason, shop_establishment_rejection_reason, udyam_rejection_reason, other_rejection_reason, step4_resubmission_flags, step4_rejection_details"
+        )
         .eq("store_id", stepStore.storeDbId)
         .single();
       const existing = existingDocRow as Record<string, unknown> | null;
@@ -1179,6 +1417,82 @@ export async function PUT(req: NextRequest) {
         other_document_type: docs.other_document_type || null,
         other_expiry_date: parseDate(docs.other_document_expiry_date),
       };
+      if (existing) {
+        const t = (u: unknown) => (typeof u === "string" ? u.trim() : "");
+        const hadRejection = (pfx: string) => {
+          const v = existing[`${pfx}_rejection_reason`];
+          return typeof v === "string" && v.trim() !== "";
+        };
+        let resubFlags: Record<string, unknown> =
+          existing.step4_resubmission_flags &&
+          typeof existing.step4_resubmission_flags === "object" &&
+          existing.step4_resubmission_flags !== null
+            ? { ...(existing.step4_resubmission_flags as Record<string, unknown>) }
+            : {};
+        let detailRoot: Record<string, unknown> =
+          existing.step4_rejection_details &&
+          typeof existing.step4_rejection_details === "object" &&
+          existing.step4_rejection_details !== null
+            ? { ...(existing.step4_rejection_details as Record<string, unknown>) }
+            : {};
+        const onNewFile = (newUrl: string | null, oldKey: string, pfx: string) => {
+          const n = t(newUrl);
+          const o = t(existing[oldKey]);
+          if (!n || n === o) return;
+          (docRow as Record<string, unknown>)[`${pfx}_is_verified`] = false;
+          (docRow as Record<string, unknown>)[`${pfx}_verified_at`] = null;
+          (docRow as Record<string, unknown>)[`${pfx}_verified_by`] = null;
+          if (hadRejection(pfx)) {
+            const det = rejectionDetailForDocType(detailRoot, pfx);
+            if (rejectionRequiresNewFileUpload(det)) {
+              resubFlags = { ...resubFlags, [pfx]: true };
+            }
+          } else {
+            (docRow as Record<string, unknown>)[`${pfx}_rejection_reason`] = null;
+          }
+        };
+        onNewFile(panDocumentUrl, "pan_document_url", "pan");
+        onNewFile(aadhaarFrontUrl, "aadhaar_document_url", "aadhaar");
+        const existingBack = (existing.aadhaar_document_metadata as Record<string, unknown> | undefined)?.back_url;
+        const nb = t(aadhaarBackUrl);
+        const ob = t(existingBack);
+        if (nb && nb !== ob) {
+          docRow.aadhaar_is_verified = false;
+          docRow.aadhaar_verified_at = null;
+          docRow.aadhaar_verified_by = null;
+          if (hadRejection("aadhaar")) {
+            const det = rejectionDetailForDocType(detailRoot, "aadhaar");
+            if (rejectionRequiresNewFileUpload(det)) {
+              resubFlags = { ...resubFlags, aadhaar: true };
+            }
+          } else {
+            docRow.aadhaar_rejection_reason = null;
+          }
+        }
+        onNewFile(gstDocumentUrl, "gst_document_url", "gst");
+        onNewFile(fssaiDocumentUrl, "fssai_document_url", "fssai");
+        onNewFile(drugLicenseDocumentUrl, "drug_license_document_url", "drug_license");
+        onNewFile(pharmacistCertificateUrl, "pharmacist_certificate_document_url", "pharmacist_certificate");
+        onNewFile(pharmacyCouncilUrl, "pharmacy_council_registration_document_url", "pharmacy_council_registration");
+        onNewFile(tradeLicenseUrl, "trade_license_document_url", "trade_license");
+        onNewFile(shopEstablishmentUrl, "shop_establishment_document_url", "shop_establishment");
+        onNewFile(udyamUrl, "udyam_document_url", "udyam");
+        onNewFile(otherDocumentUrl, "other_document_url", "other");
+        for (const pfx of Object.keys(STEP4_PREFIX_WATCH_KEYS)) {
+          if (!hadRejection(pfx)) continue;
+          const det = rejectionDetailForDocType(detailRoot, pfx);
+          if (rejectionRequiresNewFileUpload(det)) continue;
+          if (!step4FieldsChangedForPrefix(pfx, existing, docRow as Record<string, unknown>)) continue;
+          (docRow as Record<string, unknown>)[`${pfx}_rejection_reason`] = null;
+          (docRow as Record<string, unknown>)[`${pfx}_is_verified`] = false;
+          (docRow as Record<string, unknown>)[`${pfx}_verified_at`] = null;
+          (docRow as Record<string, unknown>)[`${pfx}_verified_by`] = null;
+          delete detailRoot[pfx];
+          resubFlags = { ...resubFlags, [pfx]: false };
+        }
+        docRow.step4_rejection_details = detailRoot;
+        docRow.step4_resubmission_flags = resubFlags;
+      }
       try {
         await db.from("merchant_store_documents").upsert([docRow], { 
           onConflict: "store_id",
@@ -1323,10 +1637,10 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    if (stepStore?.storeDbId) {
+    if (stepStore?.storeDbId && !preserveProgressPosition) {
       await db
         .from("merchant_stores")
-        .update({ current_onboarding_step: normalizedNextStep })
+        .update({ current_onboarding_step: progressStepForPersistence })
         .eq("id", stepStore.storeDbId);
     }
 
@@ -1338,9 +1652,9 @@ export async function PUT(req: NextRequest) {
       });
     }
 
-    if (stepStore?.storeDbId && mergedFormData?.step5) {
+    if (stepStore?.storeDbId && mergedFormData?.step5 && !preserveProgressPosition) {
       const s5 = mergedFormData.step5 as Record<string, unknown>;
-      await syncMerchantStoreFromStep5(db, stepStore.storeDbId, s5, normalizedNextStep);
+      await syncMerchantStoreFromStep5(db, stepStore.storeDbId, s5, progressStepForPersistence);
 
       const hours = s5.store_hours || {};
       const parseMinutes = (v: string | null | undefined) => {
@@ -1506,7 +1820,7 @@ export async function PUT(req: NextRequest) {
     const payload = {
       parent_id: validation.merchantParentId,
       store_id: stepStore?.storeDbId ?? existing?.store_id ?? null,
-      current_step: normalizedNextStep,
+      current_step: progressStepForPersistence,
       total_steps: 9,
       completed_steps: completedSteps,
       ...nextFlags,
@@ -1515,6 +1829,23 @@ export async function PUT(req: NextRequest) {
       updated_at: new Date().toISOString(),
       ...(normalizedCurrentStep >= 1 && nextFlags.step_1_completed ? { last_step_completed_at: new Date().toISOString() } : {}),
     };
+
+    const vStepsForResubmit = ((): number[] => {
+      const fromClient = Array.isArray(verificationResubmitStepsRaw)
+        ? verificationResubmitStepsRaw
+            .map((x: unknown) => Math.floor(Number(x)))
+            .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 8)
+        : [];
+      if (signalVerificationResubmission && fromClient.length > 0) {
+        return [...new Set(fromClient)].sort((a, b) => a - b);
+      }
+      let v = verificationStepsFromFormDataPatch(formDataPatch as Record<string, unknown>);
+      if (signalVerificationResubmission) {
+        const extra = partnerOnboardingStepToVerificationResubmitSteps(normalizedCurrentStep);
+        v = [...new Set([...v, ...extra])].sort((a, b) => a - b);
+      }
+      return v;
+    })();
 
     if (existing?.id) {
       const { data, error } = await db
@@ -1533,6 +1864,9 @@ export async function PUT(req: NextRequest) {
         });
         return NextResponse.json({ success: false, error: "Failed to update progress" }, { status: 500 });
       }
+      if (shouldMarkVerificationResubmission && stepStore?.storeDbId && vStepsForResubmit.length > 0) {
+        await markMerchantResubmittedForRejectedSteps(db, stepStore.storeDbId, vStepsForResubmit);
+      }
       return NextResponse.json({ success: true, progress: data });
     }
 
@@ -1543,6 +1877,33 @@ export async function PUT(req: NextRequest) {
       .single();
 
     if (error) {
+      if (error.code === "23505" && payload.store_id != null) {
+        const { data: rowOnConflict } = await db
+          .from("merchant_store_registration_progress")
+          .select("*")
+          .eq("parent_id", validation.merchantParentId)
+          .eq("store_id", payload.store_id)
+          .maybeSingle();
+        if (rowOnConflict?.id) {
+          const mergedOnConflict = deepMergeFormData(
+            (rowOnConflict.form_data as Record<string, unknown>) || {},
+            mergedFormData
+          );
+          const retryPayload = { ...payload, form_data: mergedOnConflict };
+          const { data: updatedRow, error: updateErr } = await db
+            .from("merchant_store_registration_progress")
+            .update(retryPayload)
+            .eq("id", rowOnConflict.id)
+            .select("*")
+            .single();
+          if (!updateErr && updatedRow) {
+            if (shouldMarkVerificationResubmission && stepStore?.storeDbId && vStepsForResubmit.length > 0) {
+              await markMerchantResubmittedForRejectedSteps(db, stepStore.storeDbId, vStepsForResubmit);
+            }
+            return NextResponse.json({ success: true, progress: updatedRow });
+          }
+        }
+      }
       console.error("[register-store-progress][PUT] Progress insert failed:", {
         message: error.message,
         code: error.code,
@@ -1552,6 +1913,9 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: "Failed to create progress" }, { status: 500 });
     }
 
+    if (shouldMarkVerificationResubmission && stepStore?.storeDbId && vStepsForResubmit.length > 0) {
+      await markMerchantResubmittedForRejectedSteps(db, stepStore.storeDbId, vStepsForResubmit);
+    }
     return NextResponse.json({ success: true, progress: data });
   } catch (e) {
     console.error("[register-store-progress][PUT]", e);

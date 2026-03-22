@@ -1,7 +1,7 @@
 /**
  * POST /api/merchant/stores/[id]/documents/verify
- * Mark a single document type as verified. Updates merchant_store_documents and keeps
- * verification in sync (step verification is completed when all docs are verified via main button).
+ * Mark a single document type as verified or rejected. Updates merchant_store_documents;
+ * step 4 completion still uses the main "Mark as verified" flow when all required docs pass.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -10,10 +10,37 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
+import { ensureMerchantStoreDocumentsStep4JsonColumns } from "@/lib/db/ensure-step4-resubmission-flags-column";
+import {
+  buildStoredRejectionReason,
+  parseRejectionIssuesFromBody,
+  rejectionDetailForDocType,
+  rejectionRequiresNewFileUpload,
+} from "@/lib/merchant-store-document-rejection";
 
 export const runtime = "nodejs";
 
-const DOC_TYPES = ["pan", "gst", "aadhaar", "fssai", "drug_license"] as const;
+/** Column family prefix in merchant_store_documents (must match DB columns). */
+const DOC_TYPES = [
+  "pan",
+  "gst",
+  "aadhaar",
+  "fssai",
+  "drug_license",
+  "trade_license",
+  "shop_establishment",
+  "udyam",
+  "pharmacist_certificate",
+  "pharmacy_council_registration",
+  "bank_proof",
+  "other",
+] as const;
+
+type DocType = (typeof DOC_TYPES)[number];
+
+function isDocType(s: string): s is DocType {
+  return (DOC_TYPES as readonly string[]).includes(s);
+}
 
 export async function POST(
   request: NextRequest,
@@ -76,63 +103,112 @@ export async function POST(
     const verifiedBy = systemUser?.id ?? null;
 
     const body = await request.json().catch(() => ({}));
-    const docType = body.docType as string | undefined;
+    const docTypeRaw = body.docType as string | undefined;
     const action = (body.action as string) === "reject" ? "reject" : "verify";
-    const rejectionReason =
+    let rejectionReason =
       typeof body.rejection_reason === "string" ? body.rejection_reason.trim() || null : null;
 
-    if (!docType || !DOC_TYPES.includes(docType as (typeof DOC_TYPES)[number])) {
+    if (!docTypeRaw || !isDocType(docTypeRaw)) {
       return NextResponse.json(
-        { success: false, error: "Invalid docType. Use: pan, gst, aadhaar, fssai, drug_license" },
+        {
+          success: false,
+          error: `Invalid docType. Use one of: ${DOC_TYPES.join(", ")}`,
+        },
         { status: 400 }
       );
     }
 
-    const sql = getSql();
+    const docType = docTypeRaw;
+    const rejectionIssues = parseRejectionIssuesFromBody(body);
+    const rejectionNote =
+      typeof body.rejection_note === "string" ? body.rejection_note.trim() : "";
 
     if (action === "reject") {
-      switch (docType) {
-        case "pan":
-          await sql`
-            UPDATE merchant_store_documents
-            SET pan_is_verified = false, pan_verified_at = null, pan_verified_by = null, pan_rejection_reason = ${rejectionReason}
-            WHERE store_id = ${storeId}
-          `;
-          break;
-        case "gst":
-          await sql`
-            UPDATE merchant_store_documents
-            SET gst_is_verified = false, gst_verified_at = null, gst_verified_by = null, gst_rejection_reason = ${rejectionReason}
-            WHERE store_id = ${storeId}
-          `;
-          break;
-        case "aadhaar":
-          await sql`
-            UPDATE merchant_store_documents
-            SET aadhaar_is_verified = false, aadhaar_verified_at = null, aadhaar_verified_by = null, aadhaar_rejection_reason = ${rejectionReason}
-            WHERE store_id = ${storeId}
-          `;
-          break;
-        case "fssai":
-          await sql`
-            UPDATE merchant_store_documents
-            SET fssai_is_verified = false, fssai_verified_at = null, fssai_verified_by = null, fssai_rejection_reason = ${rejectionReason}
-            WHERE store_id = ${storeId}
-          `;
-          break;
-        case "drug_license":
-          await sql`
-            UPDATE merchant_store_documents
-            SET drug_license_is_verified = false, drug_license_verified_at = null, drug_license_verified_by = null, drug_license_rejection_reason = ${rejectionReason}
-            WHERE store_id = ${storeId}
-          `;
-          break;
-        default:
-          return NextResponse.json(
-            { success: false, error: "Invalid docType" },
-            { status: 400 }
-          );
+      if (rejectionIssues.length === 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Select at least one rejection category (what is wrong with this document).",
+          },
+          { status: 400 }
+        );
       }
+      if (!rejectionReason) {
+        rejectionReason = buildStoredRejectionReason(rejectionIssues, rejectionNote || undefined);
+      } else if (rejectionNote) {
+        rejectionReason = `${rejectionReason}${rejectionReason.endsWith(".") ? "" : "."} ${rejectionNote}`;
+      }
+    }
+
+    const sql = getSql() as {
+      (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+      unsafe: (query: string, parameters?: unknown[]) => Promise<unknown[]>;
+    };
+
+    await ensureMerchantStoreDocumentsStep4JsonColumns();
+
+    await sql`
+      INSERT INTO merchant_store_documents (store_id)
+      VALUES (${storeId})
+      ON CONFLICT (store_id) DO NOTHING
+    `;
+
+    const pf = docType;
+
+    if (action === "verify") {
+      const chkRows = await sql.unsafe(
+        `SELECT ${pf}_rejection_reason AS rr, step4_resubmission_flags AS flags, step4_rejection_details AS rd FROM merchant_store_documents WHERE store_id = $1 LIMIT 1`,
+        [storeId]
+      );
+      const chk0 = Array.isArray(chkRows) ? chkRows[0] : chkRows;
+      const rr =
+        chk0 && typeof chk0 === "object" && chk0 !== null && "rr" in chk0 && (chk0 as { rr: unknown }).rr != null
+          ? String((chk0 as { rr: unknown }).rr).trim()
+          : "";
+      const rawFlags =
+        chk0 && typeof chk0 === "object" && chk0 !== null && "flags" in chk0
+          ? (chk0 as { flags: unknown }).flags
+          : null;
+      let resubmitted = false;
+      if (rawFlags && typeof rawFlags === "object" && rawFlags !== null) {
+        const v = (rawFlags as Record<string, unknown>)[pf];
+        resubmitted = v === true || v === "true";
+      }
+      const rdRoot =
+        chk0 && typeof chk0 === "object" && chk0 !== null && "rd" in chk0
+          ? (chk0 as { rd: unknown }).rd
+          : null;
+      const detail = rejectionDetailForDocType(rdRoot, pf);
+      const needsNewFile = rejectionRequiresNewFileUpload(detail);
+      if (rr && !resubmitted && needsNewFile) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "This document is still marked rejected for the uploaded file. Ask the store to upload a new document image on the partner portal, then verify again.",
+          },
+          { status: 409 }
+        );
+      }
+    }
+
+    if (action === "reject") {
+      const detailPayload = JSON.stringify({
+        issues: rejectionIssues,
+        ...(rejectionNote ? { note: rejectionNote } : {}),
+      });
+      await sql.unsafe(
+        `UPDATE merchant_store_documents SET
+          ${pf}_is_verified = false,
+          ${pf}_verified_at = null,
+          ${pf}_verified_by = null,
+          ${pf}_rejection_reason = $1,
+          step4_rejection_details = jsonb_set(COALESCE(step4_rejection_details, '{}'::jsonb), ARRAY['${pf}']::text[], $2::jsonb, true),
+          step4_resubmission_flags = jsonb_set(COALESCE(step4_resubmission_flags, '{}'::jsonb), ARRAY['${pf}']::text[], 'false'::jsonb, true),
+          updated_at = now()
+        WHERE store_id = $3`,
+        [rejectionReason, detailPayload, storeId]
+      );
       return NextResponse.json({
         success: true,
         docType,
@@ -141,48 +217,18 @@ export async function POST(
       });
     }
 
-    switch (docType) {
-      case "pan":
-        await sql`
-          UPDATE merchant_store_documents
-          SET pan_is_verified = true, pan_verified_at = now(), pan_verified_by = ${verifiedBy}, pan_rejection_reason = null
-          WHERE store_id = ${storeId}
-        `;
-        break;
-      case "gst":
-        await sql`
-          UPDATE merchant_store_documents
-          SET gst_is_verified = true, gst_verified_at = now(), gst_verified_by = ${verifiedBy}, gst_rejection_reason = null
-          WHERE store_id = ${storeId}
-        `;
-        break;
-      case "aadhaar":
-        await sql`
-          UPDATE merchant_store_documents
-          SET aadhaar_is_verified = true, aadhaar_verified_at = now(), aadhaar_verified_by = ${verifiedBy}, aadhaar_rejection_reason = null
-          WHERE store_id = ${storeId}
-        `;
-        break;
-      case "fssai":
-        await sql`
-          UPDATE merchant_store_documents
-          SET fssai_is_verified = true, fssai_verified_at = now(), fssai_verified_by = ${verifiedBy}, fssai_rejection_reason = null
-          WHERE store_id = ${storeId}
-        `;
-        break;
-      case "drug_license":
-        await sql`
-          UPDATE merchant_store_documents
-          SET drug_license_is_verified = true, drug_license_verified_at = now(), drug_license_verified_by = ${verifiedBy}, drug_license_rejection_reason = null
-          WHERE store_id = ${storeId}
-        `;
-        break;
-      default:
-        return NextResponse.json(
-          { success: false, error: "Invalid docType" },
-          { status: 400 }
-        );
-    }
+    await sql.unsafe(
+      `UPDATE merchant_store_documents SET
+        ${pf}_is_verified = true,
+        ${pf}_verified_at = now(),
+        ${pf}_verified_by = $1,
+        ${pf}_rejection_reason = null,
+        step4_rejection_details = COALESCE(step4_rejection_details, '{}'::jsonb) - '${pf}',
+        step4_resubmission_flags = jsonb_set(COALESCE(step4_resubmission_flags, '{}'::jsonb), ARRAY['${pf}']::text[], 'false'::jsonb, true),
+        updated_at = now()
+      WHERE store_id = $2`,
+      [verifiedBy, storeId]
+    );
 
     return NextResponse.json({
       success: true,
