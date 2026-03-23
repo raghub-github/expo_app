@@ -100,10 +100,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const userEmail = user.email?.trim();
+    if (!userEmail) {
+      return NextResponse.json(
+        { success: false, error: "Authenticated user has no email; cannot resolve system user" },
+        { status: 400 }
+      );
+    }
+
     // Get system user ID for created_by
     const sql = getSql();
     const [systemUser] = await sql`
-      SELECT id FROM system_users WHERE email = ${user.email}
+      SELECT id FROM system_users WHERE email = ${userEmail}
     `;
 
     if (!systemUser) {
@@ -227,7 +235,6 @@ export async function PUT(request: NextRequest) {
       `UPDATE service_points SET ${setFragments.join(", ")}, updated_at = NOW() WHERE id = $${n} RETURNING id, name, city, latitude, longitude, address, is_active, created_at, updated_at`,
       [...params, id] as never[]
     );
-
     if (!updatedServicePoint) {
       return NextResponse.json(
         { success: false, error: "Service point not found" },

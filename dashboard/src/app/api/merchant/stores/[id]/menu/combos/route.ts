@@ -77,12 +77,10 @@ export async function POST(
         : null;
     const displayOrderRaw = Number(body.display_order);
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
-
     const sql = getSql();
     const [row] = await sql`
       INSERT INTO merchant_menu_combos (store_id, combo_name, description, combo_price, image_url, display_order)
-      VALUES (${storeId}, ${combo_name}, ${description}, ${combo_price}, ${imageUrl}, ${displayOrder})
-      RETURNING id
+      VALUES (${storeId}, ${combo_name}, ${description}, ${combo_price}, ${imageUrl}, ${displayOrder})      RETURNING id
     `;
     try {
       const agentId = await getAgentIdForStore(storeId);

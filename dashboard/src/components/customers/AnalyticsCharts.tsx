@@ -175,8 +175,7 @@ export function AnalyticsCharts({ stats, loading = false }: AnalyticsChartsProps
               formatter={(value) =>
                 value != null ? `₹${Number(value).toLocaleString()}` : ""
               }
-            />
-            <Legend />
+            />            <Legend />
             <Line
               type="monotone"
               dataKey="food"

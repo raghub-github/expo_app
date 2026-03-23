@@ -19,6 +19,7 @@ type AuditPayload = {
   assigned_by_type?: string | null;
   previous_assignee_user_id?: number | null;
   previous_assignee_name?: string | null;
+  unassigned_by_user_id?: number | null;
   old_status?: string | null;
   new_status?: string | null;
   old_priority?: string | null;
@@ -37,8 +38,7 @@ type AuditPayload = {
 export async function insertTicketActivityAudit(
   /** Postgres.js `sql` from `getSql()`, or a minimal `{ unsafe }` wrapper. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- driver `unsafe` uses postgres-specific JSON/fragment parameter types
-  sqlClient: { unsafe: (query: string, values?: any) => any },
-  payload: AuditPayload
+  sqlClient: { unsafe: (query: string, values?: any) => any },  payload: AuditPayload
 ): Promise<void> {
   const cols = [
     "ticket_id",
@@ -56,6 +56,7 @@ export async function insertTicketActivityAudit(
     "assigned_by_type",
     "previous_assignee_user_id",
     "previous_assignee_name",
+    "unassigned_by_user_id",
     "old_status",
     "new_status",
     "old_priority",

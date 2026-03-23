@@ -161,8 +161,7 @@ export async function PUT(
         { status: 404 }
       );
     }
-    const systemUser = { id: systemUserRow.id, fullName: systemUserRow.fullName ?? "" };
-    const userIsSuperAdmin = userPerms.isSuperAdmin;
+    const systemUser = { id: systemUserRow.id, fullName: systemUserRow.fullName ?? "" };    const userIsSuperAdmin = userPerms.isSuperAdmin;
 
     // Check permission (use cached userPerms if available, otherwise call checkPermission)
     // For super admin, they have all permissions
@@ -504,8 +503,7 @@ export async function PUT(
           const dashType = accessPoint.dashboardType as DashboardType;
           if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
             const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
-              (ap: any) => ap.group === accessPoint.accessPointGroup
-            );
+              (ap: any) => ap.group === accessPoint.accessPointGroup            );
             if (def) {
               accessPointName = def.label;
               accessPointDescription = def.description;

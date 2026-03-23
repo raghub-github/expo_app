@@ -450,7 +450,7 @@ export default function OrderTimeline({ orderId, initialEntries, currentStatus, 
                 );
                 const colors = isPlaceholder
                   ? { dot: "bg-slate-300", text: "text-slate-400" }
-                  : getStageColor(index, entry.status, isPastBreachPoint);
+                  : getStageColor(index, entry.status, Boolean(isPastBreachPoint));
                 const isCancelledEntry =
                   !isPlaceholder &&
                   (entry.status.toLowerCase() === "cancelled" || entry.status.toLowerCase() === "rejected");

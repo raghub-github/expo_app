@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
+import { useQuery, useQueryClient } from "@tanstack/react-query";import Link from "next/link";
 import {
   Store,
   Package,
@@ -17,6 +16,12 @@ import {
   Search,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import {
+  useGetAreaManagerMetricsQuery,
+  useGetAreaManagerCountsQuery,
+  useGetAreaManagersQuery,
+  type AreaManagerListItem,
+} from "@/store/api/areaManagerApi";
 
 const CARD_MIN_HEIGHT = "min-h-[110px]";
 
@@ -136,7 +141,6 @@ function SuperAdminAreaManagerList() {
     refetchOnWindowFocus: false,
     placeholderData: (prev) => prev,
   });
-
   const { data: riderListData, isFetching: riderLoading } = useQuery<{
     success: boolean;
     data?: { items: AreaManagerListItem[] };
@@ -381,8 +385,7 @@ export function AreaManagerDashboardClient() {
     });
   }, [queryClient]);
 
-  if (isLoading && !data) {
-    return (
+  if (isLoading && !data) {    return (
       <div className="flex items-center justify-center py-12">
         <LoadingSpinner />
       </div>
@@ -394,8 +397,7 @@ export function AreaManagerDashboardClient() {
       <div className="rounded-lg border border-red-200 bg-red-50 p-4">
         <p className="text-sm font-medium text-red-800">
           {error instanceof Error ? error.message : String(error)}
-        </p>
-      </div>
+        </p>      </div>
     );
   }
 

@@ -161,7 +161,6 @@ export async function GET(request: NextRequest) {
       updatedAt: String(row.updated_at ?? ""),
       closedAt: row.closed_at != null ? String(row.closed_at) : null,
     }));
-
     return NextResponse.json({
       success: true,
       data: {

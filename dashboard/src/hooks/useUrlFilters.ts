@@ -91,6 +91,7 @@ export function useUrlFilters(
       for (const [key, value] of Object.entries(updates)) {
         const config = options.filters[key];
         if (!config) continue;
+        if (value === undefined) continue;
 
         if (value === null || value === config.defaultValue) {
           if (params.has(config.paramName)) {

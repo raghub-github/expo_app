@@ -111,8 +111,7 @@ export function StoreUserInsightsClient({ storeId }: { storeId: string }) {
         }
       } catch (e) {
         console.error("Error fetching reviews:", e);
-        toast("Failed to load feedback");
-      } finally {
+        toast("Failed to load feedback");      } finally {
         setLoading(false);
       }
     };

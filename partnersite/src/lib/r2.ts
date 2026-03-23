@@ -160,8 +160,12 @@ export function extractR2KeyFromUrl(imageUrl: string): string | null {
   try {
     const normalizedImageUrl = imageUrl.trim();
 
-    // If it's our proxy URL, extract key from query param
-    if (normalizedImageUrl.includes('/api/attachments/proxy') && normalizedImageUrl.includes('key=')) {
+    // Proxy URL (Next.js dashboard/partnersite or Fastify backend), extract key from query param
+    if (
+      (normalizedImageUrl.includes('/api/attachments/proxy') ||
+        normalizedImageUrl.includes('/v1/attachments/proxy')) &&
+      normalizedImageUrl.includes('key=')
+    ) {
       try {
         const u = new URL(normalizedImageUrl, 'http://dummy');
         const k = u.searchParams.get('key');

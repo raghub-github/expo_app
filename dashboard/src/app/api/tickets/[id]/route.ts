@@ -440,7 +440,7 @@ export async function PATCH(
 
     updateFields.push(`updated_at = NOW()`);
 
-    const sql = sqlClient as { unsafe: (q: string, v: unknown[]) => Promise<unknown[]> };
+    const sql = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
     let updatedRows: unknown[];
     try {
       updatedRows = await sql.unsafe(
@@ -468,7 +468,7 @@ export async function PATCH(
     const updated = Array.isArray(updatedRows) ? updatedRows[0] : null;
     const existing = existingResult[0] as { status?: string; priority?: string; assigned_to_agent_id?: number | null; assigned_to_agent_name?: string | null; group_id?: number | null };
     const updatedRecord = updated as { status?: string; priority?: string; assigned_to_agent_id?: number | null; assigned_to_agent_name?: string | null; group_id?: number | null } | null;
-    const sqlUnsafe = sqlClient as { unsafe: (q: string, v: unknown[]) => Promise<unknown[]> };
+    const sqlUnsafe = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
     const actorId = systemUser.id;
     const actorName = systemUser.fullName ?? systemUser.email ?? "Agent";
     const actorEmail = systemUser.email ?? null;

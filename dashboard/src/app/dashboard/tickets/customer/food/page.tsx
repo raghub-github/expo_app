@@ -1,7 +1,7 @@
 import { requireDashboardAccess } from "@/lib/permissions/page-protection";
 
 export default async function CustomerFoodTicketsPage() {
-  await requireDashboardAccess("TICKET_CUSTOMER_FOOD");
+  await requireDashboardAccess("TICKET");
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">

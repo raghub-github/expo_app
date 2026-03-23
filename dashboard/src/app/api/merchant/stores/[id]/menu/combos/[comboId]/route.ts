@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { mergeBool, mergeNum, mergeOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
@@ -104,14 +105,19 @@ export async function PUT(
       return NextResponse.json({ success: false, error: "Invalid combo_price" }, { status: 400 });
     }
 
+    const description = mergeOptionalStr(body.description, e.description);
+    const image_url = mergeOptionalStr(body.image_url, e.image_url);
+    const is_active = mergeBool(body.is_active, e.is_active);
+    const display_order = mergeNum(body.display_order, e.display_order);
+
     await sql`
       UPDATE merchant_menu_combos
       SET combo_name = ${combo_name},
-          description = ${body.description !== undefined ? body.description : e.description},
+          description = ${description},
           combo_price = ${combo_price},
-          image_url = ${body.image_url !== undefined ? body.image_url : e.image_url},
-          is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
-          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
+          image_url = ${image_url},
+          is_active = ${is_active},
+          display_order = ${display_order},
           updated_at = NOW()
       WHERE id = ${cId} AND store_id = ${storeId}
     `;

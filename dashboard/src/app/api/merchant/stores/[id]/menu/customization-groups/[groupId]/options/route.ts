@@ -39,6 +39,10 @@ export async function POST(
     `;
     if (!g) return NextResponse.json({ success: false, error: "Customization group not found" }, { status: 404 });
 
+    const addon_image_url = body.addon_image_url != null ? String(body.addon_image_url) : null;
+    const in_stock = body.in_stock === false ? false : true;
+    const display_order = Number(body.display_order) || 0;
+
     const addonId = genId("ADN_");
     const addonImageUrl =
       body.addon_image_url != null && String(body.addon_image_url).trim() !== ""
@@ -49,8 +53,7 @@ export async function POST(
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_menu_item_addons (customization_id, addon_id, addon_name, addon_price, addon_image_url, in_stock, display_order)
-      VALUES (${gId}, ${addonId}, ${addon_name}, ${addon_price}, ${addonImageUrl}, ${inStock}, ${displayOrder})
-      RETURNING id
+      VALUES (${gId}, ${addonId}, ${addon_name}, ${addon_price}, ${addonImageUrl}, ${inStock}, ${displayOrder})      RETURNING id
     `;
     try {
       await logStoreActivity({ storeId, section: "addon", action: "create", summary: `Agent added addon option to group #${groupId}`, actorType: "agent", source: "dashboard" });

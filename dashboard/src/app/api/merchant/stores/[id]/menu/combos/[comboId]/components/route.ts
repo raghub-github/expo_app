@@ -52,8 +52,7 @@ export async function POST(
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_menu_combo_components (combo_id, menu_item_id, variant_id, quantity, display_order)
-      VALUES (${cId}, ${menu_item_id}, ${variant_id}, ${quantity}, ${displayOrder})
-      RETURNING id
+      VALUES (${cId}, ${menu_item_id}, ${variant_id}, ${quantity}, ${displayOrder})      RETURNING id
     `;
     try {
       const agentId = await getAgentIdForStore(storeId);
@@ -70,6 +69,22 @@ export async function POST(
     try {
       await logStoreActivity({ storeId, section: "combo_component", action: "create", summary: `Agent added item to combo #${cId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}
+
+    // Backend-derived combo_price: SUM(menu_item.selling_price * quantity)
+    const [priceRow] = await sql`
+      SELECT COALESCE(SUM(m.selling_price::numeric * cc.quantity), 0)::numeric AS derived_price
+      FROM merchant_menu_combo_components cc
+      INNER JOIN merchant_menu_items m ON m.id = cc.menu_item_id AND m.store_id = ${storeId}
+      WHERE cc.combo_id = ${cId}
+    `;
+    const derivedPrice = (priceRow as any)?.derived_price ?? 0;
+    await sql`
+      UPDATE merchant_menu_combos
+      SET combo_price = ${derivedPrice},
+          updated_at = NOW()
+      WHERE id = ${cId} AND store_id = ${storeId}
+    `;
+
     return NextResponse.json({ success: true, id: Number((row as any)?.id) }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/menu/combos/[comboId]/components]", e);

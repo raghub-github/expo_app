@@ -152,8 +152,7 @@ export async function POST(
       `;
     }
 
-    await insertTicketActivityAudit(sqlClient, {
-      ticket_id: ticketId,
+    await insertTicketActivityAudit(sqlClient, {      ticket_id: ticketId,
       activity_type: isInternalNote ? "internal_note" : "response",
       activity_category: isInternalNote ? "note" : "response",
       activity_description: isInternalNote ? "Internal note added" : (isFirstResponse ? "First response sent" : "Response sent"),

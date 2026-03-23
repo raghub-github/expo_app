@@ -49,9 +49,10 @@ export async function GET(
     const sql = getSql();
     const categories = await sql`
       SELECT id, store_id, category_name, category_description, category_image_url,
-             parent_category_id, display_order, is_active, created_at, updated_at
+             parent_category_id, cuisine_id, display_order, is_active, created_at, updated_at
       FROM merchant_menu_categories
       WHERE store_id = ${storeId}
+        AND COALESCE(is_deleted, FALSE) = FALSE
       ORDER BY parent_category_id NULLS FIRST, display_order ASC, id ASC
     `;
 
@@ -62,7 +63,7 @@ export async function GET(
              in_stock, is_active, is_deleted, display_order,
              has_customizations, has_addons, has_variants,
              is_popular, is_recommended,
-             preparation_time_minutes, serves, serves_label, item_size_value, item_size_unit,
+             preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit,
              approval_status::text,
              (SELECT EXISTS(
                SELECT 1 FROM merchant_menu_item_change_requests r
@@ -84,6 +85,8 @@ export async function GET(
         id: storeId,
         store_id: (store as any).store_id ?? null,
         store_name: (store as any).store_name ?? null,
+        avg_preparation_time_minutes: (store as any).avg_preparation_time_minutes ?? null,
+        packaging_charge_amount: (store as any).packaging_charge_amount ?? null,
       },
       categories,
       items,

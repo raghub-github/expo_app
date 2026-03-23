@@ -369,8 +369,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     if (todaySlots.length > 0) {
       const first = todaySlots[0];
       setOpeningTime(first.start || "09:00");
-      setClosingTime(first.end || "23:00");
-    }
+      setClosingTime(first.end || "23:00");    }
   }, [operationsQuery.data]);
 
   // Sync wallet from shared React Query cache

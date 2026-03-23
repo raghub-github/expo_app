@@ -309,7 +309,7 @@ export async function POST(request: NextRequest) {
                    access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("PARCEL")) {
           orderType = "parcel";
         } else if (access.dashboardType.startsWith("TICKET") && access.dashboardType.includes("GENERAL")) {
-          orderType = null; // General tickets are not order-specific
+          orderType = undefined; // General tickets are not order-specific
         }
         
         await db.insert(dashboardAccess).values({
@@ -367,8 +367,7 @@ export async function POST(request: NextRequest) {
         const dashType = accessPoint.dashboardType as DashboardType;
         if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
           const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
-            (ap: any) => ap.group === accessPoint.accessPointGroup
-          );
+            (ap: any) => ap.group === accessPoint.accessPointGroup          );
           if (def) {
             accessPointName = def.label;
             accessPointDescription = def.description;

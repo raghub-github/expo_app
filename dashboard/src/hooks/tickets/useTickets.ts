@@ -156,7 +156,6 @@ export function useTickets(filters: TicketFilters = {}) {
     if (!isAllowed || !isOnTicketsRoute) return null;
     return `dashboard_snapshot:tickets:${pathname}:${JSON.stringify(filters)}`;
   }, [isAllowed, isOnTicketsRoute, pathname, filters]);
-
   const initialSnapshot = useMemo(() => {
     if (!snapshotKey) return null;
     return loadClientSnapshot<TicketsResponse>(snapshotKey, SNAPSHOT_TTL_MS);

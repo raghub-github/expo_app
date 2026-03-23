@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { listStores, getMenuByStoreId, getStoreLiveStatus, getMenuItemFullConfig, search } from "./merchant.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
+import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 
 const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional().default(20),
@@ -62,13 +63,13 @@ export async function merchantRoutes(app: FastifyInstance) {
       });
       const body = items.map((s) => {
         const nearby = s as NearbyStoreRow;
-        const displayImage =
+        const displayImageRaw =
           nearby.display_image ??
           s.banner_url ??
           (Array.isArray(s.ads_images) && s.ads_images[0] ? s.ads_images[0] : null) ??
           (Array.isArray(s.gallery_images) && s.gallery_images[0] ? s.gallery_images[0] : null) ??
-          s.logo_url ??
           null;
+        const displayImage = toAbsoluteClientMediaUrl(displayImageRaw);
         const prepMin = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
         const rawLiveStatus = (s as NearbyStoreRow).live_status;
         const normalized =
@@ -197,7 +198,6 @@ export async function merchantRoutes(app: FastifyInstance) {
             packaging_charge_amount: z.number().nullable().optional(),
             delivery_charge_per_km: z.number().nullable().optional(),
             delivery_radius_km: z.number().nullable().optional(),
-            logo_url: z.string().nullable(),
             banner_url: z.string().nullable(),
             is_active: z.boolean().nullable(),
             created_at: z.string().nullable().optional(),
@@ -224,7 +224,6 @@ export async function merchantRoutes(app: FastifyInstance) {
         packaging_charge_amount: (store as { packaging_charge_amount?: number | null }).packaging_charge_amount ?? null,
         delivery_charge_per_km: (store as { delivery_charge_per_km?: number | null }).delivery_charge_per_km ?? null,
         delivery_radius_km: (store as { delivery_radius_km?: number | null }).delivery_radius_km ?? null,
-        logo_url: store.logo_url ?? null,
         banner_url: store.banner_url ?? null,
         is_active: store.is_active ?? null,
         created_at: store.created_at ?? null,
@@ -302,7 +301,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         name: m.item_name,
         description: m.item_description ?? undefined,
         price: parseFloat(m.selling_price),
-        imageUrl: m.item_image_url ?? undefined,
+        imageUrl: toAbsoluteClientMediaUrl(m.item_image_url ?? null) ?? undefined,
         isVeg: (m.food_type ?? "").toLowerCase().startsWith("veg"),
         category: m.cuisine_type ?? (m as { category_name?: string | null }).category_name ?? undefined,
         categoryId: m.category_id ?? undefined,
@@ -327,12 +326,16 @@ export async function merchantRoutes(app: FastifyInstance) {
               operational_status: store.operational_status,
             });
       const isOpen = liveStatus === "OPEN";
+      const bannerImagesAbsolute = bannerImages
+        .map((u) => toAbsoluteClientMediaUrl(u))
+        .filter((u): u is string => Boolean(u));
+
       return reply.send({
         id: store.store_id,
         name: store.store_display_name ?? store.store_name,
-        imageUrl: store.logo_url ?? store.banner_url ?? undefined,
+        imageUrl: toAbsoluteClientMediaUrl(store.banner_url ?? null) ?? undefined,
         address: store.store_description ?? undefined,
-        bannerImages: bannerImages.length > 0 ? bannerImages : undefined,
+        bannerImages: bannerImagesAbsolute.length > 0 ? bannerImagesAbsolute : undefined,
         latitude: store.latitude != null ? Number(store.latitude) : undefined,
         longitude: store.longitude != null ? Number(store.longitude) : undefined,
         operationalStatus: store.operational_status ?? undefined,
@@ -404,7 +407,7 @@ export async function merchantRoutes(app: FastifyInstance) {
       const storeList = stores.map((s) => ({
         id: s.store_id,
         name: s.store_display_name ?? s.store_name,
-        imageUrl: s.logo_url ?? s.banner_url ?? undefined,
+        imageUrl: toAbsoluteClientMediaUrl(s.banner_url ?? null) ?? undefined,
         cuisines: s.cuisine_types ?? undefined,
       }));
       return reply.send({ dishes, stores: storeList });

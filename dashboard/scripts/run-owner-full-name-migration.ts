@@ -22,7 +22,6 @@ if (fs.existsSync(envPath)) {
 }
 
 const databaseUrl = process.env.DATABASE_URL || process.env.NEXT_PUBLIC_DATABASE_URL;
-
 let pgConnectionString: string;
 if (!databaseUrl) {
   console.error("❌ DATABASE_URL or NEXT_PUBLIC_DATABASE_URL is required");
@@ -31,8 +30,7 @@ if (!databaseUrl) {
 pgConnectionString = databaseUrl;
 
 async function run() {
-  const sql = postgres(pgConnectionString, { max: 1 });
-  try {
+  const sql = postgres(pgConnectionString, { max: 1 });  try {
     const migrationPath = path.join(process.cwd(), "drizzle", "0132_merchant_stores_owner_full_name.sql");
     if (!fs.existsSync(migrationPath)) {
       console.error("❌ Migration file not found:", migrationPath);

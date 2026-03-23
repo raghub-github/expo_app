@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { bodyBool, bodyNum, bodyOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess, genId, getModifierLimits } from "../../../assert-store-access";
 
 export const runtime = "nodejs";
@@ -96,14 +97,12 @@ export async function POST(
     const defaultQuantity = Number.isFinite(defaultQuantityRaw) ? defaultQuantityRaw : 0;
     const displayOrderRaw = Number(body.display_order);
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
-
     const optionCode = genId("MO_");
     let row: any;
     try {
       [row] = await sql`
         INSERT INTO merchant_modifier_options (modifier_group_id, group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
-        VALUES (${modifierGroupId}, ${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${imageUrl}, ${inStock}, ${defaultQuantity}, ${displayOrder})
-        RETURNING id, option_code
+        VALUES (${modifierGroupId}, ${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${imageUrl}, ${inStock}, ${defaultQuantity}, ${displayOrder})        RETURNING id, option_code
       `;
     } catch (insertErr: any) {
       const isGroupIdMissing = insertErr?.code === "42703" && String(insertErr?.message || "").includes("group_id");
@@ -111,14 +110,12 @@ export async function POST(
       if (isGroupIdMissing) {
         [row] = await sql`
           INSERT INTO merchant_modifier_options (modifier_group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
-          VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${imageUrl}, ${inStock}, ${defaultQuantity}, ${displayOrder})
-          RETURNING id, option_code
+          VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${imageUrl}, ${inStock}, ${defaultQuantity}, ${displayOrder})          RETURNING id, option_code
         `;
       } else if (isGroupIdNull) {
         [row] = await sql`
           INSERT INTO merchant_modifier_options (group_id, option_code, name, price_delta, image_url, in_stock, default_quantity, display_order)
-          VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${imageUrl}, ${inStock}, ${defaultQuantity}, ${displayOrder})
-          RETURNING id, option_code
+          VALUES (${modifierGroupId}, ${optionCode}, ${name}, ${price_delta}, ${imageUrl}, ${inStock}, ${defaultQuantity}, ${displayOrder})          RETURNING id, option_code
         `;
       } else throw insertErr;
     }

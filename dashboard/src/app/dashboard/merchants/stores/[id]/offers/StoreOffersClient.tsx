@@ -31,6 +31,7 @@ const defaultForm = {
   offer_type: "PERCENTAGE" as Offer["offer_type"],
   offer_sub_type: "ALL_ORDERS" as Offer["offer_sub_type"],
   menu_item_ids: [] as string[],
+  offer_image_aspect_ratio: null as number | null,
   discount_value: "",
   min_order_amount: "",
   buy_quantity: "",
@@ -134,11 +135,14 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
   const [menuItems, setMenuItems] = useState<MenuItemForOffer[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [expandedOfferItems, setExpandedOfferItems] = useState<Record<string, boolean>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState<"basic" | "details" | "validity">("basic");
   const [formData, setFormData] = useState(defaultForm);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  // Keep the previously saved offer image URL so the upload endpoint can delete the old object from R2.
+  const [existingOfferImageUrl, setExistingOfferImageUrl] = useState<string | null>(null);
   const [showOfferTypeDropdown, setShowOfferTypeDropdown] = useState(false);
   const [showApplyToDropdown, setShowApplyToDropdown] = useState(false);
   const [menuItemSearch, setMenuItemSearch] = useState("");
@@ -284,7 +288,27 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
     if (file) {
       setImageFile(file);
       const reader = new FileReader();
-      reader.onloadend = () => setImagePreview(reader.result as string);
+      reader.onloadend = () => {
+        const url = reader.result as string;
+        setImagePreview(url);
+        // Fallback while the image dimensions are being read.
+        setFormData((prev) => ({ ...prev, offer_image_aspect_ratio: prev.offer_image_aspect_ratio ?? 2 }));
+        // Save banner aspect ratio so preview + customer app can render consistently.
+        const img = new window.Image();
+        img.onload = () => {
+          const w = img.naturalWidth;
+          const h = img.naturalHeight;
+          if (w > 0 && h > 0) {
+            const ratio = w / h; // width/height
+            setFormData((prev) => ({ ...prev, offer_image_aspect_ratio: Number(ratio.toFixed(4)) }));
+          }
+        };
+        img.onerror = () => {
+          // If we can't read dimensions, keep any previous value (or fallback to null).
+          setFormData((prev) => ({ ...prev, offer_image_aspect_ratio: prev.offer_image_aspect_ratio ?? null }));
+        };
+        img.src = url;
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -298,6 +322,7 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
         offer_type: offer.offer_type,
         offer_sub_type: offer.offer_sub_type,
         menu_item_ids: offer.menu_item_ids || [],
+        offer_image_aspect_ratio: offer.offer_image_aspect_ratio ?? (offer.image_url ? 2 : null),
         discount_value: offer.discount_value?.toString() ?? "",
         min_order_amount: offer.min_order_amount?.toString() ?? "",
         buy_quantity: offer.buy_quantity?.toString() ?? "",
@@ -306,11 +331,29 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
         valid_till: offer.valid_till.split("T")[0],
       });
       setImagePreview(offer.image_url || null);
+      setExistingOfferImageUrl(offer.image_url || null);
+      // If we don't have a saved aspect ratio (older offers), compute it from the current image.
+      if (offer.image_url && offer.offer_image_aspect_ratio == null) {
+        const img = new window.Image();
+        img.onload = () => {
+          const w = img.naturalWidth;
+          const h = img.naturalHeight;
+          if (w > 0 && h > 0) {
+            const ratio = w / h;
+            setFormData((prev) => ({ ...prev, offer_image_aspect_ratio: Number(ratio.toFixed(4)) }));
+          }
+        };
+        img.onerror = () => {
+          // keep fallback value
+        };
+        img.src = offer.image_url;
+      }
       if (offer.offer_type === "COUPON") setGeneratedCouponCode(offer.coupon_code || "");
     } else {
       setEditingId(null);
       setFormData(defaultForm);
       setImagePreview(null);
+      setExistingOfferImageUrl(null);
       setGeneratedCouponCode("");
     }
     setImageFile(null);
@@ -326,6 +369,7 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
     setFormData(defaultForm);
     setImageFile(null);
     setImagePreview(null);
+    setExistingOfferImageUrl(null);
     setEditingId(null);
     setActiveTab("basic");
     setShowOfferTypeDropdown(false);
@@ -373,6 +417,9 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
         offer_type: formData.offer_type,
         offer_sub_type: formData.offer_sub_type,
         menu_item_ids: formData.offer_sub_type === "SPECIFIC_ITEM" && formData.menu_item_ids.length > 0 ? formData.menu_item_ids : null,
+        ...(formData.offer_image_aspect_ratio != null
+          ? { offer_image_aspect_ratio: formData.offer_image_aspect_ratio }
+          : {}),
         discount_value: formData.discount_value !== "" ? formData.discount_value : null,
         min_order_amount: formData.min_order_amount !== "" ? formData.min_order_amount : null,
         buy_quantity: formData.buy_quantity ? parseInt(formData.buy_quantity, 10) : null,
@@ -399,7 +446,7 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
             const form = new FormData();
             form.append("file", imageFile);
             form.append("offerId", String(data.offer.offer_id));
-            if (imagePreview) form.append("currentImageUrl", String(imagePreview));
+            if (existingOfferImageUrl) form.append("currentImageUrl", String(existingOfferImageUrl));
             const upRes = await fetch(`/api/merchant/stores/${storeId}/offers/upload-image`, {
               method: "POST",
               body: form,
@@ -502,6 +549,10 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
 
   const getMenuItemName = (itemId: string) => menuItems.find((m) => m.item_id === itemId)?.item_name ?? "Unknown Item";
 
+  const toggleOfferItemsExpanded = (offerKey: string) => {
+    setExpandedOfferItems((prev) => ({ ...prev, [offerKey]: !prev[offerKey] }));
+  };
+
   const handleOfferTypeChange = (type: Offer["offer_type"]) => {
     setFormData((prev) => ({ ...prev, offer_type: type }));
     setShowOfferTypeDropdown(false);
@@ -582,6 +633,19 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
               }
               const status = getStatusColor(offer);
               const badgeColor = getOfferBadgeColor(offer.offer_type);
+              const offerKey = String(offer.offer_id ?? offer.id ?? "");
+              const itemNames =
+                offer.offer_sub_type === "SPECIFIC_ITEM" && offer.menu_item_ids?.length
+                  ? offer.menu_item_ids.map((id) => getMenuItemName(id))
+                  : [];
+              const isExpanded = expandedOfferItems[offerKey] ?? false;
+              const itemsToShow = isExpanded ? itemNames : itemNames.slice(0, 3);
+              const hasMoreItems = !isExpanded && itemNames.length > 3;
+              const showViewLess = isExpanded && itemNames.length > 3;
+              const imageAspectRatio =
+                offer.offer_image_aspect_ratio != null && offer.offer_image_aspect_ratio > 0
+                  ? offer.offer_image_aspect_ratio
+                  : 2; // fallback for older offers
               return (
                 <div
                   key={offer.offer_id}
@@ -590,7 +654,7 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                 >
                   <div className={`absolute top-0 left-0 right-0 h-1 ${badgeColor}`} />
                   <div className="p-1.5 md:p-2">
-                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-start justify-between mb-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1 mb-0.5">
                           {getOfferIcon(offer.offer_type)}
@@ -615,7 +679,7 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                                 : "No items"
                             }
                           >
-                            Specific Items
+                              Specific Items{offer.menu_item_ids?.length ? ` (${offer.menu_item_ids.length})` : ""}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-blue-50 text-blue-700">
@@ -624,6 +688,32 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                         )}
                       </div>
                     </div>
+
+                      {offer.offer_sub_type === "SPECIFIC_ITEM" && (
+                        <div className="mb-2">
+                          <div className="text-[10px] font-semibold text-gray-600 mb-1">Applies to</div>
+                          <div className="space-y-0.5">
+                            {itemsToShow.length > 0 ? (
+                              itemsToShow.map((name, idx) => (
+                                <div key={`${offerKey}-${idx}`} className="text-[10px] text-gray-700 truncate">
+                                  • {name}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-[10px] text-gray-500">No items selected</div>
+                            )}
+                          </div>
+                          {(hasMoreItems || showViewLess) && (
+                            <button
+                              type="button"
+                              onClick={() => toggleOfferItemsExpanded(offerKey)}
+                              className="mt-1 text-[10px] font-semibold text-orange-600 hover:text-orange-700"
+                            >
+                              {showViewLess ? "View fewer items" : `View all items (${itemNames.length})`}
+                            </button>
+                          )}
+                        </div>
+                      )}
 
                     <div className="mb-2">
                       {offer.offer_type === "COUPON" && offer.coupon_code && (
@@ -681,8 +771,15 @@ export function StoreOffersClient({ storeId }: { storeId: string }) {
                         )}
                       </div>
                       {offer.image_url && (
-                        <div className="mt-0.5 rounded-lg overflow-hidden border border-gray-200">
-                          <img src={offer.image_url} alt={offer.offer_title} className="w-full h-10 object-cover" />
+                        <div
+                          className="mt-0.5 rounded-lg overflow-hidden border border-gray-200"
+                          style={{ aspectRatio: imageAspectRatio }}
+                        >
+                          <img
+                            src={offer.image_url}
+                            alt={offer.offer_title}
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
                         </div>
                       )}
                       {offer.offer_description && (

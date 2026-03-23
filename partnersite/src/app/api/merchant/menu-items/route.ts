@@ -221,6 +221,17 @@ export async function POST(req: NextRequest) {
     const hasCustomizations = Array.isArray(body.customizations) && body.customizations.length > 0
     const hasAddons = hasCustomizations && body.customizations.some((c: any) => c.addons?.length > 0)
     const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])
+    const itemTagsRaw = Array.isArray(body.item_tags)
+      ? body.item_tags
+      : typeof body.item_tags === 'string'
+        ? body.item_tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+        : []
+    const item_tags = itemTagsRaw.length ? itemTagsRaw : null
+    const parseOptNum = (v: unknown): number | null => {
+      if (v === undefined || v === null || v === '') return null
+      const n = Number(v)
+      return Number.isFinite(n) && n >= 0 ? n : null
+    }
 
     const payload = {
       store_id: store.id,
@@ -244,12 +255,33 @@ export async function POST(req: NextRequest) {
       is_popular: body.is_popular ?? false,
       is_recommended: body.is_recommended ?? false,
       preparation_time_minutes: body.preparation_time_minutes ?? 15,
+      packaging_charges:
+        body.packaging_charges === null || body.packaging_charges === undefined
+          ? null
+          : Number(body.packaging_charges),
       serves: body.serves ?? 1,
       is_active: body.is_active ?? true,
       allergens: allergens.length ? allergens : null,
+      item_tags,
+      available_for_delivery: body.available_for_delivery !== undefined ? Boolean(body.available_for_delivery) : true,
+      weight_per_serving: parseOptNum(body.weight_per_serving),
+      weight_per_serving_unit: body.weight_per_serving_unit ?? 'grams',
+      calories_kcal: parseOptNum(body.calories_kcal),
+      protein: parseOptNum(body.protein),
+      protein_unit: body.protein_unit ?? 'mg',
+      carbohydrates: parseOptNum(body.carbohydrates),
+      carbohydrates_unit: body.carbohydrates_unit ?? 'mg',
+      fat: parseOptNum(body.fat),
+      fat_unit: body.fat_unit ?? 'mg',
+      fibre: parseOptNum(body.fibre),
+      fibre_unit: body.fibre_unit ?? 'mg',
       is_locked_by_plan: willExceedLimit,
       locked_reason: willExceedLimit ? 'plan_item_limit_exceeded' : null,
       locked_at: willExceedLimit ? new Date().toISOString() : null,
+      // Merchant / MX portal: pending agent verification (dashboard agents use APPROVED on create).
+      approval_status: 'PENDING' as const,
+      approved_at: null,
+      approved_by: null,
     }
 
     const { data, error } = await supabase
@@ -413,7 +445,41 @@ export async function PATCH(req: NextRequest) {
     const hasItemFields =
       body.item_name != null ||
       body.base_price != null ||
-      body.in_stock !== undefined
+      body.selling_price != null ||
+      body.in_stock !== undefined ||
+      body.item_description !== undefined ||
+      body.category_id !== undefined ||
+      body.food_type !== undefined ||
+      body.spice_level !== undefined ||
+      body.cuisine_type !== undefined ||
+      body.discount_percentage !== undefined ||
+      body.tax_percentage !== undefined ||
+      body.available_quantity !== undefined ||
+      body.low_stock_threshold !== undefined ||
+      body.has_customizations !== undefined ||
+      body.has_addons !== undefined ||
+      body.has_variants !== undefined ||
+      body.is_popular !== undefined ||
+      body.is_recommended !== undefined ||
+      body.preparation_time_minutes !== undefined ||
+      body.packaging_charges !== undefined ||
+      body.serves !== undefined ||
+      body.is_active !== undefined ||
+      body.allergens !== undefined ||
+      body.item_image_url !== undefined ||
+      body.available_for_delivery !== undefined ||
+      body.weight_per_serving !== undefined ||
+      body.weight_per_serving_unit !== undefined ||
+      body.calories_kcal !== undefined ||
+      body.protein !== undefined ||
+      body.protein_unit !== undefined ||
+      body.carbohydrates !== undefined ||
+      body.carbohydrates_unit !== undefined ||
+      body.fat !== undefined ||
+      body.fat_unit !== undefined ||
+      body.fibre !== undefined ||
+      body.fibre_unit !== undefined ||
+      body.item_tags !== undefined
     let data: any = null
 
     if (hasItemFields) {
@@ -454,12 +520,47 @@ export async function PATCH(req: NextRequest) {
       if (body.is_popular !== undefined) updatePayload.is_popular = body.is_popular ?? false
       if (body.is_recommended !== undefined) updatePayload.is_recommended = body.is_recommended ?? false
       if (body.preparation_time_minutes !== undefined) updatePayload.preparation_time_minutes = body.preparation_time_minutes ?? 15
+      if (body.packaging_charges !== undefined) {
+        updatePayload.packaging_charges =
+          body.packaging_charges === null ? null : Number(body.packaging_charges)
+      }
       if (body.serves !== undefined) updatePayload.serves = body.serves ?? 1
       if (body.is_active !== undefined) updatePayload.is_active = body.is_active ?? true
       if (body.allergens !== undefined) {
         const allergens = Array.isArray(body.allergens) ? body.allergens : (typeof body.allergens === 'string' ? body.allergens.split(',').map((a: string) => a.trim()).filter(Boolean) : [])
         updatePayload.allergens = allergens.length ? allergens : null
       }
+      if (body.item_tags !== undefined) {
+        const tags = Array.isArray(body.item_tags)
+          ? body.item_tags
+          : typeof body.item_tags === 'string'
+            ? body.item_tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+            : []
+        updatePayload.item_tags = tags.length ? tags : null
+      }
+      const patchOptNum = (v: unknown): number | null => {
+        if (v === null || v === '') return null
+        const n = Number(v)
+        return Number.isFinite(n) && n >= 0 ? n : null
+      }
+      if (body.available_for_delivery !== undefined) {
+        updatePayload.available_for_delivery = Boolean(body.available_for_delivery)
+      }
+      if (body.weight_per_serving !== undefined) {
+        updatePayload.weight_per_serving = patchOptNum(body.weight_per_serving)
+      }
+      if (body.weight_per_serving_unit !== undefined) {
+        updatePayload.weight_per_serving_unit = body.weight_per_serving_unit ?? null
+      }
+      if (body.calories_kcal !== undefined) updatePayload.calories_kcal = patchOptNum(body.calories_kcal)
+      if (body.protein !== undefined) updatePayload.protein = patchOptNum(body.protein)
+      if (body.protein_unit !== undefined) updatePayload.protein_unit = body.protein_unit ?? null
+      if (body.carbohydrates !== undefined) updatePayload.carbohydrates = patchOptNum(body.carbohydrates)
+      if (body.carbohydrates_unit !== undefined) updatePayload.carbohydrates_unit = body.carbohydrates_unit ?? null
+      if (body.fat !== undefined) updatePayload.fat = patchOptNum(body.fat)
+      if (body.fat_unit !== undefined) updatePayload.fat_unit = body.fat_unit ?? null
+      if (body.fibre !== undefined) updatePayload.fibre = patchOptNum(body.fibre)
+      if (body.fibre_unit !== undefined) updatePayload.fibre_unit = body.fibre_unit ?? null
       const filtered = Object.fromEntries(Object.entries(updatePayload).filter(([, v]) => v !== undefined))
       const { data: updated, error } = await supabase
         .from('merchant_menu_items')

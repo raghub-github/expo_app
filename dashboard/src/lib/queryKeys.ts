@@ -134,8 +134,7 @@ export const queryKeys = {
   offers: {
     merchant: {
       list: (filters: Record<string, unknown>) =>
-        ["offers", "merchant", "list", stableSerialize(filters)] as const,
-    },
+        ["offers", "merchant", "list", stableSerialize(filters)] as const,    },
     stores: () => ["offers", "stores"] as const,
   },
 

@@ -22,7 +22,7 @@ function isKey(value: string): boolean {
 /** Same-origin attachment proxy — use as img src directly (cookies/session); no signed-URL round trip. */
 function isAttachmentProxyUrl(value: string): boolean {
   const t = value.trim();
-  if (t.startsWith('/api/attachments/proxy')) return true;
+  if (t.startsWith('/api/attachments/proxy') || t.startsWith('/v1/attachments/proxy')) return true;
   // Stored without leading slash — invalid as img src unless normalized
   if (/^api\/attachments\/proxy/i.test(t)) return true;
   if (t.startsWith('http://') || t.startsWith('https://')) {

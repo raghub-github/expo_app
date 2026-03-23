@@ -143,8 +143,7 @@ export function createPersister(): Persister {
                 const queryKey = query.queryKey || [];
                 return shouldPersistQuery(queryKey);
               }
-            ),
-          },
+            ),          },
         };
         
         const serialized = JSON.stringify(filteredClient);
@@ -184,8 +183,7 @@ export function createPersister(): Persister {
         const now = Date.now();
         if (client.clientState?.queries) {
           client.clientState.queries = client.clientState.queries.filter(
-            (query: { state?: { data?: unknown } }) => {
-            // Check if query has expiry metadata
+            (query: { state?: { data?: unknown } }) => {            // Check if query has expiry metadata
             const queryData = query.state?.data as { __expiresAt?: number } | undefined;
             if (queryData?.__expiresAt && queryData.__expiresAt < now) {
               return false;

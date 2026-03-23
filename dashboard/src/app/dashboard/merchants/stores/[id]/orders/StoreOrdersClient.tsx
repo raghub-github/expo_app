@@ -381,7 +381,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       }
       if (res.ok) {
         if (Array.isArray(data.orders)) {
-          setOrders(data.orders);
+          setOrders(data.orders as OrdersFoodRow[]);
         } else {
           setOrders([]);
         }
@@ -678,8 +678,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         if (!result.ok) {
           const msg =
             (result.data as { error?: string } | null)?.error ?? 'Failed to update order';
-          toast('Error: ' + msg);
-          return;
+          toast('Error: ' + msg);          return;
         }
         const data = result.data as { order?: OrdersFoodRow };
         if (data?.order) {
@@ -1147,7 +1146,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                   </div>
                 </div>
               </div>
-
                 {/* Mobile: Order details panel beside sidebar - card-based layout (only when order selected) */}
                 {selectedOrder && (
                 <div className="lg:hidden flex-1 min-w-0 flex flex-col overflow-hidden order-1">

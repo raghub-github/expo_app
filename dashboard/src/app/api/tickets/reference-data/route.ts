@@ -125,8 +125,7 @@ export async function GET() {
         id: Number(r.id),
         tagCode: r.tag_code ?? "",
         tagName: r.tag_name ?? "",
-      }));
-    } catch {
+      }));    } catch {
       tags = [];
     }
 

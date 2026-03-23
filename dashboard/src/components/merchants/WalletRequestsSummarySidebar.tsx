@@ -13,8 +13,7 @@ function n(v: unknown): number {
 export function WalletRequestsSummarySidebar({ storeId }: { storeId?: string | null }) {
   const { data } = useMerchantWalletRequestsSummaryQuery(storeId);
 
-  const counts = data?.counts ?? {
-    PENDING: 0,
+  const counts = data?.counts ?? {    PENDING: 0,
     APPROVED: 0,
     REJECTED: 0,
     CANCELLED: 0,
@@ -47,21 +46,31 @@ export function WalletRequestsSummarySidebar({ storeId }: { storeId?: string | n
           </div>
           <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">
             {total} total
-          </span>
+          </span>        </div>
+        <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+          {tooltipLabel}
+          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
         </div>
+      </Link>
+    );
+  }
 
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+  return (
+    <Link
+      href={href}
+      className="group relative flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-xs font-medium text-gray-900 transition-all duration-200 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+    >
+      <div className="flex items-center gap-2">
+        <Wallet className="h-4 w-4 flex-shrink-0" />
+        <span className="flex-1 truncate text-xs font-medium">Wallet requests</span>
+        {loading ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400" />
+        ) : (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 text-[10px]">
             {badge.pending} Pending
           </span>
-          <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800">
-            {badge.approved} Approved
-          </span>
-          <span className="rounded-md bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-800">
-            {badge.rejected} Rejected
-          </span>
-        </div>
-        <p className="mt-1 text-[10px] text-gray-500">Click to view and filter all requests</p>
+        )}
+      </div>
     </Link>
   );
 }

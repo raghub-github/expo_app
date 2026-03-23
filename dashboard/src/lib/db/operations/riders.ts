@@ -173,7 +173,7 @@ export async function getRiderDocumentById(docId: number) {
 export async function updateRiderDocument(
   docId: number,
   updates: {
-    docNumber?: string;
+    docNumber?: string | null;
     fileUrl?: string;
     r2Key?: string;
     metadata?: Record<string, any>;

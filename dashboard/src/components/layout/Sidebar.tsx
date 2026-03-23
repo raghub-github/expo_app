@@ -70,23 +70,20 @@ function SidebarComponent() {
 
       // Check dashboard access
       if (item.dashboardType) {
-        const dt = item.dashboardType;
-        // Super admin has access to all dashboards
+        const dt = item.dashboardType;        // Super admin has access to all dashboards
         if (isSuperAdmin) {
           return true;
         }
 
         // Special handling for Orders - show if user has access to any order type
-        if (dt === "ORDER_FOOD") {
-          return (
+        if (dt === "ORDER_FOOD") {          return (
             accessibleDashboards.has("ORDER_FOOD") ||
             accessibleDashboards.has("ORDER_PERSON_RIDE") ||
             accessibleDashboards.has("ORDER_PARCEL")
           );
         }
 
-        return accessibleDashboards.has(dt);
-      }
+        return accessibleDashboards.has(dt);      }
 
       // Default: show if no specific requirements
       return true;

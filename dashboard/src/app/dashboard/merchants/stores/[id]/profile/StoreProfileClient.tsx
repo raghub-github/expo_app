@@ -32,6 +32,7 @@ import { OperatingDaysCard } from "./OperatingDaysCard";
 import { CompactEditableRow, CompactLockedRow } from "./CompactProfileRows";
 import { ChangeAddressModal } from "./ChangeAddressModal";
 import { StoreProfileSkeleton } from "./StoreProfileSkeleton";
+import { StoreCuisineManagerSection } from "./StoreCuisineManagerSection";
 
 function formatArray(arr: string[] | undefined | null): string {
   if (!arr || arr.length === 0) return "—";
@@ -45,6 +46,10 @@ function formatDate(dateString: string | undefined | null): string {
     month: "short",
     year: "numeric",
   });
+}
+
+function nonEmptyUnknown(v: unknown): boolean {
+  return typeof v === "string" && v.length > 0;
 }
 
 export function StoreProfileClient({ storeId }: { storeId: string }) {
@@ -105,14 +110,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         (payload as Record<string, unknown>)[field] = (editData as Record<string, unknown>)[field];
       }
       await updateStore.mutateAsync(payload);
-      toast("Saved successfully");
-      setEditingField(null);
+      toast("Saved successfully");      setEditingField(null);
       queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
       queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
       router.refresh();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed to save");
-    } finally {
+      toast(e instanceof Error ? e.message : "Failed to save");    } finally {
       setSavingField(null);
     }
   };
@@ -143,8 +146,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         const next = { ...editData, banner_url: url };
         setEditData(next);
         await updateStore.mutateAsync(next);
-        toast("Banner updated");
-        queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
+        toast("Banner updated");        queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
         queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
         router.refresh();
       } else {
@@ -157,14 +159,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
         const next = { ...editData, gallery_images: newGallery };
         setEditData(next);
         await updateStore.mutateAsync(next);
-        toast("Gallery updated");
-        queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
+        toast("Gallery updated");        queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
         queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
         router.refresh();
       }
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Upload failed");
-    } finally {
+      toast(err instanceof Error ? err.message : "Upload failed");    } finally {
       setUploadingImages([]);
     }
   };
@@ -177,13 +177,11 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
     setEditData(nextData);
     try {
       await updateStore.mutateAsync(nextData);
-      toast("Image removed");
-      queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
+      toast("Image removed");      queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
       queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
       router.refresh();
     } catch {
-      toast("Failed to remove image");
-    }
+      toast("Failed to remove image");    }
   };
 
   // Show skeleton until we have data or the request has settled (avoids hydration mismatch:
@@ -288,10 +286,17 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                         label="Store Display Name"
                         value={displayStore.store_display_name ?? null}
                       />
-                      <CompactLockedRow
-                        label="Cuisine Types"
-                        value={formatArray(displayStore.cuisine_types ?? [])}
-                      />
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] text-gray-500">
+                          Legacy tags (onboarding):{" "}
+                          <span className="text-gray-800">
+                            {(displayStore.cuisine_types?.length ?? 0) > 0
+                              ? formatArray(displayStore.cuisine_types ?? [])
+                              : "—"}
+                          </span>
+                        </div>
+                        <StoreCuisineManagerSection storeId={storeId} />
+                      </div>
                       <CompactLockedRow
                         label="Store Email"
                         value={displayStore.store_email ?? null}
@@ -374,43 +379,37 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                         doc.pan_document_number || doc.gst_document_number || doc.fssai_document_number
                       ) ? (
                         <div className="space-y-2 text-xs">
-                          {!!doc.pan_document_number && (
-                            <div className="bg-white rounded p-2 border border-gray-200">
+                          {!!doc.pan_document_number && (                            <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">PAN</span>
-                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.pan_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                                {doc.pan_is_verified ? "Verified" : "Pending"}
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${Boolean(doc.pan_is_verified) ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                {Boolean(doc.pan_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.pan_document_number)}</span></div>
-                              {!!doc.pan_document_url && (
-                                <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
+                              {!!doc.pan_document_url && (                                <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {!!doc.gst_document_number && (
-                            <div className="bg-white rounded p-2 border border-gray-200">
+                          {!!doc.gst_document_number && (                            <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">GST</span>
-                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.gst_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                                {doc.gst_is_verified ? "Verified" : "Pending"}
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${Boolean(doc.gst_is_verified) ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                {Boolean(doc.gst_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.gst_document_number)}</span></div>
-                              {!!doc.gst_document_url && (
-                                <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
+                              {!!doc.gst_document_url && (                                <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {!!doc.fssai_document_number && (
-                            <div className="bg-white rounded p-2 border border-gray-200">
+                          {!!doc.fssai_document_number && (                            <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">FSSAI</span>
-                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.fssai_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                                {doc.fssai_is_verified ? "Verified" : "Pending"}
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${Boolean(doc.fssai_is_verified) ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                {Boolean(doc.fssai_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.fssai_document_number)}</span></div>
-                              {!!doc.fssai_document_url && (
-                                <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
+                              {!!doc.fssai_document_url && (                                <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
@@ -492,8 +491,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                           <FileCheck size={16} className="text-blue-600" />
                           Agreement
                         </h3>
-                        {!!agreement.contract_pdf_url && (
-                          <a
+                        {!!agreement.contract_pdf_url && (                          <a
                             href={String(agreement.contract_pdf_url)}
                             target="_blank"
                             rel="noopener noreferrer"
@@ -503,7 +501,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                           </a>
                         )}
                       </div>
-                      {agreement.signer_name || agreement.accepted_at ? (
+                      {nonEmptyUnknown(agreement.signer_name) || agreement.accepted_at != null ? (
                         <div className="space-y-2 text-xs">
                           <div className="flex justify-between">
                             <span className="text-gray-600">Signed by</span>
@@ -515,8 +513,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                               {agreement.accepted_at ? formatDate(String(agreement.accepted_at)) : "—"}
                             </span>
                           </div>
-                          {!!agreement.contract_pdf_url && (
-                            <div className="flex gap-2 mt-2">
+                          {!!agreement.contract_pdf_url && (                            <div className="flex gap-2 mt-2">
                               <a
                                 href={String(agreement.contract_pdf_url)}
                                 target="_blank"
@@ -552,43 +549,37 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                         doc.pan_document_number || doc.gst_document_number || doc.fssai_document_number
                       ) ? (
                         <div className="space-y-2 text-xs">
-                          {!!doc.pan_document_number && (
-                            <div className="bg-white rounded p-2 border border-gray-200">
+                          {!!doc.pan_document_number && (                            <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">PAN</span>
-                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.pan_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                                {doc.pan_is_verified ? "Verified" : "Pending"}
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${Boolean(doc.pan_is_verified) ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                {Boolean(doc.pan_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.pan_document_number)}</span></div>
-                              {!!doc.pan_document_url && (
-                                <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
+                              {!!doc.pan_document_url && (                                <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {!!doc.gst_document_number && (
-                            <div className="bg-white rounded p-2 border border-gray-200">
+                          {!!doc.gst_document_number && (                            <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">GST</span>
-                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.gst_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                                {doc.gst_is_verified ? "Verified" : "Pending"}
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${Boolean(doc.gst_is_verified) ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                {Boolean(doc.gst_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.gst_document_number)}</span></div>
-                              {!!doc.gst_document_url && (
-                                <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
+                              {!!doc.gst_document_url && (                                <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
                             </div>
                           )}
-                          {!!doc.fssai_document_number && (
-                            <div className="bg-white rounded p-2 border border-gray-200">
+                          {!!doc.fssai_document_number && (                            <div className="bg-white rounded p-2 border border-gray-200">
                               <span className="font-semibold text-gray-900">FSSAI</span>
-                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${doc.fssai_is_verified ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-                                {doc.fssai_is_verified ? "Verified" : "Pending"}
+                              <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${Boolean(doc.fssai_is_verified) ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                {Boolean(doc.fssai_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.fssai_document_number)}</span></div>
-                              {!!doc.fssai_document_url && (
-                                <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
+                              {!!doc.fssai_document_url && (                                <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
                               )}
@@ -612,38 +603,8 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                   </div>
                 </div>
 
-                {/* Last row: Logo + Banner + Gallery */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mt-5">
-                  {/* Store Logo card */}
-                  <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-100">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-gray-900">Store Logo</h3>
-                        <p className="text-xs text-gray-600">Primary logo shown in apps and dashboard</p>
-                      </div>
-                    </div>
-                    {displayStore.logo_url ? (
-                      <div className="mt-2 flex items-center gap-4">
-                        <div className="h-24 w-24 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center overflow-hidden">
-                          <img
-                            src={String(displayStore.logo_url)}
-                            alt="Store logo"
-                            className="h-full w-full object-contain"
-                          />
-                        </div>
-                        <div className="text-xs text-gray-600 max-w-xs">
-                          This logo is managed from the onboarding and verification flow. Contact support if you need to
-                          change it.
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 h-24 bg-gray-100 rounded-lg flex items-center justify-center">
-                        <ImageIcon size={20} className="text-gray-400" />
-                        <span className="text-xs text-gray-500 ml-2">No logo available</span>
-                      </div>
-                    )}
-                  </div>
-
+                {/* Banner + Gallery (store logo column removed from schema) */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-5">
                   {/* Store Banner card */}
                   <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-4 border border-blue-100">
                     <div className="flex items-center justify-between mb-3">
@@ -771,8 +732,7 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
           queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
           queryClient.invalidateQueries({ queryKey: STORE_PROFILE_FULL_KEY(storeId) });
           router.refresh();
-          toast("Address updated successfully");
-        }}
+          toast("Address updated successfully");        }}
       />
     </div>
   );

@@ -19,7 +19,6 @@ import {
   inArray,
   type SQL,
 } from "drizzle-orm";
-
 export interface CustomerFilters {
   page?: number;
   limit?: number;
@@ -136,8 +135,7 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     conditions.push(inArray(customers.id, customerIds));
   }
   
-  // Build base query (omit first_name/last_name - they may not exist in DB; use fullName)
-  let query = db.select({
+  const customerSelect = {
     id: customers.id,
     customerId: customers.customerId,
     fullName: customers.fullName,
@@ -156,21 +154,18 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     query = query.where(and(...conditions));
   }
   
-  // Sorting
-  const sortBy = filters.sortBy || "createdAt";
+  // Sorting  const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
-  
-  if (sortBy === "fullName") {
-    query = query.orderBy(sortOrder === "asc" ? asc(customers.fullName) : desc(customers.fullName));
-  } else if (sortBy === "createdAt") {
-    query = query.orderBy(sortOrder === "asc" ? asc(customers.createdAt) : desc(customers.createdAt));
-  } else if (sortBy === "lastOrderAt") {
-    query = query.orderBy(sortOrder === "asc" ? asc(customers.lastOrderAt) : desc(customers.lastOrderAt));
-  } else {
-    query = query.orderBy(desc(customers.createdAt));
-  }
-  
-  // Get total count for pagination
+
+  const query =
+    sortBy === "fullName"
+      ? filteredCustomers.orderBy(sortOrder === "asc" ? asc(customers.fullName) : desc(customers.fullName))
+      : sortBy === "createdAt"
+        ? filteredCustomers.orderBy(sortOrder === "asc" ? asc(customers.createdAt) : desc(customers.createdAt))
+        : sortBy === "lastOrderAt"
+          ? filteredCustomers.orderBy(sortOrder === "asc" ? asc(customers.lastOrderAt) : desc(customers.lastOrderAt))
+          : filteredCustomers.orderBy(desc(customers.createdAt));
+
   const countConditions = [...conditions];
   let total: number;
   if (orderTypeFilter) {
@@ -196,21 +191,33 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     const [countResult] = await countQuery;
     total = Number(countResult?.count || 0);
   }
-  
-  // Apply pagination
+    // Apply pagination
   const customerList = await query.limit(limit).offset(offset);
   
   // Get order statistics for each customer (firstName/lastName omitted from select if not in DB)
   const customersWithStats: CustomerWithStats[] = await Promise.all(
     customerList.map(async (customer) => {
       const stats = await getCustomerOrderStats(customer.id, orderTypeFilter || undefined);
+      const trustRaw = customer.trustScore;
+      const trustScore =
+        trustRaw === null || trustRaw === undefined
+          ? null
+          : typeof trustRaw === "number"
+            ? trustRaw
+            : Number(trustRaw);
+      const wbRaw = customer.walletBalance;
+      const walletBalance =
+        wbRaw === null || wbRaw === undefined
+          ? null
+          : typeof wbRaw === "number"
+            ? wbRaw
+            : Number(wbRaw);
       return {
         ...customer,
         trustScore:
           customer.trustScore == null ? null : Number(customer.trustScore),
         walletBalance:
-          customer.walletBalance == null ? null : Number(customer.walletBalance),
-        firstName: null,
+          customer.walletBalance == null ? null : Number(customer.walletBalance),        firstName: null,
         lastName: null,
         orderStats: stats,
       };
@@ -241,7 +248,6 @@ export async function getCustomerOrderStats(
   if (orderType) {
     statsConditions.push(eq(ordersCore.orderType, orderType));
   }
-
   const stats = await db
     .select({
       orderType: ordersCore.orderType,
@@ -250,8 +256,7 @@ export async function getCustomerOrderStats(
       lastOrderAt: sql<Date | null>`max(${ordersCore.createdAt})`,
     })
     .from(ordersCore)
-    .where(and(...statsConditions)!)
-    .groupBy(ordersCore.orderType);
+    .where(and(...statsConditions)!)    .groupBy(ordersCore.orderType);
   
   return stats.map((stat) => ({
     orderType: stat.orderType as "food" | "parcel" | "person_ride" | null,

@@ -1369,8 +1369,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
               </div>
               {(() => {
                 const amt = parseFloat(withdrawalAmount);
-                if (payoutQuoteLoading && amt >= 100) {
-                  return (
+                if (payoutQuoteLoading && amt >= 100) {                  return (
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-center gap-2 text-slate-600 text-sm">
                       <Loader2 size={18} className="animate-spin" />
                       Calculating...
@@ -1444,8 +1443,7 @@ export function StorePaymentsClient({ storeId }: { storeId: string }) {
                           })}
                         </span>
                       </div>
-                    </div>
-                );
+                    </div>                );
               })()}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">

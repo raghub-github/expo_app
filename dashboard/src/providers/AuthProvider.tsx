@@ -2,7 +2,6 @@
 
 import React, { createContext, useCallback, useContext, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-
 interface SessionUser {
   id: string;
   email: string;
@@ -40,7 +39,6 @@ export interface SystemUserSummary {
   fullName: string;
   email: string;
 }
-
 interface AuthContextValue {
   /** True once bootstrap/auth state has been resolved and queries may run */
   authReady: boolean;

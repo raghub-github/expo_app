@@ -30,6 +30,16 @@ export function R2Image({ src, alt, className = "", fallbackSrc }: R2ImageProps)
     }
   }
 
+  // Legacy DB values: raw R2 object key (e.g. merchants/.../menu/... or merchant-menu/...)
+  if (
+    resolvedSrc &&
+    !resolvedSrc.includes("://") &&
+    !resolvedSrc.startsWith("/") &&
+    !resolvedSrc.startsWith("data:")
+  ) {
+    resolvedSrc = `/api/attachments/proxy?key=${encodeURIComponent(resolvedSrc)}`;
+  }
+
   const resolved =
     resolvedSrc &&
     (resolvedSrc.startsWith("http") ||

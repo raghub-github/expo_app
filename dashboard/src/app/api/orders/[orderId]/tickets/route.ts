@@ -55,7 +55,7 @@ export async function GET(
     }
 
     const sqlClient = getSql();
-    type Row = {
+    type OrderTicketRow = {
       id: number;
       ticket_id: string;
       status: string;
@@ -67,7 +67,7 @@ export async function GET(
       resolver_name: string | null;
       resolver_email: string | null;
     };
-    let rows: Row[] = [];
+    let rows: OrderTicketRow[] = [];
     try {
       const result = await sqlClient`
         SELECT ut.id, ut.ticket_id, ut.status, ut.subject, ut.created_at, ut.raised_by_type,
@@ -80,8 +80,7 @@ export async function GET(
         ORDER BY ut.created_at DESC
         LIMIT 100
       `;
-      rows = result as unknown as Row[];
-    } catch (e) {
+      rows = result as unknown as Row[];    } catch (e) {
       console.error("[GET /api/orders/[orderId]/tickets] Query error:", e);
       return NextResponse.json(
         { success: false, error: "Failed to fetch tickets" },

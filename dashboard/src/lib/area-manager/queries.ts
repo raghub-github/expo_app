@@ -259,8 +259,7 @@ export async function countRidersByAvailability(
     scopeWhere = and(scopeWhere, eq(riders.areaManagerId, areaManagerId))!;
   }
   if (localityCode?.trim()) {
-    scopeWhere = and(scopeWhere, eq(riders.localityCode, localityCode.trim()))!;
-  }
+    scopeWhere = and(scopeWhere, eq(riders.localityCode, localityCode.trim()))!;  }
 
   const [online] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -419,7 +418,7 @@ export async function updateRiderScoped(
   }
   const [row] = await db
     .update(riders)
-    .set({ ...data, updatedAt: new Date() })
+    .set({ ...data, updatedAt: new Date() } as Partial<typeof riders.$inferInsert>)
     .where(and(...conditions))
     .returning();
   return row ?? null;

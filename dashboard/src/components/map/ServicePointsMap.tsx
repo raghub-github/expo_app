@@ -53,8 +53,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
     refetch,
     isFetching,
     fulfilledTimeStamp,
-  } = useGetServicePointsQuery();
-  const [deleteServicePoint, { isLoading: deleteLoading }] = useDeleteServicePointMutation();
+  } = useGetServicePointsQuery();  const [deleteServicePoint, { isLoading: deleteLoading }] = useDeleteServicePointMutation();
   const [retrying, setRetrying] = useState(false);
   const handleRetry = useCallback(async () => {
     setRetrying(true);
@@ -68,8 +67,7 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   // #region agent log
   useEffect(() => {
     const queryCheckTime = Date.now();
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServicePointsMap.tsx:32',message:'ServicePoints query state',data:{isLoading,isFetching,fulfilledTimeStamp,hasData:!!servicePoints.length,timeSinceMount:queryCheckTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  }, [isLoading, isFetching, servicePoints.length]);
+    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServicePointsMap.tsx:32',message:'ServicePoints query state',data:{isLoading,isFetching,fulfilledTimeStamp,hasData:!!servicePoints.length,timeSinceMount:queryCheckTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});  }, [isLoading, isFetching, servicePoints.length]);
   // #endregion
 
   // Support both env variable names

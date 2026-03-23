@@ -118,8 +118,7 @@ export async function getSystemUserByEmail(
               full_name: row.full_name,
               primary_role: row.primary_role as SystemUserRow["primaryRole"],
               status: row.status as SystemUserRow["status"],
-            }];
-          }
+            }];          }
         }
       } catch {
         // Ignore raw fallback errors; result stays empty

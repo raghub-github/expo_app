@@ -134,7 +134,6 @@ function CustomersPageContent() {
   } = useCustomerDashboardStats(shouldFetchStats ? dashboardFilters : {}, {
     enabled: shouldFetchStats,
   });
-
   // Handle redirect to detail page if search returns single customer (ID/mobile search)
   useEffect(() => {
     if (

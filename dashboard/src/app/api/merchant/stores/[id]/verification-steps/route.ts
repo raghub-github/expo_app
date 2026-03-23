@@ -63,8 +63,7 @@ async function allowStoreAccess(storeId: number) {
     allowed: true as const,
     user: { id: user.id, email: user.email },
     systemUserId: systemUser?.id ?? null,
-    systemUserName: systemUser?.full_name?.trim() || user.email,
-    store,
+    systemUserName: systemUser?.full_name?.trim() || user.email,    store,
     areaManagerId,
   };
 }
@@ -140,8 +139,7 @@ export async function POST(
       );
     }
     const notes = typeof body.notes === "string" ? body.notes.trim() || null : null;
-    const verifiedByName = access.systemUserName || access.user.email || "agent";
-    const ok = await upsertStoreVerificationStep({
+    const verifiedByName = access.systemUserName || access.user.email || "agent";    const ok = await upsertStoreVerificationStep({
       storeId,
       stepNumber: step,
       verifiedBy: access.systemUserId ?? null,

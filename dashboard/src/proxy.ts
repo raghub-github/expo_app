@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import type { ResponseCookie } from "next/dist/compiled/@edge-runtime/cookies";
 import { createServerClient } from "@supabase/ssr";
 import {
   getSessionMetadata,
@@ -36,6 +37,28 @@ const auditLastSent = new Map<string, number>();
 const AUDIT_MIN_INTERVAL_MS = 5000;
 // Note: User validation is done in /api/auth/set-cookie, not in proxy
 // Proxy runs in Edge Runtime which doesn't support database connections
+
+function toResponseCookieOptions(options: {
+  maxAge: number;
+  path: string;
+  httpOnly?: boolean;
+  sameSite?: string;
+  secure?: boolean;
+}): Partial<ResponseCookie> {
+  const same =
+    options.sameSite === "strict" ||
+    options.sameSite === "lax" ||
+    options.sameSite === "none"
+      ? options.sameSite
+      : "lax";
+  return {
+    maxAge: options.maxAge,
+    path: options.path,
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite: same,
+  };
+}
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
@@ -100,8 +123,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            setSafeResponseCookie(response, name, value, options);
-          },
+            setSafeResponseCookie(response, name, value, options);          },
         };
         updateActivity(cookieManager);
       }
@@ -113,13 +135,12 @@ export async function proxy(request: NextRequest) {
 
     if (hasAuthCookie) {
       try {
-        const userResult = await Promise.race([
+        const userResult = (await Promise.race([
           supabase.auth.getUser(),
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ]) as unknown as {
-          data?: { user?: { id: string; email?: string } | null };
+        ]) as unknown as {          data?: { user?: { id: string; email?: string } | null };
           error?: { message?: string; code?: string };
         };
         const user = userResult.data?.user ?? null;
@@ -129,8 +150,7 @@ export async function proxy(request: NextRequest) {
           session = {
             user: { id: user.id, email: user.email },
             ...user,
-          } as unknown as typeof session;
-        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
+          } as unknown as typeof session;        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
         }
@@ -201,8 +221,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            setSafeResponseCookie(response, name, value, options);
-          },
+            setSafeResponseCookie(response, name, value, options);          },
         };
         updateActivity(cookieManager);
       }

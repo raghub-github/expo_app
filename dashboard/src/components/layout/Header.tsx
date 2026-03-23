@@ -17,7 +17,6 @@ import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
-
 // Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
   const pathname = usePathname();
@@ -217,6 +216,23 @@ function HeaderComponent() {
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
   const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
+  const { canPerformAction } = usePermission();
+
+  // Determine if the user has any edit-level access on the MERCHANT dashboard
+  const hasMerchantEditAccess = useMemo(() => {
+    if (!isMerchantsArea) return false;
+    const editActions: ActionType[] = ["CREATE", "UPDATE", "APPROVE", "REJECT", "ASSIGN", "CANCEL", "REFUND", "BLOCK", "UNBLOCK"];
+    return editActions.some((action) => canPerformAction("MERCHANT", action));
+  }, [isMerchantsArea, canPerformAction]);
+
+  // If user is restricted to view-only, force merchant portal as default and hide the Admin/Merchant toggle
+  useEffect(() => {
+    if (!isMerchantsArea) return;
+    if (hasMerchantEditAccess) return;
+    if (portal === "merchant") return;
+    // Redirect view-only users to merchant portal
+    setPortal("merchant");
+  }, [isMerchantsArea, hasMerchantEditAccess, portal]);
   const handleOpenRightPanel = () => {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
@@ -501,8 +517,8 @@ function HeaderComponent() {
       ) : null}
 
       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
-        {/* Admin | Merchant portal toggle: always on merchants area (list + store pages) */}
-        {isMerchantsArea && (
+        {/* Admin | Merchant portal toggle: only show when user has edit access on merchants dashboard */}
+        {isMerchantsArea && hasMerchantEditAccess && (
           <div className="flex rounded-md border border-gray-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
             <button
               type="button"

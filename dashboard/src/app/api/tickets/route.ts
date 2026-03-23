@@ -9,7 +9,6 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSql } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
-import { sql } from "drizzle-orm";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
@@ -82,25 +81,26 @@ export async function GET(request: NextRequest) {
     const orderByClause = `${sortBy} ${sortOrder}`;
 
     const sqlClient = getSql();
-    const whereConditions: ReturnType<typeof sql>[] = [];
+    /** postgres.js fragments (do not use Drizzle sql`` here — incompatible with getSql() templates) */
+    const whereConditions: unknown[] = [];
 
     const serviceTypes = serviceTypeParam ? serviceTypeParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
     if (serviceTypes.length > 0) {
-      whereConditions.push(sql`ut.service_type = ANY(${serviceTypes})`);
+      whereConditions.push(sqlClient`ut.service_type = ANY(${serviceTypes})`);
     }
     if (ticketSection && ticketSection !== "all") {
-      whereConditions.push(sql`ut.raised_by_type = ${ticketSection.toUpperCase()}`);
+      whereConditions.push(sqlClient`ut.raised_by_type = ${ticketSection.toUpperCase()}`);
     }
     const statuses = statusParam ? statusParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     if (statuses.length > 0) {
-      whereConditions.push(sql`ut.status = ANY(${statuses})`);
+      whereConditions.push(sqlClient`ut.status = ANY(${statuses})`);
     }
     const priorities = priorityParam ? priorityParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     if (priorities.length > 0) {
-      whereConditions.push(sql`ut.priority = ANY(${priorities})`);
+      whereConditions.push(sqlClient`ut.priority = ANY(${priorities})`);
     }
     if (ticketCategory && ticketCategory !== "all") {
-      whereConditions.push(sql`ut.ticket_category = ${ticketCategory}`);
+      whereConditions.push(sqlClient`ut.ticket_category = ${ticketCategory}`);
     }
     const assignedToIds = assignedToIdsParam
       ? assignedToIdsParam.split(",").map((s) => s.trim()).filter(Boolean)
@@ -109,60 +109,66 @@ export async function GET(request: NextRequest) {
       const meIndex = assignedToIds.indexOf("me");
       const unassignedIndex = assignedToIds.indexOf("unassigned");
       const numericIds = assignedToIds.filter((id) => id !== "me" && id !== "unassigned").map((id) => parseInt(id, 10)).filter((id) => !isNaN(id));
-      const orParts: ReturnType<typeof sql>[] = [];
-      if (meIndex !== -1) orParts.push(sql`ut.assigned_to_agent_id = ${systemUser.id}`);
-      if (unassignedIndex !== -1) orParts.push(sql`ut.assigned_to_agent_id IS NULL`);
-      if (numericIds.length > 0) orParts.push(sql`ut.assigned_to_agent_id = ANY(${numericIds})`);
+      const orParts: unknown[] = [];
+      if (meIndex !== -1) orParts.push(sqlClient`ut.assigned_to_agent_id = ${systemUser.id}`);
+      if (unassignedIndex !== -1) orParts.push(sqlClient`ut.assigned_to_agent_id IS NULL`);
+      if (numericIds.length > 0) orParts.push(sqlClient`ut.assigned_to_agent_id = ANY(${numericIds})`);
       if (orParts.length > 0) {
-        whereConditions.push(orParts.length === 1 ? orParts[0]! : sql`(${orParts.reduce((acc, cond, idx) => (idx === 0 ? cond : sql`${acc} OR ${cond}`))})`);
+        const orCombined = orParts.reduce((acc, cond, idx) =>
+          idx === 0 ? cond : sqlClient`${acc as never} OR ${cond as never}`
+        );
+        whereConditions.push(sqlClient`(${orCombined as never})`);
       }
     }
     const sourceRoles = sourceRoleParam ? sourceRoleParam.split(",").map((s) => s.trim()).filter(Boolean) : [];
     if (sourceRoles.length > 0) {
       const upperSourceRoles = sourceRoles.map((r) => r.toUpperCase());
-      whereConditions.push(sql`ut.raised_by_type = ANY(${upperSourceRoles})`);
+      whereConditions.push(sqlClient`ut.raised_by_type = ANY(${upperSourceRoles})`);
     }
     if (dateFrom) {
-      whereConditions.push(sql`ut.created_at >= ${dateFrom}::date`);
+      whereConditions.push(sqlClient`ut.created_at >= ${dateFrom}::date`);
     }
     if (dateTo) {
-      whereConditions.push(sql`ut.created_at <= (${dateTo}::date + interval '1 day')`);
+      whereConditions.push(sqlClient`ut.created_at <= (${dateTo}::date + interval '1 day')`);
     }
     if (resolvedFrom) {
-      whereConditions.push(sql`ut.resolved_at IS NOT NULL AND ut.resolved_at >= ${resolvedFrom}::date`);
+      whereConditions.push(sqlClient`ut.resolved_at IS NOT NULL AND ut.resolved_at >= ${resolvedFrom}::date`);
     }
     if (resolvedTo) {
-      whereConditions.push(sql`ut.resolved_at IS NOT NULL AND ut.resolved_at < (${resolvedTo}::date + interval '1 day')`);
+      whereConditions.push(sqlClient`ut.resolved_at IS NOT NULL AND ut.resolved_at < (${resolvedTo}::date + interval '1 day')`);
     }
     if (closedFrom) {
-      whereConditions.push(sql`ut.closed_at IS NOT NULL AND ut.closed_at >= ${closedFrom}::date`);
+      whereConditions.push(sqlClient`ut.closed_at IS NOT NULL AND ut.closed_at >= ${closedFrom}::date`);
     }
     if (closedTo) {
-      whereConditions.push(sql`ut.closed_at IS NOT NULL AND ut.closed_at < (${closedTo}::date + interval '1 day')`);
+      whereConditions.push(sqlClient`ut.closed_at IS NOT NULL AND ut.closed_at < (${closedTo}::date + interval '1 day')`);
     }
     if (orderIdFilter != null && !Number.isNaN(orderIdFilter)) {
-      whereConditions.push(sql`ut.order_id = ${orderIdFilter}`);
+      whereConditions.push(sqlClient`ut.order_id = ${orderIdFilter}`);
     }
     if (searchQuery) {
       const num = parseInt(searchQuery, 10);
       if (!Number.isNaN(num) && String(num) === searchQuery) {
         const searchPattern = `%${searchQuery}%`;
-        whereConditions.push(sql`(ut.ticket_id LIKE ${searchPattern} OR ut.id = ${num} OR ut.order_id = ${num})`);
+        whereConditions.push(sqlClient`(ut.ticket_id LIKE ${searchPattern} OR ut.id = ${num} OR ut.order_id = ${num})`);
       } else {
         const term = `%${searchQuery.replace(/%/g, "\\%")}%`;
-        whereConditions.push(sql`(ut.subject ILIKE ${term} OR ut.description ILIKE ${term} OR ut.ticket_id ILIKE ${term})`);
+        whereConditions.push(sqlClient`(ut.subject ILIKE ${term} OR ut.description ILIKE ${term} OR ut.ticket_id ILIKE ${term})`);
       }
     }
     if (tagsParam) {
       const tags = tagsParam.split(",").map((t) => t.trim()).filter(Boolean);
       if (tags.length > 0) {
-        whereConditions.push(sql`ut.tags && ${tags}`);
+        whereConditions.push(sqlClient`ut.tags && ${tags}`);
       }
     }
 
-    const whereClause = whereConditions.length > 0
-      ? whereConditions.reduce((acc, cond, idx) => (idx === 0 ? cond : sql`${acc} AND ${cond}`))
-      : null;
+    const whereClause =
+      whereConditions.length > 0
+        ? whereConditions.reduce((acc, cond, idx) =>
+            idx === 0 ? cond : sqlClient`${acc as never} AND ${cond as never}`
+          )
+        : null;
 
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
@@ -206,10 +212,9 @@ export async function GET(request: NextRequest) {
     try {
       if (whereClause) {
         countResult = (await sqlClient`
-          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as any}
-        `) as unknown as { count: number }[];
+          SELECT COUNT(*)::int as count FROM public.unified_tickets ut WHERE ${whereClause as never}        `) as unknown as { count: number }[];
         try {
-          ticketRows = await sqlClient`
+          ticketRows = (await sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -219,13 +224,12 @@ export async function GET(request: NextRequest) {
               ut.group_id, tg.group_code as group_code, tg.group_name as group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-            WHERE ${whereClause as any}
-            ORDER BY ${sql.raw(orderByClause) as any}
-            LIMIT ${limit}
+            WHERE ${whereClause as never}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
-          `;
+          `) as unknown as Record<string, unknown>[];
         } catch {
-          ticketRows = await sqlClient`
+          ticketRows = (await sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -233,18 +237,17 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
             FROM public.unified_tickets ut
-            WHERE ${whereClause as any}
-            ORDER BY ${sql.raw(orderByClause) as any}
-            LIMIT ${limit}
+            WHERE ${whereClause as never}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
-          `;
+          `) as unknown as Record<string, unknown>[];
         }
       } else {
         countResult = (await sqlClient`SELECT COUNT(*)::int as count FROM public.unified_tickets ut`) as unknown as {
           count: number;
         }[];
         try {
-          ticketRows = await sqlClient`
+          ticketRows = (await sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -254,12 +257,11 @@ export async function GET(request: NextRequest) {
               ut.group_id, tg.group_code as group_code, tg.group_name as group_name
             FROM public.unified_tickets ut
             LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-            ORDER BY ${sql.raw(orderByClause) as any}
-            LIMIT ${limit}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
-          `;
+          `) as unknown as Record<string, unknown>[];
         } catch {
-          ticketRows = await sqlClient`
+          ticketRows = (await sqlClient`
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
@@ -267,10 +269,9 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at
             FROM public.unified_tickets ut
-            ORDER BY ${sql.raw(orderByClause) as any}
-            LIMIT ${limit}
+            ORDER BY ${sqlClient.unsafe(orderByClause)}            LIMIT ${limit}
             OFFSET ${offset}
-          `;
+          `) as unknown as Record<string, unknown>[];
         }
       }
     } catch (queryError) {

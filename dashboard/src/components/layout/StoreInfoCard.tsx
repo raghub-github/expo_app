@@ -111,7 +111,6 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
   );
 
   if (stepNum === 1) {
-    const logoUrl = store.logo_url as string | null | undefined;
     const bannerUrl = store.banner_url as string | null | undefined;
     const gallery = (store.gallery_images as string[] | null | undefined) ?? [];
     return (
@@ -123,10 +122,9 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
         {row("Store type", store.store_type as string)}
         {row("Email", store.store_email as string)}
         {row("Phones", Array.isArray(store.store_phones) ? (store.store_phones as string[]).join(", ") : null)}
-        {(logoUrl || bannerUrl || gallery.length > 0) && (
+        {(bannerUrl || gallery.length > 0) && (
           <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
-            <p className="text-[10px] font-semibold uppercase text-gray-500">Logo, banner & gallery</p>
-            {logoUrl && <div><p className="mb-0.5 text-[10px] font-medium text-gray-500">Logo</p><img src={logoUrl} alt="Store logo" className="h-20 w-20 rounded-lg border border-gray-200 object-cover" /></div>}
+            <p className="text-[10px] font-semibold uppercase text-gray-500">Banner & gallery</p>
             {bannerUrl && <div><p className="mb-0.5 text-[10px] font-medium text-gray-500">Banner</p><img src={bannerUrl} alt="Store banner" className="max-h-32 w-full max-w-sm rounded-lg border border-gray-200 object-cover" /></div>}
             {gallery.length > 0 && <div><p className="mb-0.5 text-[10px] font-medium text-gray-500">Gallery</p><div className="flex flex-wrap gap-2">{gallery.slice(0, 6).map((url, i) => <img key={i} src={url} alt="" className="h-16 w-16 rounded border border-gray-200 object-cover" />)}{gallery.length > 6 && <span className="text-[10px] text-gray-500">+{gallery.length - 6} more</span>}</div></div>}
           </div>
@@ -196,10 +194,9 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
                   )}
                 </div>
                 {!!doc[e.urlKey] && (
-                  <a href={doc[e.urlKey] as string} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700">
-                    <ExternalLink className="h-2.5 w-2.5" /> Open
+                  <a href={doc[e.urlKey] as string} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700">                    <ExternalLink className="h-2.5 w-2.5" /> Open
                   </a>
-                )}
+                ) : null}
               </div>
             ))}
             {!!doc.fssai_expiry_date &&
@@ -214,7 +211,6 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
     return (
       <div className="space-y-2">
         <p className="text-[10px] font-semibold uppercase text-gray-500">Operational details</p>
-        {row("Logo", store.logo_url ? "Uploaded" : null)}
         {row("Banner", store.banner_url ? "Uploaded" : null)}
         {row("Min order (₹)", store.min_order_amount != null ? String(store.min_order_amount) : null)}
         {row("Delivery radius (km)", store.delivery_radius_km != null ? String(store.delivery_radius_km) : null)}

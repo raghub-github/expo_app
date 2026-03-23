@@ -136,8 +136,7 @@ export default function RiderOnboardingClient() {
   ) ?? false;
 
   // Use ref to store the latest sync function to avoid dependency issues
-  const syncDashboardStateFromRiderRef = useRef<((r: Rider | null) => void) | null>(null);
-  
+  const syncDashboardStateFromRiderRef = useRef<((r: Rider | null) => void) | null>(null);  
   const syncDashboardStateFromRider = useCallback(
     (r: Rider | null) => {
       if (!riderDashboard || !r) return;
@@ -340,8 +339,7 @@ export default function RiderOnboardingClient() {
       const rawDoc =
         payload != null && typeof payload === "object" && "document" in payload
           ? (payload as { document?: unknown }).document ?? payload
-          : payload;
-      const raw = rawDoc && typeof rawDoc === "object" ? (rawDoc as Record<string, unknown>) : null;
+          : payload;      const raw = rawDoc && typeof rawDoc === "object" ? (rawDoc as Record<string, unknown>) : null;
       const updatedDoc =
         raw
           ? {

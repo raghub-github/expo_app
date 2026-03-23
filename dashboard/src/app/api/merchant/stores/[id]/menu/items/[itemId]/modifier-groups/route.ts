@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { bodyNum } from "@/lib/db/sql-json-body";
 import { assertStoreAccess, getModifierLimits } from "../../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -108,8 +109,7 @@ export async function POST(
     const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const [row] = await sql`
       INSERT INTO merchant_item_modifier_groups (menu_item_id, modifier_group_id, display_order)
-      VALUES (${menuItemId}, ${modifier_group_id}, ${displayOrder})
-      RETURNING id
+      VALUES (${menuItemId}, ${modifier_group_id}, ${displayOrder})      RETURNING id
     `;
     try {
       await logStoreActivity({ storeId, section: "addon", action: "link", summary: `Agent linked modifier group to item #${itemId}`, actorType: "agent", source: "dashboard" });

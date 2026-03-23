@@ -60,8 +60,7 @@ export function useCustomerDashboardStats(
   return useQuery({
     queryKey: queryKeys.customers.stats(filters as unknown as Record<string, unknown>),
     queryFn: () => fetchDashboardStats(filters),
-    enabled: isAllowed && options?.enabled !== false,
-    ...getCacheConfig(CacheTier.MEDIUM),
+    enabled: isAllowed && options?.enabled !== false,    ...getCacheConfig(CacheTier.MEDIUM),
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
     refetchOnMount: false,

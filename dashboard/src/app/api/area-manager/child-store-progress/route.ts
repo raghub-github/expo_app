@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
     let formDataWithStepStore: Record<string, unknown> = {
       ...formData,
       step_store: { ...(formData.step_store as object ?? {}), ...stepStore },
-    };
+    } as Record<string, unknown> & { step1?: Record<string, unknown> };
 
     // If payment has been successfully captured on Partner Site, automatically
     // advance onboarding to at least step 8 so AM dashboard reflects it.

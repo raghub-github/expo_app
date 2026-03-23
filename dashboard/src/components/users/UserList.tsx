@@ -5,24 +5,11 @@ import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, Chevron
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
-import { useUsersQuery, useUpdateUser } from "@/hooks/queries/useUsersQuery";
+import { useUsersQuery, useUpdateUser, type SystemUser } from "@/hooks/queries/useUsersQuery";
 import { StatusChangeModal } from "./StatusChangeModal";
 import { SystemRolesListPanel } from "./SystemRolesListPanel";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
-
-interface SystemUser {
-  id: number;
-  systemUserId: string;
-  fullName: string;
-  email: string;
-  mobile: string;
-  primaryRole: string;
-  status: string;
-  department?: string;
-  createdAt: string;
-  suspensionExpiresAt?: string | null;
-}
 
 interface UserListProps {
   onUserSelect?: (user: SystemUser) => void;
@@ -142,6 +129,9 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
 
   // Memoize users and pagination data to prevent unnecessary re-renders
   const users = useMemo(() => data?.users || [], [data?.users]);
+
+  const effectiveUserStatus = (u: SystemUser) =>
+    u.status ?? (u.isActive ? "ACTIVE" : "PENDING_ACTIVATION");
   const paginationData = useMemo(() => data?.pagination || {
     page: 1,
     limit: 20,
@@ -156,7 +146,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
       // Check if any users have expired suspensions
       const hasExpiredSuspensions = users.some(
         (user) =>
-          user.status === "SUSPENDED" &&
+          effectiveUserStatus(user) === "SUSPENDED" &&
           user.suspensionExpiresAt &&
           new Date(user.suspensionExpiresAt) <= now
       );
@@ -602,6 +592,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                 </tr>
               ) : (
               users.map((user) => {
+                const st = effectiveUserStatus(user);
                 const isEditingSelf = systemUserId && user.id === systemUserId;
                 const isSuperAdminUser = user.primaryRole === "SUPER_ADMIN";
                 const canEdit = isSuperAdmin && !isEditingSelf && !isSuperAdminUser;
@@ -632,7 +623,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                         </span>
                       </td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
-                        {getStatusBadge(user.status, user.suspensionExpiresAt)}
+                        {getStatusBadge(st, user.suspensionExpiresAt)}
                       </td>
                       <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-500 hidden md:table-cell">
                         {user.department || "-"}
@@ -686,8 +677,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                   }
                                 }}
                                 disabled={permissionsLoading || !canChangeStatus}
-                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(userStatus)} ${
-                                  permissionsLoading || !canChangeStatus 
+                                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-md text-xs font-semibold transition-all border ${getStatusButtonColor(userStatus)} ${                                  permissionsLoading || !canChangeStatus 
                                     ? "opacity-50 cursor-not-allowed" 
                                     : ""
                                 } ${isDropdownOpen ? "ring-2 ring-blue-500 ring-offset-1" : ""}`}
@@ -708,8 +698,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                     userStatus.replace(/_/g, " ").toLowerCase()}
                                 </span>
                                 <span className="capitalize sm:hidden text-[10px]">
-                                  {(STATUS_OPTIONS.find((s) => s.value === userStatus)?.label ?? userStatus).substring(0, 4)}
-                                </span>
+                                  {(STATUS_OPTIONS.find((s) => s.value === userStatus)?.label ?? userStatus).substring(0, 4)}                                </span>
                                 <ChevronDown 
                                   className={`h-3 w-3 sm:h-3.5 sm:w-3.5 transition-transform duration-200 flex-shrink-0 ${
                                     isDropdownOpen ? 'rotate-180' : ''
@@ -720,15 +709,13 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                                 <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-lg shadow-xl border border-gray-200 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
                                   <div className="py-1">
                                     {STATUS_OPTIONS.map((status) => {
-                                      const isCurrentStatus = userStatus === status.value;
-                                      const isUpdating = updateUser.isPending && updateUser.variables?.id === user.id && updateUser.variables?.status === status.value;
+                                      const isCurrentStatus = userStatus === status.value;                                      const isUpdating = updateUser.isPending && updateUser.variables?.id === user.id && updateUser.variables?.status === status.value;
                                       return (
                                         <button
                                           key={status.value}
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            handleStatusChangeClick(user.id, status.value, userStatus, user.fullName);
-                                          }}
+                                            handleStatusChangeClick(user.id, status.value, userStatus, user.fullName);                                          }}
                                           disabled={isCurrentStatus || isUpdating}
                                           className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${
                                             isCurrentStatus

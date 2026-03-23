@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { X, Upload, Edit2, Trash2, Search, Image as ImageIcon, Info } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { X, Upload, Edit2, Trash2, Search, Image as ImageIcon, Info, ChevronDown } from "lucide-react";
 import { R2Image } from "@/components/ui/R2Image";
 import {
   type MenuCategory,
@@ -16,6 +16,8 @@ import {
   CUSTOMIZATION_VARIANT_LIMIT,
   SERVES_OPTIONS,
   SIZE_UNITS,
+  WEIGHT_PER_SERVING_UNITS,
+  NUTRIENT_UNITS,
   normalizeSpiceLevelForForm,
 } from "./menu-types";
 
@@ -39,10 +41,28 @@ export interface ItemFormData {
   is_popular: boolean;
   is_recommended: boolean;
   preparation_time_minutes: number;
+  /** When true, item uses a per-item packaging fee (see packaging_charges). */
+  packaging_enabled: boolean;
+  packaging_charges: string;
   serves: number;
   serves_label: string;
   item_size_value: string;
   item_size_unit: string;
+  /** Same semantics as merchant app / backend `merchant_menu_items`. */
+  available_for_delivery: boolean;
+  weight_per_serving: string;
+  weight_per_serving_unit: string;
+  calories_kcal: string;
+  protein: string;
+  protein_unit: string;
+  carbohydrates: string;
+  carbohydrates_unit: string;
+  fat: string;
+  fat_unit: string;
+  fibre: string;
+  fibre_unit: string;
+  /** Comma-separated tags (stored as `item_tags` text[]). */
+  item_tags: string;
   is_active: boolean;
   allergens: string;
   category_id: number | null;
@@ -56,7 +76,7 @@ interface ItemFormProps {
   setFormData: (data: ItemFormData | ((prev: ItemFormData) => ItemFormData)) => void;
   imagePreview: string;
   setImagePreview: (url: string) => void;
-  onProcessImage?: (file: File, isEdit: boolean) => void;
+  onProcessImage?: (file: File, isEdit: boolean) => void | Promise<void>;
   onSaveAndNext?: () => Promise<void>;
   onSubmitOptions?: () => Promise<void>;
   onSubmit?: () => void;
@@ -76,6 +96,12 @@ interface ItemFormProps {
   maxCuisinesPerItem?: number | null;
   imageValidationError?: string;
   imageValidating?: boolean;
+  /** Optional: center 1:1 crop + resize after validation failed (dashboard normalizes client-side). */
+  onNormalizeMenuItemImage?: () => void | Promise<void>;
+  storeDefaults?: {
+    avg_preparation_time_minutes?: number | null;
+    packaging_charge_amount?: number | null;
+  } | null;
 }
 
 const defaultNewCustomization = {
@@ -112,10 +138,13 @@ export function MenuItemForm({
   maxCuisinesPerItem = null,
   imageValidationError,
   imageValidating = false,
+  onNormalizeMenuItemImage,
+  storeDefaults,
 }: ItemFormProps) {
   const [activeSection, setActiveSection] = useState<"main" | "customization">("main");
   const [cuisineSearch, setCuisineSearch] = useState("");
   const [cuisineViewMore, setCuisineViewMore] = useState(false);
+  const [nutritionExpanded, setNutritionExpanded] = useState(false);
   const [customizations, setCustomizations] = useState<Customization[]>(formData.customizations || []);
   const [newCustomization, setNewCustomization] = useState({ ...defaultNewCustomization });
   const [editingCustomizationIndex, setEditingCustomizationIndex] = useState<number | null>(null);
@@ -129,12 +158,14 @@ export function MenuItemForm({
   }, [formData.customizations?.length, currentItemId]);
 
   useEffect(() => {
-    if (!isEdit || !storeId || !currentItemId) return;
+    if (!storeId || !currentItemId) return;
     const itemId = typeof currentItemId === "string" ? parseInt(currentItemId, 10) : currentItemId;
     if (!Number.isFinite(itemId)) return;
-    fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}/modifier-groups`)
+    const ac = new AbortController();
+    fetch(`/api/merchant/stores/${storeId}/menu/items/${itemId}/modifier-groups`, { signal: ac.signal })
       .then((r) => r.json())
       .then((j) => {
+        if (ac.signal.aborted) return;
         if (j?.linkedModifierGroups) {
           setLinkedAddonGroups(
             j.linkedModifierGroups.map((l: any) => ({
@@ -145,18 +176,123 @@ export function MenuItemForm({
           );
         }
       })
-      .catch(() => {});
-  }, [isEdit, storeId, currentItemId]);
+      .catch((e) => {
+        if (e?.name === "AbortError") return;
+      });
+    return () => ac.abort();
+  }, [storeId, currentItemId]);
 
   useEffect(() => {
     if (!showLinkAddonPicker || !storeId) return;
-    fetch(`/api/merchant/stores/${storeId}/menu/modifier-groups`)
+    const ac = new AbortController();
+    fetch(`/api/merchant/stores/${storeId}/menu/modifier-groups`, { signal: ac.signal })
       .then((r) => r.json())
       .then((j) => {
+        if (ac.signal.aborted) return;
         if (j?.modifierGroups) setAllGroupsForPicker(j.modifierGroups);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (e?.name === "AbortError") return;
+      });
+    return () => ac.abort();
   }, [showLinkAddonPicker, storeId]);
+
+  const categoryPickerRef = useRef<HTMLDivElement>(null);
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [categoryPickerQuery, setCategoryPickerQuery] = useState("");
+
+  type CategorySection = {
+    key: string;
+    title: string;
+    rows: { id: number; parentName: string; subName: string | null }[];
+  };
+
+  const categorySections = useMemo((): CategorySection[] => {
+    const sortKids = (a: MenuCategory, b: MenuCategory) =>
+      (a.display_order ?? 0) - (b.display_order ?? 0) || a.id - b.id;
+    const byParent = new Map<number, MenuCategory[]>();
+    for (const c of categories) {
+      if (c.parent_category_id) {
+        const arr = byParent.get(c.parent_category_id) ?? [];
+        arr.push(c);
+        byParent.set(c.parent_category_id, arr);
+      }
+    }
+    const roots = categories.filter((c) => !c.parent_category_id).slice().sort(sortKids);
+    const used = new Set<number>();
+    const sections: CategorySection[] = [];
+    for (const root of roots) {
+      const kids = (byParent.get(root.id) ?? []).slice().sort(sortKids);
+      if (kids.length) {
+        for (const ch of kids) used.add(ch.id);
+        sections.push({
+          key: `p-${root.id}`,
+          title: root.category_name,
+          rows: kids.map((ch) => ({
+            id: ch.id,
+            parentName: root.category_name,
+            subName: ch.category_name,
+          })),
+        });
+      } else {
+        used.add(root.id);
+        sections.push({
+          key: `leaf-${root.id}`,
+          title: root.category_name,
+          rows: [{ id: root.id, parentName: root.category_name, subName: null }],
+        });
+      }
+    }
+    const orphans = categories.filter((c) => c.parent_category_id && !used.has(c.id));
+    if (orphans.length) {
+      sections.push({
+        key: "orphan",
+        title: "Other",
+        rows: orphans.sort(sortKids).map((c) => ({
+          id: c.id,
+          parentName: c.category_name,
+          subName: null,
+        })),
+      });
+    }
+    return sections;
+  }, [categories]);
+
+  const filteredCategorySections = useMemo(() => {
+    const q = categoryPickerQuery.trim().toLowerCase();
+    if (!q) return categorySections;
+    return categorySections
+      .map((sec) => ({
+        ...sec,
+        rows: sec.rows.filter((row) => {
+          const a = row.parentName.toLowerCase();
+          const b = row.subName?.toLowerCase() ?? "";
+          return a.includes(q) || b.includes(q) || `${a} ${b}`.includes(q);
+        }),
+      }))
+      .filter((sec) => sec.rows.length > 0);
+  }, [categorySections, categoryPickerQuery]);
+
+  const categoryButtonLabel = useMemo(() => {
+    if (formData.category_id == null) return "Select category";
+    const cat = categories.find((c) => c.id === formData.category_id);
+    if (!cat) return "Select category";
+    const parent = cat.parent_category_id
+      ? categories.find((c) => c.id === cat.parent_category_id)
+      : null;
+    return parent ? `${parent.category_name} (${cat.category_name})` : cat.category_name;
+  }, [formData.category_id, categories]);
+
+  useEffect(() => {
+    if (!categoryPickerOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (categoryPickerRef.current && !categoryPickerRef.current.contains(e.target as Node)) {
+        setCategoryPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [categoryPickerOpen]);
 
   // Selling price is not auto-calculated; offer/discount is set separately. Base and selling show actual API values.
 
@@ -180,7 +316,7 @@ export function MenuItemForm({
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
-    if (file && onProcessImage) onProcessImage(file, isEdit);
+    if (file && onProcessImage) void Promise.resolve(onProcessImage(file, isEdit));
   };
 
   const totalOptionsCount = (formData.customizations?.length || 0) + (formData.variants?.length || 0);
@@ -207,7 +343,7 @@ export function MenuItemForm({
       });
     }
     setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated });
+    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
     setNewCustomization({ ...defaultNewCustomization, display_order: updated.length });
   };
 
@@ -227,7 +363,7 @@ export function MenuItemForm({
   const handleDeleteCustomization = (index: number) => {
     const updated = customizations.filter((_, i) => i !== index);
     setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated });
+    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
   };
 
   const handleAddAddon = (custIndex: number) => {
@@ -243,7 +379,7 @@ export function MenuItemForm({
     });
     updated[custIndex] = { ...cust, addons };
     setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated });
+    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
   };
 
   const handleUpdateAddon = (custIndex: number, addonIndex: number, field: string, value: unknown) => {
@@ -252,7 +388,7 @@ export function MenuItemForm({
     addons[addonIndex] = { ...addons[addonIndex], [field]: value };
     updated[custIndex] = { ...updated[custIndex], addons };
     setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated });
+    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
   };
 
   const handleDeleteAddon = (custIndex: number, addonIndex: number) => {
@@ -260,12 +396,9 @@ export function MenuItemForm({
     const addons = (updated[custIndex].addons || []).filter((_, i) => i !== addonIndex);
     updated[custIndex] = { ...updated[custIndex], addons };
     setCustomizations(updated);
-    setFormData({ ...formData, customizations: updated });
+    setFormData({ ...formData, customizations: updated, has_customizations: updated.length > 0 });
   };
 
-  const taxNum = Number(formData.tax_percentage);
-  const isTaxInvalid =
-    formData.tax_percentage !== "" && (isNaN(taxNum) || taxNum < 0 || taxNum > 100);
   const baseNum = Number(formData.base_price);
   const isBaseInvalid = formData.base_price !== "" && (isNaN(baseNum) || baseNum <= 0);
   const sellNum = Number(formData.selling_price);
@@ -283,13 +416,20 @@ export function MenuItemForm({
     !CUISINE_TYPES.some((c) => c.toLowerCase() === q) &&
     !selectedCuisines.some((c) => c.toLowerCase() === q);
 
+  /** Add flow: second tab needs an item id (after Save and Next). Edit flow: always unlocked. */
+  const lockOptionsTab = Boolean(onSaveAndNext) && !currentItemId;
+
   return (
     <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-2 md:mx-0 border border-gray-100">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
         <div>
           <h2 className="text-base font-bold text-gray-900">{title}</h2>
           <p className="text-xs text-gray-500">
-            {isEdit ? `Editing: ${currentItemId}` : "Enter details for the menu item"}
+            {isEdit
+              ? `Editing: ${currentItemId}`
+              : currentItemId
+                ? `Item #${currentItemId} — add customizations or variants on the next tab`
+                : "Enter details for the menu item"}
           </p>
         </div>
         <button type="button" onClick={onCancel} className="p-1.5 hover:bg-gray-100 rounded-lg" aria-label="Close">
@@ -309,12 +449,21 @@ export function MenuItemForm({
         </button>
         <button
           type="button"
-          onClick={() => setActiveSection("customization")}
+          title={
+            lockOptionsTab
+              ? "Use Save and Next on the first tab to create the item, then add options here"
+              : undefined
+          }
+          disabled={lockOptionsTab}
+          onClick={() => {
+            if (lockOptionsTab) return;
+            setActiveSection("customization");
+          }}
           className={`px-3 py-2 text-xs font-medium border-b-2 ${
             activeSection === "customization"
               ? "border-orange-500 text-orange-600"
               : "border-transparent text-gray-500"
-          }`}
+          } ${lockOptionsTab ? "opacity-40 cursor-not-allowed" : ""}`}
         >
           Customizations & variants
         </button>
@@ -325,19 +474,18 @@ export function MenuItemForm({
         autoComplete="off"
         onSubmit={async (e) => {
           e.preventDefault();
-          if (activeSection === "main") {
-            if (onSaveAndNext) {
-              try {
+          try {
+            if (activeSection === "main") {
+              if (onSaveAndNext) {
                 await onSaveAndNext();
                 setActiveSection("customization");
-              } catch {}
-            } else if (onSubmit) onSubmit();
-          } else {
-            if (onSubmitOptions) {
-              try {
-                await onSubmitOptions();
-              } catch {}
-            } else if (onSubmit) onSubmit();
+              } else if (onSubmit) onSubmit();
+            } else {
+              if (onSubmitOptions) await onSubmitOptions();
+              else if (onSubmit) onSubmit();
+            }
+          } catch {
+            /* parent sets error / toast; do not advance tab */
           }
         }}
       >
@@ -355,23 +503,90 @@ export function MenuItemForm({
                   required
                 />
               </div>
-              <div>
+              <div className="relative" ref={categoryPickerRef}>
                 <label className="text-xs font-medium text-gray-600">Category *</label>
-                <select
-                  className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  value={formData.category_id ?? ""}
-                  onChange={(e) =>
-                    setFormData({ ...formData, category_id: e.target.value ? Number(e.target.value) : null })
-                  }
-                  required
+                <button
+                  type="button"
+                  id="menu-item-category-picker"
+                  aria-expanded={categoryPickerOpen}
+                  aria-haspopup="listbox"
+                  className="mt-0.5 w-full flex items-center justify-between gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white text-left hover:border-orange-200 hover:bg-orange-50/30 transition-colors shadow-sm"
+                  onClick={() => setCategoryPickerOpen((o) => !o)}
                 >
-                  <option value="">Select</option>
-                  {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.category_name}
-                    </option>
-                  ))}
-                </select>
+                  <span
+                    className={
+                      formData.category_id == null ? "text-gray-400" : "text-gray-900 font-medium truncate"
+                    }
+                  >
+                    {categoryButtonLabel}
+                  </span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${categoryPickerOpen ? "rotate-180" : ""}`}
+                  />
+                </button>
+                {categoryPickerOpen && (
+                  <div className="absolute z-50 mt-1 w-full rounded-xl border border-gray-200/90 bg-white shadow-xl shadow-gray-200/60 overflow-hidden ring-1 ring-black/5">
+                    <div className="p-2 border-b border-gray-100 bg-gradient-to-b from-gray-50/80 to-white">
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                        <input
+                          type="search"
+                          className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-gray-200 bg-white"
+                          placeholder="Search categories…"
+                          value={categoryPickerQuery}
+                          onChange={(e) => setCategoryPickerQuery(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          autoComplete="off"
+                        />
+                      </div>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto py-1">
+                      {filteredCategorySections.length === 0 ? (
+                        <p className="px-3 py-4 text-sm text-gray-500 text-center">No categories match</p>
+                      ) : (
+                        filteredCategorySections.map((sec) => (
+                          <div key={sec.key} className="mb-0.5 last:mb-0">
+                            <div className="sticky top-0 z-10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-400 bg-gradient-to-r from-slate-50 via-white to-gray-50/80 border-b border-gray-100/80">
+                              {sec.title}
+                            </div>
+                            {sec.rows.map((row) => (
+                              <button
+                                key={row.id}
+                                type="button"
+                                role="option"
+                                aria-selected={formData.category_id === row.id}
+                                className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2 transition-colors border-b border-gray-50 last:border-0 ${
+                                  formData.category_id === row.id
+                                    ? "bg-orange-50 text-orange-950"
+                                    : "text-gray-800 hover:bg-slate-50"
+                                }`}
+                                onClick={() => {
+                                  setFormData({ ...formData, category_id: row.id });
+                                  setCategoryPickerOpen(false);
+                                  setCategoryPickerQuery("");
+                                }}
+                              >
+                                <span className="min-w-0">
+                                  {row.subName != null ? (
+                                    <>
+                                      <span className="font-semibold text-gray-900">{row.parentName}</span>
+                                      <span className="text-gray-500 font-normal"> ({row.subName})</span>
+                                    </>
+                                  ) : (
+                                    <span className="font-semibold text-gray-900">{row.parentName}</span>
+                                  )}
+                                </span>
+                                {formData.category_id === row.id && (
+                                  <span className="text-orange-600 text-xs font-bold shrink-0">✓</span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -511,6 +726,9 @@ export function MenuItemForm({
             <div className="flex gap-3 items-start">
               <div className="flex-shrink-0">
                 <label className="text-xs font-medium text-gray-600 block mb-1">Image</label>
+                <p className="text-[10px] text-gray-500 mb-1 max-w-[11rem] leading-snug">
+                  Square 1:1 · 400–2000 px · max 10 MB (PNG, JPG, WebP)
+                </p>
                 {imageLimitReached && (
                   <div className="flex justify-end mb-0.5">
                     <span
@@ -544,7 +762,7 @@ export function MenuItemForm({
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/png,image/jpeg,image/jpg"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
                       className="hidden"
                       onChange={handleImageChange}
                     />
@@ -588,6 +806,16 @@ export function MenuItemForm({
                       <p className="text-xs text-red-600 mt-1 max-w-[10rem]" role="alert">
                         {imageValidationError}
                       </p>
+                    )}
+                    {imageValidationError && onNormalizeMenuItemImage && (
+                      <button
+                        type="button"
+                        className="mt-1 text-xs text-orange-600 font-semibold hover:text-orange-700 disabled:opacity-50"
+                        onClick={() => void onNormalizeMenuItemImage()}
+                        disabled={imageValidating}
+                      >
+                        Auto-fix (1:1 crop and resize)
+                      </button>
                     )}
                   </>
                 )}
@@ -638,19 +866,6 @@ export function MenuItemForm({
                 />
                 {isSellInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
               </div>
-              <div>
-                <label className="text-xs font-medium text-gray-600">Tax % (from agreement)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  step={0.01}
-                  readOnly
-                  className="w-full px-2.5 py-1.5 border rounded text-sm bg-gray-100 border-gray-200 text-gray-700"
-                  value={formData.tax_percentage}
-                  title="Tax is set from the store agreement; not editable here."
-                />
-              </div>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="flex items-center gap-2">
@@ -685,7 +900,7 @@ export function MenuItemForm({
                 />
               </div>
               <div>
-                <label className="text-xs font-medium text-gray-600">Prep (min)</label>
+                <label className="text-xs font-medium text-gray-600">Prep / ETA (min)</label>
                 <input
                   type="number"
                   min={0}
@@ -695,6 +910,11 @@ export function MenuItemForm({
                     setFormData({ ...formData, preparation_time_minutes: Number(e.target.value) || 15 })
                   }
                 />
+                {storeDefaults?.avg_preparation_time_minutes != null && (
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Store default: {storeDefaults.avg_preparation_time_minutes} min
+                  </p>
+                )}
               </div>
               <div>
                 <label className="text-xs font-medium text-gray-600">Serves (label)</label>
@@ -743,7 +963,262 @@ export function MenuItemForm({
                 </div>
               </div>
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-gray-100">
+              <div className="sm:col-span-2">
+                <div className="flex items-center justify-between gap-3 max-w-md">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-gray-700">Packaging charge for this item</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      Uses your store default from settings when you turn this on; you can change the amount for this item
+                      only.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={formData.packaging_enabled}
+                    onClick={() => {
+                      const on = !formData.packaging_enabled;
+                      const defAmt = storeDefaults?.packaging_charge_amount;
+                      const fromStore =
+                        defAmt != null && Number.isFinite(Number(defAmt))
+                          ? String(Number(defAmt))
+                          : "";
+                      setFormData({
+                        ...formData,
+                        packaging_enabled: on,
+                        packaging_charges: on
+                          ? fromStore !== ""
+                            ? fromStore
+                            : formData.packaging_charges?.trim() || ""
+                          : "",
+                      });
+                    }}
+                    className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
+                      formData.packaging_enabled ? "bg-orange-500" : "bg-gray-200"
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-6 w-6 translate-y-px rounded-full bg-white shadow transition ${
+                        formData.packaging_enabled ? "translate-x-[1.35rem]" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                </div>
+                {formData.packaging_enabled && (
+                  <div className="mt-1.5 flex flex-col gap-1 max-w-md">
+                    <label className="text-xs font-medium text-gray-600">Amount (₹)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                      placeholder={
+                        storeDefaults?.packaging_charge_amount != null
+                          ? `e.g. ${Number(storeDefaults.packaging_charge_amount).toFixed(0)}`
+                          : "Amount (₹)"
+                      }
+                      value={formData.packaging_charges}
+                      onChange={(e) => setFormData({ ...formData, packaging_charges: e.target.value })}
+                    />
+                    {storeDefaults?.packaging_charge_amount != null && (
+                      <p className="text-[10px] text-gray-500">
+                        Store default: ₹{Number(storeDefaults.packaging_charge_amount).toFixed(2)} (merchant_stores) —
+                        saved on this item only
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <p className="text-xs font-semibold text-gray-800">Delivery & nutrition (optional)</p>
+              <div className="flex items-center justify-between gap-3 max-w-md">
+                <span className="text-xs font-medium text-gray-700">Available for delivery</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={formData.available_for_delivery}
+                  onClick={() => {
+                    const cur = formData.available_for_delivery !== false;
+                    setFormData({ ...formData, available_for_delivery: !cur });
+                  }}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
+                    formData.available_for_delivery ? "bg-orange-500" : "bg-gray-200"
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 translate-y-px rounded-full bg-white shadow transition ${
+                      formData.available_for_delivery ? "translate-x-[1.35rem]" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-500">Per serving ≈ one adult portion (same as merchant app).</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Weight per serving</label>
+                  <div className="flex gap-1.5 mt-0.5">
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                      placeholder="e.g. 500"
+                      value={formData.weight_per_serving}
+                      onChange={(e) => setFormData({ ...formData, weight_per_serving: e.target.value })}
+                    />
+                    <select
+                      className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                      value={formData.weight_per_serving_unit}
+                      onChange={(e) => setFormData({ ...formData, weight_per_serving_unit: e.target.value })}
+                    >
+                      {WEIGHT_PER_SERVING_UNITS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Calories (kcal)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm mt-0.5"
+                    placeholder="e.g. 300"
+                    value={formData.calories_kcal}
+                    onChange={(e) => setFormData({ ...formData, calories_kcal: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600">Protein</label>
+                  <div className="flex gap-1.5 mt-0.5">
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                      placeholder="e.g. 50"
+                      value={formData.protein}
+                      onChange={(e) => setFormData({ ...formData, protein: e.target.value })}
+                    />
+                    <select
+                      className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                      value={formData.protein_unit}
+                      onChange={(e) => setFormData({ ...formData, protein_unit: e.target.value })}
+                    >
+                      {NUTRIENT_UNITS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              {nutritionExpanded && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-medium text-gray-600">Carbohydrates</label>
+                    <div className="flex gap-1.5 mt-0.5">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                        value={formData.carbohydrates}
+                        onChange={(e) => setFormData({ ...formData, carbohydrates: e.target.value })}
+                      />
+                      <select
+                        className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                        value={formData.carbohydrates_unit}
+                        onChange={(e) => setFormData({ ...formData, carbohydrates_unit: e.target.value })}
+                      >
+                        {NUTRIENT_UNITS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-600">Fat</label>
+                    <div className="flex gap-1.5 mt-0.5">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                        value={formData.fat}
+                        onChange={(e) => setFormData({ ...formData, fat: e.target.value })}
+                      />
+                      <select
+                        className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                        value={formData.fat_unit}
+                        onChange={(e) => setFormData({ ...formData, fat_unit: e.target.value })}
+                      >
+                        {NUTRIENT_UNITS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-xs font-medium text-gray-600">Fibre</label>
+                    <div className="flex gap-1.5 mt-0.5 max-w-md">
+                      <input
+                        type="number"
+                        min={0}
+                        step="any"
+                        className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                        value={formData.fibre}
+                        onChange={(e) => setFormData({ ...formData, fibre: e.target.value })}
+                      />
+                      <select
+                        className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                        value={formData.fibre_unit}
+                        onChange={(e) => setFormData({ ...formData, fibre_unit: e.target.value })}
+                      >
+                        {NUTRIENT_UNITS.map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {!nutritionExpanded && (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-orange-600 hover:text-orange-700"
+                  onClick={() => setNutritionExpanded(true)}
+                >
+                  View more (carbs, fat, fibre)
+                </button>
+              )}
+              <div>
+                <label className="text-xs font-medium text-gray-600">Item tags (comma-separated)</label>
+                <input
+                  type="text"
+                  className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm mt-0.5"
+                  placeholder="e.g. High protein, Chef special"
+                  value={formData.item_tags}
+                  onChange={(e) => setFormData({ ...formData, item_tags: e.target.value })}
+                />
+              </div>
+            </div>
             <div className="flex flex-wrap gap-4 pt-1 border-t border-gray-100">
+              <p className="w-full text-[10px] text-gray-500 -mb-1">
+                Customizations and variants are added in the next tab; flags below save with this step.
+              </p>
               <label className="flex items-center gap-1.5">
                 <input
                   type="checkbox"
@@ -761,24 +1236,6 @@ export function MenuItemForm({
                   className="h-3.5 w-3.5 text-orange-500 rounded"
                 />
                 <span className="text-xs text-gray-700">Recommended</span>
-              </label>
-              <label className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={formData.has_customizations}
-                  onChange={(e) => setFormData({ ...formData, has_customizations: e.target.checked })}
-                  className="h-3.5 w-3.5 text-orange-500 rounded"
-                />
-                <span className="text-xs text-gray-700">Customizations</span>
-              </label>
-              <label className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={formData.has_variants}
-                  onChange={(e) => setFormData({ ...formData, has_variants: e.target.checked })}
-                  className="h-3.5 w-3.5 text-orange-500 rounded"
-                />
-                <span className="text-xs text-gray-700">Variants</span>
               </label>
               <label className="flex items-center gap-1.5">
                 <input
@@ -1006,7 +1463,11 @@ export function MenuItemForm({
                       onChange={(e) => {
                         const vars = [...(formData.variants || [])];
                         vars[idx] = { ...vars[idx], variant_name: e.target.value };
-                        setFormData({ ...formData, variants: vars });
+                        setFormData({
+                          ...formData,
+                          variants: vars,
+                          has_variants: vars.some((v) => (v.variant_name || "").trim().length > 0),
+                        });
                       }}
                       placeholder="e.g. Half, Full"
                     />
@@ -1022,7 +1483,11 @@ export function MenuItemForm({
                       onChange={(e) => {
                         const vars = [...(formData.variants || [])];
                         vars[idx] = { ...vars[idx], variant_price: Number(e.target.value) || 0 };
-                        setFormData({ ...formData, variants: vars });
+                        setFormData({
+                          ...formData,
+                          variants: vars,
+                          has_variants: vars.some((v) => (v.variant_name || "").trim().length > 0),
+                        });
                       }}
                       placeholder="0"
                     />
@@ -1065,7 +1530,7 @@ export function MenuItemForm({
               </button>
             </div>
 
-            {isEdit && storeId && currentItemId && (
+            {storeId && currentItemId && (
               <div className="mt-4 pt-4 border-t border-gray-200">
                 <h3 className="text-xs font-semibold text-gray-700 mb-2">Linked addon groups</h3>
                 <p className="text-xs text-gray-500 mb-2">Reusable addon groups from Addon Library. Link or unlink below.</p>
@@ -1197,11 +1662,9 @@ export function MenuItemForm({
               disabled={
                 isSaving ||
                 !!imageValidationError ||
-                isTaxInvalid ||
                 isBaseInvalid ||
                 isSellInvalid ||
                 !formData.base_price ||
-                !formData.tax_percentage ||
                 !formData.selling_price
               }
             >

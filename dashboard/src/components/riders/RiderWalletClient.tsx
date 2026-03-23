@@ -119,6 +119,14 @@ export function RiderWalletClient() {
     }
   }, []);
 
+  const riderFromContext = riderContext?.currentRiderInfo
+    ? {
+        id: riderContext.currentRiderInfo.id,
+        name: riderContext.currentRiderInfo.name,
+        mobile: riderContext.currentRiderInfo.mobile,
+      }
+    : null;
+
   const riderId = rider?.id ?? riderFromContext?.id ?? null;
 
   const {

@@ -84,7 +84,6 @@ export async function POST(request: NextRequest) {
       body.storeInternalId != null && body.storeInternalId !== ""
         ? Number(body.storeInternalId)
         : null;
-
     if (!parentId || !Number.isFinite(parentId)) {
       return NextResponse.json({ success: false, error: "parentId is required" }, { status: 400 });
     }

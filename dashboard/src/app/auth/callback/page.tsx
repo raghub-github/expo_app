@@ -59,7 +59,6 @@ function AuthCallbackLoading() {
     </div>
   );
 }
-
 function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -180,6 +179,23 @@ function AuthCallbackContent() {
 export default function AuthCallbackPage() {
   return (
     <Suspense fallback={<AuthCallbackLoading />}>
+      <AuthCallbackContent />
+    </Suspense>
+  );
+}
+
+export default function AuthCallbackPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-white to-gray-50 px-4">
+          <div className="text-center space-y-6">
+            <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent" />
+            <p className="text-sm font-medium text-gray-700 sm:text-base">Loading...</p>
+          </div>
+        </div>
+      }
+    >
       <AuthCallbackContent />
     </Suspense>
   );

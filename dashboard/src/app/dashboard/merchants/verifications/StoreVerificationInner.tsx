@@ -230,7 +230,6 @@ interface VerificationDataStore {
   country?: string | null;
   latitude?: number | null;
   longitude?: number | null;
-  logo_url?: string | null;
   banner_url?: string | null;
   gallery_images?: string[] | null;
   cuisine_types?: string[] | null;
@@ -945,7 +944,6 @@ function StepDetailContent({
   );
 
   if (stepNum === 1) {
-    const logoUrl = store.logo_url as string | null | undefined;
     const bannerUrl = store.banner_url as string | null | undefined;
     const gallery = (store.gallery_images as string[] | null | undefined) ?? [];
     return (
@@ -957,15 +955,9 @@ function StepDetailContent({
         {row("Store type", store.store_type)}
         {row("Email", store.store_email)}
         {row("Phones", Array.isArray(store.store_phones) ? store.store_phones.join(", ") : null)}
-        {(logoUrl || bannerUrl || gallery.length > 0) && (
+        {(bannerUrl || gallery.length > 0) && (
           <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
-            <p className="mb-1 text-[10px] font-semibold uppercase text-gray-500">Logo, banner & gallery</p>
-            {logoUrl && (
-              <div>
-                <p className="mb-0.5 text-[10px] font-medium text-gray-500">Logo</p>
-                <img src={logoUrl} alt="Store logo" className="h-20 w-20 rounded-lg border border-gray-200 object-cover" />
-              </div>
-            )}
+            <p className="mb-1 text-[10px] font-semibold uppercase text-gray-500">Banner & gallery</p>
             {bannerUrl && (
               <div>
                 <p className="mb-0.5 text-[10px] font-medium text-gray-500">Banner</p>
@@ -1101,8 +1093,7 @@ function StepDetailContent({
                   )}
                 </div>
               );
-            })}
-          </>
+            })}          </>
         )}
       </div>
     );
@@ -1111,7 +1102,6 @@ function StepDetailContent({
     return (
       <div className="mt-2 border-t border-gray-200 pt-2 space-y-3">
         <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Operational details</p>
-        {row("Logo", store.logo_url ? "Uploaded" : null)}
         {row("Banner", store.banner_url ? "Uploaded" : null)}
         {row("Min order (₹)", store.min_order_amount != null ? String(store.min_order_amount) : null)}
         {row("Delivery radius (km)", store.delivery_radius_km != null ? String(store.delivery_radius_km) : null)}
@@ -1428,7 +1418,6 @@ function StepDetailContentEditable({
         ),
       },
     ];
-    const logoUrl = form.logo_url as string | null | undefined;
     const bannerUrl = form.banner_url as string | null | undefined;
     const gallery = (form.gallery_images as string[] | null | undefined) ?? [];
     return (
@@ -1447,15 +1436,9 @@ function StepDetailContentEditable({
             editNode={f.editNode}
           />
         ))}
-        {(logoUrl || bannerUrl || gallery.length > 0) && (
+        {(bannerUrl || gallery.length > 0) && (
           <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
-            <p className="mb-1 text-[10px] font-semibold uppercase text-gray-500">Logo, banner & gallery</p>
-            {logoUrl && (
-              <div>
-                <p className="mb-0.5 text-[10px] font-medium text-gray-500">Logo</p>
-                <img src={logoUrl} alt="Store logo" className="h-20 w-20 rounded-lg border border-gray-200 object-cover" />
-              </div>
-            )}
+            <p className="mb-1 text-[10px] font-semibold uppercase text-gray-500">Banner & gallery</p>
             {bannerUrl && (
               <div>
                 <p className="mb-0.5 text-[10px] font-medium text-gray-500">Banner</p>
@@ -1713,8 +1696,7 @@ function StepDetailContentEditable({
                   </div>
                 </div>
               );
-            })}
-          </div>
+            })}          </div>
         )}
       </div>
     );
@@ -1737,10 +1719,9 @@ function StepDetailContentEditable({
               <FieldWithEditSave key={f.key} fieldKey={f.key} label={f.label} displayValue={f.display} isEditing={editingField === f.key} onStartEdit={() => onStartEdit(f.key)} onSave={() => onSaveField(f.key)} saving={savingField === f.key} editNode={f.editNode} />
             ))}
           </div>
-          {(form.logo_url || form.banner_url) && (
+          {form.banner_url && (
             <div className="mt-1.5 flex flex-wrap gap-3 text-[10px] text-gray-500">
-              {form.logo_url && <span>Logo: Uploaded</span>}
-              {form.banner_url && <span>Banner: Uploaded</span>}
+              <span>Banner: Uploaded</span>
             </div>
           )}
         </section>

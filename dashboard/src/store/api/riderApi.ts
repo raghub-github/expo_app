@@ -5,6 +5,9 @@ export interface RiderCore {
   id: number;
   name: string | null;
   mobile: string;
+  /** Dial code; optional when API omits it */
+  countryCode?: string | null;
+  dob?: string | null;
   aadhaarNumber: string | null;
   panNumber: string | null;
   onboardingStage: string;
@@ -14,6 +17,9 @@ export interface RiderCore {
   state: string | null;
   pincode: string | null;
   address: string | null;
+  referralCode?: string | null;
+  referredBy?: number | null;
+  defaultLanguage?: string | null;
   createdAt: string;
   updatedAt: string;
 }

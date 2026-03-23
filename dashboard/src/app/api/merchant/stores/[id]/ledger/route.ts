@@ -56,8 +56,7 @@ export async function GET(
     const to = searchParams.get("to") ?? undefined;
     const directionRaw = searchParams.get("direction");
     const direction =
-      directionRaw === "CREDIT" || directionRaw === "DEBIT" ? directionRaw : undefined;
-    const category = searchParams.get("category") ?? undefined;
+      directionRaw === "CREDIT" || directionRaw === "DEBIT" ? directionRaw : undefined;    const category = searchParams.get("category") ?? undefined;
 
     const result = await queryLedger(store.id, { limit, offset, from, to, direction, category });
     return NextResponse.json({ success: true, entries: result.entries, total: result.total });

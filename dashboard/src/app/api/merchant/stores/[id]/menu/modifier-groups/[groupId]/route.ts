@@ -4,6 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { mergeBool, mergeNum, mergeOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
@@ -37,14 +38,20 @@ export async function PUT(
     const title = body.title !== undefined ? String(body.title).trim() : e.title;
     if (!title) return NextResponse.json({ success: false, error: "title required" }, { status: 400 });
 
+    const description = mergeOptionalStr(body.description, e.description);
+    const is_required = mergeBool(body.is_required, e.is_required);
+    const min_selection = mergeNum(body.min_selection, e.min_selection);
+    const max_selection = mergeNum(body.max_selection, e.max_selection);
+    const display_order = mergeNum(body.display_order, e.display_order);
+
     await sql`
       UPDATE merchant_modifier_groups
       SET title = ${title},
-          description = ${body.description !== undefined ? body.description : e.description},
-          is_required = ${body.is_required !== undefined ? body.is_required : e.is_required},
-          min_selection = ${body.min_selection !== undefined ? body.min_selection : e.min_selection},
-          max_selection = ${body.max_selection !== undefined ? body.max_selection : e.max_selection},
-          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
+          description = ${description},
+          is_required = ${is_required},
+          min_selection = ${min_selection},
+          max_selection = ${max_selection},
+          display_order = ${display_order},
           updated_at = NOW()
       WHERE id = ${modifierGroupId} AND store_id = ${storeId}
     `;

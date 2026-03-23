@@ -328,38 +328,52 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                   );
                 };
                 const isAssignAmActive = cleanPathname === "/dashboard/merchants/assign-am";
+                const effectiveStoreId =
+                  storeIdFromPath ??
+                  (merchantSearchResultStore?.storeId != null
+                    ? String(merchantSearchResultStore.storeId)
+                    : null);
+                const showWalletRequests = isMerchantsDashboard && !effectiveStoreId;
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
-                    {/* Wallet requests: show only when NO specific store is selected (global context) */}
-                    {isOpen && isMerchantsDashboard && (
-                      (() => {
-                        const effectiveStoreId =
-                          storeIdFromPath ??
-                          (merchantSearchResultStore?.storeId != null
-                            ? String(merchantSearchResultStore.storeId)
-                            : null);
-                        if (effectiveStoreId) return null;
-                        return (
-                          <div className="mt-3 min-w-0">
-                            <WalletRequestsSummarySidebar />
+                    {/* Assign AM link for admin portal merchants dashboard (shown open and collapsed) */}
+                    {isMerchantsDashboard && portal === "admin" && (
+                      isOpen ? (
+                        <Link
+                          href="/dashboard/merchants/assign-am"
+                          className={`mt-1 flex cursor-pointer items-center space-x-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-all duration-200 ${
+                            isAssignAmActive
+                              ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
+                              : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+                          }`}
+                        >
+                          <Users className="h-4 w-4 flex-shrink-0" />
+                          <span className="flex-1 truncate">Assign AM to Stores</span>
+                        </Link>
+                      ) : (
+                        <Link
+                          href="/dashboard/merchants/assign-am"
+                          title="Assign AM to Stores"
+                          className={`group relative mt-1 flex cursor-pointer items-center justify-center rounded-lg px-2 py-2.5 transition-all duration-200 ${
+                            isAssignAmActive
+                              ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
+                              : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900"
+                          }`}
+                        >
+                          <Users className="h-5 w-5 flex-shrink-0" />
+                          <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
+                            Assign AM to Stores
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
                           </div>
-                        );
-                      })()
+                        </Link>
+                      )
                     )}
-                    {/* Assign AM link for admin portal merchants dashboard */}
-                    {isOpen && isMerchantsDashboard && portal === "admin" && (
-                      <Link
-                        href="/dashboard/merchants/assign-am"
-                        className={`mt-1 flex cursor-pointer items-center space-x-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-all duration-200 ${
-                          isAssignAmActive
-                            ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
-                            : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
-                        }`}
-                      >
-                        <Users className="h-4 w-4 flex-shrink-0" />
-                        <span className="flex-1 truncate">Assign AM to Stores</span>
-                      </Link>
+                    {/* Wallet requests: show only when NO specific store is selected (open and collapsed) */}
+                    {showWalletRequests && (
+                      <div className={isOpen ? "mt-2 min-w-0" : "mt-1"}>
+                        <WalletRequestsSummarySidebar collapsed={!isOpen} />
+                      </div>
                     )}
                     {/* Store Information Card: merchant portal — from URL store, or from search result on list page; skeleton when search loading */}
                     {isOpen && portal === "merchant" && (

@@ -284,8 +284,7 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   const offset = (page - 1) * limit;
   
   let query = db.select().from(systemUsers).$dynamic();
-  
-  // Build where conditions
+    // Build where conditions
   const conditions = [];
   
   // Exclude soft-deleted users
@@ -318,12 +317,9 @@ export async function listSystemUsers(filters: UserFilters = {}) {
     conditions.push(eq(systemUsers.department, filters.department));
   }
   
-  // Apply where conditions
-  if (conditions.length > 0) {
-    query = query.where(and(...conditions));
-  }
-  
-  // Sorting
+  const filteredQuery =
+    conditions.length > 0 ? db.select().from(systemUsers).where(and(...conditions)) : db.select().from(systemUsers);
+
   const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
   
@@ -346,7 +342,6 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   if (conditions.length > 0) {
     countQuery = countQuery.where(and(...conditions));
   }
-
   const [{ count: total }] = await countQuery;
   
   // Apply pagination
@@ -497,10 +492,9 @@ export async function getUniqueRoles(): Promise<string[]> {
     
     // Extract roles (execute() returns RowList / iterable, not node-pg { rows })
     const rows = Array.from(result as Iterable<Record<string, unknown>>);
-    const roles = rows.map((row) => row.role as string).filter(Boolean);
-    
+    const roles = rows.map((row) => row.role as string).filter(Boolean);    
     // Sort roles alphabetically, but put SUPER_ADMIN first if it exists
-    return roles.sort((a, b) => {
+    return roles.sort((a: string, b: string) => {
       if (a === "SUPER_ADMIN") return -1;
       if (b === "SUPER_ADMIN") return 1;
       return a.localeCompare(b);

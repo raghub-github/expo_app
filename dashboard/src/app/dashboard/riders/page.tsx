@@ -847,8 +847,7 @@ export default function RidersPage() {
                         src={(riderSummary?.rider as { selfieUrl?: string | null })?.selfieUrl ?? ""}
                         alt=""
                         className="w-full h-full object-cover"
-                      />
-                    ) : rider.name?.trim() ? (
+                      />                    ) : rider.name?.trim() ? (
                       <span className="text-sm font-semibold text-gray-400">{rider.name.trim().split(/\s+/).map(n => n[0]).slice(0, 2).join("").toUpperCase()}</span>
                     ) : (
                       <User className="w-5 h-5 text-gray-400" />
@@ -1527,8 +1526,7 @@ export default function RidersPage() {
                         </thead>
                         <tbody className="divide-y divide-gray-100 bg-white">
                           {displayedPenalties.map((penalty: { id: number; orderId?: number | null; serviceType: string | null; penaltyType: string; amount: string; reason: string; status: string; imposedAt: string; resolvedAt?: string | null; imposedByEmail?: string | null; reversedByEmail?: string | null }) => {
-                            const canRevert = penalty.status === "active" || penalty.status === "paid";
-                            const imposedDate = penalty.imposedAt ? new Date(penalty.imposedAt).toLocaleDateString() : '—';
+                            const canRevert = penalty.status === "active" || penalty.status === "paid";                            const imposedDate = penalty.imposedAt ? new Date(penalty.imposedAt).toLocaleDateString() : '—';
                             const resolvedDate = penalty.resolvedAt ? new Date(penalty.resolvedAt).toLocaleDateString() : null;
                             const isReversed = penalty.status === 'reversed';
                             const statusLabel = isReversed ? 'Reverted' : (penalty.status === 'paid' ? 'Paid' : 'Active');
@@ -1722,7 +1720,6 @@ export default function RidersPage() {
             const createdAtRaw = latestFreeze?.createdAt;
             const latestFreezeDate =
               createdAtRaw != null ? new Date(createdAtRaw as string | number | Date) : null;
-
             const negativeWalletBlocks = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
             const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;
             const blacklistSection = (

@@ -85,6 +85,8 @@ function MenuItemCard({
   const sellingFormatted = `₹${sellingNum.toFixed(0)}`;
   const baseFormatted = baseNum > 0 ? `₹${baseNum.toFixed(0)}` : null;
   const prepMins = item.preparation_time_minutes != null ? item.preparation_time_minutes : null;
+  const packNum = item.packaging_charges != null ? Number(item.packaging_charges) : NaN;
+  const packShow = Number.isFinite(packNum) && packNum > 0;
   const foodTypeLabel = item.food_type ? (FOOD_TYPE_LABELS[item.food_type] ?? item.food_type) : null;
   const tags: string[] = [];
   if (item.has_variants) tags.push("Variants");
@@ -211,6 +213,7 @@ function MenuItemCard({
               {categoryName ?? "Uncategorised"}
               {foodTypeLabel ? ` · ${foodTypeLabel}` : ""}
               {prepMins != null && prepMins > 0 ? ` · ${prepMins} min` : ""}
+              {packShow ? ` · Pack ₹${packNum.toFixed(0)}` : ""}
             </Text>
           </View>
           {(item.serves_label != null && item.serves_label.trim() !== "") || (item.serves != null && item.serves > 0) || (item.item_size_value != null && item.item_size_value > 0) || (item.item_size_unit != null && item.item_size_unit.trim() !== "") ? (
@@ -841,8 +844,15 @@ export default function MenuScreen() {
   const categoryMap = new Map(categories.map((c) => [c.id, c.category_name]));
   const getCategoryDisplayName = useCallback((c: MenuCategory) => {
     const parent = c.parent_category_id ? categories.find((p) => p.id === c.parent_category_id) : null;
-    return parent ? `${parent.category_name} › ${c.category_name}` : c.category_name;
+    return parent ? `${parent.category_name} (${c.category_name})` : c.category_name;
   }, [categories]);
+  const categoryDisplayNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of categories) {
+      m.set(c.id, getCategoryDisplayName(c));
+    }
+    return m;
+  }, [categories, getCategoryDisplayName]);
   const selectedCategoryLabel = selectedCategoryId == null
     ? "All categories"
     : (() => {
@@ -1328,7 +1338,7 @@ export default function MenuScreen() {
                 <MenuItemCard
                   key={item.id}
                   item={item}
-                  categoryName={item.category_id != null ? categoryMap.get(item.category_id) ?? null : null}
+                  categoryName={item.category_id != null ? categoryDisplayNameById.get(item.category_id) ?? null : null}
                   onToggleStock={handleToggleStock}
                   onEdit={handleOpenItemDetails}
                   onMoreOptions={handleMoreOptions}

@@ -155,8 +155,7 @@ export async function POST(
     // Use external merchant/child codes in the key so URLs match the
     // docs-style paths (docs/merchants/GMMP.../stores/GMMC.../onboarding/documents/...).
     const parentCode =
-      (store.parent?.parent_merchant_id && String(store.parent.parent_merchant_id).trim()) ||
-      String(store.parent_id ?? store.id);
+      (store.parent?.parent_merchant_id && String(store.parent.parent_merchant_id).trim()) ||      String(store.parent_id ?? store.id);
     const storeCode = String(store.store_id || storeId);
     const timestamp = Date.now();
     const safeName = sanitizeFileName(file.name);
