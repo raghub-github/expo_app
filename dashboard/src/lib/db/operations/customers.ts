@@ -147,14 +147,15 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     walletBalance: customers.walletBalance,
     createdAt: customers.createdAt,
     lastOrderAt: customers.lastOrderAt,
-  }).from(customers).$dynamic();
+  };
 
-  // Apply where conditions
+  let filteredCustomers = db.select(customerSelect).from(customers).$dynamic();
+
   if (conditions.length > 0) {
-    query = query.where(and(...conditions));
+    filteredCustomers = filteredCustomers.where(and(...conditions));
   }
-  
-  // Sorting  const sortBy = filters.sortBy || "createdAt";
+
+  const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
 
   const query =
@@ -217,7 +218,8 @@ export async function listCustomers(filters: CustomerFilters = {}) {
         trustScore:
           customer.trustScore == null ? null : Number(customer.trustScore),
         walletBalance:
-          customer.walletBalance == null ? null : Number(customer.walletBalance),        firstName: null,
+          customer.walletBalance == null ? null : Number(customer.walletBalance),
+        firstName: null,
         lastName: null,
         orderStats: stats,
       };
@@ -256,7 +258,8 @@ export async function getCustomerOrderStats(
       lastOrderAt: sql<Date | null>`max(${ordersCore.createdAt})`,
     })
     .from(ordersCore)
-    .where(and(...statsConditions)!)    .groupBy(ordersCore.orderType);
+    .where(and(...statsConditions)!)
+    .groupBy(ordersCore.orderType);
   
   return stats.map((stat) => ({
     orderType: stat.orderType as "food" | "parcel" | "person_ride" | null,

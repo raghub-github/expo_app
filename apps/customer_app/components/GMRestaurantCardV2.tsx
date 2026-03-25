@@ -4,7 +4,7 @@
  * Data: merchant_stores (banner_url / logo_url), real distance, rating from API only.
  */
 
-import React, { useCallback, useState, useEffect } from "react";
+import React, { useCallback, useState, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -27,6 +27,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 
@@ -175,6 +176,16 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
     return { label: "Closed", isGreen: false, sub: null };
   })();
 
+  const heroUri = useMemo(
+    () => toAbsoluteImageUrl(merchant.displayImage ?? merchant.banner_url ?? null),
+    [merchant.displayImage, merchant.banner_url]
+  );
+
+  useEffect(() => {
+    setImageLoaded(false);
+    setImageError(false);
+  }, [heroUri]);
+
   useEffect(() => {
     enterOpacity.value = withTiming(1, { duration: 320, easing: Easing.out(Easing.cubic) });
     enterTranslateY.value = withSpring(0, { damping: 20, stiffness: 200 });
@@ -216,7 +227,7 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
     scale.value = withSpring(1, { damping: 18, stiffness: 260 });
   };
 
-  const hasImage = Boolean(merchant.displayImage && !imageError);
+  const hasImage = Boolean(heroUri && !imageError);
   const distanceStr = formatDistance(merchant.distanceKm);
   const hasRating = merchant.avgRating != null && merchant.avgRating >= 0;
   const ratingLabel =
@@ -242,7 +253,7 @@ export function GMRestaurantCardV2({ merchant, initialSaved = false }: GMRestaur
         {hasImage ? (
           <>
             <Image
-              source={{ uri: merchant.displayImage! }}
+              source={{ uri: heroUri! }}
               style={[
                 styles.image,
                 !imageLoaded && styles.imageOpaque,

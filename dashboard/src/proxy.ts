@@ -62,6 +62,7 @@ function toResponseCookieOptions(options: {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  const canTogglePortal = request.cookies.get("gm_portal_toggle_access")?.value === "1";
   // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [proxy] Path and redirect messages (off by default to reduce console noise).
   const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
   if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
@@ -135,14 +136,16 @@ export async function proxy(request: NextRequest) {
 
     if (hasAuthCookie) {
       try {
+        type AuthUserResult = {
+          data?: { user?: { id: string; email?: string } | null };
+          error?: { message?: string; code?: string };
+        };
         const userResult = (await Promise.race([
           supabase.auth.getUser(),
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ]) as unknown as {          data?: { user?: { id: string; email?: string } | null };
-          error?: { message?: string; code?: string };
-        };
+        ])) as unknown as AuthUserResult;
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
 
@@ -150,7 +153,8 @@ export async function proxy(request: NextRequest) {
           session = {
             user: { id: user.id, email: user.email },
             ...user,
-          } as unknown as typeof session;        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
+          } as unknown as typeof session;
+        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
         }
@@ -253,6 +257,28 @@ export async function proxy(request: NextRequest) {
 
     // For protected routes, check custom session management and user validation
     if (session && !isPublicRoute) {
+      const requestedPortal = request.nextUrl.searchParams.get("portal");
+      const isAdminPortalRequest =
+        pathname.startsWith("/admin") ||
+        (pathname.startsWith("/dashboard/merchants") && requestedPortal === "admin");
+      if (isAdminPortalRequest && !canTogglePortal) {
+        if (pathname.startsWith("/api/")) {
+          return NextResponse.json(
+            { success: false, error: "Access Denied" },
+            { status: 403, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        const redirectUrl = request.nextUrl.clone();
+        if (pathname.startsWith("/dashboard/merchants")) {
+          redirectUrl.pathname = pathname;
+          redirectUrl.searchParams.set("portal", "merchant");
+        } else {
+          redirectUrl.pathname = "/dashboard/merchants";
+          redirectUrl.searchParams.set("portal", "merchant");
+        }
+        return NextResponse.redirect(redirectUrl);
+      }
+
       // Get session metadata from cookies
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name),

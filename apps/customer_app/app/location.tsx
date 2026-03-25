@@ -3,7 +3,7 @@
  * Instant autocomplete, area/city/state/distance, highlighted match, recent-location boost.
  */
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -16,16 +16,20 @@ import {
   LayoutAnimation,
   Alert,
   Share,
+  RefreshControl,
 } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import * as Location from "expo-location";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { searchPlacesEnriched, isPincodeSearchMode, type EnrichedPlaceResult } from "@/services/location.service";
+import { reverseGeocode } from "@/services/location.service";
 import { addressService, type Address, type LocalSuggestionResult } from "@/services/address.service";
+import { profileService } from "@/services/profile.service";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
 
@@ -46,7 +50,7 @@ const SHADOW = Platform.select({
   android: { elevation: 3 },
 });
 
-const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_DEBOUNCE_MS = 350;
 const NEAR_SAVED_RADIUS_METERS = 500;
 
 function toRad(deg: number) {
@@ -92,9 +96,22 @@ export default function SelectLocationScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ fromOnboarding?: string }>();
   const insets = useSafeAreaInsets();
-  const { address, coords, requestPermissionAndFetch, setAddress, setAddressAndCoords, loading } =
-    useLocationStore();
-  const { getRecentLocationKeys, addRecentLocation, hydrate: hydrateRecentLocations } = useRecentLocationStore();
+  const {
+    address,
+    coords,
+    locationSource,
+    requestPermissionAndFetch,
+    setAddress,
+    setAddressAndCoords,
+    loading,
+  } = useLocationStore();
+  const {
+    items: recentSearches,
+    getRecentLocationKeys,
+    addRecentLocation,
+    clearRecentLocations,
+    hydrate: hydrateRecentLocations,
+  } = useRecentLocationStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -102,25 +119,46 @@ export default function SelectLocationScreen() {
   const [savedAddressLoading, setSavedAddressLoading] = useState<number | null>(null);
   const [confirmAddress, setConfirmAddress] = useState<Address | null>(null);
   const [menuForId, setMenuForId] = useState<number | null>(null);
+  const [currentLocationPreview, setCurrentLocationPreview] = useState("Current location");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  const lastSearchKeyRef = useRef<string>("");
   const queryClient = useQueryClient();
+  const safeBack = () => {
+    if (params.fromOnboarding === "1") {
+      router.replace("/(onboarding)/permissions");
+      return;
+    }
+    if (typeof router.canGoBack === "function" && router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace("/(tabs)/");
+  };
 
   useEffect(() => {
     hydrateRecentLocations();
   }, [hydrateRecentLocations]);
 
-  const { data: savedAddresses = [], isLoading: addressesLoading } = useQuery({
+  const {
+    data: savedAddresses = [],
+    isLoading: addressesLoading,
+    isError: addressesError,
+    refetch: refetchAddresses,
+  } = useQuery({
     queryKey: ["addresses"],
     queryFn: () => addressService.getAddresses(),
     retry: false,
   });
 
-  const { data: activeLocation } = useQuery({
+  const { data: activeLocation, refetch: refetchActiveLocation } = useQuery({
     queryKey: ["active-location"],
     queryFn: () => addressService.getActiveLocation(),
     staleTime: 0,
+    retry: false,
   });
+
+  const [listRefreshing, setListRefreshing] = useState(false);
 
   const activeAddressId = useMemo(() => {
     if (
@@ -143,6 +181,27 @@ export default function SelectLocationScreen() {
     if (best && best.distance <= 50) return best.id;
     return null;
   }, [activeLocation, savedAddresses]);
+
+  /** SELECTED pill on a saved row: only when user intent is a saved/map pin, and coords match that row (or legacy API match). */
+  const matchedSavedIdForPill = useMemo(() => {
+    if (locationSource === "current") return null;
+
+    if (locationSource === "selected") {
+      if (!coords || savedAddresses.length === 0) return null;
+      let best: { id: number; distance: number } | null = null;
+      for (const addr of savedAddresses) {
+        const d = distanceMeters(coords.latitude, coords.longitude, addr.latitude, addr.longitude);
+        if (!best || d < best.distance) best = { id: addr.id, distance: d };
+      }
+      if (best && best.distance <= 50) return best.id;
+      return null;
+    }
+
+    // locationSource null (e.g. first paint): keep API-based match
+    return activeAddressId;
+  }, [locationSource, coords, savedAddresses, activeAddressId]);
+
+  const showSelectedOnCurrentLocationRow = locationSource === "current";
 
   // One entry per location (rounded to 4 decimals ~11m); Current location first, then default, then last used
   const dedupedAndSortedAddresses = useMemo(() => {
@@ -179,7 +238,92 @@ export default function SelectLocationScreen() {
     [dedupedAndSortedAddresses, searchQuery]
   );
 
-  const currentLocationName = address?.primary ?? "Current location";
+  const formatLocationLine = (fullAddress?: string | null, secondary?: string | null, primary?: string | null, state?: string | null) => {
+    const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
+    const fullParts = (fullAddress ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const secondaryParts = (secondary ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const stateCandidate =
+      state ??
+      [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
+    const normalizedState = stateCandidate?.toLowerCase() ?? "";
+    const areaLocalityCandidates = [...secondaryParts, ...fullParts, primary ?? ""]
+      .map((p) => p.trim())
+      .filter(
+        (p) =>
+          !!p &&
+          !isPincode(p) &&
+          p.toLowerCase() !== "india" &&
+          p.toLowerCase() !== normalizedState
+      );
+    const dedupedAreaLocality = Array.from(new Set(areaLocalityCandidates));
+    const area = dedupedAreaLocality.slice(0, 2).join(", ") || "Current location";
+    return stateCandidate ? `${area} (${stateCandidate})` : area;
+  };
+
+  const refreshCurrentLocationPreview = useCallback(async () => {
+    const gpsMs = 14_000;
+    const geoMs = 10_000;
+    const withTimeout = <T,>(promise: Promise<T>, ms: number) =>
+      new Promise<T>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("timeout")), ms);
+        promise.then(
+          (v) => {
+            clearTimeout(t);
+            resolve(v);
+          },
+          (e) => {
+            clearTimeout(t);
+            reject(e);
+          }
+        );
+      });
+    try {
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") return;
+      const pos = await withTimeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+        gpsMs
+      );
+      const rg = await withTimeout(
+        reverseGeocode(pos.coords.longitude, pos.coords.latitude),
+        geoMs
+      );
+      setCurrentLocationPreview(
+        formatLocationLine(rg.fullAddress, rg.secondary, rg.primary, rg.state ?? null)
+      );
+    } catch {
+      // Keep previous preview on transient errors.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCurrentLocationPreview();
+  }, [refreshCurrentLocationPreview]);
+
+  const onPullRefresh = useCallback(async () => {
+    setListRefreshing(true);
+    try {
+      await hydrateRecentLocations();
+      await Promise.all([
+        refetchAddresses(),
+        refetchActiveLocation(),
+        refreshCurrentLocationPreview(),
+      ]);
+    } finally {
+      setListRefreshing(false);
+    }
+  }, [
+    hydrateRecentLocations,
+    refetchAddresses,
+    refetchActiveLocation,
+    refreshCurrentLocationPreview,
+  ]);
 
   // Autocomplete 250ms debounce; pincode (6 digits) or normal search (2+ chars)
   useEffect(() => {
@@ -203,6 +347,12 @@ export default function SelectLocationScreen() {
         coords?.latitude != null && coords?.longitude != null
           ? { latitude: coords.latitude, longitude: coords.longitude }
           : undefined;
+      const reqKey = `${query.toLowerCase()}|${proximity?.longitude ?? ""},${proximity?.latitude ?? ""}`;
+      if (lastSearchKeyRef.current === reqKey) {
+        setSearchLoading(false);
+        return;
+      }
+      lastSearchKeyRef.current = reqKey;
       const getLocal = (q: string) => addressService.getLocationSearchSuggestions(q, 10);
       const getCityAreas = (city: string) => addressService.getCityAreaSuggestions(city, 10);
       searchPlacesEnriched(query, {
@@ -277,14 +427,31 @@ export default function SelectLocationScreen() {
   }, [searchQuery, coords?.latitude, coords?.longitude]);
 
   const handleUseCurrentLocation = async () => {
-    await requestPermissionAndFetch();
-    const { coords: latestCoords, address: latestAddress } = useLocationStore.getState();
-    if (!latestCoords) {
+    await requestPermissionAndFetch({ forceDevice: true });
+    const osPermission = await Location.getForegroundPermissionsAsync();
+    const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
+    const hasLocationAccess = permissionStatus === "granted" && osPermission.status === "granted";
+
+    if (!hasLocationAccess || !latestCoords) {
+      try {
+        await profileService.updateProfile({ location_permission: false });
+      } catch {
+        // Non-blocking; user flow should continue.
+      }
       Alert.alert("Location not found", "We couldn't detect your location. Try again or search manually.");
       return;
     }
+    try {
+      await profileService.updateProfile({
+        location_permission: true,
+        latitude: latestCoords.latitude,
+        longitude: latestCoords.longitude,
+      });
+    } catch {
+      // Non-blocking; selecting location should still work.
+    }
 
-    // If we have saved addresses, suggest a nearby one within 500m
+    // If we have a nearby saved address, use it directly (no confirmation step).
     if (savedAddresses.length > 0) {
       let best = { addr: null as Address | null, distance: Number.POSITIVE_INFINITY };
       for (const addr of savedAddresses) {
@@ -292,50 +459,53 @@ export default function SelectLocationScreen() {
         if (d < best.distance) best = { addr, distance: d };
       }
       if (best.addr && best.distance <= NEAR_SAVED_RADIUS_METERS) {
-        Alert.alert(
-          "Use saved address?",
-          `You're near your saved address "${best.addr.label ?? "Address"}". Do you want to deliver here?`,
-          [
+        try {
+          await addressService.setActiveLocation({
+            latitude: best.addr.latitude,
+            longitude: best.addr.longitude,
+            address: best.addr.fullAddress,
+          });
+          const primary = best.addr.label ?? "Address";
+          useLocationStore.getState().setAddressAndCoords(
             {
-              text: "Use this address",
-              onPress: async () => {
-                try {
-                  await addressService.setActiveLocation({
-                    latitude: best.addr!.latitude,
-                    longitude: best.addr!.longitude,
-                    address: best.addr!.fullAddress,
-                  });
-                  router.back();
-                } catch {
-                  router.back();
-                }
-              },
+              primary,
+              secondary: best.addr.fullAddress.slice(0, 80),
+              fullAddress: best.addr.fullAddress,
             },
-            {
-              text: "Choose different",
-              style: "cancel",
-              onPress: () => {
-                router.push({
-                  pathname: "/location-map",
-                  params: {
-                    latitude: String(latestCoords.latitude),
-                    longitude: String(latestCoords.longitude),
-                    primary: latestAddress?.primary ?? "Current location",
-                    fullAddress: latestAddress?.fullAddress ?? "",
-                    ...(params.fromOnboarding === "1" ? { fromOnboarding: "1" } : {}),
-                  },
-                });
-              },
-            },
-          ],
-        );
+            { latitude: best.addr.latitude, longitude: best.addr.longitude },
+            { source: "selected" }
+          );
+        } finally {
+          safeBack();
+        }
         return;
       }
     }
 
-    // New location: always go to map to confirm exact pin before full address
+    // For "Use current location", apply immediately without map confirmation/form.
+    try {
+      await addressService.setActiveLocation({
+        latitude: latestCoords.latitude,
+        longitude: latestCoords.longitude,
+        address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
+      });
+    } finally {
+      safeBack();
+    }
+  };
+
+  const handleAddAddressDirect = async () => {
+    await requestPermissionAndFetch({ forceDevice: true });
+    const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
+    if (permissionStatus !== "granted" || !latestCoords) {
+      Alert.alert(
+        "Location required",
+        "Please enable location to add your delivery address directly."
+      );
+      return;
+    }
     router.push({
-      pathname: "/location-map",
+      pathname: "/location-address",
       params: {
         latitude: String(latestCoords.latitude),
         longitude: String(latestCoords.longitude),
@@ -378,9 +548,9 @@ export default function SelectLocationScreen() {
         { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
         { latitude: addr.latitude, longitude: addr.longitude }
       );
-      router.back();
+      safeBack();
     } catch {
-      router.back();
+      safeBack();
     } finally {
       setSavedAddressLoading(null);
     }
@@ -397,6 +567,33 @@ export default function SelectLocationScreen() {
   };
 
   const showSearchSection = searchQuery.trim().length >= 2;
+  const showRecentSearches = !showSearchSection && recentSearches.length > 0;
+  const recentSearchList = useMemo(() => recentSearches.slice(0, 7), [recentSearches]);
+
+  const handleSelectRecentSearch = async (place: {
+    primary: string;
+    fullAddress?: string;
+    latitude: number;
+    longitude: number;
+  }) => {
+    try {
+      await addressService.setActiveLocation({
+        latitude: place.latitude,
+        longitude: place.longitude,
+        address: place.fullAddress ?? place.primary,
+      });
+      setAddressAndCoords(
+        {
+          primary: place.primary,
+          secondary: (place.fullAddress ?? "").slice(0, 80),
+          fullAddress: place.fullAddress ?? place.primary,
+        },
+        { latitude: place.latitude, longitude: place.longitude }
+      );
+    } finally {
+      safeBack();
+    }
+  };
 
   return (
     <>
@@ -406,7 +603,7 @@ export default function SelectLocationScreen() {
       {/* Header with integrated search – minimal gap below status bar */}
       <View style={styles.header}>
         <View style={styles.headerRow}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
+          <TouchableOpacity onPress={safeBack} style={styles.backBtn} hitSlop={12}>
             <Ionicons name="arrow-back" size={24} color={TITLE_DARK} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Select a location</Text>
@@ -419,6 +616,8 @@ export default function SelectLocationScreen() {
               style={styles.searchInput}
               placeholder="Search for area, street name..."
               placeholderTextColor={TEXT_GRAY}
+              autoCapitalize="none"
+              autoCorrect={false}
               value={searchQuery}
               onChangeText={setSearchQuery}
               returnKeyType="search"
@@ -437,6 +636,14 @@ export default function SelectLocationScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={listRefreshing}
+            onRefresh={onPullRefresh}
+            tintColor={TEAL}
+            colors={[TEAL]}
+          />
+        }
       >
         {/* Search results from API */}
         {showSearchSection && (
@@ -552,48 +759,50 @@ export default function SelectLocationScreen() {
           </View>
         )}
 
-        {/* Use current location */}
-        <TouchableOpacity
-          style={[styles.optionCard, styles.optionCardBorder, SHADOW]}
-          onPress={handleUseCurrentLocation}
-          activeOpacity={0.85}
-          disabled={loading}
-        >
-          <View style={[styles.optionIconWrap, { backgroundColor: TEAL_LIGHT }]}>
-            <Ionicons name="locate" size={24} color={TEAL} />
-          </View>
-          <View style={styles.optionTextWrap}>
-            <Text style={styles.optionTitle}>Use current location</Text>
-            <Text style={styles.optionSub} numberOfLines={1}>
-              {loading ? "Getting location..." : currentLocationName}
-            </Text>
-          </View>
-          {loading ? (
-            <ActivityIndicator size="small" color={TEAL} />
-          ) : (
-            <View style={styles.chevronWrap}>
-              <Ionicons name="chevron-forward" size={20} color={TEAL} />
+        <View style={styles.actionPanel}>
+          {/* Use current location */}
+          <TouchableOpacity
+            style={styles.actionRow}
+            onPress={handleUseCurrentLocation}
+            activeOpacity={0.85}
+            disabled={loading}
+          >
+            <View style={styles.actionLeft}>
+              <Ionicons name="locate" size={20} color={TEAL} />
+              <View style={styles.optionTextWrap}>
+                <Text style={styles.actionTitle}>Use current location</Text>
+                <Text style={styles.optionSub} numberOfLines={1}>
+                  {loading ? "Getting location..." : currentLocationPreview}
+                </Text>
+              </View>
             </View>
-          )}
-        </TouchableOpacity>
+            <View style={styles.actionRowRight}>
+              {showSelectedOnCurrentLocationRow ? (
+                <View style={styles.selectedPillAction}>
+                  <Text style={styles.selectedPillRightText}>SELECTED</Text>
+                </View>
+              ) : null}
+              {loading ? (
+                <ActivityIndicator size="small" color={TEAL} />
+              ) : (
+                <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
+              )}
+            </View>
+          </TouchableOpacity>
 
-        {/* Add Address */}
-        <TouchableOpacity
-          style={[styles.optionCard, styles.optionCardBorder, SHADOW]}
-          onPress={() => router.push("/profile/addresses")}
-          activeOpacity={0.85}
-        >
-          <View style={[styles.optionIconWrap, { backgroundColor: "#EDE9FE" }]}>
-            <Ionicons name="add" size={24} color="#7c3aed" />
-          </View>
-          <View style={styles.optionTextWrap}>
-            <Text style={styles.optionTitle}>Add Address</Text>
-            <Text style={styles.optionSub}>Save a new delivery address</Text>
-          </View>
-          <View style={styles.chevronWrap}>
-            <Ionicons name="chevron-forward" size={20} color={TEAL} />
-          </View>
-        </TouchableOpacity>
+          {/* Add Address */}
+          <TouchableOpacity
+            style={[styles.actionRow, styles.actionRowLast]}
+            onPress={handleAddAddressDirect}
+            activeOpacity={0.85}
+          >
+            <View style={styles.actionLeft}>
+              <Ionicons name="add" size={22} color={TEAL} />
+              <Text style={styles.actionTitle}>Add Address</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
+          </TouchableOpacity>
+        </View>
 
         {/* SAVED ADDRESSES */}
         <View style={[styles.sectionHeadRow, styles.sectionHeadRowBorder]}>
@@ -605,6 +814,15 @@ export default function SelectLocationScreen() {
             <ActivityIndicator size="small" color={TEAL} />
             <Text style={[styles.emptySavedText, { marginTop: 12 }]}>Loading saved addresses...</Text>
           </View>
+        ) : addressesError ? (
+          <View style={styles.emptySaved}>
+            <Text style={styles.emptySavedText}>
+              Could not load saved addresses. Check your connection and try again.
+            </Text>
+            <TouchableOpacity onPress={() => refetchAddresses()} activeOpacity={0.85}>
+              <Text style={[styles.addAddressLink, { marginTop: 12 }]}>Retry</Text>
+            </TouchableOpacity>
+          </View>
         ) : filteredSaved.length === 0 ? (
           <View style={styles.emptySaved}>
             <View style={styles.emptyIconWrap}>
@@ -614,31 +832,26 @@ export default function SelectLocationScreen() {
               {searchQuery.trim() ? "No addresses match your search." : "No saved addresses yet."}
             </Text>
             {!searchQuery.trim() && (
-              <TouchableOpacity onPress={() => router.push("/profile/addresses")}>
+              <TouchableOpacity onPress={handleAddAddressDirect}>
                 <Text style={styles.addAddressLink}>Add address</Text>
               </TouchableOpacity>
             )}
           </View>
         ) : (
           filteredSaved.map((saved) => (
-            <View key={saved.id} style={[styles.addressCard, styles.addressCardBorder, SHADOW]}>
+            <View key={saved.id} style={[styles.addressCard, styles.addressCardBorder]}>
               <TouchableOpacity
                 style={styles.addressCardLeft}
                 onPress={() => handleSelectSaved(saved)}
                 disabled={savedAddressLoading !== null}
                 activeOpacity={0.85}
               >
-                <View style={[styles.addressIconWrap, { backgroundColor: TEAL_LIGHT }]}>
-                  <Ionicons name={addressIcon(saved.label)} size={22} color={TEAL} />
+                <View style={[styles.addressIconWrap, { backgroundColor: "#F8FAFC" }]}>
+                  <Ionicons name={addressIcon(saved.label)} size={22} color="#667085" />
                 </View>
                 <View style={styles.addressCardContent}>
                   <View style={styles.addressLabelRow}>
                     <Text style={styles.addressLabel}>{saved.label ?? "Address"}</Text>
-                    {saved.id === activeAddressId && (
-                      <View style={styles.selectedPill}>
-                        <Text style={styles.selectedPillText}>SELECTED</Text>
-                      </View>
-                    )}
                   </View>
                   {saved.contactName ? (
                     <Text style={styles.addressLine} numberOfLines={1}>
@@ -652,6 +865,11 @@ export default function SelectLocationScreen() {
                 </View>
               </TouchableOpacity>
               <View style={styles.cardRight}>
+                {saved.id === matchedSavedIdForPill && (
+                  <View style={styles.selectedPillRight}>
+                    <Text style={styles.selectedPillRightText}>SELECTED</Text>
+                  </View>
+                )}
                 <TouchableOpacity
                   hitSlop={12}
                   style={styles.moreBtn}
@@ -744,6 +962,46 @@ export default function SelectLocationScreen() {
           ))
         )}
 
+        {showRecentSearches && (
+          <>
+            <View style={[styles.sectionHeadRow, { justifyContent: "space-between" }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Ionicons name="time-outline" size={14} color={TEAL} />
+                <Text style={styles.sectionHeading}>RECENT SEARCHES</Text>
+              </View>
+              <TouchableOpacity onPress={clearRecentLocations} hitSlop={8}>
+                <Text style={styles.clearAllText}>Clear All</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.recentSearchList}>
+              {recentSearchList.map((item, index) => (
+                <TouchableOpacity
+                  key={`${item.latitude}-${item.longitude}-${item.primary}-${index}`}
+                  style={[
+                    styles.recentSearchRow,
+                    index === recentSearchList.length - 1 && styles.recentSearchRowLast,
+                  ]}
+                  onPress={() => handleSelectRecentSearch(item)}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.recentSearchLeft}>
+                    <Ionicons name="time-outline" size={18} color="#667085" />
+                    <View style={styles.recentSearchTextWrap}>
+                      <Text style={styles.recentSearchTitle} numberOfLines={1}>
+                        {item.primary}
+                      </Text>
+                      <Text style={styles.recentSearchSubtitle} numberOfLines={2}>
+                        {item.fullAddress ?? item.primary}
+                      </Text>
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={TEXT_GRAY} />
+                </TouchableOpacity>
+              ))}
+            </View>
+          </>
+        )}
+
         <BrandingFooter />
       </ScrollView>
       </View>
@@ -834,28 +1092,34 @@ const styles = StyleSheet.create({
     borderTopColor: BORDER,
     marginTop: 16,
   },
-  optionCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: CARD_BG,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    borderWidth: 0,
-  },
-  optionCardBorder: {
+  actionPanel: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: BORDER,
+    marginBottom: 12,
+    overflow: "hidden",
   },
-  optionIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+  actionRow: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
   },
-  optionTextWrap: { flex: 1, marginLeft: 14 },
-  optionTitle: { fontSize: 16, fontWeight: "600", color: TITLE_DARK },
+  actionRowLast: { borderBottomWidth: 0 },
+  actionRowRight: { flexDirection: "row", alignItems: "center", gap: 8 },
+  actionLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1, marginRight: 10 },
+  selectedPillAction: {
+    backgroundColor: TEAL,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  actionTitle: { fontSize: 18, fontWeight: "600", color: TEAL },
+  optionTextWrap: { flex: 1, marginLeft: 0 },
   optionSub: { fontSize: 13, color: TEXT_GRAY, marginTop: 2 },
   chevronWrap: { padding: 4 },
   sectionHeadRow: {
@@ -878,11 +1142,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     marginBottom: 12,
-    borderWidth: 0,
-  },
-  addressCardBorder: {
     borderWidth: 1,
     borderColor: BORDER,
+  },
+  addressCardBorder: {
+    borderWidth: 0,
   },
   addressCardLeft: { flex: 1, flexDirection: "row" },
   addressIconWrap: {
@@ -899,6 +1163,17 @@ const styles = StyleSheet.create({
   distanceRow: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4 },
   addressDistance: { fontSize: 12, color: TEAL, fontWeight: "600" },
   addressLabel: { fontSize: 16, fontWeight: "600", color: TITLE_DARK },
+  addressLabelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  cardRight: { alignItems: "flex-end", justifyContent: "flex-start", marginLeft: 8, minWidth: 34 },
+  moreBtn: { padding: 2 },
+  selectedPillRight: {
+    backgroundColor: TEAL,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginBottom: 8,
+  },
+  selectedPillRightText: { color: "#FFFFFF", fontSize: 10, fontWeight: "700", letterSpacing: 0.4 },
   addressLabelMatch: { color: TEAL, textDecorationLine: "underline" },
   addressLine: { fontSize: 13, color: TEXT_GRAY, marginTop: 2, lineHeight: 18 },
   phoneRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 },
@@ -916,6 +1191,29 @@ const styles = StyleSheet.create({
   emptyIconWrap: { marginBottom: 12 },
   emptySavedText: { fontSize: 14, color: TEXT_GRAY, textAlign: "center" },
   addAddressLink: { fontSize: 15, color: TEAL, fontWeight: "600", marginTop: 10 },
+  clearAllText: { fontSize: 12, fontWeight: "700", color: TEAL },
+  recentSearchList: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    marginBottom: 12,
+    overflow: "hidden",
+  },
+  recentSearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  recentSearchRowLast: { borderBottomWidth: 0 },
+  recentSearchLeft: { flexDirection: "row", alignItems: "center", flex: 1, marginRight: 10 },
+  recentSearchTextWrap: { marginLeft: 10, flex: 1 },
+  recentSearchTitle: { fontSize: 14, fontWeight: "700", color: "#111827" },
+  recentSearchSubtitle: { fontSize: 12, color: "#334155", marginTop: 2 },
   confirmOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15, 23, 42, 0.45)",

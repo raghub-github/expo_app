@@ -26,8 +26,9 @@ import {
 } from "@/lib/menu-reference-image-bundle";
 import { buildMenuReferenceRejectionDetailSnapshot } from "@/lib/store-verification-menu-rejection-detail";
 import { sendEmail } from "@/lib/email/send";
-import { buildVerificationStepRejectedEmail } from "@/lib/email/store-verification-templates";
+import { buildStepApprovedEmail, buildVerificationStepRejectedEmail } from "@/lib/email/store-verification-templates";
 import { resolveVerificationRecipientEmail } from "@/lib/email/resolve-verification-recipient";
+import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
@@ -138,7 +139,19 @@ export async function POST(
         { status: 400 }
       );
     }
-    const notes = typeof body.notes === "string" ? body.notes.trim() || null : null;
+    const adminOverride = !!body.admin_override || !!body.override;
+    const notes =
+      typeof body.notes === "string" ? body.notes.trim() || null : adminOverride ? "ADMIN_OVERRIDE" : null;
+    const STEP_LABELS: Record<number, string> = {
+      1: "Restaurant information",
+      2: "Location details",
+      3: "Menu setup",
+      4: "Restaurant documents",
+      5: "Operational details",
+      6: "Bank account",
+      7: "Commission plan",
+      8: "Sign & submit",
+    };
     const verifiedByName = access.systemUserName || access.user.email || "agent";    const ok = await upsertStoreVerificationStep({
       storeId,
       stepNumber: step,
@@ -155,6 +168,21 @@ export async function POST(
         },
         { status: 500 }
       );
+    }
+    let hadRejectionBefore = false;
+    if (adminOverride) {
+      try {
+        const sql = getSql();
+        const rejRows = await sql`
+          SELECT 1
+          FROM store_verification_step_rejections
+          WHERE store_id = ${storeId} AND step_number = ${step}
+          LIMIT 1
+        `;
+        hadRejectionBefore = Array.isArray(rejRows) && rejRows.length > 0;
+      } catch {
+        hadRejectionBefore = false;
+      }
     }
     await clearStoreVerificationStepRejection(storeId, step);
     // When menu step (3) is verified, mark all MENU_REFERENCE media files as VERIFIED
@@ -245,6 +273,41 @@ export async function POST(
           "[POST verification-steps] failed to bump store to UNDER_VERIFICATION",
           statusErr
         );
+      }
+    }
+
+    if (adminOverride) {
+      try {
+        const previousStatus = hadRejectionBefore ? "REJECTED" : "PENDING";
+        await logStoreActivity({
+          storeId,
+          section: "onboarding_step",
+          action: "ADMIN_OVERRIDE_VERIFY",
+          entityId: step,
+          entityName: STEP_LABELS[step] ?? `Step ${step}`,
+          summary: `Admin override verification: ${previousStatus} -> VERIFIED (step ${step})`,
+          actorType: "agent",
+          actorId: access.systemUserId ?? null,
+          actorEmail: access.user?.email ?? null,
+          actorName: access.systemUserName ?? access.user?.email ?? null,
+          source: "dashboard",
+          diff: { adminOverride: true },
+        });
+
+        const recipientEmail = await resolveVerificationRecipientEmail(storeId, (access.store as any).store_email);
+        if (recipientEmail) {
+          const dashboardUrl =
+            process.env.PARTNER_DASHBOARD_URL?.trim() || "https://partner.gatimitra.com/auth/post-login";
+          const { subject, text, html } = buildStepApprovedEmail({
+            storeName: (access.store as any).store_name,
+            storePublicId: (access.store as any).store_id ? String((access.store as any).store_id) : `GMMC${storeId}`,
+            dashboardUrl,
+            stepLabel: STEP_LABELS[step] ?? `Step ${step}`,
+          });
+          await sendEmail({ to: recipientEmail, subject, text, html });
+        }
+      } catch (mailErr) {
+        console.warn("[POST verification-steps] admin override email/log failed:", mailErr);
       }
     }
     const byStep = await getStoreVerificationStepsApiRows(storeId);

@@ -14,6 +14,20 @@ import {
 } from "@/services/locationSearch.service";
 
 const COUNTRY_INDIA = "IN";
+const roadDistanceCache = new Map<string, { distanceMeters: number; durationSeconds: number | null }>();
+
+function roadDistanceKey(
+  originLongitude: number,
+  originLatitude: number,
+  destinationLongitude: number,
+  destinationLatitude: number
+) {
+  const oLng = originLongitude.toFixed(5);
+  const oLat = originLatitude.toFixed(5);
+  const dLng = destinationLongitude.toFixed(5);
+  const dLat = destinationLatitude.toFixed(5);
+  return `${oLng},${oLat}|${dLng},${dLat}`;
+}
 
 export type ReverseGeocodeResult = {
   primary: string;
@@ -47,7 +61,7 @@ export async function reverseGeocode(
     };
   }
 
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood&language=en,hi&worldview=in`;
+  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood,postcode&language=en,hi&worldview=in`;
   const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Mapbox geocode failed: ${res.status}`);
@@ -80,6 +94,7 @@ export async function reverseGeocode(
   const neighborhood = context.find((c) => c.id.startsWith("neighborhood"))?.text;
   const region = context.find((c) => c.id.startsWith("region"))?.text;
   const postcode = context.find((c) => c.id.startsWith("postcode"))?.text;
+  const fallbackPincode = placeName.match(/\b\d{6}\b/)?.[0] ?? null;
   const primary = feature.text ?? locality ?? neighborhood ?? place ?? "Current location";
   const secondary = [locality, place, neighborhood].filter(Boolean).join(", ") || placeName.split(",").slice(1, 3).join(", ").trim() || "—";
 
@@ -89,7 +104,7 @@ export async function reverseGeocode(
     fullAddress: placeName,
     city: place ?? locality ?? null,
     state: region ?? null,
-    pincode: postcode ?? null,
+    pincode: postcode ?? fallbackPincode,
   };
 }
 
@@ -163,6 +178,49 @@ export async function searchPlacesEnriched(
     getLocalSuggestions: options?.getLocalSuggestions,
     getCityAreas: options?.getCityAreas,
   });
+}
+
+export async function getRoadDistance(
+  originLongitude: number,
+  originLatitude: number,
+  destinationLongitude: number,
+  destinationLatitude: number
+): Promise<{ distanceMeters: number; durationSeconds: number | null }> {
+  const { mapboxAccessToken } = getConfig();
+  if (!mapboxAccessToken) {
+    throw new Error("Mapbox token missing for directions.");
+  }
+
+  const key = roadDistanceKey(
+    originLongitude,
+    originLatitude,
+    destinationLongitude,
+    destinationLatitude
+  );
+  const cached = roadDistanceCache.get(key);
+  if (cached) return cached;
+
+  const coords = `${originLongitude},${originLatitude};${destinationLongitude},${destinationLatitude}`;
+  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?access_token=${encodeURIComponent(mapboxAccessToken)}&alternatives=false&overview=false&steps=false`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Mapbox directions failed: ${res.status}`);
+  }
+
+  const data = (await res.json()) as {
+    routes?: Array<{ distance?: number; duration?: number }>;
+  };
+  const route = data.routes?.[0];
+  if (!route?.distance) {
+    throw new Error("No drivable route found.");
+  }
+
+  const result = {
+    distanceMeters: route.distance,
+    durationSeconds: typeof route.duration === "number" ? route.duration : null,
+  };
+  roadDistanceCache.set(key, result);
+  return result;
 }
 
 /**

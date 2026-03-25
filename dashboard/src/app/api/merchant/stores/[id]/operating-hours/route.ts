@@ -115,16 +115,29 @@ function normalizeDayValues(
     d.s1End = parseTimeInput(d.s1End);
     d.s2Start = parseTimeInput(d.s2Start);
     d.s2End = parseTimeInput(d.s2End);
-    if (d.s1Start != null && d.s1End != null && !timeGt(d.s1End, d.s1Start)) {
+    // Closed day: ensure all slots are null to satisfy DB constraints consistently.
+    if (!d.open) {
+      d.s1Start = d.s1End = d.s2Start = d.s2End = null;
+      continue;
+    }
+
+    // Slot 1 must be a valid pair and end must be after start.
+    const hasS1Pair = d.s1Start != null && d.s1End != null;
+    if (!hasS1Pair || !timeGt(d.s1End, d.s1Start)) {
       d.s1Start = d.s1End = null;
     }
-    if (d.s2Start != null && d.s2End != null) {
-      if (d.s1End != null && !timeGt(d.s2Start, d.s1End)) {
-        d.s2Start = d.s2End = null;
-      } else if (d.s1Start != null && !timeGt(d.s2End, d.s1Start)) {
-        d.s2Start = d.s2End = null;
-      }
-    } else if (d.s2Start != null || d.s2End != null) {
+
+    // Slot 2 must be a valid pair, and slot 1 must be valid if slot 2 is set.
+    const hasS2Pair = d.s2Start != null && d.s2End != null;
+    if (!hasS2Pair) {
+      d.s2Start = d.s2End = null;
+      continue;
+    }
+    if (d.s1Start == null || d.s1End == null) {
+      d.s2Start = d.s2End = null;
+      continue;
+    }
+    if (!timeGt(d.s2End, d.s2Start) || !timeGt(d.s2Start, d.s1End)) {
       d.s2Start = d.s2End = null;
     }
   }
@@ -232,17 +245,20 @@ export async function PATCH(
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Merchant dashboard access required" }, { status: 403 });
     }
+    const isAdmin = await isSuperAdmin(user.id, user.email);
     const areaManagerId = await getAreaManagerId(user.id, user.email);
     const store = await getMerchantStoreById(storeId, areaManagerId);
     if (!store) {
       return NextResponse.json({ success: false, error: "Store not found" }, { status: 404 });
     }
-    const access = await getMerchantAccess(user.id, user.email);
-    if (!access) {
-      return NextResponse.json({ success: false, error: "Merchant access required" }, { status: 403 });
-    }
-    if (!access.can_update_store_timing) {
-      return NextResponse.json({ success: false, error: "Permission denied: cannot update store timing" }, { status: 403 });
+    if (!isAdmin) {
+      const access = await getMerchantAccess(user.id, user.email);
+      if (!access) {
+        return NextResponse.json({ success: false, error: "Merchant access required" }, { status: 403 });
+      }
+      if (!access.can_update_store_timing) {
+        return NextResponse.json({ success: false, error: "Permission denied: cannot update store timing" }, { status: 403 });
+      }
     }
     const systemUser = await getSystemUserByEmail(user.email);
     const agentId = systemUser?.id ?? null;
@@ -251,7 +267,6 @@ export async function PATCH(
     const sql = getSql();
     const sameForAll = !!body.same_for_all_days;
     const is24Hours = !!body.is_24_hours;
-    const closedDays = Array.isArray(body.closed_days) ? body.closed_days : [];
     const dayValues: { open: boolean; s1Start: string | null; s1End: string | null; s2Start: string | null; s2End: string | null }[] = [];
     for (const day of DAYS) {
       dayValues.push({
@@ -262,7 +277,23 @@ export async function PATCH(
         s2End: body[`${day}_slot2_end`] ?? null,
       });
     }
+
+    // If 24h mode is enabled, force a consistent representation for DB + schedule engine.
+    // The UI may send partial times; we standardize here.
+    if (is24Hours) {
+      for (const d of dayValues) {
+        d.open = true;
+        d.s1Start = "00:00";
+        d.s1End = "23:59";
+        d.s2Start = null;
+        d.s2End = null;
+      }
+    }
+
     normalizeDayValues(dayValues);
+
+    // Always derive closed_days from per-day open toggles to avoid drift between UI and DB.
+    const closedDays = is24Hours ? [] : DAYS.filter((_, i) => !dayValues[i].open);
 
     const newPayload = {
       same_for_all_days: sameForAll,

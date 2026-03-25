@@ -69,6 +69,7 @@ export interface Permission {
 
 export interface UserPermissions {
   systemUserId: number;
+  canTogglePortal: boolean;
   roles: Array<{
     id: number;
     roleId: string;
@@ -289,6 +290,7 @@ export async function getUserPermissions(
     
     const result: UserPermissions = {
       systemUserId,
+      canTogglePortal: Boolean((systemUser as { can_toggle_portal?: boolean }).can_toggle_portal),
       roles,
       permissions,
       domainAccess,

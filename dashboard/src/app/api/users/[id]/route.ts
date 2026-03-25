@@ -210,6 +210,14 @@ export async function PUT(
       city,
       ...updates 
     } = body;
+
+    const normalizeRoleValue = (value: string) => value.replace(/\s+/g, " ").trim();
+    if (typeof updates.primary_role === "string") {
+      updates.primary_role = normalizeRoleValue(updates.primary_role);
+      if (!updates.primary_role) {
+        delete updates.primary_role;
+      }
+    }
     
     // Handle suspension_expires_at separately
     if (suspension_expires_at !== undefined) {

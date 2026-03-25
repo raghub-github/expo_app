@@ -127,7 +127,7 @@ export function mergeVerificationStepsWithRejections(
   rejections: Record<number, StepRejectionRecord>
 ): Record<number, VerificationStepApiRow> {
   const byStep: Record<number, VerificationStepApiRow> = {};
-  for (let i = 1; i <= 7; i++) {
+  for (let i = 1; i <= 8; i++) {
     const s = steps.find((x) => x.step_number === i);
     const rej = rejections[i] ?? null;
     byStep[i] = s
@@ -275,7 +275,7 @@ export async function clearStoreVerificationStepRejection(
   storeId: number,
   stepNumber: number
 ): Promise<boolean> {
-  if (stepNumber < 1 || stepNumber > 7) return false;
+  if (stepNumber < 1 || stepNumber > 8) return false;
   const sql = getSql();
   try {
     await sql`

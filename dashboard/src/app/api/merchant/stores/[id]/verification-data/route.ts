@@ -171,92 +171,103 @@ export async function GET(
       const sql = getSql();
       const storeIdNum = Number(storeId);
 
-      // Use subscription_payments + merchant_subscriptions so we only show payments
-      // for the store currently being verified (no other stores for this parent).
+      // Step 7 (Commission plan) is sourced from merchant_onboarding_payments.
+      // This is tied to a specific merchant_store (merchant_store_id -> merchant_stores.id).
       const payRows = await sql`
         SELECT
-          sp.id,
-          sp.amount,
-          sp.payment_status,
-          sp.payment_date,
-          sp.billing_period_start,
-          sp.billing_period_end,
-          sp.payment_gateway,
-          sp.payment_gateway_id,
-          sp.notes,
-          sp.plan_id,
-          mp.plan_name
-        FROM subscription_payments sp
-        JOIN merchant_subscriptions ms ON ms.id = sp.subscription_id
-        JOIN merchant_plans mp ON mp.id = sp.plan_id
-        WHERE COALESCE(sp.store_id, ms.store_id) = ${storeIdNum}
-        ORDER BY sp.payment_date DESC
+          id,
+          merchant_parent_id,
+          merchant_store_id,
+          amount_paise,
+          currency,
+          plan_id,
+          plan_name,
+          standard_amount_paise,
+          promo_amount_paise,
+          promo_label,
+          razorpay_order_id,
+          razorpay_payment_id,
+          razorpay_signature,
+          razorpay_status,
+          status,
+          payer_email,
+          payer_phone,
+          payer_name,
+          ip_address,
+          user_agent,
+          created_at,
+          captured_at,
+          failed_at,
+          failure_reason,
+          metadata
+        FROM merchant_onboarding_payments
+        WHERE merchant_store_id = ${storeIdNum}
+        ORDER BY created_at DESC
         LIMIT 10
       `;
 
       const rows = Array.isArray(payRows) ? payRows : [];
       onboardingPayments = rows.map((r) => {
         const o = r as Record<string, unknown>;
-        const amount =
-          typeof o.amount === "number"
-            ? o.amount
-            : Number((o.amount as unknown) ?? 0) || 0;
-        const paymentDate = o.payment_date as unknown;
-        const billingStart = o.billing_period_start as unknown;
-        const billingEnd = o.billing_period_end as unknown;
+        const amountPaise =
+          typeof o.amount_paise === "number"
+            ? o.amount_paise
+            : Number((o.amount_paise as unknown) ?? 0) || 0;
 
-        const createdIso =
-          paymentDate instanceof Date
-            ? paymentDate.toISOString()
-            : paymentDate != null
-            ? String(paymentDate)
-            : "";
+        const toIsoOrNull = (v: unknown) => {
+          if (v instanceof Date) return v.toISOString();
+          if (v == null) return null;
+          const s = String(v);
+          return s.trim() ? s : null;
+        };
 
-        const billingStartIso =
-          billingStart instanceof Date
-            ? billingStart.toISOString()
-            : billingStart != null
-            ? String(billingStart)
-            : null;
-
-        const billingEndIso =
-          billingEnd instanceof Date
-            ? billingEnd.toISOString()
-            : billingEnd != null
-            ? String(billingEnd)
-            : null;
+        const createdIso = toIsoOrNull(o.created_at) ?? "";
+        const capturedIso = toIsoOrNull(o.captured_at);
+        const failedIso = toIsoOrNull(o.failed_at);
 
         return {
           id: o.id,
-          amount_paise: Math.round(amount * 100),
-          currency: "INR",
+          amount_paise: amountPaise,
+          currency: (o.currency as string) ?? "INR",
           plan_id: o.plan_id,
           plan_name: o.plan_name,
-          standard_amount_paise: null,
-          promo_amount_paise: null,
-          promo_label: null,
-          razorpay_order_id: o.payment_gateway_id ?? null,
-          razorpay_payment_id: null,
-          status: o.payment_status,
-          payer_email: null,
-          payer_phone: null,
-          payer_name: null,
+          standard_amount_paise:
+            typeof o.standard_amount_paise === "number"
+              ? o.standard_amount_paise
+              : o.standard_amount_paise ?? null,
+          promo_amount_paise:
+            typeof o.promo_amount_paise === "number"
+              ? o.promo_amount_paise
+              : o.promo_amount_paise ?? null,
+          promo_label: (o.promo_label as string) ?? null,
+          razorpay_order_id: (o.razorpay_order_id as string) ?? null,
+          razorpay_payment_id: (o.razorpay_payment_id as string) ?? null,
+          status: (o.status as string) ?? "pending",
+          payer_email: (o.payer_email as string) ?? null,
+          payer_phone: (o.payer_phone as string) ?? null,
+          payer_name: (o.payer_name as string) ?? null,
           created_at: createdIso,
-          captured_at: createdIso,
-          failed_at: null,
-          failure_reason: null,
-          billing_period_start: billingStartIso,
-          billing_period_end: billingEndIso,
+          captured_at: capturedIso,
+          failed_at: failedIso,
+          failure_reason: (o.failure_reason as string) ?? null,
+          // Kept for backward compatibility with UI mapping.
+          billing_period_start: null,
+          billing_period_end: null,
+          razorpay_signature: (o.razorpay_signature as string) ?? null,
+          razorpay_status: (o.razorpay_status as string) ?? null,
+          ip_address: (o.ip_address as string) ?? null,
+          user_agent: (o.user_agent as string) ?? null,
+          metadata: o.metadata ?? {},
         } as Record<string, unknown>;
       });
 
       if (process.env.NODE_ENV !== "production") {
         console.info(
-          `[verification-data] storeId=${storeId} subscription_payments=${onboardingPayments.length}`
+          `[verification-data] storeId=${storeId} merchant_onboarding_payments=${onboardingPayments.length}`
         );
       }
     } catch (e) {
-      console.warn("[verification-data] subscription_payments lookup failed:", e);
+      console.warn("[verification-data] merchant_onboarding_payments lookup failed:", e);
     }
 
     let agreementAcceptance: Record<string, unknown> | null = null;

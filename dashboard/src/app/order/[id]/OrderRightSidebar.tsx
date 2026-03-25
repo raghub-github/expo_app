@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
-import { useUserEmail } from "@/hooks/queries/useAuthQuery";
+import { useAuthOptional } from "@/providers/AuthProvider";
 import { ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
 
@@ -109,7 +109,8 @@ export default function OrderRightSidebar({
   orderRefunds = [],
   onRefundCreated,
 }: OrderRightSidebarProps) {
-  const userEmail = useUserEmail();
+  const auth = useAuthOptional();
+  const userEmail = auth?.user?.email ?? null;
   const [remarks, setRemarks] = useState<Remark[]>([]);
   const [remarkType, setRemarkType] = useState<string>("CUSTOMER");
   const [remarkPreset, setRemarkPreset] = useState<string>("");

@@ -13,6 +13,26 @@ import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
+type MenuImageBundleEntry = {
+  id?: string;
+  url?: string;
+  file_name?: string;
+  verification_status?: string;
+};
+
+function parseMenuImageBundle(value: unknown): MenuImageBundleEntry[] {
+  if (Array.isArray(value)) return value as MenuImageBundleEntry[];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? (parsed as MenuImageBundleEntry[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
@@ -129,6 +149,77 @@ export async function GET(req: NextRequest) {
           custom_store_type: step1FromStore.custom_store_type ?? existingStep1.custom_store_type,
         },
       };
+    }
+
+    // Always hydrate Step 3 menu attachments from DB media table so UI reflects latest data,
+    // even if registration_progress step3 is stale or missing.
+    try {
+      const sql = getSql();
+      const mediaRows = await sql`
+        SELECT id, source_entity, original_file_name, r2_key, public_url, menu_reference_image_urls, created_at
+        FROM merchant_store_media_files
+        WHERE store_id = ${storeInternalId}
+          AND media_scope = 'MENU_REFERENCE'
+          AND is_active = true
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC
+      `;
+      const rows = (Array.isArray(mediaRows) ? mediaRows : mediaRows ? [mediaRows] : []) as Array<{
+        id: number | string;
+        source_entity: string | null;
+        original_file_name: string | null;
+        r2_key: string | null;
+        public_url: string | null;
+        menu_reference_image_urls: unknown;
+      }>;
+
+      const imageRow =
+        rows.find((r) => r.source_entity === "ONBOARDING_MENU_IMAGE") ?? null;
+      const pdfRow =
+        rows.find((r) => r.source_entity === "ONBOARDING_MENU_PDF") ?? null;
+      const sheetRow =
+        rows.find((r) => r.source_entity === "ONBOARDING_MENU_SHEET") ?? null;
+
+      const imageBundle = imageRow ? parseMenuImageBundle(imageRow.menu_reference_image_urls) : [];
+      const imageUrls = imageBundle
+        .map((entry) => (typeof entry.url === "string" ? entry.url : ""))
+        .filter(Boolean);
+      const imageNames = imageBundle
+        .map((entry) => (typeof entry.file_name === "string" ? entry.file_name : ""))
+        .filter(Boolean);
+
+      const step3FromDb: Record<string, unknown> = {
+        menuUploadMode: imageUrls.length
+          ? "IMAGE"
+          : pdfRow
+            ? "PDF"
+            : sheetRow
+              ? "CSV"
+              : ((formDataWithStepStore.step3 as Record<string, unknown> | undefined)?.menuUploadMode ?? "IMAGE"),
+        menuImageUrls: imageUrls,
+        menuImageNames: imageNames,
+        menuPdfUrl: pdfRow?.public_url ?? null,
+        menuPdfFileName: pdfRow?.original_file_name ?? null,
+        menuPdfR2Key: pdfRow?.r2_key ?? null,
+        menuSpreadsheetUrl: sheetRow?.public_url ?? null,
+        menuSpreadsheetName: sheetRow?.original_file_name ?? null,
+        menuSpreadsheetR2Key: sheetRow?.r2_key ?? null,
+        // Keep only numeric ids (used by existing UI in a few places).
+        menuUploadIds: [
+          pdfRow?.id != null && Number.isFinite(Number(pdfRow.id)) ? Number(pdfRow.id) : null,
+          sheetRow?.id != null && Number.isFinite(Number(sheetRow.id)) ? Number(sheetRow.id) : null,
+        ].filter((v): v is number => v != null),
+      };
+
+      formDataWithStepStore = {
+        ...formDataWithStepStore,
+        step3: {
+          ...((formDataWithStepStore.step3 as Record<string, unknown>) ?? {}),
+          ...step3FromDb,
+        },
+      };
+    } catch {
+      // Non-fatal: if media query fails, keep existing progress payload.
     }
 
     let parent_name: string | null = null;

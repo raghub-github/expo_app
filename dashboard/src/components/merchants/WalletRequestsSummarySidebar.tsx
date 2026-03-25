@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { Wallet } from "lucide-react";
+import { Wallet, Loader2 } from "lucide-react";
 import { useMerchantWalletRequestsSummaryQuery } from "@/hooks/queries/useMerchantWalletRequestsSummaryQuery";
 
 function n(v: unknown): number {
@@ -10,10 +10,17 @@ function n(v: unknown): number {
   return Number.isFinite(x) ? x : 0;
 }
 
-export function WalletRequestsSummarySidebar({ storeId }: { storeId?: string | null }) {
-  const { data } = useMerchantWalletRequestsSummaryQuery(storeId);
+export function WalletRequestsSummarySidebar({
+  storeId,
+  collapsed = false,
+}: {
+  storeId?: string | null;
+  collapsed?: boolean;
+}) {
+  const { data, isPending, isFetching } = useMerchantWalletRequestsSummaryQuery(storeId);
 
-  const counts = data?.counts ?? {    PENDING: 0,
+  const counts = data?.counts ?? {
+    PENDING: 0,
     APPROVED: 0,
     REJECTED: 0,
     CANCELLED: 0,
@@ -28,28 +35,37 @@ export function WalletRequestsSummarySidebar({ storeId }: { storeId?: string | n
     return { pending, approved, rejected };
   }, [counts]);
 
-  // When a store is selected, keep the user inside that store scope (payments page).
-  // Global wallet-requests page is still available but we don't link to it from store context.
+  const loading = isPending || isFetching;
+
+  const tooltipLabel = useMemo(
+    () =>
+      `${badge.pending} pending · ${badge.approved} approved · ${badge.rejected} rejected · ${total} total`,
+    [badge.pending, badge.approved, badge.rejected, total]
+  );
+
   const href = storeId
     ? `/dashboard/merchants/stores/${encodeURIComponent(storeId)}/payments`
     : "/dashboard/merchants/wallet-requests";
 
-  return (
-    <Link
-      href={href}
-      className="block w-full rounded-lg border border-gray-200 bg-white p-3 text-left hover:bg-gray-50 transition-colors"
-    >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-            <Wallet className="h-4 w-4" />
-            Wallet requests
-          </div>
-          <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700">
-            {total} total
-          </span>        </div>
-        <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
-          {tooltipLabel}
-          <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
+  if (collapsed) {
+    return (
+      <Link
+        href={href}
+        title={`Wallet requests — ${tooltipLabel}`}
+        className="group relative flex w-full cursor-pointer items-center justify-center rounded-lg px-2 py-2.5 text-gray-900 transition-all duration-200 hover:bg-gray-200/80 hover:text-gray-900"
+      >
+        <Wallet className="h-5 w-5 flex-shrink-0" />
+        {loading ? (
+          <Loader2 className="absolute h-3.5 w-3.5 animate-spin text-gray-400" />
+        ) : badge.pending > 0 ? (
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[9px] font-bold text-white">
+            {badge.pending > 99 ? "99+" : badge.pending}
+          </span>
+        ) : null}
+        <div className="pointer-events-none absolute right-full z-50 mr-2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+          Wallet requests
+          <div className="mt-0.5 text-[10px] font-normal text-gray-300">{tooltipLabel}</div>
+          <div className="absolute right-0 top-1/2 translate-x-1 -translate-y-1/2 border-4 border-transparent border-l-gray-900" />
         </div>
       </Link>
     );
@@ -58,18 +74,22 @@ export function WalletRequestsSummarySidebar({ storeId }: { storeId?: string | n
   return (
     <Link
       href={href}
-      className="group relative flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-xs font-medium text-gray-900 transition-all duration-200 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
+      className="group relative grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg px-2 py-2 text-xs font-medium text-gray-900 transition-all duration-200 hover:-translate-x-1 hover:bg-gray-200/80 hover:text-gray-900"
     >
-      <div className="flex items-center gap-2">
-        <Wallet className="h-4 w-4 flex-shrink-0" />
-        <span className="flex-1 truncate text-xs font-medium">Wallet requests</span>
-        {loading ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-400" />
-        ) : (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800 text-[10px]">
-            {badge.pending} Pending
-          </span>
-        )}
+      <span className="flex size-5 items-center justify-center justify-self-start text-current">
+        <Wallet className="h-4 w-4 shrink-0" aria-hidden />
+      </span>
+      <span className="min-w-0 truncate text-left text-xs font-medium">Wallet requests</span>
+      {loading ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 justify-self-end animate-spin text-gray-400" aria-hidden />
+      ) : (
+        <span className="shrink-0 justify-self-end rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+          {badge.pending} Pending
+        </span>
+      )}
+      <div className="pointer-events-none absolute right-full z-50 mr-2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+        {tooltipLabel}
+        <div className="absolute right-0 top-1/2 translate-x-1 -translate-y-1/2 border-4 border-transparent border-l-gray-900" />
       </div>
     </Link>
   );

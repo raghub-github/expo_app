@@ -1,0 +1,39 @@
+# Dependencies & caches
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Next.js
+.next
+out
+
+# Git & VCS
+.git
+.gitignore
+.gitattributes
+
+# Environment & secrets
+.env
+.env.*
+
+# IDE & OS
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Tests & docs (not needed in image)
+coverage
+*.md
+!README.md
+
+# Misc
+*.log
+tmp
+temp
+.cursor
+agent-transcripts

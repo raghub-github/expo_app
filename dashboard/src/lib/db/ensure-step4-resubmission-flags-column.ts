@@ -12,7 +12,8 @@ export function ensureMerchantStoreDocumentsStep4JsonColumns(): Promise<void> {
       .unsafe(`
         ALTER TABLE public.merchant_store_documents
           ADD COLUMN IF NOT EXISTS step4_resubmission_flags jsonb NOT NULL DEFAULT '{}'::jsonb,
-          ADD COLUMN IF NOT EXISTS step4_rejection_details jsonb NOT NULL DEFAULT '{}'::jsonb
+          ADD COLUMN IF NOT EXISTS step4_rejection_details jsonb NOT NULL DEFAULT '{}'::jsonb,
+          ADD COLUMN IF NOT EXISTS step4_uploaded_by jsonb NOT NULL DEFAULT '{}'::jsonb
       `)
       .then(() => undefined)
       .catch((err) => {

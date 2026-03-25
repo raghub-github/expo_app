@@ -28,6 +28,7 @@ interface PermissionsData {
   exists: boolean;
   systemUserId: number | null;
   isSuperAdmin: boolean;
+  canTogglePortal?: boolean;
   roles?: string[];
   permissions?: string[];
   message?: string;

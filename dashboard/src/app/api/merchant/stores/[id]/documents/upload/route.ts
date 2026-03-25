@@ -14,7 +14,7 @@ import {
   rejectionDetailForDocType,
   rejectionRequiresNewFileUpload,
 } from "@/lib/merchant-store-document-rejection";
-import { uploadWithKey } from "@/lib/services/r2";
+import { deleteDocument, uploadWithKey } from "@/lib/services/r2";
 
 async function readUploadResubFlag(
   sql: ReturnType<typeof getSql>,
@@ -58,10 +58,122 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 60) || "file";
 }
 
+function extensionFromUploadFile(file: File): string {
+  const rawName = file.name || "";
+  const fromName = rawName.includes(".") ? rawName.slice(rawName.lastIndexOf(".")).toLowerCase() : "";
+  if (fromName && /^[.][a-z0-9]+$/.test(fromName)) return fromName;
+  const mime = (file.type || "").toLowerCase();
+  if (mime.includes("pdf")) return ".pdf";
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return ".jpg";
+  if (mime.includes("webp")) return ".webp";
+  return ".bin";
+}
+
+function documentDisplayName(
+  docType: (typeof DOC_TYPES)[number],
+  aadhaarSide: "front" | "back" | null
+): string {
+  if (docType === "aadhaar") {
+    return aadhaarSide === "back" ? "aadhaar_back" : "aadhaar_front";
+  }
+  if (docType === "trade_license") return "trade_license";
+  return docType;
+}
+
 // We intentionally avoid embedding absolute hostnames in stored URLs.
 // All document URLs will be relative `/api/attachments/proxy?...` paths.
 function buildProxyUrl(r2Key: string): string {
   return `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+}
+
+function extractKeyFromProxyOrUrl(value: unknown): string | null {
+  const v = typeof value === "string" ? value.trim() : "";
+  if (!v) return null;
+  if (v.includes("/api/attachments/proxy") && v.includes("key=")) {
+    try {
+      const u = new URL(v, "http://dummy");
+      const k = u.searchParams.get("key");
+      return k ? decodeURIComponent(k) : null;
+    } catch {
+      return null;
+    }
+  }
+  if (v.startsWith("http://") || v.startsWith("https://")) {
+    try {
+      const u = new URL(v);
+      return u.pathname.replace(/^\/+/, "") || null;
+    } catch {
+      return null;
+    }
+  }
+  return v.replace(/^\/+/, "") || null;
+}
+
+async function readCurrentDocumentUrl(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  docType: (typeof DOC_TYPES)[number],
+  aadhaarSide: "front" | "back" | null
+): Promise<string | null> {
+  const runner = sql as { unsafe: (q: string, p?: unknown[]) => Promise<unknown[]> };
+  let query = "";
+  switch (docType) {
+    case "pan":
+      query = "SELECT pan_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "gst":
+      query = "SELECT gst_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "aadhaar":
+      if (aadhaarSide === "back") {
+        query = "SELECT aadhaar_document_metadata AS m FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      } else {
+        query = "SELECT aadhaar_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      }
+      break;
+    case "fssai":
+      query = "SELECT fssai_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "drug_license":
+      query = "SELECT drug_license_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "trade_license":
+      query = "SELECT trade_license_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "shop_establishment":
+      query = "SELECT shop_establishment_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "udyam":
+      query = "SELECT udyam_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "other":
+      query = "SELECT other_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "pharmacist_certificate":
+      query =
+        "SELECT pharmacist_certificate_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "pharmacy_council_registration":
+      query =
+        "SELECT pharmacy_council_registration_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+    case "bank_proof":
+      query = "SELECT bank_proof_document_url AS u FROM merchant_store_documents WHERE store_id = $1 LIMIT 1";
+      break;
+  }
+  if (!query) return null;
+  const rows = await runner.unsafe(query, [storeId]);
+  const row0 = Array.isArray(rows) ? rows[0] : rows;
+  if (!row0 || typeof row0 !== "object" || row0 === null) return null;
+  if (docType === "aadhaar" && aadhaarSide === "back") {
+    const meta = "m" in row0 ? (row0 as { m?: unknown }).m : null;
+    if (!meta || typeof meta !== "object") return null;
+    const back = (meta as { back_url?: unknown }).back_url;
+    return typeof back === "string" ? back : null;
+  }
+  const raw = "u" in row0 ? (row0 as { u?: unknown }).u : null;
+  return typeof raw === "string" ? raw : null;
 }
 
 export async function POST(
@@ -89,6 +201,8 @@ export async function POST(
         { status: 401 }
       );
     }
+    const uploadedBy = user.id;
+    const uploadedByEmail = user.email;
 
     const allowed =
       (await isSuperAdmin(user.id, user.email)) ||
@@ -144,6 +258,8 @@ export async function POST(
           ? "back"
           : "front"
         : null;
+    const uploadedByKey =
+      docType === "aadhaar" && aadhaarSide === "back" ? "aadhaar_back" : docType;
 
     if (file.size > MAX_FILE_BYTES) {
       return NextResponse.json(
@@ -154,12 +270,33 @@ export async function POST(
 
     // Use external merchant/child codes in the key so URLs match the
     // docs-style paths (docs/merchants/GMMP.../stores/GMMC.../onboarding/documents/...).
-    const parentCode =
-      (store.parent?.parent_merchant_id && String(store.parent.parent_merchant_id).trim()) ||      String(store.parent_id ?? store.id);
+    let parentIdForPath =
+      typeof store.parent_id === "number" && Number.isFinite(store.parent_id)
+        ? store.parent_id
+        : null;
+    if (parentIdForPath == null) {
+      const sqlFallback = getSql();
+      const parentRows = await sqlFallback`
+        SELECT parent_id
+        FROM merchant_stores
+        WHERE id = ${storeId}
+        LIMIT 1
+      `;
+      const parentRow = Array.isArray(parentRows) ? parentRows[0] : parentRows;
+      if (parentRow && (parentRow as { parent_id?: unknown }).parent_id != null) {
+        const parsed = Number((parentRow as { parent_id: unknown }).parent_id);
+        if (Number.isFinite(parsed)) parentIdForPath = parsed;
+      }
+    }
+    if (parentIdForPath == null) {
+      return NextResponse.json(
+        { success: false, error: "Parent id not found for store", code: "PARENT_ID_MISSING" },
+        { status: 400 }
+      );
+    }
     const storeCode = String(store.store_id || storeId);
     const timestamp = Date.now();
-    const safeName = sanitizeFileName(file.name);
-    const ext = file.name.split(".").pop()?.toLowerCase() || "pdf";
+    const ext = extensionFromUploadFile(file);
 
     // Match Partner Site naming for Aadhaar front/back so keys look like:
     // docs/merchants/{parent}/stores/{store}/onboarding/documents/aadhar_front_...
@@ -170,17 +307,19 @@ export async function POST(
           : "aadhar_front"
         : docType;
 
-    const r2Key = `docs/merchants/${parentCode}/stores/${storeCode}/onboarding/documents/${baseDocName}_${timestamp}_${safeName}.${ext}`;
+    const r2Key = `docs/merchants/${parentIdForPath}/stores/${storeCode}/onboarding/documents/${baseDocName}_${timestamp}${ext}`;
 
     await uploadWithKey(file, r2Key);
 
     const publicUrl = buildProxyUrl(r2Key);
 
     const sql = getSql();
+    const previousUrl = await readCurrentDocumentUrl(sql, storeId, docType, aadhaarSide);
+    const previousKey = extractKeyFromProxyOrUrl(previousUrl);
 
     try {
       await ensureMerchantStoreDocumentsStep4JsonColumns();
-      const displayName = safeName;
+      const displayName = documentDisplayName(docType, aadhaarSide);
 
       switch (docType) {
         case "pan": {
@@ -210,6 +349,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -241,6 +386,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -277,6 +428,12 @@ export async function POST(
                     END
                     ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
                   END,
+                  step4_uploaded_by = jsonb_set(
+                    COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                    ARRAY[${uploadedByKey}]::text[],
+                    to_jsonb(${uploadedByEmail}::text),
+                    true
+                  ),
                   updated_at = now()
             `;
           } else {
@@ -306,6 +463,12 @@ export async function POST(
                     END
                     ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
                   END,
+                  step4_uploaded_by = jsonb_set(
+                    COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                    ARRAY[${uploadedByKey}]::text[],
+                    to_jsonb(${uploadedByEmail}::text),
+                    true
+                  ),
                   updated_at = now()
             `;
           }
@@ -337,6 +500,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -368,6 +537,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -399,6 +574,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -430,6 +611,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -461,6 +648,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -492,6 +685,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -523,6 +722,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -554,6 +759,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -585,6 +796,12 @@ export async function POST(
                 END
                 ELSE COALESCE(merchant_store_documents.step4_resubmission_flags, '{}'::jsonb)
               END,
+              step4_uploaded_by = jsonb_set(
+                COALESCE(merchant_store_documents.step4_uploaded_by, '{}'::jsonb),
+                ARRAY[${uploadedByKey}]::text[],
+                to_jsonb(${uploadedByEmail}::text),
+                true
+              ),
               updated_at = now()
           `;
           break;
@@ -598,10 +815,20 @@ export async function POST(
       );
     }
 
+    if (previousKey && previousKey !== r2Key) {
+      try {
+        await deleteDocument(previousKey);
+      } catch (e) {
+        console.warn("[documents/upload] old R2 delete failed:", previousKey, e);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       url: publicUrl,
       docType,
+      uploaded_by: uploadedBy,
+      uploaded_by_email: uploadedByEmail,
       message: "File uploaded and URL saved.",
     });
   } catch (e) {

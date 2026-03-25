@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";import Link from "next/link";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import {
   Store,
   Package,
@@ -51,18 +52,6 @@ interface RiderMetrics {
 }
 
 type MetricsData = MerchantMetrics | RiderMetrics;
-
-interface AreaManagerListItem {
-  id: number;
-  userId: number;
-  managerType: string;
-  areaCode: string | null;
-  localityCode: string | null;
-  city: string | null;
-  status: string;
-  fullName: string | null;
-  email: string | null;
-}
 
 function useDebouncedValue<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -140,6 +129,7 @@ function SuperAdminAreaManagerList() {
     gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     placeholderData: (prev) => prev,
+    enabled: type === "MERCHANT",
   });
   const { data: riderListData, isFetching: riderLoading } = useQuery<{
     success: boolean;
@@ -157,6 +147,7 @@ function SuperAdminAreaManagerList() {
     gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     placeholderData: (prev) => prev,
+    enabled: type === "RIDER",
   });
 
   const list: AreaManagerListItem[] = useMemo(() => {
@@ -363,8 +354,10 @@ export function AreaManagerDashboardClient() {
     placeholderData: (prev) => prev,
   });
 
-  // Preload both merchant and rider lists so tab switching feels instant.
+  // Preload manager lists only for super admin to avoid 403 calls for scoped roles.
   useEffect(() => {
+    const metrics = data?.data;
+    if (!metrics || metrics.managerType !== "MERCHANT" || !metrics.isSuperAdmin) return;
     queryClient.prefetchQuery({
       queryKey: ["area-managers", "merchant"],
       queryFn: async () => {
@@ -373,6 +366,7 @@ export function AreaManagerDashboardClient() {
         });
         return res.json();
       },
+      staleTime: 5 * 60 * 1000,
     });
     queryClient.prefetchQuery({
       queryKey: ["area-managers", "rider"],
@@ -382,8 +376,9 @@ export function AreaManagerDashboardClient() {
         });
         return res.json();
       },
+      staleTime: 5 * 60 * 1000,
     });
-  }, [queryClient]);
+  }, [queryClient, data?.data]);
 
   if (isLoading && !data) {    return (
       <div className="flex items-center justify-center py-12">

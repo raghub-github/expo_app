@@ -90,7 +90,7 @@ export function useStoreOperationsQuery(storeId: string | null) {
 }
 
 /** Dashboard/merchants page: aggregated stats (total, verified, pending, etc.). Cached 2min for fast revisit. */
-export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string) {
+export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string, storeType?: string) {
   const auth = useAuthOptional();
   const sessionUser = auth?.user;
   const permissions = auth?.permissions;
@@ -103,10 +103,11 @@ export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string) 
   const params = new URLSearchParams();
   if (fromDate) params.set("fromDate", fromDate);
   if (toDate) params.set("toDate", toDate);
+  if (storeType) params.set("storeType", storeType);
   const qs = params.toString();
   const url = `/api/merchant/stores/stats${qs ? `?${qs}` : ""}`;
   return useQuery({
-    queryKey: queryKeys.merchantStores.stats(fromDate, toDate),
+    queryKey: queryKeys.merchantStores.stats(fromDate, toDate, storeType),
     queryFn: () =>
       fetchJson<{
         success: boolean;
@@ -114,15 +115,14 @@ export function useMerchantStoresStatsQuery(fromDate?: string, toDate?: string) 
         verified?: number;
         pending?: number;
         rejected?: number;
+        drafted?: number;
         new?: number;
       }>(url),
     enabled: Boolean(isAllowed && isOnMerchantsHome),
     staleTime: STALE_MS,
     gcTime: GC_TIME_MS,
     refetchOnWindowFocus: false,
-    refetchOnMount: false,
-    // Keep previous stats visible while refetching on date/filter changes for smooth UX.
-    placeholderData: (prev) => prev,
+    refetchOnMount: true,
   });
 }
 

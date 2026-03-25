@@ -53,9 +53,11 @@ export async function GET(request: NextRequest) {
 
     const fromDate = request.nextUrl.searchParams.get("fromDate")?.trim() || undefined;
     const toDate = request.nextUrl.searchParams.get("toDate")?.trim() || undefined;
+    const storeType = request.nextUrl.searchParams.get("storeType")?.trim() || undefined;
     const stats = await countMerchantStoresByStatus(areaManagerId, {
       createdFrom: fromDate,
       createdTo: toDate,
+      storeType: storeType && storeType !== "" ? storeType : undefined,
     });
     return NextResponse.json({ success: true, ...stats });
   } catch (e) {

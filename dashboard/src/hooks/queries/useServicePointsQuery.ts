@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 
@@ -77,29 +76,9 @@ async function fetchServicePoints(): Promise<ServicePoint[]> {
  * Uses React Query for automatic caching and refetching
  */
 export function useServicePointsQuery() {
-  // #region agent log
-  const queryCallTime = Date.now();
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useServicePointsQuery.ts:25',message:'useServicePointsQuery called',data:{queryCallTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
-  
   const query = useQuery({
     queryKey: queryKeys.servicePoints.list(),
-    queryFn: async () => {
-      // #region agent log
-      const fetchStartTime = Date.now();
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useServicePointsQuery.ts:30',message:'Starting service points fetch',data:{fetchStartTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      
-      const result = await fetchServicePoints();
-      
-      // #region agent log
-      const fetchEndTime = Date.now();
-      const fetchDuration = fetchEndTime - fetchStartTime;
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useServicePointsQuery.ts:35',message:'Service points fetch completed',data:{fetchDuration,resultCount:result.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      
-      return result;
-    },
+    queryFn: fetchServicePoints,
     ...getCacheConfig(CacheTier.STATIC), // Service points are static data
     retry: (failureCount, error) => {
       if (error instanceof Error && error.message === SESSION_EXPIRED_MESSAGE) return false;
@@ -111,13 +90,7 @@ export function useServicePointsQuery() {
     },
     retryDelay: (attemptIndex) => Math.min(800 * 2 ** attemptIndex, 5000),
   });
-  
-  // #region agent log
-  useEffect(() => {
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useServicePointsQuery.ts:45',message:'Query state changed',data:{isLoading:query.isLoading,isFetching:query.isFetching,isStale:query.isStale,dataUpdatedAt:query.dataUpdatedAt,status:query.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  }, [query.isLoading, query.isFetching, query.isStale, query.status]);
-  // #endregion
-  
+
   return query;
 }
 

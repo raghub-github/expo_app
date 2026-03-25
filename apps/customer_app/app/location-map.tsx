@@ -16,7 +16,7 @@ import {
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import MapView, { Region } from "react-native-maps";
+import MapView, { Circle, Region } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
@@ -35,6 +35,7 @@ const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
 
 const GEOCODE_DEBOUNCE_MS = 400;
+const PIN_RANGE_RADIUS_METERS = 120;
 
 export default function LocationMapScreen() {
   const router = useRouter();
@@ -124,10 +125,14 @@ export default function LocationMapScreen() {
     setLoading(true);
     try {
       const result = await reverseGeocode(centerCoord.longitude, centerCoord.latitude);
-      setAddressAndCoords(result, {
-        latitude: centerCoord.latitude,
-        longitude: centerCoord.longitude,
-      });
+      setAddressAndCoords(
+        result,
+        {
+          latitude: centerCoord.latitude,
+          longitude: centerCoord.longitude,
+        },
+        { source: "selected" }
+      );
       addRecentLocation({
         latitude: centerCoord.latitude,
         longitude: centerCoord.longitude,
@@ -175,6 +180,13 @@ export default function LocationMapScreen() {
           onRegionChangeComplete={handleRegionChangeComplete}
           scrollEnabled
           zoomEnabled
+        />
+        <Circle
+          center={centerCoord}
+          radius={PIN_RANGE_RADIUS_METERS}
+          strokeWidth={1.5}
+          strokeColor="rgba(59,130,246,0.45)"
+          fillColor="rgba(59,130,246,0.18)"
         />
         {/* Fixed center pin */}
         <View style={styles.pinOverlay} pointerEvents="none">

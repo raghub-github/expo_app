@@ -4,7 +4,7 @@
  * Slide-from-right transition, keyboard auto-focus, debounced search, voice support.
  */
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useMemo } from "react";
 import {
   View,
   Text,
@@ -33,9 +33,15 @@ import Animated, {
 } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useLocalSearchParams } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  fetchUserAppCategories,
+  type UserAppCategoryItem,
+} from "@/services/userAppCategory.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
 import { useRecentSearchStore } from "@/store/recentSearchStore";
 import { useLocationStore } from "@/store/locationStore";
@@ -45,34 +51,84 @@ import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import {
-  SEARCH_CATEGORIES,
   SEARCH_CATEGORY_IMAGES,
   MOCK_DISHES,
-  type SearchCategory,
   type SearchDish,
 } from "@/constants/search";
 import type { MerchantSummary } from "@/services/merchant.service";
 
 const { width, height } = Dimensions.get("window");
 const PAD = 16;
-const COLS = 3;
+const GRID_COLS = 4;
 const GRID_GAP = 8;
-const CARD_WIDTH = (width - PAD * 2 - GRID_GAP * (COLS - 1)) / COLS;
+const CARD_WIDTH = (width - PAD * 2 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
 const CARD_IMAGE_HEIGHT = CARD_WIDTH * 0.72;
+const SEARCH_CATEGORY_STORE_TYPE = "FOOD";
 
 const PLACEHOLDER = "Restaurant name or a dish...";
 const ACCENT_RED = "#dc2626";
 
 const EMPTY_IMAGE = require("../public/img/wrong.png");
+const DEFAULT_CATEGORY_IMAGE = require("../public/img/ndf.png");
+
+function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
+  const byId = new Map<number, UserAppCategoryItem>();
+  for (const r of rows) {
+    if (!byId.has(r.id)) byId.set(r.id, r);
+  }
+  const byName = new Map<string, UserAppCategoryItem>();
+  for (const r of byId.values()) {
+    const key = r.name.trim().toLowerCase();
+    const cur = byName.get(key);
+    if (!cur || r.displayOrder < cur.displayOrder || (r.displayOrder === cur.displayOrder && r.id < cur.id)) {
+      byName.set(key, r);
+    }
+  }
+  return [...byName.values()].sort(
+    (a, b) => a.displayOrder - b.displayOrder || a.id - b.id
+  );
+}
+
+type MindGridRow = { id: string; name: string; slug: string; imageUrl: string | null };
+
+function MindGridCategoryImage({ imageUrl }: { imageUrl: string | null }) {
+  const [failed, setFailed] = React.useState(false);
+  const uri = imageUrl ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null;
+  React.useEffect(() => {
+    setFailed(false);
+  }, [imageUrl]);
+  if (uri && !failed) {
+    return (
+      <Image
+        source={{ uri }}
+        style={styles.gridImage}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return <Image source={DEFAULT_CATEGORY_IMAGE} style={styles.gridImage} resizeMode="contain" />;
+}
+
+function normalizeSearchParam(raw: string | string[] | undefined): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) return raw[0] ?? "";
+  return "";
+}
 
 export default function SearchScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ voice?: string }>();
+  const params = useLocalSearchParams<{ voice?: string; q?: string | string[] }>();
   const insets = useSafeAreaInsets();
   const voiceMode = params.voice === "1";
 
-  const [query, setQuery] = React.useState("");
+  const [query, setQuery] = React.useState(() => normalizeSearchParam(params.q));
   const inputRef = useRef<TextInput>(null);
+
+  React.useEffect(() => {
+    const next = normalizeSearchParam(params.q);
+    if (next) setQuery(next);
+  }, [params.q]);
   const { items: recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, hydrate } = useRecentSearchStore();
   const { coords } = useLocationStore();
   const { results, isLoading } = useDebouncedSearch(
@@ -93,6 +149,23 @@ export default function SearchScreen() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  const { data: apiMindCategories = [], isPending: mindCategoriesPending } = useQuery({
+    queryKey: ["userAppCategories", SEARCH_CATEGORY_STORE_TYPE, "searchMindGrid"],
+    queryFn: () => fetchUserAppCategories({ storeType: SEARCH_CATEGORY_STORE_TYPE }),
+    staleTime: 10 * 60 * 1000,
+    retry: 1,
+  });
+
+  const mindGridData = useMemo((): MindGridRow[] => {
+    const deduped = dedupeUserAppCategories(apiMindCategories ?? []);
+    return deduped.map((r) => ({
+      id: String(r.id),
+      name: r.name,
+      slug: String(r.id),
+      imageUrl: r.imageUrl,
+    }));
+  }, [apiMindCategories]);
 
   useEffect(() => {
     if (!voiceMode) {
@@ -222,12 +295,17 @@ export default function SearchScreen() {
             </View>
           )}
 
-          {/* Category grid – What's on your mind? */}
+          {/* Category grid – same user_app_category API as home / category browse */}
           <Text style={[styles.sectionTitle, styles.categoryTitle]}>WHAT'S ON YOUR MIND?</Text>
+          {mindCategoriesPending ? (
+            <View style={styles.mindGridLoading}>
+              <ActivityIndicator size="small" color={GatiMitraColors.emerald} />
+            </View>
+          ) : (
           <FlatList
-            data={SEARCH_CATEGORIES}
+            data={mindGridData}
             keyExtractor={(item) => item.id}
-            numColumns={COLS}
+            numColumns={GRID_COLS}
             scrollEnabled={false}
             columnWrapperStyle={styles.gridRow}
             contentContainerStyle={styles.gridListContent}
@@ -237,17 +315,16 @@ export default function SearchScreen() {
                 onPress={() => handleCategoryPress(cat.slug)}
                 activeOpacity={0.85}
               >
-                <View style={[styles.gridImageWrap, GatiMitraColors.searchShadow]}>
-                  <Image
-                    source={SEARCH_CATEGORY_IMAGES[cat.slug] ?? SEARCH_CATEGORY_IMAGES.default}
-                    style={styles.gridImage}
-                    resizeMode="cover"
-                  />
+                <View style={styles.gridImageWrap}>
+                  <MindGridCategoryImage imageUrl={cat.imageUrl} />
                 </View>
-                <Text style={styles.gridLabel} numberOfLines={1}>{cat.name}</Text>
+                <Text style={styles.gridLabel} numberOfLines={2}>
+                  {cat.name}
+                </Text>
               </TouchableOpacity>
             )}
           />
+          )}
           <BrandingFooter />
         </ScrollView>
       ) : (
@@ -658,6 +735,11 @@ const styles = StyleSheet.create({
     gap: GRID_GAP,
     marginBottom: GRID_GAP,
   },
+  mindGridLoading: {
+    paddingVertical: 32,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   gridItem: {
     width: CARD_WIDTH,
     alignItems: "center",
@@ -667,7 +749,7 @@ const styles = StyleSheet.create({
     width: CARD_WIDTH,
     height: CARD_IMAGE_HEIGHT,
     borderRadius: 12,
-    backgroundColor: "#F5F5F5",
+    backgroundColor: "transparent",
     overflow: "hidden",
     marginBottom: 6,
   },

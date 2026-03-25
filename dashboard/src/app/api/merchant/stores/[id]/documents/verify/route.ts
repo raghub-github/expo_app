@@ -105,6 +105,7 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const docTypeRaw = body.docType as string | undefined;
     const action = (body.action as string) === "reject" ? "reject" : "verify";
+    const override = !!body.override || !!body.admin_override;
     let rejectionReason =
       typeof body.rejection_reason === "string" ? body.rejection_reason.trim() || null : null;
 
@@ -180,7 +181,7 @@ export async function POST(
           : null;
       const detail = rejectionDetailForDocType(rdRoot, pf);
       const needsNewFile = rejectionRequiresNewFileUpload(detail);
-      if (rr && !resubmitted && needsNewFile) {
+      if (!override && rr && !resubmitted && needsNewFile) {
         return NextResponse.json(
           {
             success: false,
@@ -213,6 +214,7 @@ export async function POST(
         success: true,
         docType,
         action: "reject",
+        rejection_reason: rejectionReason,
         message: "Document marked as rejected.",
       });
     }

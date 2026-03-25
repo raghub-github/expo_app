@@ -207,7 +207,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [closeReason, setCloseReason] = useState('');
   const [closeReasonOther, setCloseReasonOther] = useState('');
   const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
-  const [openingTimeForClose, setOpeningTimeForClose] = useState('09:00');
+  const [openingTimeForClose, setOpeningTimeForClose] = useState<string | null>(null);
   const [showTurnOnModal, setShowTurnOnModal] = useState(false);
   const [turnOnLoading, setTurnOnLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() => {
@@ -564,13 +564,13 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     fetch(`/api/merchant/stores/${storeId}/store-operations`)
       .then((res) => res.json())
       .then((data) => {
-        if (data.today_slots?.[0]?.start) setOpeningTimeForClose(data.today_slots[0].start);
+        setOpeningTimeForClose(data.today_slots?.[0]?.start ?? null);
       })
       .catch(() => {});
   }, [showStoreCloseModal, storeId]);
 
-  const formatTimeHMS = useCallback((t: string) => {
-    if (!t) return '00:00:00';
+  const formatTimeHMS = useCallback((t: string | null) => {
+    if (!t) return '--';
     const parts = t.split(':');
     if (parts.length === 2) return `${t}:00`;
     if (parts.length === 1) return `${t.padStart(2, '0')}:00:00`;
@@ -585,7 +585,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     if (closeClosureType === 'temporary') {
       const closedUntil = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
       durationMinutes = Math.max(1, Math.round((closedUntil.getTime() - now.getTime()) / (1000 * 60)));
-    } else if (closeClosureType === 'today') {
+    } else if (closeClosureType === 'today' && openingTimeForClose) {
       const [h, m] = openingTimeForClose.split(':').map(Number);
       const tomorrowOpen = new Date(now);
       tomorrowOpen.setDate(tomorrowOpen.getDate() + 1);
@@ -616,7 +616,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         else if (closeClosureType === 'temporary') {
           const until = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
           toast(`Store closed until ${until.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}. You can also turn it ON manually anytime.`);
-        } else toast(`Store closed for today. Reopens tomorrow at ${openingTimeForClose}`);
+        } else toast(`Store closed for today. Reopens tomorrow at ${openingTimeForClose || 'scheduled opening time'}`);
       } else {
         toast('Error: ' + (data.error || 'Failed to close store'));
       }
@@ -1676,7 +1676,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 <input type="radio" name="closureType" checked={closeClosureType === 'today'} onChange={() => setCloseClosureType('today')} className="w-4 h-4" />
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-gray-900">Close for Today</p>
-                  <p className="text-xs text-gray-600">Reopen tomorrow at {formatTimeHMS(openingTimeForClose)}</p>
+                  <p className="text-xs text-gray-600">Reopen tomorrow at {openingTimeForClose ? formatTimeHMS(openingTimeForClose) : 'scheduled opening time'}</p>
                 </div>
               </label>
               <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${closeClosureType === 'manual_hold' ? 'bg-amber-50 border-amber-400' : 'border-gray-200 hover:border-amber-200'}`}>

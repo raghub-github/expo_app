@@ -50,6 +50,13 @@ const TicketSettingsIcon = dynamic(async () => {
   };
 });
 
+const CategoriesIcon = dynamic(async () => {
+  const { LayoutGrid } = await import("lucide-react");
+  return function CategoriesIcon(props: { className?: string }) {
+    return <LayoutGrid {...props} />;
+  };
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -90,6 +97,14 @@ const adminOptions: AdminOption[] = [
     description: "Manage ticket groups, tags, and reference data for the ticket dashboard",
     color: "text-indigo-600",
     bgColor: "bg-indigo-50 hover:bg-indigo-100",
+  },
+  {
+    name: "Categories",
+    href: "/dashboard/super-admin/customer-app-categories",
+    Icon: CategoriesIcon,
+    description: "Manage home and browse categories shown in the customer app",
+    color: "text-cyan-600",
+    bgColor: "bg-cyan-50 hover:bg-cyan-100",
   },
 ];
 
