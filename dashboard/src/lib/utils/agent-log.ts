@@ -1,49 +1,32 @@
 /**
- * Silent agent logging utility
- * All calls are fire-and-forget and will never throw errors or cause unhandled rejections
- */
-
-/**
- * Send a log to the agent logging service
- * This function is completely silent and will never throw errors
+ * Optional debug logging hook (previously posted to a local ingest server).
+ * Disabled by default — avoids ERR_CONNECTION_REFUSED noise in the browser.
+ *
+ * To enable: set NEXT_PUBLIC_AGENT_LOG_URL to your ingest endpoint (https only recommended).
  */
 export function agentLog(
-  location: string,
-  message: string,
-  data?: Record<string, any>
+  _location: string,
+  _message: string,
+  _data?: Record<string, unknown>
 ): void {
-  // Only run in browser
-  if (typeof window === "undefined") {
-    return;
-  }
+  if (typeof window === "undefined") return;
+  const url = process.env.NEXT_PUBLIC_AGENT_LOG_URL?.trim();
+  if (!url) return;
 
-  // Use setTimeout to make it completely async and non-blocking
   setTimeout(() => {
     try {
-      // Create a promise but don't await it - completely fire-and-forget
-      const logPromise = fetch(
-        "http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            location,
-            message,
-            data: data || {},
-            timestamp: Date.now(),
-            sessionId: "debug-session",
-            runId: "run1",
-            hypothesisId: "A",
-          }),
-        }
-      );
-
-      // Add catch handler that does nothing - completely silent
-      logPromise.catch(() => {
-        // Silently ignore all errors
-      });
+      void fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: _location,
+          message: _message,
+          data: _data ?? {},
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
     } catch {
-      // Silently ignore all errors
+      /* ignore */
     }
   }, 0);
 }

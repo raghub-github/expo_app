@@ -10,12 +10,13 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
   Platform,
   ScrollView,
   Image,
   Modal,
   Pressable,
+  RefreshControl,
+  useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { createAnimatedComponent } from "react-native-reanimated";
@@ -25,6 +26,11 @@ import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
+import {
+  fetchUserAppCategories,
+  type UserAppCategoryItem,
+} from "@/services/userAppCategory.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
@@ -32,23 +38,19 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import { RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { GMHeader } from "@/components/GMHeader";
 import { GMSearchBar } from "@/components/GMSearchBar";
-import type { CategoryItem } from "@/components/GMCategoryRail";
 import { GMRestaurantCardV2 } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const AnimatedScrollView = createAnimatedComponent(ScrollView);
 
-const { width } = Dimensions.get("window");
 const PAGE_PAD = 16;
 const SECTION_GAP = 24;
 const SECTION_GAP_SM = 10;
-const GRID_COLS = 4;
-const GRID_GAP = 14;
-const CATEGORY_CARD_SIZE =
-  (width - PAGE_PAD * 2 - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
-const CATEGORY_IMAGE_SIZE = 46;
-const CIRCLE_SIZE = 52;
+/** Vertical gap between the two tiles in each column. */
+const RAIL_ROW_GAP = 10;
+/** Target 4 category columns on screen (2 rows of pairs → 8 items visible before scroll). */
+const CATEGORY_RAIL_TARGET_COLUMNS = 4;
 
 const OFFERS_SECTION_PAD = 14;
 const OFFER_CARD_WIDTH = 260;
@@ -72,52 +74,100 @@ const DELIVERY_OPTIONS: { id: DeliveryFilter; label: string }[] = [
 
 const CUISINE_OPTIONS = ["North Indian", "South Indian", "Chinese", "Fast Food", "Bakery", "Desserts"];
 
-const FOOD_CATEGORY_IMAGES: Record<string, ReturnType<typeof require>> = {
-  "1": require("../../public/img/biryani.png"),
-  "2": require("../../public/img/pizza.png"),
-  "3": require("../../public/img/Cake.png"),
-  "4": require("../../public/img/ndf.png"),
-  "5": require("../../public/img/burger.png"),
-  "6": require("../../public/img/thali.png"),
-  "7": require("../../public/img/vegbiryani.png"),
-  "8": require("../../public/img/Pav Bhaji.png"),
-  "9": require("../../public/img/Paratha.png"),
-  "10": require("../../public/img/Dosa.png"),
-  "11": require("../../public/img/Noodles.png"),
-  "12": require("../../public/img/gulabjamun.png"),
-};
+const HOME_CATEGORY_STORE_TYPE = "FOOD";
 
-const FOOD_CATEGORIES = [
-  { id: "1", name: "Biryani", slug: "biryani" },
-  { id: "2", name: "Pizza", slug: "pizza" },
-  { id: "3", name: "Cake", slug: "cake" },
-  { id: "4", name: "Kadai Paneer", slug: "kadai-paneer" },
-  { id: "5", name: "Burger", slug: "burger" },
-  { id: "6", name: "Thali", slug: "thali" },
-  { id: "7", name: "Butter Chicken", slug: "chicken" },
-  { id: "8", name: "Pav Bhaji", slug: "pav-bhaji" },
-  { id: "9", name: "North Indian", slug: "north-indian" },
-  { id: "10", name: "South Indian", slug: "south-indian" },
-  { id: "11", name: "Chinese", slug: "chinese" },
-  { id: "12", name: "Desserts", slug: "desserts" },
-];
+const DEFAULT_CATEGORY_GRID_IMAGE = require("../../public/img/ndf.png");
 
-function buildCategoryItems(): CategoryItem[] {
-  return FOOD_CATEGORIES.map((c) => ({
-    id: c.id,
-    name: c.name,
-    slug: c.slug,
-    image: FOOD_CATEGORY_IMAGES[c.id] ?? FOOD_CATEGORY_IMAGES["4"],
-  }));
+function dedupeUserAppCategories(rows: UserAppCategoryItem[]): UserAppCategoryItem[] {
+  const byId = new Map<number, UserAppCategoryItem>();
+  for (const r of rows) {
+    if (!byId.has(r.id)) byId.set(r.id, r);
+  }
+  const byName = new Map<string, UserAppCategoryItem>();
+  for (const r of byId.values()) {
+    const key = r.name.trim().toLowerCase();
+    const cur = byName.get(key);
+    if (!cur || r.displayOrder < cur.displayOrder || (r.displayOrder === cur.displayOrder && r.id < cur.id)) {
+      byName.set(key, r);
+    }
+  }
+  return [...byName.values()].sort(
+    (a, b) => a.displayOrder - b.displayOrder || a.id - b.id
+  );
 }
 
-const CATEGORY_ITEMS = buildCategoryItems();
+function HomeCategoryGridImage({ imageUrl, size }: { imageUrl: string | null; size: number }) {
+  const [failed, setFailed] = useState(false);
+  const uri = imageUrl ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null;
+  useEffect(() => {
+    setFailed(false);
+  }, [imageUrl]);
+  if (uri && !failed) {
+    return (
+      <Image
+        source={{ uri }}
+        style={{ width: size, height: size }}
+        resizeMode="contain"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <Image source={DEFAULT_CATEGORY_GRID_IMAGE} style={{ width: size, height: size }} resizeMode="contain" />
+  );
+}
+
+function chunkIntoPairs<T>(arr: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += 2) {
+    out.push(arr.slice(i, i + 2));
+  }
+  return out;
+}
+
+type CategoryRailLayout = {
+  itemW: number;
+  columnGap: number;
+  circle: number;
+  imgSize: number;
+};
+
+/** Sizes the rail so N columns fit in the first viewport without clipping. */
+function computeCategoryRailMetrics(windowWidth: number, insetRight: number): CategoryRailLayout {
+  const n = CATEGORY_RAIL_TARGET_COLUMNS;
+  const usable = Math.max(
+    0,
+    windowWidth - PAGE_PAD - Math.max(4, insetRight) - 2
+  );
+  let columnGap = 6;
+  let itemW = (usable - (n - 1) * columnGap) / n;
+  if (itemW < 52) {
+    columnGap = 4;
+    itemW = (usable - (n - 1) * columnGap) / n;
+  }
+  if (itemW < 50) {
+    columnGap = 3;
+    itemW = (usable - (n - 1) * columnGap) / n;
+  }
+  itemW = Math.floor(Math.max(48, itemW));
+  const circle = Math.min(52, Math.max(44, Math.round(itemW - 6)));
+  const imgSize = Math.round(circle * 0.88);
+  return { itemW, columnGap, circle, imgSize };
+}
 
 export default function FoodMerchantsScreen() {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const router = useRouter();
-  const { address, coords, permissionStatus, refetchLocation, requestPermissionAndFetch } =
-    useLocationStore();
+  const {
+    address,
+    coords,
+    permissionStatus,
+    locationSource,
+    locationHydrated,
+    refetchLocation,
+    requestPermissionAndFetch,
+  } = useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
   const [vegOnly, setVegOnly] = useState(false);
   const [openNow, setOpenNow] = useState(true);
@@ -127,8 +177,9 @@ export default function FoodMerchantsScreen() {
   const [deliveryFilter, setDeliveryFilter] = useState<DeliveryFilter>("any");
   const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
   const [filterHasOffers, setFilterHasOffers] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const { data: merchantsData, isLoading, isFetching } = useQuery({
+  const { data: merchantsData, isLoading, isFetching, refetch } = useQuery({
     queryKey: [
       "merchants",
       debouncedCoords?.latitude,
@@ -143,10 +194,43 @@ export default function FoodMerchantsScreen() {
           : {}),
         vegOnly,
       }),
-    enabled: true,
+    // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
+    enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
+
+  const {
+    data: apiHomeCategories = [],
+    isSuccess: homeCategoriesReady,
+    refetch: refetchHomeCategories,
+  } = useQuery({
+    queryKey: ["userAppCategories", HOME_CATEGORY_STORE_TYPE],
+    queryFn: () => fetchUserAppCategories({ storeType: HOME_CATEGORY_STORE_TYPE }),
+    staleTime: 10 * 60 * 1000,
+    retry: 1,
+  });
+
+  const homeCategoryRailItems = useMemo(() => {
+    if (!homeCategoriesReady) return [];
+    const deduped = dedupeUserAppCategories(apiHomeCategories ?? []);
+    return deduped.map((r) => ({
+      id: String(r.id),
+      name: r.name,
+      slug: String(r.id),
+      imageUrl: r.imageUrl,
+    }));
+  }, [homeCategoriesReady, apiHomeCategories]);
+
+  const homeCategoryRailColumns = useMemo(
+    () => chunkIntoPairs(homeCategoryRailItems),
+    [homeCategoryRailItems]
+  );
+
+  const categoryRailLayout = useMemo(
+    () => computeCategoryRailMetrics(windowWidth, insets.right),
+    [windowWidth, insets.right]
+  );
 
   const merchants = Array.isArray(merchantsData) ? merchantsData : [];
   const showSkeleton = isLoading || isFetching;
@@ -154,14 +238,37 @@ export default function FoodMerchantsScreen() {
   const setStatusFromApi = useStoreStatusStore((s) => s.setStatusFromApi);
   const statusMap = useStoreStatusStore((s) => s.statusMap);
 
-  // When user opens \"Order Food\", ensure we have a fresh, high-accuracy location.
+  // Do not replace a user-selected pin with GPS when opening the food listing.
+  // Stop after we already have device GPS (same loop as tabs index: refetch → source "current" → deps change).
   useEffect(() => {
+    if (!locationHydrated) return;
+    if (locationSource === "selected") return;
+    if (locationSource === "current" && coords) return;
     if (permissionStatus === "granted") {
-      void refetchLocation();
+      if (coords) void refetchLocation();
+      else void requestPermissionAndFetch();
     } else if (permissionStatus === "undetermined") {
       void requestPermissionAndFetch();
     }
-  }, [permissionStatus, refetchLocation, requestPermissionAndFetch]);
+  }, [
+    locationHydrated,
+    locationSource,
+    coords,
+    permissionStatus,
+    refetchLocation,
+    requestPermissionAndFetch,
+  ]);
+
+  useEffect(() => {
+    if (!__DEV__ || !coords) return;
+    const location = {
+      address: address?.fullAddress,
+      lat: coords.latitude,
+      lng: coords.longitude,
+      source: locationSource ?? "unset",
+    };
+    console.log("Using location:", location.source);
+  }, [address?.fullAddress, coords, locationSource]);
 
   useEffect(() => {
     merchants.forEach((m) => {
@@ -228,6 +335,51 @@ export default function FoodMerchantsScreen() {
   };
   const applyFilters = () => setFilterSheetVisible(false);
   const hasActiveFilters = deliveryFilter !== "any" || selectedCuisines.length > 0 || filterHasOffers;
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        refetch(),
+        refetchHomeCategories(),
+        permissionStatus === "granted" && locationSource !== "selected" ? refetchLocation() : Promise.resolve(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  const selectedLocationLabel = useMemo(() => {
+    const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
+    const fullParts = (address?.fullAddress ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const secondaryParts = (address?.secondary ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const stateCandidate =
+      address?.state ??
+      [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
+    const normalizedState = stateCandidate?.toLowerCase() ?? "";
+    const areaLocality = Array.from(
+      new Set(
+        [...secondaryParts, ...fullParts, address?.primary ?? ""]
+          .map((p) => p.trim())
+          .filter(
+            (p) =>
+              !!p &&
+              !isPincode(p) &&
+              p.toLowerCase() !== "india" &&
+              p.toLowerCase() !== normalizedState
+          )
+      )
+    )
+      .slice(0, 2)
+      .join(", ");
+    if (areaLocality && stateCandidate) return `${areaLocality} (${stateCandidate})`;
+    if (areaLocality) return areaLocality;
+    return address?.fullAddress ?? "Current location";
+  }, [address?.fullAddress, address?.secondary, address?.primary, address?.state]);
 
   // No-service: minimal header + empty state only when load complete and 0 stores. While loading, show full UI with skeleton (no blocking text).
   if (!isServiceable && !showSkeleton) {
@@ -238,7 +390,7 @@ export default function FoodMerchantsScreen() {
           topInset={Math.max(8, insets.top - 10)}
           onBack={handleBack}
           minimal
-          locationLabel={address?.primary ?? address?.fullAddress ?? "Current location"}
+          locationLabel={selectedLocationLabel}
         />
         <View style={styles.nonServiceableContent}>
           <GMEmptyState />
@@ -269,6 +421,14 @@ export default function FoodMerchantsScreen() {
           style={styles.scroll}
           contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing || (isFetching && !isLoading)}
+              onRefresh={onRefresh}
+              tintColor={GatiMitraColors.primaryMint}
+              colors={[GatiMitraColors.primaryMint]}
+            />
+          }
         >
           {/* Offers carousel – above category, horizontal scroll, snap */}
           <View style={styles.offersSection}>
@@ -306,29 +466,77 @@ export default function FoodMerchantsScreen() {
 
           <View style={styles.sectionGap} />
 
-          {/* Category grid – 2 rows, 4 columns; no All button */}
-          <View style={styles.categoryGridSection}>
-            <View style={styles.categoryGrid}>
-              {CATEGORY_ITEMS.slice(0, 8).map((cat) => (
-                <TouchableOpacity
-                  key={cat.id}
-                  style={styles.categoryGridCard}
-                  onPress={() => handleCategorySelect(cat.id, cat.slug)}
-                  activeOpacity={0.96}
-                >
-                  <View style={styles.categoryGridCircle}>
-                    <Image
-                      source={cat.image!}
-                      style={styles.categoryGridImage}
-                      resizeMode="contain"
-                    />
+          {/* Category rail – all user_app_category (FOOD), horizontal scroll by display_order */}
+          <View style={styles.categoryRailSection}>
+            {homeCategoryRailItems.length === 0 && !homeCategoriesReady ? (
+              <View style={styles.categoryRailLoading}>
+                <Text style={styles.categoryRailLoadingText}>Loading categories…</Text>
+              </View>
+            ) : homeCategoryRailItems.length === 0 ? (
+              <View style={styles.categoryRailLoading}>
+                <Text style={styles.categoryRailLoadingText}>No categories yet.</Text>
+              </View>
+            ) : (
+              <ScrollView
+                horizontal
+                nestedScrollEnabled
+                removeClippedSubviews={false}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={[
+                  styles.categoryRailScrollContent,
+                  {
+                    gap: categoryRailLayout.columnGap,
+                    paddingRight:
+                      PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
+                    paddingEnd:
+                      PAGE_PAD + categoryRailLayout.columnGap + Math.max(4, insets.right),
+                  },
+                ]}
+              >
+                {homeCategoryRailColumns.map((pair) => (
+                  <View
+                    key={`${pair[0]?.id ?? "x"}-${pair[1]?.id ?? ""}`}
+                    style={styles.categoryRailColumn}
+                  >
+                    {pair.map((cat) => (
+                      <TouchableOpacity
+                        key={cat.id}
+                        style={[styles.categoryRailItem, { width: categoryRailLayout.itemW }]}
+                        onPress={() => handleCategorySelect(cat.id, cat.slug)}
+                        activeOpacity={0.96}
+                      >
+                        <View
+                          style={[
+                            styles.categoryRailCircle,
+                            {
+                              width: categoryRailLayout.circle,
+                              height: categoryRailLayout.circle,
+                              borderRadius: categoryRailLayout.circle / 2,
+                            },
+                          ]}
+                        >
+                          <HomeCategoryGridImage
+                            imageUrl={cat.imageUrl}
+                            size={categoryRailLayout.imgSize}
+                          />
+                        </View>
+                        <Text
+                          style={[
+                            styles.categoryRailLabel,
+                            { width: categoryRailLayout.itemW },
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {cat.name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
                   </View>
-                  <Text style={styles.categoryGridLabel} numberOfLines={1}>
-                    {cat.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+                ))}
+                {/* Ensures last column can scroll fully clear of screen edge */}
+                <View style={styles.categoryRailScrollTrail} />
+              </ScrollView>
+            )}
           </View>
 
           {/* Dynamic filter bar – Open Now (default on) + Sort + Filters + store count */}
@@ -514,25 +722,29 @@ const styles = StyleSheet.create({
   sectionGap: {
     height: SECTION_GAP_SM,
   },
-  categoryGridSection: {
-    paddingHorizontal: PAGE_PAD,
+  categoryRailSection: {
     paddingVertical: 12,
     marginBottom: SECTION_GAP,
+    overflow: "visible",
   },
-  categoryGrid: {
+  categoryRailScrollContent: {
+    paddingLeft: PAGE_PAD,
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: GRID_GAP,
+    alignItems: "flex-start",
   },
-  categoryGridCard: {
-    width: CATEGORY_CARD_SIZE,
+  categoryRailScrollTrail: {
+    width: PAGE_PAD,
+    flexShrink: 0,
+  },
+  categoryRailColumn: {
+    flexDirection: "column",
+    gap: RAIL_ROW_GAP,
     alignItems: "center",
-    justifyContent: "center",
   },
-  categoryGridCircle: {
-    width: CIRCLE_SIZE,
-    height: CIRCLE_SIZE,
-    borderRadius: CIRCLE_SIZE / 2,
+  categoryRailItem: {
+    alignItems: "center",
+  },
+  categoryRailCircle: {
     backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
@@ -545,11 +757,16 @@ const styles = StyleSheet.create({
     }),
     elevation: 3,
   },
-  categoryGridImage: {
-    width: CATEGORY_IMAGE_SIZE,
-    height: CATEGORY_IMAGE_SIZE,
+  categoryRailLoading: {
+    paddingHorizontal: PAGE_PAD,
+    paddingVertical: 24,
+    alignItems: "center",
   },
-  categoryGridLabel: {
+  categoryRailLoadingText: {
+    fontSize: 14,
+    color: GatiMitraColors.textSecondary,
+  },
+  categoryRailLabel: {
     fontSize: 13,
     fontWeight: "500",
     color: GatiMitraColors.textPrimaryNew,

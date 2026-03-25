@@ -540,6 +540,7 @@ export const systemUsers = pgTable(
     isEmailVerified: boolean("is_email_verified").default(false),
     isMobileVerified: boolean("is_mobile_verified").default(false),
     twoFactorEnabled: boolean("two_factor_enabled").default(false),
+    canTogglePortal: boolean("can_toggle_portal").notNull().default(false),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
     loginCount: integer("login_count").default(0),
@@ -880,6 +881,7 @@ export type AccessPointGroup =
   | "MERCHANT_OPERATIONS"
   | "MERCHANT_STORE_MANAGEMENT"
   | "MERCHANT_WALLET"
+  | "MERCHANT_ADMIN_MERCHANT_ACCESS"
   | "MERCHANT_WALLET_REQUESTS"
   | "MERCHANT_MENU_MANAGEMENT"
   | "MERCHANT_OFFER_MANAGEMENT"

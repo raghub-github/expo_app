@@ -3,14 +3,17 @@
  */
 
 import api from "./api";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 
 const MERCHANTS_PREFIX = "/v1/merchants";
 
 export type MerchantSummary = {
   id: string;
   name: string;
-  /** Card hero image: COALESCE(banner_url, ads_images[1], gallery_images[1], logo_url). No placeholder. */
+  /** Card hero image from API (banner / gallery). */
   displayImage?: string | null;
+  /** Banner from merchant_stores when API sends it; card falls back if displayImage empty. */
+  banner_url?: string | null;
   deliveryTime?: string;
   cuisines?: string[];
   isOpen?: boolean;
@@ -92,14 +95,27 @@ export type MenuItemFullConfig = {
 
 export type MerchantDetail = MerchantSummary & {
   menu: MenuItem[];
+  /** Hero banner from GET /menu (store banner_url). */
+  imageUrl?: string | null;
   address?: string;
-  /** Carousel images: ads_images + gallery_images, or [banner_url] fallback */
+  /** Carousel images: gallery_images, or [banner_url] fallback */
   bannerImages?: string[];
   latitude?: number | null;
   longitude?: number | null;
   operationalStatus?: string | null;
   avgPreparationTimeMinutes?: number | null;
   city?: string | null;
+};
+
+export type NearbyStore = {
+  id: string;
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  distance_km: number;
+  duration_min: number | null;
+  is_open: boolean;
 };
 
 export type MerchantAbout = {
@@ -137,6 +153,72 @@ export type SearchApiResponse = {
   }>;
 };
 
+function pickFirstString(...candidates: unknown[]): string | null {
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim().length > 0) return c.trim();
+  }
+  return null;
+}
+
+function normalizeMerchantListItem(item: MerchantSummary & Record<string, unknown>): MerchantSummary {
+  const bannerRaw = pickFirstString(item.banner_url, item.bannerUrl);
+  const chosen = pickFirstString(item.displayImage, bannerRaw, item.imageUrl);
+  return {
+    ...item,
+    banner_url: bannerRaw,
+    displayImage: toAbsoluteImageUrl(chosen),
+  };
+}
+
+/** Detail /menu response: fix relative URLs and localhost so header BannerCarousel can load on device. */
+function normalizeMerchantDetail(data: MerchantDetail): MerchantDetail {
+  const r = data as MerchantDetail & Record<string, unknown>;
+  const imageUrlRaw = pickFirstString(data.imageUrl, r.image_url);
+  const displayRaw = pickFirstString(data.displayImage, r.display_image);
+  const bannerRaw = pickFirstString(data.banner_url, r.banner_url);
+
+  const rawBannerImages = Array.isArray(data.bannerImages)
+    ? data.bannerImages
+    : Array.isArray(r.banner_images)
+      ? (r.banner_images as string[])
+      : [];
+
+  const hero = pickFirstString(imageUrlRaw, displayRaw, bannerRaw);
+  const resolvedHero = toAbsoluteImageUrl(hero);
+
+  const resolvedList = rawBannerImages
+    .map((u) => (typeof u === "string" ? toAbsoluteImageUrl(u) : null))
+    .filter((u): u is string => Boolean(u));
+
+  const seen = new Set<string>();
+  const mergedBanner: string[] = [];
+  const pushUrl = (u: string | null | undefined) => {
+    if (!u) return;
+    const t = u.trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    mergedBanner.push(t);
+  };
+  pushUrl(resolvedHero);
+  for (const u of resolvedList) pushUrl(u);
+
+  const bannerImages: string[] | undefined = mergedBanner.length > 0 ? mergedBanner : undefined;
+
+  const menu = (data.menu ?? []).map((m) => ({
+    ...m,
+    imageUrl: toAbsoluteImageUrl(m.imageUrl ?? null) ?? m.imageUrl,
+  }));
+
+  return {
+    ...data,
+    imageUrl: resolvedHero ?? undefined,
+    displayImage: resolvedHero ?? undefined,
+    banner_url: toAbsoluteImageUrl(bannerRaw) ?? bannerRaw ?? data.banner_url,
+    bannerImages,
+    menu,
+  };
+}
+
 /** Check if current customer has bookmarked a store. Requires auth. */
 export async function checkStoreBookmark(storeId: string): Promise<boolean> {
   try {
@@ -172,7 +254,31 @@ export const merchantService = {
           veg: params?.vegOnly === true ? "true" : undefined,
         },
       });
-      return Array.isArray(data?.items) ? data.items : [];
+      const list = Array.isArray(data?.items) ? data.items : [];
+      return list.map((item) =>
+        normalizeMerchantListItem(item as MerchantSummary & Record<string, unknown>)
+      );
+    } catch {
+      return [];
+    }
+  },
+
+  async getNearbyStores(params: {
+    lat: number;
+    lng: number;
+    maxDistanceKm?: number;
+    mapboxLimit?: number;
+  }): Promise<NearbyStore[]> {
+    try {
+      const { data } = await api.get<NearbyStore[]>("/v1/stores/nearby", {
+        params: {
+          lat: params.lat,
+          lng: params.lng,
+          maxDistanceKm: params.maxDistanceKm ?? 10,
+          mapboxLimit: params.mapboxLimit ?? 15,
+        },
+      });
+      return Array.isArray(data) ? data : [];
     } catch {
       return [];
     }
@@ -181,7 +287,7 @@ export const merchantService = {
   async getMerchantById(id: string, searchInMenu?: string): Promise<MerchantDetail> {
     const params = searchInMenu?.trim() ? { q: searchInMenu.trim() } : undefined;
     const { data } = await api.get<MerchantDetail>(`${MERCHANTS_PREFIX}/${id}/menu`, { params });
-    return data;
+    return normalizeMerchantDetail(data);
   },
 
   /** About page: store info (full_address, operational_status, etc.) */

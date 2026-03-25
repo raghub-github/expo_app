@@ -148,6 +148,8 @@ export function buildStoreApprovedEmail(args: {
   const textLines = [
     "Dear Partner,",
     "",
+    "Congratulations! Your store has been successfully verified",
+    "",
     `Your store ${args.storeName.trim() || "your store"} (Store ID: ${args.storePublicId}) has been successfully verified by the GatiMitra team.`,
     "",
     "You can now make your store live at your convenience and start receiving orders. Please ensure you are fully prepared to manage incoming orders smoothly.",
@@ -173,6 +175,9 @@ export function buildStoreApprovedEmail(args: {
                     <p class="body" style="margin:0 0 12px 0; font-size:14px; color:#111827; line-height:1.7;">
                       Dear Partner,
                     </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#111827; line-height:1.7;">
+                      Congratulations! Your store has been successfully verified
+                    </p>
                     <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
                       Your store <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>) has been successfully verified by the GatiMitra team.
                     </p>
@@ -189,7 +194,64 @@ export function buildStoreApprovedEmail(args: {
   });
 
   return {
-    subject: "Your Store Has Been Verified – GatiMitra",
+    subject: "Congratulations! Your Store Has Been Verified – GatiMitra",
+    text: textLines.join("\n"),
+    html,
+  };
+}
+
+export function buildStepApprovedEmail(args: {
+  storeName: string;
+  storePublicId: string;
+  dashboardUrl: string;
+  stepLabel: string;
+}): { subject: string; text: string; html: string } {
+  const safeName = escapeHtml(args.storeName.trim() || "your store");
+  const safeId = escapeHtml(args.storePublicId.trim());
+  const safeStep = escapeHtml(args.stepLabel.trim() || "this step");
+
+  const textLines = [
+    "Dear Partner,",
+    "",
+    `Congratulations! Your ${safeStep} has been approved by the GatiMitra team.`,
+    "",
+    `Store: ${args.storeName.trim() || "your store"} (Store ID: ${args.storePublicId})`,
+    `You can continue your onboarding from the dashboard: ${args.dashboardUrl}`,
+    "",
+    "Best regards,",
+    "Team GatiMitra",
+  ];
+
+  const html = layoutEmail({
+    pageTitle: "Step approved",
+    headerBadgeHtml: `
+          <div style="margin-top:8px; display:inline-block; background:rgba(16,185,129,0.10); border-radius:999px; padding:4px 10px; font-size:11px; font-weight:600; color:#065f46; border:1px solid rgba(16,185,129,0.15);">
+            Approved by Admin
+          </div>`,
+    headerTitle: "Step approved ✓",
+    headerSubtitle: `${safeName} — onboarding progress updated.`,
+    headerRibbonHtml: `<div style="display:inline-block; background:rgba(16,185,129,0.25); border:1px solid rgba(16,185,129,0.35); border-radius:999px; padding:7px 10px; color:#065f46; font-size:11px; font-weight:800;">Approved</div>`,
+    bodyInnerHtml: `
+                    <p class="body" style="margin:0 0 14px 0; font-size:14px; color:#111827; line-height:1.7;">
+                      Dear Partner,
+                    </p>
+                    <p class="body" style="margin:0 0 18px 0; font-size:14px; color:#4b5563; line-height:1.7;">
+                      Congratulations! Your <strong>${safeStep}</strong> for <strong>${safeName}</strong> (Store ID: <strong>${safeId}</strong>) has been approved.
+                    </p>
+                    <table width="100%" cellpadding="0" cellspacing="0" style="background:#ecfdf3; border-radius:12px; border:1px solid #bbf7d0; margin-bottom:18px;">
+                      <tr><td style="padding:14px 16px;">
+                        <p style="margin:0; font-size:14px; font-weight:700; color:#166534;">Next step unlocked</p>
+                        <p style="margin:8px 0 0 0; font-size:13px; color:#166534; line-height:1.65;">
+                          Please continue your onboarding from your partner dashboard.
+                        </p>
+                      </td></tr>
+                    </table>`,
+    ctaLabel: "View Dashboard",
+    ctaUrl: args.dashboardUrl,
+  });
+
+  return {
+    subject: `Step approved: ${args.stepLabel} – GatiMitra`,
     text: textLines.join("\n"),
     html,
   };

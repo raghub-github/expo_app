@@ -16,6 +16,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
+import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 import { CurrentRouteProvider } from "@/context/CurrentRouteContext";
 /** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
@@ -50,6 +51,8 @@ function DashboardBootstrapSkeleton() {
   );
 }
 
+let bootstrapInFlight: Promise<void> | null = null;
+
 /**
  * Bootstrap gate
  *
@@ -69,44 +72,68 @@ function useBootstrapGate(queryClient: ReturnType<typeof useQueryClient>) {
     if (didRun.current) return;
     didRun.current = true;
 
-    const cached = queryClient.getQueryData(["auth", "session"]);
-    if (cached != null) {
-      setAuthReady(true);
-      return;
-    }
+    const run = async () => {
+      // Mirror Supabase client session → httpOnly cookies when /auth/callback was skipped
+      // (wrong Site URL / redirect) but the user still has tokens in the browser.
+      await syncServerSessionCookies();
 
-    // 1) Try fast path: hydrate from localStorage without any network call so
-    // the dashboard can render instantly after navigation/login.
-    const stored = loadBootstrapFromStorage<{
-      session: { user: Record<string, unknown> };
-      permissions: unknown;
-      dashboardAccess: unknown;
-      systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
-    }>(10 * 60 * 1000); // 10 minutes max age to match React Query staleTime
+      const cached = queryClient.getQueryData(["auth", "session"]);
+      if (cached != null) {
+        setAuthReady(true);
+        return;
+      }
 
-    if (stored?.data) {
-      const { session, permissions, dashboardAccess, systemUser } = stored.data;
-      queryClient.setQueryData(["auth", "session"], {
-        session,
-        permissions,
-        systemUser: systemUser ?? null,
-      });
-      queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
-      queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
-      // SWR-style: in the background, revalidate with a fresh bootstrap call
-      // but do not block the initial render.
-      void fetchBootstrapAndSeedCache(queryClient).finally(() => {
+      // 1) Try fast path: hydrate from localStorage without any network call so
+      // the dashboard can render instantly after navigation/login.
+      const stored = loadBootstrapFromStorage<{
+        session: { user: Record<string, unknown> };
+        permissions: unknown;
+        dashboardAccess: unknown;
+        systemUser?: { id: number; systemUserId: string; fullName: string; email: string } | null;
+      }>(10 * 60 * 1000); // 10 minutes max age to match React Query staleTime
+
+      if (stored?.data) {
+        const { session, permissions, dashboardAccess, systemUser } = stored.data;
+        queryClient.setQueryData(["auth", "session"], {
+          session,
+          permissions,
+          systemUser: systemUser ?? null,
+        });
+        queryClient.setQueryData(queryKeys.permissions(), permissions as unknown);
+        queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
+        // SWR-style: in the background, revalidate with a fresh bootstrap call
+        // but do not block the initial render.
+        if (!bootstrapInFlight) {
+          bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
+            .catch(() => false)
+            .then(() => undefined)
+            .finally(() => {
+              bootstrapInFlight = null;
+            });
+        }
+        void bootstrapInFlight.finally(() => {
+          setAuthReady(true);
+        });
+        return;
+      }
+
+      // 2) Slow path: no cached payload, call bootstrap once in the background.
+      // Views that depend on this data will show their own lightweight loaders,
+      // but the global layout (sidebar/header) never blocks on this.
+      if (!bootstrapInFlight) {
+        bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
+          .catch(() => false)
+          .then(() => undefined)
+          .finally(() => {
+            bootstrapInFlight = null;
+          });
+      }
+      void bootstrapInFlight.finally(() => {
         setAuthReady(true);
       });
-      return;
-    }
+    };
 
-    // 2) Slow path: no cached payload, call bootstrap once in the background.
-    // Views that depend on this data will show their own lightweight loaders,
-    // but the global layout (sidebar/header) never blocks on this.
-    void fetchBootstrapAndSeedCache(queryClient).finally(() => {
-      setAuthReady(true);
-    });
+    void run();
   }, [queryClient]);
 
   return authReady;
@@ -381,8 +408,23 @@ function DashboardLayoutContent({
   // Track when a sidebar navigation has started so we can immediately
   // clear the previous page content and show a lightweight branded
   // loader over main + right rail. Left sidebar and header stay visible
-  // (RightSidebar is fixed, so the overlay uses fixed insets below the header).
+  // (Spinner covers main below the header; right rail is full-height fixed, separate from header column.)
   const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
+  const [showNavigationSpinner, setShowNavigationSpinner] = useState(false);
+
+  // Prevent spinner flashes for fast/cached navigations.
+  useEffect(() => {
+    if (!pendingNavHref) {
+      setShowNavigationSpinner(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setShowNavigationSpinner(true);
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [pendingNavHref]);
 
   // As soon as the URL matches the target href (navigation completed),
   // stop showing the global navigation spinner. Individual pages then
@@ -398,9 +440,8 @@ function DashboardLayoutContent({
     }
   }, [cleanPathname, pendingNavHref]);
 
-  // During sidebar navigation, overlay the outgoing page with an opaque layer so
+  // During slower sidebar navigation, overlay the outgoing page with an opaque layer so
   // heavy content (e.g. Mapbox on Home) does not show through the spinner.
-  const showNavigationSpinner = pendingNavHref !== null;
   // When we're in the global navigation loading state, we should treat the
   // layout as if there is no right sidebar so that we don't show a sidebar
   // or reserved margin before the new main content is ready.
@@ -440,95 +481,102 @@ function DashboardLayoutContent({
         >
           <MerchantsSearchProvider>
             <SyncSidebarsOnMobile />
-            {/* Main content: margin-left reserves space for fixed left sidebar (w-56, same as right); margin-right for right sidebar overlay */}
-            <div
-              className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${
-                isLeftSidebarOpen ? "lg:ml-56" : "lg:ml-16"
-              } ${
-                effectiveHasRightSidebar && isRightSidebarOpen
-                  ? isFilterSidebarOpen
-                    ? "lg:mr-[28rem]"
-                    : "lg:mr-56"
-                  : effectiveHasRightSidebar && !isRightSidebarOpen
-                    ? "lg:mr-16"
-                    : ""
-              }`}
-              style={{ transition: "margin 0.3s ease-out" }}
-            >
-              <Header />
-              <div className="flex flex-1 overflow-hidden relative w-full">
-                <main
-                  className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full flex flex-col min-h-0 relative"
-                  style={{ backgroundColor: "#FFFFFF" }}
-                >
-                  <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
-                    {children}
-                  </div>
-                </main>
-
-                {showNavigationSpinner && (
-                  <div
-                    className={`pointer-events-auto fixed right-0 bottom-0 z-[130] flex items-center justify-center bg-[#FFFFFF] top-14 left-0 ${
-                      isLeftSidebarOpen ? "lg:left-56" : "lg:left-16"
-                    }`}
-                    aria-busy
-                    aria-label="Loading page"
+            {/*
+              Outer flex wraps main column + fixed right UI. Keep RightSidebar / ticket filters out of the same
+              flex row as <main> so fixed positioning is not tied to that scroll row (avoids subtle containing-block
+              / overflow issues and keeps overlays independent of main content transitions).
+            */}
+            <div className="flex min-w-0 flex-1">
+              {/* Main content: margin-left reserves space for fixed left sidebar (w-56, same as right); margin-right for right sidebar overlay */}
+              <div
+                className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${
+                  isLeftSidebarOpen ? "lg:ml-56" : "lg:ml-16"
+                } ${
+                  effectiveHasRightSidebar && isRightSidebarOpen
+                    ? isFilterSidebarOpen
+                      ? "lg:mr-[28rem]"
+                      : "lg:mr-56"
+                    : effectiveHasRightSidebar && !isRightSidebarOpen
+                      ? "lg:mr-16"
+                      : ""
+                }`}
+                style={{ transition: "margin 0.3s ease-out" }}
+              >
+                <Header />
+                <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
+                  <main
+                    className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full flex flex-col min-h-0 relative"
+                    style={{ backgroundColor: "#FFFFFF" }}
                   >
-                    <GatiSpinner />
-                  </div>
-                )}
+                    <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
+                      {children}
+                    </div>
+                  </main>
 
-                {/* Persistent Mapbox container stash (keeps map mounted across route changes). */}
-                <div
-                  id="gm-map-stash"
-                  aria-hidden
-                  className="pointer-events-none fixed opacity-0"
-                  style={{ left: -10000, top: 0, width: 520, height: 520 }}
-                />
-                {(!isRiderDashboardLayout || hasRiderSidebarContent) && (
-                  <RightSidebar
-                    isOpen={isRightSidebarOpen}
-                    onToggle={handleRightSidebarToggle}
-                    filterSidebarOpen={isFilterSidebarOpen}
-                  />
-                )}
-                {isTicketDetailPage && (
-                  <div
-                    className="fixed top-0 bottom-0 z-50 overflow-hidden transition-[width] duration-300 ease-out lg:top-14"
-                    style={{
-                      right: 0,
-                      width: isFilterSidebarOpen ? "14rem" : 0,
-                    }}
-                    aria-hidden={!isFilterSidebarOpen}
-                  >
-                    <aside
-                      className="absolute inset-y-0 right-0 flex h-full w-56 flex-col bg-[#E8F0F2] shadow-xl border-l border-gray-200/80 rounded-l-xl"
-                      style={{
-                        scrollbarWidth: "thin",
-                        scrollbarColor: "#9CA3AF #E8F0F2",
-                      }}
-                      aria-label="Filters"
+                  {showNavigationSpinner && (
+                    <div
+                      className={`pointer-events-auto fixed right-0 bottom-0 z-[130] flex items-center justify-center bg-[#FFFFFF] top-14 left-0 ${
+                        isLeftSidebarOpen ? "lg:left-56" : "lg:left-16"
+                      }`}
+                      aria-busy
+                      aria-label="Loading page"
                     >
-                      <div className="flex h-12 sm:h-14 items-center justify-between border-b border-gray-300/30 px-3 shrink-0 bg-white/50 rounded-tl-xl">
-                        <span className="text-sm font-semibold text-gray-800 tracking-tight">Filters</span>
-                        <button
-                          type="button"
-                          onClick={() => filterSidebar?.closeFilterSidebar()}
-                          className="p-2 rounded-lg text-gray-500 hover:bg-gray-200/80 hover:text-gray-900 transition-colors"
-                          aria-label="Close filters"
-                        >
-                          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                      <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                        <TicketFilters variant="sidebar" dark={false} />
-                      </div>
-                    </aside>
-                  </div>
-                )}
+                      <GatiSpinner />
+                    </div>
+                  )}
+
+                  {/* Persistent Mapbox container stash (keeps map mounted across route changes). */}
+                  <div
+                    id="gm-map-stash"
+                    aria-hidden
+                    className="pointer-events-none fixed opacity-0"
+                    style={{ left: -10000, top: 0, width: 520, height: 520 }}
+                  />
+                </div>
               </div>
+              {(!isRiderDashboardLayout || hasRiderSidebarContent) && (
+                <RightSidebar
+                  isOpen={isRightSidebarOpen}
+                  onToggle={handleRightSidebarToggle}
+                  filterSidebarOpen={isFilterSidebarOpen}
+                />
+              )}
+              {isTicketDetailPage && (
+                <div
+                  className="fixed inset-y-0 z-50 overflow-hidden transition-[width] duration-300 ease-out"
+                  style={{
+                    right: 0,
+                    width: isFilterSidebarOpen ? "14rem" : 0,
+                  }}
+                  aria-hidden={!isFilterSidebarOpen}
+                >
+                  <aside
+                    className="absolute inset-y-0 right-0 flex h-full w-56 flex-col bg-[#E8F0F2] shadow-xl border-l border-gray-200/80 rounded-l-xl"
+                    style={{
+                      scrollbarWidth: "thin",
+                      scrollbarColor: "#9CA3AF #E8F0F2",
+                    }}
+                    aria-label="Filters"
+                  >
+                    <div className="flex h-14 min-h-14 items-center justify-between border-b border-gray-300/30 px-3 shrink-0 bg-white/50 rounded-tl-xl">
+                      <span className="text-sm font-semibold text-gray-800 tracking-tight">Filters</span>
+                      <button
+                        type="button"
+                        onClick={() => filterSidebar?.closeFilterSidebar()}
+                        className="p-2 rounded-lg text-gray-500 hover:bg-gray-200/80 hover:text-gray-900 transition-colors"
+                        aria-label="Close filters"
+                      >
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                      <TicketFilters variant="sidebar" dark={false} />
+                    </div>
+                  </aside>
+                </div>
+              )}
             </div>
           </MerchantsSearchProvider>
         </RightSidebarProvider>

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban } from "lucide-react";
+import { Store, ChevronRight, CheckCircle, Clock, XCircle, Sparkles, Ban, Pencil } from "lucide-react";
 import { StoreDashboardSkeleton } from "./stores/[id]/StoreDashboardSkeleton";
 import { MerchantParentSkeleton } from "./MerchantParentSkeleton";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
@@ -15,6 +15,7 @@ type StoreStats = {
   verified: number;
   pending: number;
   rejected: number;
+  drafted: number;
   new: number;
 };
 
@@ -25,6 +26,7 @@ type ChildRow = {
   parent_id: number | null;
   name: string;
   city: string | null;
+  store_type?: string | null;
   approval_status: string;
   onboarding_step: number | null;
   onboarding_completed: boolean | null;
@@ -33,6 +35,23 @@ type ChildRow = {
   created_at?: string | null;
   verified_by_email?: string | null;
 };
+
+function storeTypeLabel(storeType: string | null | undefined): string {
+  const t = (storeType ?? "").trim().toUpperCase();
+  if (!t) return "Restaurant";
+  const map: Record<string, string> = {
+    RESTAURANT: "Restaurant",
+    CAFE: "Cafe",
+    BAKERY: "Bakery",
+    CLOUD_KITCHEN: "Cloud Kitchen",
+    GROCERY: "Grocery",
+    PHARMA: "Pharma",
+    STATIONERY: "Stationery",
+    ELECTRONICS_ECOMMERCE: "Electronics & E-commerce",
+    OTHERS: "Others",
+  };
+  return map[t] ?? t;
+}
 
 type ParentRow = {
   type: "parent";
@@ -86,6 +105,14 @@ function StatusBadge({ status }: { status: string }) {
       </span>
     );
   }
+  if (s === "DRAFT") {
+    return (
+      <span className={`${base} bg-sky-100 text-sky-800`}>
+        <Pencil className="h-3 w-3" />
+        Drafted
+      </span>
+    );
+  }
   if (s === "REJECTED" || s === "BLOCKED" || s === "SUSPENDED") {
     return (
       <span className={`${base} bg-red-100 text-red-800`}>
@@ -135,8 +162,8 @@ function ChildActionButton({
       }}
       className={
         goesToDashboard
-          ? "inline-flex cursor-pointer items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          : "inline-flex cursor-pointer items-center gap-1 rounded bg-amber-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-amber-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
+          ? "inline-flex cursor-pointer items-center gap-1 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          : "inline-flex cursor-pointer items-center gap-1 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-amber-600 focus:outline-none focus:ring-1 focus:ring-amber-500"
       }
     >
       {goesToDashboard ? (
@@ -154,7 +181,7 @@ function ChildActionButton({
   );
 }
 
-/** Narrow email-style row: unread (pending) = highlighted, read (verified/rejected) = light. No checkboxes. */
+/** Premium result row: compact 2-line layout + status pill + CTA */
 function ChildStoreRow({
   child,
   returnTo,
@@ -176,52 +203,82 @@ function ChildStoreRow({
     status !== "SUSPENDED" &&
     status !== "DELISTED";
 
+  const iconBg =
+    status === "APPROVED"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED"
+        ? "bg-red-50 text-red-700"
+        : status === "DELISTED"
+          ? "bg-red-50 text-red-700"
+          : isUnread
+            ? "bg-indigo-50 text-indigo-700"
+            : "bg-amber-50 text-amber-700";
+
+  const iconCircle =
+    status === "APPROVED"
+      ? "border-emerald-100"
+      : status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED" || status === "DELISTED"
+        ? "border-red-100"
+        : "border-indigo-100";
+
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onChildClick(child)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onChildClick(child);
-        }
-      }}
-      className={`flex items-center justify-between gap-2 border-b border-gray-100/80 px-3 py-1.5 cursor-pointer transition-colors last:border-b-0 ${
-        isUnread
-          ? "bg-slate-50 hover:bg-slate-100/80"
-          : "bg-white hover:bg-gray-50/80"
+      className={`group flex items-center justify-between gap-3 border-b border-gray-100/90 px-3 py-2.5 transition-all last:border-b-0 ${
+        isUnread ? "bg-slate-50/80 hover:bg-slate-50" : "bg-white hover:bg-slate-50"
       }`}
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-indigo-100">
-          <Store className="h-3.5 w-3.5 text-indigo-600" />
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${iconCircle} ${iconBg}`}
+        >
+          <Store className="h-4 w-4" />
         </div>
-        <div className="min-w-0 flex-1 flex items-baseline gap-2 flex-wrap">
-          <span className={`truncate ${isUnread ? "font-semibold text-gray-900" : "font-normal text-gray-700"}`}>
-            {child.name}
-          </span>
-          <span className={`truncate text-[10px] shrink-0 ${isUnread ? "text-gray-600" : "text-gray-400"}`}>
-            {child.store_id}
-            {child.city ? ` · ${child.city}` : ""}
-          </span>
-          {(primaryPhone(child.store_phones) || child.store_email || child.created_at || child.verified_by_email) && !compact && (
-            <span className={`text-[10px] shrink-0 ${isUnread ? "text-gray-500" : "text-gray-400"}`}>
-              {primaryPhone(child.store_phones) && `Ph: ${primaryPhone(child.store_phones)}`}
-              {child.store_email && ` · ${child.store_email.length > 18 ? child.store_email.slice(0, 18) + "…" : child.store_email}`}
-              {child.verified_by_email && ` · Verified by: ${child.verified_by_email.length > 22 ? child.verified_by_email.slice(0, 22) + "…" : child.verified_by_email}`}
-              {child.created_at && ` · Created: ${formatCreatedDate(child.created_at)}`}
+
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className={`truncate text-sm font-semibold ${
+                isUnread ? "text-gray-900" : "text-gray-800"
+              }`}
+              title={child.name}
+            >
+              {child.name}
             </span>
+            <span className="truncate text-[11px] text-gray-500">
+              {child.store_id}
+              {child.city ? ` · ${child.city}` : ""}
+            </span>
+            <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-700">
+              {storeTypeLabel(child.store_type)}
+            </span>
+          </div>
+
+          {(primaryPhone(child.store_phones) || child.store_email || child.created_at || child.verified_by_email) && !compact && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-gray-500">
+              {primaryPhone(child.store_phones) ? <span className="whitespace-nowrap">Ph: {primaryPhone(child.store_phones)}</span> : null}
+              {child.store_email ? (
+                <span className="min-w-0 truncate max-w-[200px] whitespace-nowrap">
+                  {child.store_email.length > 28 ? child.store_email.slice(0, 28) + "…" : child.store_email}
+                </span>
+              ) : null}
+              {child.verified_by_email ? (
+                <span className="whitespace-nowrap">Verified by: {child.verified_by_email.length > 26 ? child.verified_by_email.slice(0, 26) + "…" : child.verified_by_email}</span>
+              ) : null}
+              {child.created_at ? <span className="whitespace-nowrap">Created: {formatCreatedDate(child.created_at)}</span> : null}
+            </div>
           )}
         </div>
-        <StatusBadge status={child.approval_status} />
       </div>
-      <ChildActionButton child={child} returnTo={returnTo} portal={portal} onNavigate={() => onChildClick(child)} />
+
+      <div className="flex shrink-0 items-center gap-2">
+        <StatusBadge status={child.approval_status} />
+        <ChildActionButton child={child} returnTo={returnTo} portal={portal} onNavigate={() => onChildClick(child)} />
+      </div>
     </div>
   );
 }
 
-type CategoryKey = "total" | "verified" | "pending" | "rejected" | "new";
+type CategoryKey = "total" | "verified" | "pending" | "rejected" | "drafted" | "new";
 
 interface StatCardConfig {
   key: CategoryKey;
@@ -232,7 +289,7 @@ interface StatCardConfig {
   border: string;
 }
 
-const CARD_MIN_HEIGHT = "min-h-[110px]";
+const CARD_MIN_HEIGHT = "min-h-[90px]";
 
 const StatCardsRow = React.memo(function StatCardsRow({
   cards,
@@ -246,7 +303,7 @@ const StatCardsRow = React.memo(function StatCardsRow({
   if (cards.length === 0) return null;
 
   return (
-    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+    <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
       {cards.map(({ key, label, count, icon, bg, border }) => {
         const isActive = category === key;
         return (
@@ -254,16 +311,31 @@ const StatCardsRow = React.memo(function StatCardsRow({
             key={key}
             type="button"
             onClick={() => onCategoryClick(key)}
-            className={`flex cursor-pointer flex-col gap-0.5 rounded-lg border p-2.5 text-left transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${CARD_MIN_HEIGHT} ${
+            className={`relative cursor-pointer rounded-lg border p-1.5 text-left transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${CARD_MIN_HEIGHT} ${
               isActive
                 ? `ring-2 ring-indigo-600 ring-offset-2 ${bg} ${border}`
                 : `${bg} ${border} hover:border-gray-300`
             }`}
             aria-pressed={isActive}
           >
-            <span className={`flex items-center ${isActive ? "text-gray-800" : "text-gray-600"}`}>{icon}</span>
-            <span className="text-lg font-semibold leading-tight text-gray-900">{count}</span>
-            <span className={`text-[10px] font-medium ${isActive ? "text-gray-700" : "text-gray-500"}`}>{label}</span>
+            {/* Icon top-left corner */}
+            <span className={`absolute top-1.5 left-1.5 flex items-center ${isActive ? "text-gray-800" : "text-gray-600"}`}>
+              {icon}
+            </span>
+
+            {/* Count exact center */}
+            <span className="absolute inset-0 flex items-center justify-center text-[21px] font-semibold leading-tight text-gray-900">
+              {count}
+            </span>
+
+            {/* Label bottom-right */}
+            <span
+              className={`absolute bottom-1.5 right-1.5 text-[8.5px] font-medium ${
+                isActive ? "text-gray-700" : "text-gray-500"
+              }`}
+            >
+              {label}
+            </span>
           </button>
         );
       })}
@@ -286,7 +358,9 @@ export function MerchantsSearchClient() {
 
   const fromDate = useMemo(() => searchParams.get("fromDate") ?? "", [searchParams]);
   const toDate = useMemo(() => searchParams.get("toDate") ?? "", [searchParams]);
-  const statsQuery = useMerchantStoresStatsQuery(fromDate || undefined, toDate || undefined);
+  const storeTypeFilterRaw = useMemo(() => searchParams.get("storeType") ?? "", [searchParams]);
+  const storeTypeFilter = storeTypeFilterRaw.trim() || undefined;
+  const statsQuery = useMerchantStoresStatsQuery(fromDate || undefined, toDate || undefined, storeTypeFilter);
   const stats: StoreStats | null =
     statsQuery.data && (statsQuery.data as { success?: boolean }).success
       ? {
@@ -294,6 +368,7 @@ export function MerchantsSearchClient() {
           verified: (statsQuery.data as StoreStats).verified ?? 0,
           pending: (statsQuery.data as StoreStats).pending ?? 0,
           rejected: (statsQuery.data as StoreStats).rejected ?? 0,
+          drafted: (statsQuery.data as StoreStats).drafted ?? 0,
           new: (statsQuery.data as StoreStats).new ?? 0,
         }
       : null;
@@ -315,7 +390,7 @@ export function MerchantsSearchClient() {
   );
 
   const hasSearchParams = searchQuery.length > 0;
-  const hasCategory = category != null && ["verified", "pending", "rejected", "new", "total"].includes(category);
+  const hasCategory = category != null && ["verified", "pending", "rejected", "drafted", "new", "total"].includes(category);
 
   const lastSearchTrigger = merchantsSearch?.lastSearchTrigger ?? 0;
   const triggeredSearch = merchantsSearch?.triggeredSearch ?? null;
@@ -342,7 +417,7 @@ export function MerchantsSearchClient() {
   );
 
   const portal: "admin" | "merchant" =
-    searchParams.get("portal") === "merchant" ? "merchant" : "admin";
+    searchParams.get("portal") === "admin" ? "admin" : "merchant";
 
   /** When merchant portal has an active list search, show skeleton until API completes. Never show "Not Found" before loading finishes. */
   const hasActiveListSearch = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");
@@ -423,6 +498,7 @@ export function MerchantsSearchClient() {
     }
     if (fromDate) params.set("fromDate", fromDate);
     if (toDate) params.set("toDate", toDate);
+    if (storeTypeFilter) params.set("storeType", storeTypeFilter);
 
     let didRedirect = false;
     fetch(`/api/merchant/stores?${params.toString()}`, { signal: ac.signal, method: "GET" })
@@ -471,7 +547,7 @@ export function MerchantsSearchClient() {
       });
 
     return () => ac.abort();
-  }, [effectiveFilter, effectiveSearch, shouldFetchList, hasCategory, category, fromDate, toDate, portal, returnTo, router, lastSearchTrigger, triggeredSearch, clearTriggeredSearch]);
+  }, [effectiveFilter, effectiveSearch, shouldFetchList, hasCategory, category, fromDate, toDate, storeTypeFilter, portal, returnTo, router, lastSearchTrigger, triggeredSearch, clearTriggeredSearch]);
 
   const handleCategoryClick = (key: CategoryKey) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -497,11 +573,19 @@ export function MerchantsSearchClient() {
     router.push(`/dashboard/merchants?${next.toString()}`);
   };
 
+  const handleStoreTypeChange = (nextType: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    if (nextType) next.set("storeType", nextType);
+    else next.delete("storeType");
+    router.push(`/dashboard/merchants?${next.toString()}`);
+  };
+
   const handleChildClick = (child: ChildRow) => {
     const returnEnc = encodeURIComponent(returnTo);
     const status = (child.approval_status || "").toUpperCase();
     const isVerified = status === "APPROVED";
     const isDelisted = status === "DELISTED";
+    const isRejectedLike = status === "REJECTED" || status === "BLOCKED" || status === "SUSPENDED";
     if (isVerified || isDelisted) {
       const params = new URLSearchParams();
       params.set("returnTo", returnTo);
@@ -509,7 +593,12 @@ export function MerchantsSearchClient() {
       if (portal === "admin") params.set("fromAdmin", "1");
       router.push(`/dashboard/merchants/stores/${child.id}?${params.toString()}`);
     } else {
-      router.push(`/dashboard/merchants/verifications?storeId=${child.id}&returnTo=${returnEnc}`);
+      const vParams = new URLSearchParams();
+      vParams.set("storeId", String(child.id));
+      vParams.set("returnTo", returnTo);
+      vParams.set("portal", portal);
+      if (isRejectedLike) vParams.set("reviewRejected", "1");
+      router.push(`/dashboard/merchants/verifications?${vParams.toString()}`);
     }
   };
 
@@ -535,11 +624,19 @@ export function MerchantsSearchClient() {
             },
             {
               key: "pending",
-              label: "Pending",
+              label: "Pending verification",
               count: stats.pending,
               icon: <Clock className="h-4 w-4 text-amber-600" />,
               bg: "bg-amber-50",
               border: "border-amber-200 hover:border-amber-300",
+            },
+            {
+              key: "drafted",
+              label: "Drafted Store",
+              count: stats.drafted,
+              icon: <Pencil className="h-4 w-4 text-sky-600" />,
+              bg: "bg-sky-50",
+              border: "border-sky-200 hover:border-sky-300",
             },
             {
               key: "new",
@@ -599,6 +696,24 @@ export function MerchantsSearchClient() {
                 className="rounded border border-gray-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 aria-label="To date"
               />
+              <span className="ml-1 text-[10px] font-medium uppercase text-gray-500">Store type</span>
+              <select
+                value={storeTypeFilter ?? ""}
+                onChange={(e) => handleStoreTypeChange(e.target.value)}
+                className="rounded border border-gray-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                aria-label="Store type"
+              >
+                <option value="">All types</option>
+                <option value="RESTAURANT">Restaurant</option>
+                <option value="CAFE">Cafe</option>
+                <option value="BAKERY">Bakery</option>
+                <option value="CLOUD_KITCHEN">Cloud Kitchen</option>
+                <option value="GROCERY">Grocery</option>
+                <option value="PHARMA">Pharma</option>
+                <option value="STATIONERY">Stationery</option>
+                <option value="ELECTRONICS_ECOMMERCE">Electronics & E-commerce</option>
+                <option value="OTHERS">Others</option>
+              </select>
               <button
                 type="button"
                 onClick={fromDate || toDate ? clearDateFilter : applyDateFilter}
@@ -659,14 +774,24 @@ export function MerchantsSearchClient() {
         ) : (
           <div className="space-y-2">
             <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500">
-              {category === "total" ? "All stores" : category === "verified" ? "Verified" : category === "pending" ? "Pending" : category === "new" ? "New (30d)" : "Rejected"} ({childItems.length})
+              {category === "total"
+                ? "All stores"
+                : category === "verified"
+                  ? "Verified"
+                  : category === "pending"
+                    ? "Pending"
+                    : category === "drafted"
+                      ? "Drafted Store"
+                      : category === "new"
+                        ? "New (30d)"
+                        : "Rejected"} ({childItems.length})
             </p>
             {hasSearched && !loading && childItems.length === 0 ? (
               <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
                 <p className="text-xs text-gray-600">No stores in this category.</p>
               </div>
-            ) : childItems.length > 0 ? (
-              <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+              ) : childItems.length > 0 ? (
+              <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
                 {childItems.map((child) => (
                   <ChildStoreRow
                     key={child.id}
@@ -768,7 +893,7 @@ export function MerchantsSearchClient() {
         // Merchant portal + child: single result – show child details (redirect already handled in fetch for verified)
         <div>
           <p className="text-[10px] font-medium uppercase text-gray-500 mb-1">Child store</p>
-          <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+          <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
             {childItems.map((child) => (
               <ChildStoreRow
                 key={child.id}
@@ -787,7 +912,7 @@ export function MerchantsSearchClient() {
       ) : (
         <div>
           <p className="text-[10px] font-medium uppercase text-gray-500 mb-1">Child store</p>
-          <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+          <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
             {childItems.map((child) => (
               <ChildStoreRow
                 key={child.id}

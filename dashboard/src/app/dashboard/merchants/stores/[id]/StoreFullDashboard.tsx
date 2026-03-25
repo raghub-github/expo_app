@@ -48,8 +48,8 @@ import {
 } from "recharts";
 import { useToast } from "@/context/ToastContext";
 
-function formatTimeHMS(t: string): string {
-  if (!t) return "00:00:00";
+function formatTimeHMS(t: string | null): string {
+  if (!t) return "--";
   const parts = t.split(":");
   if (parts.length === 2) return `${t}:00`;
   if (parts.length === 1) return `${t.padStart(2, "0")}:00:00`;
@@ -236,8 +236,8 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
 
   const [isStoreOpen, setIsStoreOpen] = useState(true);
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false);
-  const [openingTime, setOpeningTime] = useState("09:00");
-  const [closingTime, setClosingTime] = useState("23:00");
+  const [openingTime, setOpeningTime] = useState<string | null>(null);
+  const [closingTime, setClosingTime] = useState<string | null>(null);
   const [todayDate, setTodayDate] = useState("");
   const [todaySlots, setTodaySlots] = useState<{ start: string; end: string }[]>([]);
   const [lastToggleBy, setLastToggleBy] = useState<string | null>(null);
@@ -368,8 +368,12 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
     const todaySlots = d.today_slots ?? [];
     if (todaySlots.length > 0) {
       const first = todaySlots[0];
-      setOpeningTime(first.start || "09:00");
-      setClosingTime(first.end || "23:00");    }
+      setOpeningTime(first.start ?? null);
+      setClosingTime(first.end ?? null);
+    } else {
+      setOpeningTime(null);
+      setClosingTime(null);
+    }
   }, [operationsQuery.data]);
 
   // Sync wallet from shared React Query cache
@@ -637,7 +641,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
               )}
               <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === "today" ? "bg-red-50 border-red-400" : "border-gray-200"}`}>
                 <input type="radio" name="closureType" checked={toggleClosureType === "today"} onChange={() => setToggleClosureType("today")} className="w-4 h-4" />
-                <div><p className="text-sm font-semibold">Close for Today</p><p className="text-xs text-gray-600">Reopen tomorrow at {formatTimeHMS(openingTime)}</p></div>
+                <div><p className="text-sm font-semibold">Close for Today</p><p className="text-xs text-gray-600">Reopen tomorrow at {openingTime ? formatTimeHMS(openingTime) : "scheduled opening time"}</p></div>
               </label>
               <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${toggleClosureType === "manual_hold" ? "bg-amber-50 border-amber-400" : "border-gray-200"}`}>
                 <input type="radio" name="closureType" checked={toggleClosureType === "manual_hold"} onChange={() => setToggleClosureType("manual_hold")} className="w-4 h-4" />
@@ -704,7 +708,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
 
               <div className={`rounded-xl border-2 shadow-sm p-4 ${isStoreOpen ? "bg-gradient-to-br from-emerald-50/90 to-green-50/70 border-emerald-200" : restrictionType === "MANUAL_HOLD" ? "bg-amber-50/90 border-amber-300" : "bg-red-50/90 border-red-200"}`}>
                 <div className="flex items-center justify-between gap-2">
-                  <div><p className="text-[10px] font-semibold text-gray-500 uppercase">Store Status</p><p className="text-xs font-bold text-gray-900">{formatTimeHMS(openingTime)} – {formatTimeHMS(closingTime)}</p></div>
+                  <div><p className="text-[10px] font-semibold text-gray-500 uppercase">Store Status</p><p className="text-xs font-bold text-gray-900">{todaySlots.length ? todaySlots.map((slot) => `${slot.start} – ${slot.end}`).join(", ") : "Closed"}</p></div>
                   <button onClick={handleStoreToggle} className={`p-2 rounded-xl shadow-md ${isStoreOpen ? "bg-emerald-500 text-white" : restrictionType === "MANUAL_HOLD" ? "bg-amber-500 text-white" : "bg-red-500 text-white"}`}><Power size={18} /></button>
                 </div>
                 <div className={`flex items-center gap-1.5 mt-2 p-2 rounded-lg border ${isStoreOpen ? "bg-emerald-100/40 border-emerald-300" : "bg-red-100/40 border-red-300"}`}>

@@ -21,7 +21,8 @@ function md5Hash(str: string): string {
  */
 export function getGravatarUrl(email: string, size: number = 40): string {
   const hash = md5Hash(email);
-  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=404&r=pg`;
+  // Use d=mp so missing Gravatar returns 200 (silhouette), not 404 — avoids console noise and broken <img>.
+  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=mp&r=pg`;
 }
 
 /**

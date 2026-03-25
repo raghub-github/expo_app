@@ -4,8 +4,8 @@ import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase/client";
 import { Logo } from "@/components/brand/Logo";
-import { safeParseJson } from "@/lib/utils";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
 
 function parseHashParams(hash: string): Record<string, string> {
   const params: Record<string, string> = {};
@@ -21,26 +21,9 @@ function parseHashParams(hash: string): Record<string, string> {
 async function setCookieAndRedirect(
   accessToken: string,
   refreshToken: string,
-  next: string
+  _next: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const res = await fetch("/api/auth/set-cookie", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }),
-  });
-  const text = await res.text();
-  if (res.ok) return { ok: true };
-  let errorMessage = "Authentication failed";
-  if (text.trim()) {
-    try {
-      const parsed = safeParseJson<{ error?: string }>(text, "");
-      if (parsed?.error) errorMessage = parsed.error;
-      else if (text.length < 300) errorMessage = text.trim();
-    } catch {
-      // use default
-    }
-  }
-  return { ok: false, error: errorMessage };
+  return postSetCookieWithTokens(accessToken, refreshToken);
 }
 
 function AuthCallbackLoading() {
@@ -179,23 +162,6 @@ function AuthCallbackContent() {
 export default function AuthCallbackPage() {
   return (
     <Suspense fallback={<AuthCallbackLoading />}>
-      <AuthCallbackContent />
-    </Suspense>
-  );
-}
-
-export default function AuthCallbackPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-white to-gray-50 px-4">
-          <div className="text-center space-y-6">
-            <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent" />
-            <p className="text-sm font-medium text-gray-700 sm:text-base">Loading...</p>
-          </div>
-        </div>
-      }
-    >
       <AuthCallbackContent />
     </Suspense>
   );

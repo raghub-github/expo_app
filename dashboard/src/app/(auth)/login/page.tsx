@@ -8,6 +8,7 @@ import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
+import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
 
 const OTP_LENGTH = 8;
 
@@ -20,6 +21,9 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
+  const otpRequestInFlightRef = useRef(false);
+  const otpVerifyInFlightRef = useRef(false);
+  const googleInFlightRef = useRef(false);
 
   // Check for error in URL params (e.g., from OAuth callback or validation failures)
   useEffect(() => {
@@ -50,21 +54,26 @@ export default function LoginPage() {
 
   const handleRequestOTP = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (otpRequestInFlightRef.current || loading || googleLoading) return;
+    otpRequestInFlightRef.current = true;
     setLoading(true);
     setError("");
 
-    const result = await requestEmailOTP(email);
+    try {
+      const result = await requestEmailOTP(email);
 
-    if (result.success) {
-      setOtpSent(true);
-      setError("");
-      // Show success message
-      console.log("OTP request successful. Check your email for the verification code.");
-    } else {
-      setError(result.error || "Failed to send OTP. Please try again.");
+      if (result.success) {
+        setOtpSent(true);
+        setError("");
+        // Show success message
+        console.log("OTP request successful. Check your email for the verification code.");
+      } else {
+        setError(result.error || "Failed to send OTP. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+      otpRequestInFlightRef.current = false;
     }
-
-    setLoading(false);
   };
 
   const otpValue = otpDigits.join("");
@@ -109,37 +118,27 @@ export default function LoginPage() {
     e.preventDefault();
     const otp = otpDigits.join("");
     if (otp.length !== OTP_LENGTH) return;
+    if (otpVerifyInFlightRef.current || loading || googleLoading) return;
+    otpVerifyInFlightRef.current = true;
     setLoading(true);
     setError("");
 
-    const result = await verifyOTP(email, otp, "email");
+    try {
+      const result = await verifyOTP(email, otp, "email");
 
-    if (result.success && result.data?.session) {
+      if (result.success && result.data?.session) {
       // Set cookies on the server so middleware can see the session
       // The set-cookie endpoint will validate the user exists and has roles
-      try {
-        const setCookieResponse = await fetch("/api/auth/set-cookie", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            access_token: result.data.session.access_token,
-            refresh_token: result.data.session.refresh_token,
-          }),
-        });
+        try {
+        const cookieResult = await postSetCookieWithTokens(
+          result.data.session.access_token,
+          result.data.session.refresh_token
+        );
 
-        if (!setCookieResponse.ok) {
-          let errorMessage = "Your account is not authorized to access this portal. Please contact an administrator.";
-          try {
-            const text = await setCookieResponse.text();
-            if (text.trim()) {
-              const parsed = safeParseJson<{ error?: string }>(text, "");
-              if (parsed?.error) errorMessage = parsed.error;
-              else if (text.length < 300) errorMessage = text.trim();
-            }
-          } catch {
-            // Use default error message when body is not valid JSON
-          }
-          // Sign out from Supabase if validation failed
+        if (!cookieResult.ok) {
+          const errorMessage =
+            cookieResult.error ||
+            "Your account is not authorized to access this portal. Please contact an administrator.";
           await supabase.auth.signOut();
           setError(errorMessage);
           setLoading(false);
@@ -175,29 +174,39 @@ export default function LoginPage() {
         // Full navigation so the next request has cookies and middleware sees the session
         window.location.href = "/dashboard";
         return;
-      } catch (cookieError) {
-        console.error("Error setting cookies:", cookieError);
-        setError("Failed to complete login. Please try again.");
-        setLoading(false);
+        } catch (cookieError) {
+          console.error("Error setting cookies:", cookieError);
+          setError("Failed to complete login. Please try again.");
+        }
+      } else {
+        setError(result.error || "Invalid OTP. Please try again.");
       }
-    } else {
-      setError(result.error || "Invalid OTP. Please try again.");
+    } finally {
       setLoading(false);
+      otpVerifyInFlightRef.current = false;
     }
   };
 
   const handleGoogleLogin = async () => {
+    if (googleInFlightRef.current || googleLoading || loading) return;
+    googleInFlightRef.current = true;
     setGoogleLoading(true);
     setError("");
 
-    const result = await signInWithGoogle();
-    
-    if (!result.success) {
-      setError(result.error || "Google login failed. Please try again.");
-      setGoogleLoading(false);
+    try {
+      const result = await signInWithGoogle();
+
+      if (!result.success) {
+        setError(result.error || "Google login failed. Please try again.");
+        setGoogleLoading(false);
+      }
+      // If successful, the user will be redirected to Google OAuth
+      // The callback handler will process the redirect
+    } finally {
+      if (!window.location.href.includes("/auth/callback")) {
+        googleInFlightRef.current = false;
+      }
     }
-    // If successful, the user will be redirected to Google OAuth
-    // The callback handler will process the redirect
   };
 
   return (

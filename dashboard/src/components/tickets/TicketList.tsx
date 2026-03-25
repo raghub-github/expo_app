@@ -155,65 +155,8 @@ export function TicketList() {
   }, [refData?.groups]);
   const statusOptions = refData?.statuses ?? [];
 
-  // Now safe to do conditional returns
-  if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-4">
-        <LoadingSpinner />
-        <p className="text-sm text-gray-500">Loading tickets…</p>
-        <p className="text-xs text-gray-400">If this takes too long, check the network tab or try refreshing.</p>
-      </div>
-    );
-  }
-
-  const inlineErrorMessage = error instanceof Error ? error.message : "Unknown error";
-  const hasCachedData = Boolean(data);
-
-  // Non-blocking error UX: if we have cached/snapshot data, keep rendering the UI
-  // and show an inline retry banner. Only block when we have nothing to show.
-  if (error && !hasCachedData) {
-    return (
-      <div className="p-8 text-center">
-        <p className="text-red-600 font-medium">Failed to load tickets</p>
-        <p className="text-sm text-gray-600 mt-2">{inlineErrorMessage}</p>
-        <button
-          type="button"
-          onClick={() => refetch()}
-          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  const showInlineError = Boolean(error && hasCachedData);
-
-  if (!data || data.tickets.length === 0) {
-    return (
-      <div className="p-8 text-center">
-        {showInlineError && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-left">
-            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
-            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
-            <button
-              type="button"
-              onClick={() => refetch()}
-              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-        <p className="text-gray-500">No tickets found matching your filters.</p>
-      </div>
-    );
-  }
-
-  const totalPages = Math.max(1, Math.ceil(data.total / limit));
-  const start = data.total === 0 ? 0 : offset + 1;
-  const end = Math.min(offset + limit, data.total);
-  const pageNumbers = getPageNumbers(totalPages, page);
+  /** Stable while loading / empty; avoids hooks after conditional returns. */
+  const tickets = data?.tickets ?? [];
 
   const onSelect = useCallback((ticketId: number, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -223,15 +166,14 @@ export function TicketList() {
       return next;
     });
   }, []);
+
   const selectAll = useCallback(
     (checked: boolean) => {
-      if (checked) setSelectedIds(new Set(data.tickets.map((t) => t.id)));
+      if (checked) setSelectedIds(new Set(tickets.map((t) => t.id)));
       else setSelectedIds(new Set());
     },
-    [data.tickets]
+    [tickets]
   );
-  const allSelected = data.tickets.length > 0 && selectedIds.size === data.tickets.length;
-  const someSelected = selectedIds.size > 0;
 
   const handleUpdatePriority = useCallback(
     (ticketId: number, priority: string) => {
@@ -304,7 +246,7 @@ export function TicketList() {
     [selectedIds, updateTicket]
   );
   const handleExportSelected = useCallback(() => {
-    const selected = data.tickets.filter((t) => selectedIds.has(t.id));
+    const selected = tickets.filter((t) => selectedIds.has(t.id));
     if (selected.length === 0) return;
     const headers = ["Ticket #", "Subject", "Status", "Priority", "Assignee", "Group", "Created"];
     const rows = selected.map((t) => [
@@ -324,13 +266,13 @@ export function TicketList() {
     a.download = `tickets-export-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [data.tickets, selectedIds]);
+  }, [tickets, selectedIds]);
 
   const ROW_HEIGHT = 72;
 
   const VirtualRow = useCallback(
     ({ index, style }: ListChildComponentProps) => {
-      const ticket = data.tickets[index];
+      const ticket = tickets[index];
       if (!ticket) return null;
 
       return (
@@ -354,7 +296,7 @@ export function TicketList() {
       );
     },
     [
-      data.tickets,
+      tickets,
       selectedIds,
       onSelect,
       handleUpdatePriority,
@@ -368,6 +310,68 @@ export function TicketList() {
       currentUser?.id,
     ]
   );
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <LoadingSpinner />
+        <p className="text-sm text-gray-500">Loading tickets…</p>
+        <p className="text-xs text-gray-400">If this takes too long, check the network tab or try refreshing.</p>
+      </div>
+    );
+  }
+
+  const inlineErrorMessage = error instanceof Error ? error.message : "Unknown error";
+  const hasCachedData = Boolean(data);
+
+  // Non-blocking error UX: if we have cached/snapshot data, keep rendering the UI
+  // and show an inline retry banner. Only block when we have nothing to show.
+  if (error && !hasCachedData) {
+    return (
+      <div className="p-8 text-center">
+        <p className="text-red-600 font-medium">Failed to load tickets</p>
+        <p className="text-sm text-gray-600 mt-2">{inlineErrorMessage}</p>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const showInlineError = Boolean(error && hasCachedData);
+
+  if (!data || data.tickets.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        {showInlineError && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-left">
+            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
+            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        <p className="text-gray-500">No tickets found matching your filters.</p>
+      </div>
+    );
+  }
+
+  const totalPages = Math.max(1, Math.ceil(data.total / limit));
+  const start = data.total === 0 ? 0 : offset + 1;
+  const end = Math.min(offset + limit, data.total);
+  const pageNumbers = getPageNumbers(totalPages, page);
+
+  const allSelected = data.tickets.length > 0 && selectedIds.size === data.tickets.length;
+  const someSelected = selectedIds.size > 0;
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-white overflow-hidden">

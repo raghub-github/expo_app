@@ -1,6 +1,14 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { listStores, getMenuByStoreId, getStoreLiveStatus, getMenuItemFullConfig, search } from "./merchant.service.js";
+import {
+  listStores,
+  getMenuByStoreId,
+  getStoreLiveStatus,
+  getMenuItemFullConfig,
+  search,
+  listNearbyStoresByRoadDistance,
+} from "./merchant.service.js";
+import { listUserAppCategories } from "./userAppCategory.service.js";
 import type { NearbyStoreRow } from "./merchant.types.js";
 import { computeLiveStatus } from "./merchant.types.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
@@ -24,7 +32,57 @@ const searchQuerySchema = z.object({
   lng: z.coerce.number().optional(),
 });
 
+const nearbyStoresQuerySchema = z.object({
+  lat: z.coerce.number(),
+  lng: z.coerce.number(),
+  maxDistanceKm: z.coerce.number().min(1).max(10).optional().default(10),
+  mapboxLimit: z.coerce.number().int().min(1).max(15).optional().default(15),
+});
+
+const userAppCategoriesQuerySchema = z.object({
+  store_type: z.string().trim().min(1).max(32).optional().default("FOOD"),
+});
+
 export async function merchantRoutes(app: FastifyInstance) {
+  app.get(
+    "/stores/nearby",
+    {
+      schema: {
+        querystring: nearbyStoresQuerySchema,
+        response: {
+          200: z.array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+              address: z.string(),
+              lat: z.number(),
+              lng: z.number(),
+              distance_km: z.number(),
+              duration_min: z.number().nullable(),
+              is_open: z.boolean(),
+            })
+          ),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof nearbyStoresQuerySchema>;
+      const { items, mapboxFailures } = await listNearbyStoresByRoadDistance({
+        lat: q.lat,
+        lng: q.lng,
+        maxRoadDistanceKm: q.maxDistanceKm,
+        mapboxLimit: q.mapboxLimit,
+      });
+      if (mapboxFailures > 0) {
+        request.log.warn(
+          { mapboxFailures, lat: q.lat, lng: q.lng },
+          "Mapbox distance calls failed for some nearby-store candidates"
+        );
+      }
+      return reply.send(items);
+    }
+  );
+
   // GET /v1/merchants – list stores with active menu
   app.get(
     "/merchants",
@@ -38,6 +96,7 @@ export async function merchantRoutes(app: FastifyInstance) {
                 id: z.string(),
                 name: z.string(),
                 displayImage: z.string().nullable(),
+                banner_url: z.string().nullable().optional(),
                 deliveryTime: z.string().optional(),
                 cuisines: z.array(z.string()).optional(),
                 isOpen: z.boolean(),
@@ -66,10 +125,10 @@ export async function merchantRoutes(app: FastifyInstance) {
         const displayImageRaw =
           nearby.display_image ??
           s.banner_url ??
-          (Array.isArray(s.ads_images) && s.ads_images[0] ? s.ads_images[0] : null) ??
           (Array.isArray(s.gallery_images) && s.gallery_images[0] ? s.gallery_images[0] : null) ??
           null;
         const displayImage = toAbsoluteClientMediaUrl(displayImageRaw);
+        const bannerAbs = toAbsoluteClientMediaUrl(s.banner_url ?? null);
         const prepMin = nearby.avg_preparation_time_minutes ?? s.avg_preparation_time_minutes;
         const rawLiveStatus = (s as NearbyStoreRow).live_status;
         const normalized =
@@ -88,6 +147,7 @@ export async function merchantRoutes(app: FastifyInstance) {
           id: s.store_id,
           name: s.store_display_name ?? s.store_name,
           displayImage,
+          banner_url: bannerAbs ?? displayImage ?? null,
           deliveryTime: prepMin != null ? `${prepMin} min` : undefined,
           cuisines: s.cuisine_types ?? undefined,
           isOpen,
@@ -289,9 +349,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Store not found" });
       }
       const bannerImages: string[] = [];
-      const ads = store.ads_images ?? [];
       const gallery = store.gallery_images ?? [];
-      if (Array.isArray(ads) && ads.length > 0) bannerImages.push(...ads.filter(Boolean));
       if (Array.isArray(gallery) && gallery.length > 0) bannerImages.push(...gallery.filter(Boolean));
       if (bannerImages.length === 0 && store.banner_url) bannerImages.push(store.banner_url);
 
@@ -411,6 +469,35 @@ export async function merchantRoutes(app: FastifyInstance) {
         cuisines: s.cuisine_types ?? undefined,
       }));
       return reply.send({ dishes, stores: storeList });
+    }
+  );
+
+  // GET /v1/user-app/categories – category tiles (name + image) per store_type; only status=active
+  app.get(
+    "/user-app/categories",
+    {
+      schema: {
+        querystring: userAppCategoriesQuerySchema,
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                id: z.number(),
+                name: z.string(),
+                imageUrl: z.string().nullable(),
+                displayOrder: z.number(),
+                storeType: z.string(),
+                status: z.string(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    async (request, reply) => {
+      const q = request.query as z.infer<typeof userAppCategoriesQuerySchema>;
+      const items = await listUserAppCategories({ storeType: q.store_type });
+      return reply.send({ items });
     }
   );
 }

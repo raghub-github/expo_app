@@ -58,6 +58,7 @@ const EnvSchema = z.object({
 
   // Distance / routing (backend-only; shared by Customer, Rider, Merchant apps)
   OSRM_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 });
 

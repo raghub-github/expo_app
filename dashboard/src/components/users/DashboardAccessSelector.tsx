@@ -9,6 +9,8 @@ interface DashboardAccessSelectorProps {
   selectedAccessPoints: Record<string, string[]>; // { dashboardType: [accessPointGroups] }
   onDashboardsChange: (dashboards: string[]) => void;
   onAccessPointsChange: (dashboardType: string, accessPoints: string[]) => void;
+  canTogglePortal?: boolean;
+  onCanTogglePortalChange?: (value: boolean) => void;
   disabled?: boolean;
 }
 
@@ -95,6 +97,12 @@ export const DASHBOARD_DEFINITIONS: Record<
         label: "Merchant Wallet",
         description: "Wallet amount edit access",
         allowedActions: ["UPDATE"],
+      },
+      {
+        group: "MERCHANT_ADMIN_MERCHANT_ACCESS",
+        label: "Admin&Merchant access",
+        description: "Admin merchant panel",
+        allowedActions: ["ADMIN_MERCHANT_PANEL"],
       },
     ],
   },
@@ -475,6 +483,8 @@ export function DashboardAccessSelector({
   selectedAccessPoints,
   onDashboardsChange,
   onAccessPointsChange,
+  canTogglePortal = false,
+  onCanTogglePortalChange,
   disabled = false,
 }: DashboardAccessSelectorProps) {
   const [expandedDashboards, setExpandedDashboards] = useState<Set<string>>(
@@ -505,8 +515,14 @@ export function DashboardAccessSelector({
         dashboardType,
         currentPoints.filter((p) => p !== accessPointGroup)
       );
+      if (dashboardType === "MERCHANT" && accessPointGroup === "MERCHANT_ADMIN_MERCHANT_ACCESS") {
+        onCanTogglePortalChange?.(false);
+      }
     } else {
       onAccessPointsChange(dashboardType, [...currentPoints, accessPointGroup]);
+      if (dashboardType === "MERCHANT" && accessPointGroup === "MERCHANT_ADMIN_MERCHANT_ACCESS") {
+        onCanTogglePortalChange?.(true);
+      }
     }
   };
 
@@ -541,7 +557,6 @@ export function DashboardAccessSelector({
         <p className="text-xs text-gray-600 mb-4">
           Select which dashboards this user can access and configure their access points.
         </p>
-
         <div className="space-y-2 max-h-[600px] overflow-y-auto">
           {Object.entries(DASHBOARD_DEFINITIONS).map(([dashboardType, config]) => {
             const selected = isDashboardSelected(dashboardType);

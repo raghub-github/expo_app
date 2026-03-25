@@ -55,9 +55,13 @@ export async function GET(request: NextRequest) {
       ? (result as any).rows
       : (result as any);
 
-    const roles = rows
-      .map((r: any) => r.role_name)
-      .filter((r: any) => typeof r === "string" && r.length > 0);
+    const roles = Array.from(
+      new Set(
+        rows
+          .map((r: any) => String(r.role_name ?? "").replace(/\s+/g, " ").trim())
+          .filter((r: string) => r.length > 0)
+      )
+    );
 
     return NextResponse.json({
       success: true,

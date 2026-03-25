@@ -51,6 +51,7 @@ export interface UpdateUserData {
   is_email_verified?: boolean;
   is_mobile_verified?: boolean;
   two_factor_enabled?: boolean;
+  can_toggle_portal?: boolean;
   approved_by?: number;
   approved_at?: Date;
 }
@@ -202,6 +203,7 @@ export async function updateSystemUser(id: number, updates: UpdateUserData) {
   if (updates.is_email_verified !== undefined) updateData.isEmailVerified = updates.is_email_verified;
   if (updates.is_mobile_verified !== undefined) updateData.isMobileVerified = updates.is_mobile_verified;
   if (updates.two_factor_enabled !== undefined) updateData.twoFactorEnabled = updates.two_factor_enabled;
+  if (updates.can_toggle_portal !== undefined) updateData.canTogglePortal = updates.can_toggle_portal;
   if (updates.approved_by !== undefined) updateData.approvedBy = updates.approved_by;
   if (updates.approved_at !== undefined) updateData.approvedAt = updates.approved_at;
   

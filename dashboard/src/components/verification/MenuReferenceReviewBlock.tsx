@@ -65,7 +65,7 @@ export function MenuReferenceReviewBlock({
             return (
               <div key={f.id} className="rounded-lg border border-gray-200 bg-gray-50/40 p-3">
                 <p className="mb-2 text-[11px] font-medium text-gray-700">{sourceEntityLabel(f.source_entity)}</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                   {imgs.map((img) => {
                     const st = (img.verification_status || "PENDING").toUpperCase();
                     const key = `${f.id}:${img.id}`;
@@ -82,7 +82,7 @@ export function MenuReferenceReviewBlock({
                           <img
                             src={img.url}
                             alt={img.file_name || "Menu reference"}
-                            className="mx-auto max-h-52 w-full object-contain"
+                            className="mx-auto h-36 w-full object-cover"
                           />
                         </a>
                         <div className="space-y-2 p-2">

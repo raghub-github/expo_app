@@ -176,8 +176,9 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
   const walletPending = wallet?.pending_balance ?? 0;
 
   const slots = operations?.today_slots ?? [];
-  const openingTime = slots[0]?.start ?? "09:00";
-  const closingTime = slots[0]?.end ?? "23:00";
+  const slotText = slots.length
+    ? slots.map((slot) => `${slot.start} – ${slot.end}`).join(", ")
+    : "Closed";
 
   const ordersTrend = [
     { day: "Mon", orders: 0 },
@@ -247,7 +248,7 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
             <div>
               <p className="text-[10px] font-semibold text-gray-500 uppercase">Store Status</p>
               <p className="text-xs font-bold text-gray-900">
-                {openingTime} – {closingTime}
+                {slotText}
               </p>
             </div>
             <div

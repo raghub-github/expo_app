@@ -194,9 +194,15 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
                   )}
                 </div>
                 {!!doc[e.urlKey] && (
-                  <a href={doc[e.urlKey] as string} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700">                    <ExternalLink className="h-2.5 w-2.5" /> Open
+                  <a
+                    href={doc[e.urlKey] as string}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex shrink-0 items-center gap-0.5 rounded bg-indigo-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700"
+                  >
+                    <ExternalLink className="h-2.5 w-2.5" /> Open
                   </a>
-                ) : null}
+                )}
               </div>
             ))}
             {!!doc.fssai_expiry_date &&

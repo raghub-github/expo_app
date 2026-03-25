@@ -30,11 +30,6 @@ interface ServicePointsMapProps {
 }
 
 function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
-  // #region agent log
-  const componentMountTime = Date.now();
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServicePointsMap.tsx:29',message:'ServicePointsMap mounted',data:{componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
-  
   const [selectedPoint, setSelectedPoint] = useState<ServicePoint | null>(null);
   const [deletingPointId, setDeletingPointId] = useState<number | null>(null);
   const [deleteStartTime, setDeleteStartTime] = useState<number | null>(null);
@@ -63,12 +58,6 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
       setRetrying(false);
     }
   }, [refetch]);
-  
-  // #region agent log
-  useEffect(() => {
-    const queryCheckTime = Date.now();
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ServicePointsMap.tsx:32',message:'ServicePoints query state',data:{isLoading,isFetching,fulfilledTimeStamp,hasData:!!servicePoints.length,timeSinceMount:queryCheckTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});  }, [isLoading, isFetching, servicePoints.length]);
-  // #endregion
 
   // Support both env variable names
   const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN;

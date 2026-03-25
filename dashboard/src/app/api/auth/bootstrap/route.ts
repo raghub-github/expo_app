@@ -134,6 +134,7 @@ export async function GET(request: NextRequest) {
           exists: true,
           systemUserId: userPerms.systemUserId,
           isSuperAdmin: userPerms.isSuperAdmin,
+          canTogglePortal: userPerms.canTogglePortal,
           roles: userPerms.roles,
           permissions: userPerms.permissions,
           permissionStrings: toPermissionKeys(userPerms.permissions),
@@ -142,6 +143,7 @@ export async function GET(request: NextRequest) {
           exists: false,
           systemUserId: null,
           isSuperAdmin: false,
+          canTogglePortal: false,
           roles: [],
           permissions: [],
           permissionStrings: [],
@@ -201,7 +203,15 @@ export async function GET(request: NextRequest) {
       },
     };
     await setCachedBootstrap(user.id, body);
-    return NextResponse.json(body);
+    const response = NextResponse.json(body);
+    response.cookies.set("gm_portal_toggle_access", userPerms?.canTogglePortal ? "1" : "0", {
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 60 * 60 * 24 * 7,
+    });
+    return response;
   } catch (error) {
     if (isInvalidRefreshToken(error)) {
       try {

@@ -241,6 +241,19 @@ export async function meRoutes(app: FastifyInstance) {
         const sub = req.auth!.sub;
         const role = req.auth!.role;
         const body = patchBodySchema.parse(req.body);
+        if (process.env.NODE_ENV !== "production") {
+          req.log?.info?.(
+            {
+              event: "qa_profile_permission_patch",
+              userId: sub,
+              timestamp: new Date().toISOString(),
+              sms_permission: body.sms_permission,
+              location_permission: body.location_permission,
+              contacts_permission: body.contacts_permission,
+            },
+            "PATCH /v1/me/profile permission payload"
+          );
+        }
         const db = getDb();
         const emailNorm = body.email?.trim().toLowerCase();
         const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);

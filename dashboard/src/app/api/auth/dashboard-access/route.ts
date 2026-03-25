@@ -17,10 +17,6 @@ const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
 
 export async function GET(request: NextRequest) {
-  const startTime = Date.now();
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:19',message:'Dashboard access API start',data:{timestamp:startTime},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
   try {
     const supabase = await createServerSupabaseClient();
 
@@ -97,23 +93,14 @@ export async function GET(request: NextRequest) {
     }
 
     // Get dashboard access for regular users
-    const dashboardsStartTime = Date.now();
     const dashboards = await getUserDashboardAccess(systemUser.id);
-    const dashboardsDuration = Date.now() - dashboardsStartTime;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:96',message:'getUserDashboardAccess completed',data:{dashboardsCount:dashboards.length,durationMs:dashboardsDuration},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
-    
+
     // Get access points for all dashboards in parallel (faster first paint)
     const accessPointsArrays = await Promise.all(
       dashboards.map((d) => getUserAccessPoints(systemUser.id, d.dashboardType as "RIDER" | "MERCHANT" | "TICKET" | "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" | "OFFER" | "AREA_MANAGER" | "CUSTOMER" | "PAYMENT" | "SYSTEM" | "ANALYTICS"))
     );
     const allAccessPoints = accessPointsArrays.flat();
 
-    const totalDuration = Date.now() - startTime;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'dashboard-access/route.ts:105',message:'Dashboard access API complete',data:{totalDurationMs:totalDuration,dashboardsCount:dashboards.length,accessPointsCount:allAccessPoints.length},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
     return NextResponse.json({
       success: true,
       data: {

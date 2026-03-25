@@ -15,6 +15,7 @@ import PreviewPage from "@/components/onboarding/preview";
 const StoreLocationMapboxGL = dynamic(() => import("@/components/StoreLocationMapboxGL"), { ssr: false });
 const mapboxToken = typeof process !== "undefined" ? (process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "") : "";
 const disableCurrentLocationButton = typeof process !== "undefined" && process.env.NEXT_PUBLIC_DISABLE_CURRENT_LOCATION === "true";
+const MAX_MENU_IMAGE_BYTES = 12 * 1024 * 1024;
 
 const STEP_LABELS = [
   "Store Informations",
@@ -139,6 +140,8 @@ export function AddChildStoreClient() {
   const imageUploadInputRef = useRef<HTMLInputElement | null>(null);
   const csvUploadInputRef = useRef<HTMLInputElement | null>(null);
   const pdfUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const saveContinueClickLockRef = useRef(false);
+  const step3UploadInFlightRef = useRef(false);
 
   const [refreshingStepStatus, setRefreshingStepStatus] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -187,6 +190,7 @@ export function AddChildStoreClient() {
   // Step 5: Operational details (store configuration / hours / cuisines)
   const [step5StoreSetup, setStep5StoreSetup] = useState<Step5StoreSetupData | null>(null);
   const [mediaUploading, setMediaUploading] = useState(false);
+  const [menuRemoveLoading, setMenuRemoveLoading] = useState(false);
 
   const legalBusinessName = storeDisplayName;
   const currentStoreId = createdStoreId;
@@ -1165,6 +1169,22 @@ export function AddChildStoreClient() {
     return `/api/attachments/proxy?key=${encodeURIComponent(trimmed.replace(/^\/+/, ""))}`;
   }, []);
 
+  const extractAttachmentKey = useCallback((value: unknown): string | null => {
+    const normalized = toProxyAttachmentUrl(value);
+    if (!normalized) return null;
+    try {
+      const fakeOrigin = "https://local.invalid";
+      const u = normalized.startsWith("http://") || normalized.startsWith("https://")
+        ? new URL(normalized)
+        : new URL(normalized, fakeOrigin);
+      const key = u.searchParams.get("key");
+      if (!key || !key.trim()) return null;
+      return decodeURIComponent(key.trim());
+    } catch {
+      return null;
+    }
+  }, [toProxyAttachmentUrl]);
+
   const getStep2Patch = useCallback((): Record<string, unknown> => ({
     step2: {
       full_address: step2FormData.full_address,
@@ -1211,6 +1231,7 @@ export function AddChildStoreClient() {
       if (!step2FormData.postal_code?.trim()) { setErr("Postal code is required."); return; }
     }
     if (step === 3) {
+      if (step3UploadInFlightRef.current) return;
       if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) {
         setStep(4);
         return;
@@ -1242,6 +1263,7 @@ export function AddChildStoreClient() {
 
       setActionLoading(true);
       setErr(null);
+      step3UploadInFlightRef.current = true;
       try {
         let step3Patch: Record<string, unknown> | undefined;
         const hasNewFiles =
@@ -1256,7 +1278,6 @@ export function AddChildStoreClient() {
             if (menuImageFiles.length === 0) {
               throw new Error("Please select at least one menu image.");
             }
-            // Allow up to 5 images at once
             menuImageFiles.slice(0, 5).forEach((file) => {
               formData.append("files", file);
             });
@@ -1432,6 +1453,7 @@ export function AddChildStoreClient() {
             : "Failed to upload menu file. Please try again."
         );
       } finally {
+        step3UploadInFlightRef.current = false;
         setActionLoading(false);
       }
       return;
@@ -1445,6 +1467,14 @@ export function AddChildStoreClient() {
       }
       if (!step5StoreSetup || !step5StoreSetup.cuisine_types || step5StoreSetup.cuisine_types.length === 0) {
         setErr("Please select at least one cuisine before continuing.");
+        return;
+      }
+      if (
+        !Number.isFinite(step5StoreSetup.delivery_radius_km) ||
+        step5StoreSetup.delivery_radius_km < 1 ||
+        step5StoreSetup.delivery_radius_km > 8
+      ) {
+        setErr("Delivery Radius (km) must be between 1 and 8.");
         return;
       }
       const bannerValue = toProxyAttachmentUrl(step5StoreSetup.banner_preview);
@@ -1807,6 +1837,13 @@ export function AddChildStoreClient() {
       setStep(step + 1);
     }
   };
+
+  const isStep5DeliveryRadiusInvalid =
+    step === 5 &&
+    (!step5StoreSetup ||
+      !Number.isFinite(step5StoreSetup.delivery_radius_km) ||
+      step5StoreSetup.delivery_radius_km < 1 ||
+      step5StoreSetup.delivery_radius_km > 8);
 
   // While existing child-store progress is loading, avoid rendering step 1 and then
   // jumping to the active step. This removes the flicker when user clicks
@@ -2306,6 +2343,7 @@ export function AddChildStoreClient() {
                   <Step3MenuUpload
                     menuUploadMode={menuUploadMode}
                       onModeClick={(mode) => {
+                        if (menuRemoveLoading) return;
                         if (mode === menuUploadMode) return;
 
                         // Only consider files for the CURRENT mode when deciding to show switch modal.
@@ -2330,22 +2368,39 @@ export function AddChildStoreClient() {
                           variant: "warning",
                           confirmLabel: "Yes, switch",
                           onConfirm: async () => {
+                            setMenuRemoveLoading(true);
                             try {
-                              if (storeInternalId && parentId && Number.isFinite(storeInternalId)) {
-                                await fetch(
-                                  `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
-                                  {
-                                    method: "DELETE",
-                                    headers: { "Content-Type": "application/json" },
-                                    credentials: "include",
-                                    body: JSON.stringify({}),
-                                  }
-                                );
+                              if (storeInternalId && Number.isFinite(storeInternalId)) {
+                                // On switch from IMAGE -> PDF/CSV, explicitly delete all uploaded menu images.
+                                if (menuUploadMode === "IMAGE" && menuUploadIds.length > 0) {
+                                  await fetch(
+                                    `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
+                                    {
+                                      method: "DELETE",
+                                      headers: { "Content-Type": "application/json" },
+                                      credentials: "include",
+                                      body: JSON.stringify({}),
+                                    }
+                                  );
+                                } else {
+                                  await fetch(
+                                    `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
+                                    {
+                                      method: "DELETE",
+                                      headers: { "Content-Type": "application/json" },
+                                      credentials: "include",
+                                      body: JSON.stringify({}),
+                                    }
+                                  );
+                                }
                               }
                             } catch {
                               // ignore; local state will still be cleared
+                            } finally {
+                              setMenuRemoveLoading(false);
                             }
                             setMenuImageFiles([]);
+                            setImagePreviewUrls([]);
                             setMenuUploadedImageUrls([]);
                             setMenuUploadedImageNames([]);
                             setMenuSpreadsheetFile(null);
@@ -2382,7 +2437,19 @@ export function AddChildStoreClient() {
                     onMenuImageUpload={(files) => {
                       if (!files?.length) return;
                       setMenuUploadError("");
-                      setMenuImageFiles(files.slice(0, 5));
+                      const validImageFiles = files
+                        .filter((file) => file.type.startsWith("image/"))
+                        .slice(0, 5);
+                      const oversizeImage = validImageFiles.find(
+                        (file) => file.size >= MAX_MENU_IMAGE_BYTES
+                      );
+                      if (oversizeImage) {
+                        setMenuUploadError(
+                          `Image "${oversizeImage.name}" is too large. Each image must be less than 12 MB.`
+                        );
+                        return;
+                      }
+                      setMenuImageFiles(validImageFiles);
                     }}
                     onMenuPdfUpload={(file) => {
                       setMenuUploadError("");
@@ -2400,7 +2467,8 @@ export function AddChildStoreClient() {
                       setMenuImageFiles((prev) => prev.filter((_, i) => i !== idx));
                     }}
                     onRemoveUploadedImage={(idx) => {
-                      if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) {
+                      if (menuRemoveLoading) return;
+                      if (!storeInternalId || !Number.isFinite(storeInternalId)) {
                         setMenuUploadedImageUrls((prev) =>
                           prev.filter((_, i) => i !== idx)
                         );
@@ -2413,12 +2481,15 @@ export function AddChildStoreClient() {
                         return;
                       }
                       const fileId = menuUploadIds[idx];
+                      const imageUrl = menuUploadedImageUrls[idx] ?? null;
+                      const imageKey = extractAttachmentKey(imageUrl);
                       setConfirmModal({
                         title: "Remove file?",
                         message: "This will be deleted from the server.",
                         variant: "warning",
                         confirmLabel: "Confirm",
                         onConfirm: async () => {
+                          setMenuRemoveLoading(true);
                           try {
                             await fetch(
                               `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
@@ -2427,14 +2498,18 @@ export function AddChildStoreClient() {
                                 headers: { "Content-Type": "application/json" },
                                 credentials: "include",
                                 body: JSON.stringify(
-                                  fileId != null
-                                    ? { fileId }
-                                    : { r2Key: null }
+                                  imageKey
+                                    ? { r2Key: imageKey }
+                                    : fileId != null
+                                      ? { fileId }
+                                      : {}
                                 ),
                               }
                             );
                           } catch {
                             // ignore network errors; still clear local state
+                          } finally {
+                            setMenuRemoveLoading(false);
                           }
                           setMenuUploadedImageUrls((prev) =>
                             prev.filter((_, i) => i !== idx)
@@ -2449,8 +2524,59 @@ export function AddChildStoreClient() {
                         onCancel: () => setConfirmModal(null),
                       });
                     }}
+                    onRemoveAllImages={() => {
+                      if (menuRemoveLoading) return;
+                      if (!menuUploadedImageUrls.length && !menuImageFiles.length) return;
+                      setConfirmModal({
+                        title: "Remove all images?",
+                        message: "This will delete all menu images from server and database.",
+                        variant: "warning",
+                        confirmLabel: "Remove all",
+                        onConfirm: async () => {
+                          setMenuRemoveLoading(true);
+                          if (storeInternalId && Number.isFinite(storeInternalId)) {
+                            try {
+                              if (menuUploadIds.length > 0) {
+                                await fetch(
+                                  `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
+                                  {
+                                    method: "DELETE",
+                                    headers: { "Content-Type": "application/json" },
+                                    credentials: "include",
+                                    body: JSON.stringify({}),
+                                  }
+                                );
+                              } else if (menuUploadedImageUrls.length > 0) {
+                                await fetch(
+                                  `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
+                                  {
+                                    method: "DELETE",
+                                    headers: { "Content-Type": "application/json" },
+                                    credentials: "include",
+                                    body: JSON.stringify({}),
+                                  }
+                                );
+                              }
+                            } catch {
+                              // ignore network errors; clear local state regardless
+                            } finally {
+                              setMenuRemoveLoading(false);
+                            }
+                          } else {
+                            setMenuRemoveLoading(false);
+                          }
+                          setMenuImageFiles([]);
+                          setImagePreviewUrls([]);
+                          setMenuUploadedImageUrls([]);
+                          setMenuUploadedImageNames([]);
+                          setMenuUploadIds([]);
+                        },
+                        onCancel: () => setConfirmModal(null),
+                      });
+                    }}
                     onRemoveCsvFile={() => {
-                      if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) {
+                      if (menuRemoveLoading) return;
+                      if (!storeInternalId || !Number.isFinite(storeInternalId)) {
                         setMenuUploadedSpreadsheetUrl(null);
                         setMenuUploadedSpreadsheetFileName(null);
                         setMenuSpreadsheetFile(null);
@@ -2462,6 +2588,7 @@ export function AddChildStoreClient() {
                         variant: "warning",
                         confirmLabel: "Confirm",
                         onConfirm: async () => {
+                          setMenuRemoveLoading(true);
                           try {
                             await fetch(
                               `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
@@ -2474,6 +2601,8 @@ export function AddChildStoreClient() {
                             );
                           } catch {
                             // ignore; still clear local state
+                          } finally {
+                            setMenuRemoveLoading(false);
                           }
                           setMenuUploadedSpreadsheetUrl(null);
                           setMenuUploadedSpreadsheetFileName(null);
@@ -2483,7 +2612,8 @@ export function AddChildStoreClient() {
                       });
                     }}
                     onRemovePdfFile={() => {
-                      if (!storeInternalId || !parentId || !Number.isFinite(storeInternalId)) {
+                      if (menuRemoveLoading) return;
+                      if (!storeInternalId || !Number.isFinite(storeInternalId)) {
                         setMenuUploadedPdfUrl(null);
                         setMenuUploadedPdfFileName(null);
                         setMenuPdfFile(null);
@@ -2495,6 +2625,7 @@ export function AddChildStoreClient() {
                         variant: "warning",
                         confirmLabel: "Confirm",
                         onConfirm: async () => {
+                          setMenuRemoveLoading(true);
                           try {
                             await fetch(
                               `/api/merchant/stores/${storeInternalId}/media/delete-menu`,
@@ -2507,6 +2638,8 @@ export function AddChildStoreClient() {
                             );
                           } catch {
                             // ignore; still clear local state
+                          } finally {
+                            setMenuRemoveLoading(false);
                           }
                           setMenuUploadedPdfUrl(null);
                           setMenuUploadedPdfFileName(null);
@@ -2515,6 +2648,7 @@ export function AddChildStoreClient() {
                         onCancel: () => setConfirmModal(null),
                       });
                     }}
+                    removeActionsLoading={menuRemoveLoading}
                   />
                 </div>
               )}
@@ -3256,13 +3390,23 @@ export function AddChildStoreClient() {
                     <button
                       type="button"
                       onClick={() => {
+                        if (saveContinueClickLockRef.current || actionLoading) return;
+                        saveContinueClickLockRef.current = true;
                         if (step === 9) {
                           setSuccess(true);
+                          saveContinueClickLockRef.current = false;
                         } else {
-                          void nextStep();
+                          void nextStep().finally(() => {
+                            saveContinueClickLockRef.current = false;
+                          });
                         }
                       }}
-                      disabled={actionLoading || mediaUploading || (step === 4 && !step4RequiredValid)}
+                      disabled={
+                        actionLoading ||
+                        mediaUploading ||
+                        (step === 4 && !step4RequiredValid) ||
+                        isStep5DeliveryRadiusInvalid
+                      }
                       className="px-4 py-2 sm:px-5 sm:py-2.5 text-xs sm:text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium disabled:opacity-50 inline-flex items-center gap-1.5 sm:gap-2 shrink-0 cursor-pointer disabled:cursor-not-allowed"
                     >
                       {actionLoading ? (

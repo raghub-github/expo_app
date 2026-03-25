@@ -1,4 +1,6 @@
 import { getSupabase } from "../../lib/supabase.js";
+import { getEnv } from "../../config/env.js";
+import { haversineDistanceKm } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import type {
   MerchantMenuItemRow,
@@ -9,12 +11,256 @@ import type {
   MenuItemCustomizationRow,
   MenuItemAddonRow,
 } from "./merchant.types.js";
+import { computeLiveStatus } from "./merchant.types.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
 const SEARCH_LIMIT = 30;
 /** Non-negotiable: never show stores beyond 15 km. */
 const MAX_RADIUS_KM = 15;
+const ROUGH_RADIUS_KM = 12;
+const FINAL_MAX_ROAD_DISTANCE_KM = 10;
+const MAX_MAPBOX_CANDIDATES = 15;
+const MAPBOX_CONCURRENCY = 5;
+const MAPBOX_CACHE_TTL_MS = 10 * 60 * 1000;
+
+type NearbyStoreBase = {
+  id: number;
+  store_id: string;
+  store_name: string;
+  store_display_name: string | null;
+  full_address: string | null;
+  latitude: number | string | null;
+  longitude: number | string | null;
+  status: string | null;
+  is_active: boolean | null;
+  is_available: boolean | null;
+  is_accepting_orders: boolean | null;
+  operational_status: string | null;
+  live_status?: string | null;
+};
+
+export type NearbyStoreListingItem = {
+  id: string;
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  distance_km: number;
+  duration_min: number | null;
+  is_open: boolean;
+};
+
+const mapboxDistanceCache = new Map<
+  string,
+  { distanceKm: number; durationMin: number | null; expiresAt: number }
+>();
+
+function mapboxCacheKey(userLat: number, userLng: number, storeId: number): string {
+  return `${userLat.toFixed(5)}_${userLng.toFixed(5)}_${storeId}`;
+}
+
+function readMapboxCache(
+  key: string
+): { distanceKm: number; durationMin: number | null } | null {
+  const entry = mapboxDistanceCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    mapboxDistanceCache.delete(key);
+    return null;
+  }
+  return { distanceKm: entry.distanceKm, durationMin: entry.durationMin };
+}
+
+function writeMapboxCache(
+  key: string,
+  value: { distanceKm: number; durationMin: number | null }
+): void {
+  mapboxDistanceCache.set(key, {
+    ...value,
+    expiresAt: Date.now() + MAPBOX_CACHE_TTL_MS,
+  });
+}
+
+function toNumber(v: number | string | null | undefined): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const safeLimit = Math.max(1, Math.min(limit, items.length || 1));
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  async function run(): Promise<void> {
+    while (true) {
+      const current = index++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeLimit }, () => run()));
+  return results;
+}
+
+async function fetchMapboxDrivingDistanceKm(
+  userLat: number,
+  userLng: number,
+  storeLat: number,
+  storeLng: number
+): Promise<{ distanceKm: number; durationMin: number | null }> {
+  const env = getEnv();
+  const token = (env.MAPBOX_ACCESS_TOKEN ?? "").trim();
+  if (!token) {
+    throw new Error("MAPBOX_ACCESS_TOKEN not configured");
+  }
+
+  const url = new URL(
+    `https://api.mapbox.com/directions/v5/mapbox/driving/${userLng},${userLat};${storeLng},${storeLat}`
+  );
+  url.searchParams.set("access_token", token);
+  url.searchParams.set("alternatives", "false");
+  url.searchParams.set("overview", "false");
+  url.searchParams.set("steps", "false");
+
+  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) {
+    throw new Error(`Mapbox API error: ${res.status}`);
+  }
+
+  const data = (await res.json()) as {
+    routes?: Array<{ distance?: number; duration?: number }>;
+  };
+  const route = data.routes?.[0];
+  if (!route || typeof route.distance !== "number") {
+    throw new Error("Mapbox route missing");
+  }
+
+  const distanceKm = Math.round((route.distance / 1000) * 100) / 100;
+  const durationMin =
+    typeof route.duration === "number" ? Math.max(1, Math.round(route.duration / 60)) : null;
+  return { distanceKm, durationMin };
+}
+
+export async function listNearbyStoresByRoadDistance(params: {
+  lat: number;
+  lng: number;
+  maxRoadDistanceKm?: number;
+  mapboxLimit?: number;
+}): Promise<{ items: NearbyStoreListingItem[]; mapboxFailures: number }> {
+  if (!validCoord(params.lat, params.lng)) return { items: [], mapboxFailures: 0 };
+
+  const supabase = getSupabase();
+  const user = { lat: params.lat, lng: params.lng };
+  const maxRoadDistanceKm = Math.min(
+    FINAL_MAX_ROAD_DISTANCE_KM,
+    Math.max(1, params.maxRoadDistanceKm ?? FINAL_MAX_ROAD_DISTANCE_KM)
+  );
+  const mapboxLimit = Math.min(
+    MAX_MAPBOX_CANDIDATES,
+    Math.max(1, params.mapboxLimit ?? MAX_MAPBOX_CANDIDATES)
+  );
+
+  const { data, error } = await supabase
+    .from("merchant_stores")
+    .select(
+      "id, store_id, store_name, store_display_name, full_address, latitude, longitude, status, is_active, is_available, is_accepting_orders, operational_status, live_status"
+    )
+    .eq("status", "ACTIVE")
+    .eq("is_active", true)
+    .not("latitude", "is", null)
+    .not("longitude", "is", null);
+
+  if (error) throw error;
+
+  const baseRows = (data ?? []) as NearbyStoreBase[];
+  const roughCandidates = baseRows
+    .map((row) => {
+      const lat = toNumber(row.latitude);
+      const lng = toNumber(row.longitude);
+      if (lat == null || lng == null) return null;
+      const roughKm = haversineDistanceKm(user, { lat, lng });
+      return { row, lat, lng, roughKm };
+    })
+    .filter((x): x is { row: NearbyStoreBase; lat: number; lng: number; roughKm: number } => Boolean(x))
+    .filter((x) => x.roughKm <= ROUGH_RADIUS_KM)
+    .sort((a, b) => a.roughKm - b.roughKm)
+    .slice(0, mapboxLimit);
+
+  if (roughCandidates.length === 0) return { items: [], mapboxFailures: 0 };
+
+  const enriched = await mapWithConcurrency(roughCandidates, MAPBOX_CONCURRENCY, async (candidate) => {
+    const cacheKey = mapboxCacheKey(user.lat, user.lng, candidate.row.id);
+    const cached = readMapboxCache(cacheKey);
+    if (cached) {
+      return {
+        ...candidate,
+        distanceKm: cached.distanceKm,
+        durationMin: cached.durationMin,
+        source: "cache" as const,
+      };
+    }
+
+    try {
+      const route = await fetchMapboxDrivingDistanceKm(
+        user.lat,
+        user.lng,
+        candidate.lat,
+        candidate.lng
+      );
+      writeMapboxCache(cacheKey, route);
+      return {
+        ...candidate,
+        distanceKm: route.distanceKm,
+        durationMin: route.durationMin,
+        source: "mapbox" as const,
+      };
+    } catch {
+      return {
+        ...candidate,
+        distanceKm: null,
+        durationMin: null,
+        source: "error" as const,
+      };
+    }
+  });
+
+  const mapboxFailures = enriched.filter((x) => x.source === "error").length;
+
+  const items: NearbyStoreListingItem[] = enriched
+    .filter((x) => x.distanceKm != null && x.distanceKm <= maxRoadDistanceKm)
+    .map((x) => {
+      const raw = typeof x.row.live_status === "string" ? x.row.live_status.trim().toUpperCase() : "";
+      const live = raw === "OPEN" || raw === "CLOSED"
+        ? raw
+        : computeLiveStatus({
+            is_active: x.row.is_active,
+            is_available: x.row.is_available,
+            is_accepting_orders: x.row.is_accepting_orders,
+            operational_status: x.row.operational_status,
+          });
+      return {
+        id: x.row.store_id,
+        name: x.row.store_display_name ?? x.row.store_name,
+        address: x.row.full_address ?? "",
+        lat: x.lat,
+        lng: x.lng,
+        distance_km: Number((x.distanceKm ?? 0).toFixed(2)),
+        duration_min: x.durationMin,
+        is_open: live === "OPEN",
+      };
+    })
+    .filter((x) => x.is_open)
+    .sort((a, b) => a.distance_km - b.distance_km);
+
+  return { items, mapboxFailures };
+}
 
 function clampLimit(limit: number): number {
   return Math.min(MAX_LIMIT, Math.max(1, limit));
@@ -61,8 +307,51 @@ export async function listStoresNearby(params: {
   });
 
   if (error) {
-    if (error.code === "42883") {
-      return { items: [] };
+    const message = (error.message ?? "").toLowerCase();
+    const missingFunction = error.code === "42883";
+    const removedLogoColumn =
+      error.code === "42703" || message.includes("logo_url") || message.includes("column ms.logo_url");
+    if (missingFunction || removedLogoColumn) {
+      // Fallback path when DB RPC is missing/outdated (e.g., ms.logo_url removed).
+      const { data: stores, error: storesError } = await supabase
+        .from("merchant_stores")
+        .select(
+          "id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, live_status, parent_id"
+        )
+        .eq("status", "ACTIVE")
+        .eq("is_active", true)
+        .not("latitude", "is", null)
+        .not("longitude", "is", null);
+      if (storesError) throw storesError;
+
+      const user = { lat: params.lat, lng: params.lng };
+      const items = ((stores ?? []) as MerchantStoreRow[])
+        .map((s) => {
+          const lat = toNumber(s.latitude);
+          const lng = toNumber(s.longitude);
+          if (lat == null || lng == null) return null;
+          const distance_km = haversineDistanceKm(user, { lat, lng });
+          const live =
+            s.live_status === "OPEN" || s.live_status === "CLOSED"
+              ? s.live_status
+              : computeLiveStatus({
+                  is_active: s.is_active,
+                  is_available: s.is_available,
+                  is_accepting_orders: s.is_accepting_orders,
+                  operational_status: s.operational_status,
+                });
+          if (distance_km > radius_km || live !== "OPEN") return null;
+          return {
+            ...s,
+            distance_km: Number(distance_km.toFixed(2)),
+            display_image: s.banner_url ?? null,
+          } as NearbyStoreRow;
+        })
+        .filter((x): x is NearbyStoreRow => Boolean(x))
+        .sort((a, b) => a.distance_km - b.distance_km)
+        .slice(0, limit);
+
+      return { items };
     }
     throw error;
   }
@@ -105,7 +394,7 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("merchant_stores")
-    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, ads_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km")
+    .select("id, store_id, store_name, store_display_name, store_description, full_address, postal_code, banner_url, gallery_images, cuisine_types, city, latitude, longitude, operational_status, avg_preparation_time_minutes, is_active, is_available, is_accepting_orders, status, created_at, parent_id, packaging_charge_amount, delivery_charge_per_km, delivery_radius_km")
     .eq("store_id", storeId)
     .single();
   if (error || !data) return null;

@@ -193,13 +193,14 @@ export async function countChildStoresForParent(params: {
  */
 export async function countMerchantStoresByStatus(
   areaManagerId: number | null,
-  options?: { createdFrom?: string; createdTo?: string }
+  options?: { createdFrom?: string; createdTo?: string; storeType?: string | null }
 ): Promise<{
   total: number;
   verified: number;
   pending: number;
   rejected: number;
   active: number;
+  drafted: number;
   new: number;
 }> {
   const sql = getSql();
@@ -210,6 +211,10 @@ export async function countMerchantStoresByStatus(
   const childCondition = sql`AND parent_id IS NOT NULL`;
   const fromDate = options?.createdFrom?.trim();
   const toDate = options?.createdTo?.trim();
+  const storeType = options?.storeType?.trim();
+  const storeTypeCondition = storeType
+    ? sql`AND COALESCE(NULLIF(store_type::text, ''), 'RESTAURANT') = ${storeType}`
+    : sql``;
   const dateFromCondition = fromDate ? sql`AND created_at >= (${fromDate}::date)` : sql``;
   const dateToCondition = toDate ? sql`AND created_at <= (${toDate}::date + interval '1 day')` : sql``;
 
@@ -219,10 +224,17 @@ export async function countMerchantStoresByStatus(
       count(*) FILTER (WHERE approval_status = 'APPROVED')::int AS verified,
       count(*) FILTER (WHERE approval_status IN ('DRAFT', 'SUBMITTED', 'UNDER_VERIFICATION'))::int AS pending,
       count(*) FILTER (WHERE approval_status IN ('REJECTED', 'BLOCKED', 'SUSPENDED'))::int AS rejected,
+      count(*) FILTER (
+        WHERE approval_status = 'DRAFT'
+          AND current_onboarding_step IS NOT NULL
+          AND current_onboarding_step >= 1
+          AND current_onboarding_step < 8
+          AND COALESCE(onboarding_completed, false) = false
+      )::int AS drafted,
       count(*) FILTER (WHERE is_active = true AND status = 'ACTIVE')::int AS active,
       count(*) FILTER (WHERE created_at >= (now() - interval '30 days'))::int AS new
     FROM merchant_stores
-    WHERE ${baseCondition} ${childCondition} ${dateFromCondition} ${dateToCondition}
+    WHERE ${baseCondition} ${childCondition} ${storeTypeCondition} ${dateFromCondition} ${dateToCondition}
   `;
   const row = Array.isArray(scope) ? scope[0] : scope;
   return {
@@ -230,6 +242,7 @@ export async function countMerchantStoresByStatus(
     verified: Number(row?.verified ?? 0),
     pending: Number(row?.pending ?? 0),
     rejected: Number(row?.rejected ?? 0),
+    drafted: Number(row?.drafted ?? 0),
     active: Number(row?.active ?? 0),
     new: Number(row?.new ?? 0),
   };
@@ -646,6 +659,9 @@ export async function listMerchantStores(params: {
   filter?: "parent" | "child";
   parentId?: number;
   newOnly?: boolean;
+  /** "Drafted Store" = approval_status=DRAFT with some steps completed, but not yet finished (step 8 pending). */
+  draftedOnly?: boolean;
+  storeType?: string | null;
   /** Filter by created_at >= fromDate (YYYY-MM-DD) */
   createdFrom?: string;
   /** Filter by created_at <= toDate (YYYY-MM-DD, end of day) */
@@ -724,6 +740,20 @@ export async function listMerchantStores(params: {
       ? sql`AND created_at >= (now() - interval '30 days')`
       : sql``;
 
+  const storeTypeCondition = params.storeType
+    ? sql`AND COALESCE(NULLIF(store_type::text, ''), 'RESTAURANT') = ${params.storeType}`
+    : sql``;
+
+  const draftedOnlyCondition = params.draftedOnly
+    ? sql`
+        AND approval_status = 'DRAFT'
+        AND current_onboarding_step IS NOT NULL
+        AND current_onboarding_step >= 1
+        AND current_onboarding_step < 8
+        AND COALESCE(onboarding_completed, false) = false
+      `
+    : sql``;
+
   // Optional date range filter (from/to particular date)
   const fromDate = params.createdFrom?.trim();
   const toDate = params.createdTo?.trim();
@@ -748,6 +778,8 @@ export async function listMerchantStores(params: {
     ${statusCondition}
     ${storeStatusCondition}
     ${newOnlyCondition}
+    ${storeTypeCondition}
+    ${draftedOnlyCondition}
     ${dateFromCondition}
     ${dateToCondition}
     ${searchCondition}
@@ -1377,7 +1409,7 @@ export async function updateMerchantStore(
     setClauses.push(
       data.gallery_images === null
         ? sql`gallery_images = NULL`
-        : sql`gallery_images = ${sql.array(data.gallery_images)}`
+        : sql`gallery_images = ${sql.array(data.gallery_images)}::text[]`
     );
   }
   if (data.cuisine_types !== undefined) {

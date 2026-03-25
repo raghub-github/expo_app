@@ -235,6 +235,10 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
   }));
 
   const [mediaUploading, setMediaUploading] = useState(false);
+  const deliveryRadiusInvalid =
+    !Number.isFinite(storeSetup.delivery_radius_km) ||
+    storeSetup.delivery_radius_km < 1 ||
+    storeSetup.delivery_radius_km > 8;
 
   useEffect(() => {
     onMediaUploadingChange?.(mediaUploading);
@@ -360,6 +364,7 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
     formData.append("file", file);
     formData.append("type", type);
     formData.append("index", String(index));
+    formData.append("apply_to_store", "true");
 
     const res = await fetch(`/api/merchant/stores/${storeInternalId}/profile-media`, {
       method: "POST",
@@ -611,11 +616,17 @@ export default function Step5StoreSetup(props: Step5StoreSetupProps) {
                 onChange={handleSimpleFieldChange}
                 className="w-full px-3 py-2.5 sm:py-3 text-sm border border-slate-300 rounded-lg sm:rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
                 min={1}
-                max={50}
+                max={8}
               />
-              <p className="text-xs text-gray-500 mt-1.5">
-                Max delivery distance.
-              </p>
+              {deliveryRadiusInvalid ? (
+                <p className="text-xs text-rose-600 mt-1.5">
+                  Delivery Radius (km) must be between 1 and 8.
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500 mt-1.5">
+                  Max delivery distance.
+                </p>
+              )}
             </div>
           </div>
 

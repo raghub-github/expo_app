@@ -47,7 +47,8 @@ import Animated, {
 } from "react-native-reanimated";
 
 const AnimatedSectionList = createAnimatedComponent(SectionList<MenuItem>) as typeof SectionList;
-import { merchantService, type MenuItem } from "@/services/merchant.service";
+import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getRoute } from "@/services/distance.service";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
@@ -142,7 +143,26 @@ function BannerCarousel({
   const frontOpacity = useSharedValue(1);
   const backOpacity = useSharedValue(0);
 
-  const data = (images ?? []).length > 0 ? (images ?? []) : fallbackUri ? [fallbackUri] : [];
+  /** Same source as store card: `banner_url` hero first, then gallery — old order used gallery-only and ignored working fallbackUri. */
+  const data = (() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const add = (s: string | null | undefined) => {
+      const t = typeof s === "string" ? s.trim() : "";
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      out.push(t);
+    };
+    add(fallbackUri);
+    for (const u of images ?? []) add(u);
+    return out;
+  })();
+  const dataKey = data.join("|");
+  const [remoteFailed, setRemoteFailed] = useState(false);
+  useEffect(() => {
+    setRemoteFailed(false);
+  }, [dataKey]);
+
   const showCarousel = data.length > 1;
   indexRef.current = index;
 
@@ -190,7 +210,7 @@ function BannerCarousel({
     opacity: backOpacity.value,
   }));
 
-  if (data.length === 0) {
+  if (data.length === 0 || remoteFailed) {
     return (
       <View style={[styles.headerImageWrap, { height }]}>
         <Image source={DEFAULT_IMAGE} style={[styles.headerImage, { height }]} resizeMode="cover" />
@@ -201,7 +221,12 @@ function BannerCarousel({
   if (!showCarousel) {
     return (
       <View style={[styles.headerImageWrap, { height }]}>
-        <Image source={{ uri: data[0] }} style={[styles.headerImage, { height }]} resizeMode="cover" />
+        <Image
+          source={{ uri: data[0] }}
+          style={[styles.headerImage, { height }]}
+          resizeMode="cover"
+          onError={() => setRemoteFailed(true)}
+        />
       </View>
     );
   }
@@ -212,10 +237,20 @@ function BannerCarousel({
   return (
     <View style={[styles.headerImageWrap, { height }]}>
       <Animated.View style={[StyleSheet.absoluteFill, backStyle]}>
-        <Image source={{ uri: nextUri }} style={[styles.headerImage, { width: SCREEN_WIDTH, height }]} resizeMode="cover" />
+        <Image
+          source={{ uri: nextUri }}
+          style={[styles.headerImage, { width: SCREEN_WIDTH, height }]}
+          resizeMode="cover"
+          onError={() => setRemoteFailed(true)}
+        />
       </Animated.View>
       <Animated.View style={[StyleSheet.absoluteFill, frontStyle]}>
-        <Image source={{ uri: currentUri }} style={[styles.headerImage, { width: SCREEN_WIDTH, height }]} resizeMode="cover" />
+        <Image
+          source={{ uri: currentUri }}
+          style={[styles.headerImage, { width: SCREEN_WIDTH, height }]}
+          resizeMode="cover"
+          onError={() => setRemoteFailed(true)}
+        />
       </Animated.View>
       {nextUri !== currentUri && (
         <Image source={{ uri: nextUri }} style={styles.bannerPreload} resizeMode="cover" />
@@ -504,6 +539,18 @@ export default function MerchantDetailScreen() {
     refetchOnWindowFocus: true,
     refetchInterval: 2 * 60 * 1000,
   });
+
+  /** List screen often has displayImage already; detail payload can miss URLs — reuse for header banner. */
+  const listCachedBanner = useMemo(() => {
+    const entries = queryClient.getQueriesData<MerchantSummary[]>({ queryKey: ["merchants"] });
+    for (const [, list] of entries) {
+      if (!Array.isArray(list)) continue;
+      const m = list.find((x) => x.id === merchantId);
+      const u = m?.displayImage ?? m?.banner_url;
+      if (u) return toAbsoluteImageUrl(u);
+    }
+    return null;
+  }, [merchantId, queryClient]);
 
   useFocusEffect(
     useCallback(() => {
@@ -988,7 +1035,13 @@ export default function MerchantDetailScreen() {
             <Animated.View style={[styles.headerImageWrap, headerImageStyle]}>
               <BannerCarousel
                 images={merchant.bannerImages ?? []}
-                fallbackUri={merchant.imageUrl ?? null}
+                fallbackUri={
+                  merchant.imageUrl ??
+                  merchant.displayImage ??
+                  merchant.banner_url ??
+                  listCachedBanner ??
+                  null
+                }
                 height={HEADER_IMAGE_HEIGHT}
               />
               <LinearGradient
