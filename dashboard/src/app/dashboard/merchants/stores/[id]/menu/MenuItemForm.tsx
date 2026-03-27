@@ -210,49 +210,97 @@ export function MenuItemForm({
   const categorySections = useMemo((): CategorySection[] => {
     const sortKids = (a: MenuCategory, b: MenuCategory) =>
       (a.display_order ?? 0) - (b.display_order ?? 0) || a.id - b.id;
-    const byParent = new Map<number, MenuCategory[]>();
+    const byId = new Map<number, MenuCategory>();
+    const childrenCount = new Map<number, number>();
     for (const c of categories) {
-      if (c.parent_category_id) {
-        const arr = byParent.get(c.parent_category_id) ?? [];
-        arr.push(c);
-        byParent.set(c.parent_category_id, arr);
+      byId.set(Number(c.id), c);
+      const p = c.parent_category_id == null ? null : Number(c.parent_category_id);
+      if (p != null && Number.isFinite(p)) {
+        childrenCount.set(p, (childrenCount.get(p) ?? 0) + 1);
       }
     }
-    const roots = categories.filter((c) => !c.parent_category_id).slice().sort(sortKids);
-    const used = new Set<number>();
-    const sections: CategorySection[] = [];
-    for (const root of roots) {
-      const kids = (byParent.get(root.id) ?? []).slice().sort(sortKids);
-      if (kids.length) {
-        for (const ch of kids) used.add(ch.id);
-        sections.push({
-          key: `p-${root.id}`,
-          title: root.category_name,
-          rows: kids.map((ch) => ({
-            id: ch.id,
-            parentName: root.category_name,
-            subName: ch.category_name,
-          })),
-        });
-      } else {
-        used.add(root.id);
-        sections.push({
-          key: `leaf-${root.id}`,
-          title: root.category_name,
-          rows: [{ id: root.id, parentName: root.category_name, subName: null }],
-        });
+
+    const sorted = categories.slice().sort(sortKids);
+    const sectionMap = new Map<number, CategorySection>();
+    const sectionOrder = new Map<number, number>();
+    const otherRows: CategorySection["rows"] = [];
+
+    const getRootAncestor = (cat: MenuCategory): MenuCategory | null => {
+      let cursor: MenuCategory | undefined = cat;
+      const seen = new Set<number>();
+      while (cursor) {
+        const id = Number(cursor.id);
+        if (!Number.isFinite(id) || seen.has(id)) return null;
+        seen.add(id);
+        const parentId =
+          cursor.parent_category_id == null ? null : Number(cursor.parent_category_id);
+        if (parentId == null || !Number.isFinite(parentId)) return cursor;
+        const parent = byId.get(parentId);
+        if (!parent) return null;
+        cursor = parent;
       }
+      return null;
+    };
+
+    for (const cat of sorted) {
+      const parentId = cat.parent_category_id == null ? null : Number(cat.parent_category_id);
+
+      // Root category with no children: show as standalone row.
+      if (parentId == null || !Number.isFinite(parentId)) {
+        if ((childrenCount.get(Number(cat.id)) ?? 0) > 0) {
+          if (!sectionMap.has(Number(cat.id))) {
+            sectionMap.set(Number(cat.id), {
+              key: `p-${cat.id}`,
+              title: cat.category_name,
+              rows: [],
+            });
+            sectionOrder.set(Number(cat.id), cat.display_order ?? 0);
+          }
+          continue;
+        }
+        sectionMap.set(Number(cat.id), {
+          key: `leaf-${cat.id}`,
+          title: cat.category_name,
+          rows: [{ id: cat.id, parentName: cat.category_name, subName: null }],
+        });
+        sectionOrder.set(Number(cat.id), cat.display_order ?? 0);
+        continue;
+      }
+
+      const parent = byId.get(parentId);
+      const root = getRootAncestor(cat);
+      if (!parent || !root) {
+        otherRows.push({
+          id: cat.id,
+          parentName: parent?.category_name ?? cat.category_name,
+          subName: parent ? cat.category_name : null,
+        });
+        continue;
+      }
+
+      const rootId = Number(root.id);
+      const section = sectionMap.get(rootId) ?? {
+        key: `p-${root.id}`,
+        title: root.category_name,
+        rows: [],
+      };
+      section.rows.push({
+        id: cat.id,
+        parentName: parent.category_name,
+        subName: cat.category_name,
+      });
+      sectionMap.set(rootId, section);
+      if (!sectionOrder.has(rootId)) sectionOrder.set(rootId, root.display_order ?? 0);
     }
-    const orphans = categories.filter((c) => c.parent_category_id && !used.has(c.id));
-    if (orphans.length) {
+
+    const sections = Array.from(sectionMap.entries())
+      .sort((a, b) => (sectionOrder.get(a[0]) ?? 0) - (sectionOrder.get(b[0]) ?? 0))
+      .map(([, sec]) => sec);
+    if (otherRows.length > 0) {
       sections.push({
         key: "orphan",
         title: "Other",
-        rows: orphans.sort(sortKids).map((c) => ({
-          id: c.id,
-          parentName: c.category_name,
-          subName: null,
-        })),
+        rows: otherRows,
       });
     }
     return sections;
@@ -510,12 +558,12 @@ export function MenuItemForm({
                   id="menu-item-category-picker"
                   aria-expanded={categoryPickerOpen}
                   aria-haspopup="listbox"
-                  className="mt-0.5 w-full flex items-center justify-between gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white text-left hover:border-orange-200 hover:bg-orange-50/30 transition-colors shadow-sm"
+                  className="mt-0.5 w-full flex items-center justify-between gap-2 px-3 py-2 border border-gray-200 rounded-xl text-sm bg-white text-left hover:border-gray-300 transition-colors"
                   onClick={() => setCategoryPickerOpen((o) => !o)}
                 >
                   <span
                     className={
-                      formData.category_id == null ? "text-gray-400" : "text-gray-900 font-medium truncate"
+                      formData.category_id == null ? "text-gray-400" : "text-gray-900 truncate"
                     }
                   >
                     {categoryButtonLabel}
@@ -525,14 +573,14 @@ export function MenuItemForm({
                   />
                 </button>
                 {categoryPickerOpen && (
-                  <div className="absolute z-50 mt-1 w-full rounded-xl border border-gray-200/90 bg-white shadow-xl shadow-gray-200/60 overflow-hidden ring-1 ring-black/5">
-                    <div className="p-2 border-b border-gray-100 bg-gradient-to-b from-gray-50/80 to-white">
+                  <div className="absolute z-50 mt-1 w-full rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden">
+                    <div className="p-2 border-b border-gray-100">
                       <div className="relative">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                         <input
                           type="search"
                           className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-gray-200 bg-white"
-                          placeholder="Search categories…"
+                          placeholder="Search categories..."
                           value={categoryPickerQuery}
                           onChange={(e) => setCategoryPickerQuery(e.target.value)}
                           onClick={(e) => e.stopPropagation()}
@@ -540,13 +588,13 @@ export function MenuItemForm({
                         />
                       </div>
                     </div>
-                    <div className="max-h-60 overflow-y-auto py-1">
+                    <div className="max-h-72 overflow-y-auto">
                       {filteredCategorySections.length === 0 ? (
                         <p className="px-3 py-4 text-sm text-gray-500 text-center">No categories match</p>
                       ) : (
                         filteredCategorySections.map((sec) => (
-                          <div key={sec.key} className="mb-0.5 last:mb-0">
-                            <div className="sticky top-0 z-10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-400 bg-gradient-to-r from-slate-50 via-white to-gray-50/80 border-b border-gray-100/80">
+                          <div key={sec.key}>
+                            <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-gray-400 bg-gray-50 border-y border-gray-100">
                               {sec.title}
                             </div>
                             {sec.rows.map((row) => (
@@ -555,10 +603,10 @@ export function MenuItemForm({
                                 type="button"
                                 role="option"
                                 aria-selected={formData.category_id === row.id}
-                                className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2 transition-colors border-b border-gray-50 last:border-0 ${
+                                className={`w-full text-left px-3 py-3 text-sm flex items-center justify-between gap-2 transition-colors border-b border-gray-100 ${
                                   formData.category_id === row.id
-                                    ? "bg-orange-50 text-orange-950"
-                                    : "text-gray-800 hover:bg-slate-50"
+                                    ? "bg-gray-50 text-gray-900"
+                                    : "text-gray-900 hover:bg-gray-50"
                                 }`}
                                 onClick={() => {
                                   setFormData({ ...formData, category_id: row.id });
@@ -570,15 +618,12 @@ export function MenuItemForm({
                                   {row.subName != null ? (
                                     <>
                                       <span className="font-semibold text-gray-900">{row.parentName}</span>
-                                      <span className="text-gray-500 font-normal"> ({row.subName})</span>
+                                      <span className="text-gray-500"> ({row.subName})</span>
                                     </>
                                   ) : (
                                     <span className="font-semibold text-gray-900">{row.parentName}</span>
                                   )}
                                 </span>
-                                {formData.category_id === row.id && (
-                                  <span className="text-orange-600 text-xs font-bold shrink-0">✓</span>
-                                )}
                               </button>
                             ))}
                           </div>

@@ -7,7 +7,6 @@ import { useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
 const PRIORITY_DOT: Record<string, string> = {
   low: "bg-gray-400",
@@ -29,7 +28,7 @@ function formatStatusTime(dateStr: string | null): string {
   });
 }
 
-export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
+export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
   const filterSidebar = useTicketFilterSidebar();
@@ -48,7 +47,6 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
   const statusOptions = useMemo(
     () => refData?.statuses ?? [
       { value: "open", label: "Open" },
-      { value: "assigned", label: "Assigned" },
       { value: "in_progress", label: "In progress" },
       { value: "resolved", label: "Resolved" },
       { value: "closed", label: "Closed" },
@@ -89,26 +87,33 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
 
   useEffect(() => {
     if (!ticket) return;
-    setStatus(ticket.status || "open");
-    setPriority(ticket.priority || "medium");
-    setGroupId(ticket.group?.id != null ? String(ticket.group.id) : "");
-    setAgentId(
-      ticket.assignee
-        ? currentUser && ticket.assignee.id === currentUser.id
-          ? "me"
-          : String(ticket.assignee.id)
-        : ""
-    );
-    setTags(Array.isArray(ticket.tags) ? [...ticket.tags] : []);
+    const nextStatus = ticket.status || "open";
+    const nextPriority = ticket.priority || "medium";
+    const nextGroupId = ticket.group?.id != null ? String(ticket.group.id) : "";
+    const nextAgentId = ticket.assignee
+      ? currentUser && ticket.assignee.id === currentUser.id
+        ? "me"
+        : String(ticket.assignee.id)
+      : "";
+    const nextTags = Array.isArray(ticket.tags) ? [...ticket.tags] : [];
+    let nextDueBy = "";
     if (ticket.slaDueAt) {
       try {
-        const d = new Date(ticket.slaDueAt);
-        setDueBy(d.toISOString().slice(0, 16));
+        nextDueBy = new Date(ticket.slaDueAt).toISOString().slice(0, 16);
       } catch {
-        setDueBy("");
+        nextDueBy = "";
       }
-    } else setDueBy("");
-    setTagsInput("");
+    }
+
+    setStatus((prev) => (prev === nextStatus ? prev : nextStatus));
+    setPriority((prev) => (prev === nextPriority ? prev : nextPriority));
+    setGroupId((prev) => (prev === nextGroupId ? prev : nextGroupId));
+    setAgentId((prev) => (prev === nextAgentId ? prev : nextAgentId));
+    setTags((prev) =>
+      prev.length === nextTags.length && prev.every((t, i) => t === nextTags[i]) ? prev : nextTags
+    );
+    setDueBy((prev) => (prev === nextDueBy ? prev : nextDueBy));
+    setTagsInput((prev) => (prev === "" ? prev : ""));
   }, [ticket, currentUser]);
 
   const addTag = () => {
@@ -121,7 +126,8 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
   const removeTag = (tag: string) => setTags((prev) => prev.filter((x) => x !== tag));
 
   const handleUpdate = () => {
-    if (!ticketId) return;
+    const resolvedTicketId = ticket?.id;
+    if (!resolvedTicketId) return;
     const payload: {
       ticketId: number;
       status?: string;
@@ -130,7 +136,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
       groupId?: number | null;
       slaDueAt?: string | null;
       tags?: string[];
-    } = { ticketId };
+    } = { ticketId: resolvedTicketId };
     if (status) payload.status = status;
     if (priority) payload.priority = priority;
     const assigneeNum = agentId === "me" && currentUser ? currentUser.id : agentId ? parseInt(agentId, 10) : null;
@@ -147,20 +153,9 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
     updateTicket.mutate(payload);
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <LoadingSpinner />
-      </div>
-    );
-  }
-
-  if (error || !ticket) {
-    return (
-      <div className="p-4 text-sm text-gray-500">
-        Could not load ticket properties.
-      </div>
-    );
+  if (isLoading || error || !ticket) {
+    // Keep sidebar silent; main ticket area handles centralized loader / fallback.
+    return null;
   }
 
   const statusTime = ticket.closedAt || ticket.resolvedAt || ticket.updatedAt;

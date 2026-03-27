@@ -240,6 +240,21 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       });
   }, [isOpen, urlSearch, merchantsSearch]);
 
+  const filteredAreaManagers = useMemo(() => {
+    const term = areaManagerSearch.trim().toLowerCase();
+    if (!term) return areaManagers;
+    return areaManagers.filter((am) => {
+      const name = am.full_name ?? "";
+      const email = am.email ?? "";
+      const mobile = am.mobile ?? "";
+      return (
+        name.toLowerCase().includes(term) ||
+        email.toLowerCase().includes(term) ||
+        mobile.toLowerCase().includes(term)
+      );
+    });
+  }, [areaManagers, areaManagerSearch]);
+
   const toggleAreaManager = (id: number) => {
     setSelectedAreaManagerIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -432,21 +447,6 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
   };
 
   if (!isOpen || !canAssign) return null;
-
-  const filteredAreaManagers = useMemo(() => {
-    const term = areaManagerSearch.trim().toLowerCase();
-    if (!term) return areaManagers;
-    return areaManagers.filter((am) => {
-      const name = am.full_name ?? "";
-      const email = am.email ?? "";
-      const mobile = am.mobile ?? "";
-      return (
-        name.toLowerCase().includes(term) ||
-        email.toLowerCase().includes(term) ||
-        mobile.toLowerCase().includes(term)
-      );
-    });
-  }, [areaManagers, areaManagerSearch]);
 
   const content = (
     <div className="w-full rounded-2xl bg-white/95 border border-slate-200/80 shadow-md">

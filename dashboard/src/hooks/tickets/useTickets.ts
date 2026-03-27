@@ -17,12 +17,17 @@ export interface TicketFilters {
   assignedToIds?: string[];
   assignedTo?: string;
   sourceRoles?: string[];
-  groupIds?: number[];
+  /** Numeric group IDs and/or the token "unassigned" */
+  groupIds?: string[];
   skill?: string;
   tags?: string;
   company?: string;
   dateFrom?: string;
   dateTo?: string;
+  resolvedFrom?: string;
+  resolvedTo?: string;
+  closedFrom?: string;
+  closedTo?: string;
   dueFrom?: string;
   dueTo?: string;
   searchQuery?: string;
@@ -30,6 +35,10 @@ export interface TicketFilters {
   slaBreach?: string;
   sortBy?: string;
   sortOrder?: string;
+  /** Count/list only rows updated strictly after this ISO timestamp (activity badge). */
+  updatedAfter?: string;
+  /** Count/list only rows created strictly after this ISO timestamp (new-ticket badge). */
+  createdAfter?: string;
   limit?: number;
   offset?: number;
 }
@@ -37,6 +46,7 @@ export interface TicketFilters {
 export interface Ticket {
   id: number;
   ticketNumber: string;
+  ticketType: string;
   serviceType: string;
   ticketCategory: string;
   ticketSection: string;
@@ -60,6 +70,12 @@ export interface Ticket {
     name: string;
     code: string;
   } | null;
+  /** Routing / intake queue from metadata.landed_group_id or ticket_groups rule match (may differ from assigned group). */
+  landedGroup?: {
+    id: number;
+    name: string;
+    code: string;
+  } | null;
   slaDueAt: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
@@ -79,10 +95,10 @@ const TICKETS_FETCH_TIMEOUT_MS = 60_000; // 60s so slow DB doesn't hang the UI f
 export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSignal): Promise<TicketsResponse> {
   const params = new URLSearchParams();
   if (filters.serviceTypes?.length) params.set("serviceType", filters.serviceTypes.join(","));
-  if (filters.ticketSection) params.set("ticketSection", filters.ticketSection);
+  if (filters.ticketSection && filters.ticketSection !== "all") params.set("ticketSection", filters.ticketSection);
   if (filters.statuses?.length) params.set("status", filters.statuses.join(","));
   if (filters.priorities?.length) params.set("priority", filters.priorities.join(","));
-  if (filters.ticketCategory) params.set("ticketCategory", filters.ticketCategory);
+  if (filters.ticketCategory && filters.ticketCategory !== "all") params.set("ticketCategory", filters.ticketCategory);
   if (filters.assignedToIds?.length) params.set("assignedToIds", filters.assignedToIds.join(","));
   else if (filters.assignedTo) params.set("assignedTo", filters.assignedTo);
   if (filters.sourceRoles?.length) params.set("sourceRole", filters.sourceRoles.join(","));
@@ -92,13 +108,19 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   if (filters.company) params.set("company", filters.company);
   if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
   if (filters.dateTo) params.set("dateTo", filters.dateTo);
+  if (filters.resolvedFrom) params.set("resolvedFrom", filters.resolvedFrom);
+  if (filters.resolvedTo) params.set("resolvedTo", filters.resolvedTo);
+  if (filters.closedFrom) params.set("closedFrom", filters.closedFrom);
+  if (filters.closedTo) params.set("closedTo", filters.closedTo);
   if (filters.dueFrom) params.set("dueFrom", filters.dueFrom);
   if (filters.dueTo) params.set("dueTo", filters.dueTo);
   if (filters.searchQuery) params.set("q", filters.searchQuery);
-  if (filters.isHighValue) params.set("isHighValue", filters.isHighValue);
-  if (filters.slaBreach) params.set("slaBreach", filters.slaBreach);
+  if (filters.isHighValue === "true") params.set("isHighValue", "true");
+  if (filters.slaBreach === "true") params.set("slaBreach", "true");
   if (filters.sortBy) params.set("sortBy", filters.sortBy);
   if (filters.sortOrder) params.set("sortOrder", filters.sortOrder);
+  if (filters.updatedAfter?.trim()) params.set("updatedAfter", filters.updatedAfter.trim());
+  if (filters.createdAfter?.trim()) params.set("createdAfter", filters.createdAfter.trim());
   params.set("limit", String(filters.limit || 50));
   params.set("offset", String(filters.offset || 0));
 
@@ -167,12 +189,10 @@ export function useTickets(filters: TicketFilters = {}) {
     enabled: isAllowed && isOnTicketsRoute,
     ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     // Cached list with stale-while-revalidate for smooth pagination/filtering.
-    staleTime: 2 * 60 * 1000,
+    staleTime: 60 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnMount: true,
-    // Keep previous page's data while fetching the next one to avoid flicker.
-    placeholderData: (prev) => prev,
   });
 
   useEffect(() => {

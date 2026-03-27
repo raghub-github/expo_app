@@ -1,75 +1,99 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
+import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 
-const POLL_INTERVAL_MS = 18_000; // 18s - detect new tickets when Realtime is unavailable
+const POLL_INTERVAL_MS = 18_000;
+const REALTIME_DEBOUNCE_MS = 800;
+
+export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
 
 /**
- * Shows "New Updated" badge when new tickets arrive:
- * 1) Supabase Realtime on public.unified_tickets (INSERT/UPDATE)
- * 2) Polling fallback: if currentTotal from server exceeds lastKnownTotal, show badge.
- * Pass currentTotal from the list (data.total). When user clicks badge, refetch then clearNewTickets.
+ * “N new tickets” badge: count tickets that match the **current list filters** and were
+ * created after the user’s last acknowledged time (load list, Apply filters, or click refresh).
+ *
+ * Not a global DB event counter — avoids dummy totals matching full ticket count.
  */
-export function useTicketsRealtime(currentTotal: number) {
+export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: boolean) {
   const [newTicketsCount, setNewTicketsCount] = useState(0);
-  const lastKnownTotalRef = useRef(currentTotal);
+  const ackTimeIsoRef = useRef<string | null>(null);
+  const pollBaseKeyRef = useRef<string>("");
+
+  const pollBaseKey = JSON.stringify(pollBase);
+
+  useEffect(() => {
+    if (pollBaseKeyRef.current === pollBaseKey) return;
+    pollBaseKeyRef.current = pollBaseKey;
+    setNewTicketsCount(0);
+    ackTimeIsoRef.current = new Date().toISOString();
+  }, [pollBaseKey]);
+
+  const runPoll = useCallback(async () => {
+    if (!listReady || ackTimeIsoRef.current == null) return;
+    try {
+      const res = await fetchTickets({
+        ...pollBase,
+        limit: 1,
+        offset: 0,
+        createdAfter: ackTimeIsoRef.current,
+      });
+      const n = Number(res.total ?? 0);
+      if (!Number.isFinite(n) || n <= 0) return;
+      setNewTicketsCount((prev) => Math.max(prev, n));
+    } catch {
+      // ignore
+    }
+  }, [pollBase, listReady]);
+
+  // One quick check when the list finishes loading or filters change (don’t wait 18s only).
+  useEffect(() => {
+    if (!listReady) return;
+    void runPoll();
+  }, [listReady, pollBaseKey, runPoll]);
 
   const clearNewTickets = useCallback(() => {
     setNewTicketsCount(0);
-    lastKnownTotalRef.current = currentTotal;
-  }, [currentTotal]);
+    ackTimeIsoRef.current = new Date().toISOString();
+  }, []);
 
-  // Keep ref in sync so polling can compare
   useEffect(() => {
-    lastKnownTotalRef.current = currentTotal;
-  }, [currentTotal]);
+    if (!listReady) return;
+    const id = window.setInterval(() => {
+      void runPoll();
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [listReady, runPoll]);
 
-  // 1) Supabase Realtime subscription
   useEffect(() => {
+    if (!listReady) return;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
     const channel = supabase
-      .channel(`unified_tickets_${Math.random().toString(36).slice(2)}`)
+      .channel(`tickets_activity_${Math.random().toString(36).slice(2)}`)
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "unified_tickets",
-        },
-        (payload) => {
-          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-            setNewTicketsCount((n) => n + 1);
-          }
+        { event: "*", schema: "public", table: "unified_tickets" },
+        () => {
+          if (debounce) window.clearTimeout(debounce);
+          debounce = window.setTimeout(() => {
+            debounce = null;
+            void runPoll();
+          }, REALTIME_DEBOUNCE_MS);
         }
       )
       .subscribe((status) => {
         if (status === "CHANNEL_ERROR") {
-          console.warn("[useTicketsRealtime] Realtime channel error - using polling fallback. Enable Realtime for unified_tickets in Supabase Dashboard > Database > Replication.");
+          console.warn(
+            "[useTicketsRealtime] Realtime error — polling still runs. Enable Replication for public.unified_tickets if you want faster updates."
+          );
         }
       });
 
     return () => {
+      if (debounce) window.clearTimeout(debounce);
       supabase.removeChannel(channel);
     };
-  }, []);
-
-  // 2) Polling fallback so badge appears even when Realtime is not enabled
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/tickets?limit=1&offset=0", { credentials: "include" });
-        const json = await res.json();
-        if (!json.success || !json.data) return;
-        const serverTotal = Number(json.data.total ?? 0);
-        if (serverTotal > lastKnownTotalRef.current) {
-          setNewTicketsCount((n) => Math.max(n, serverTotal - lastKnownTotalRef.current));
-        }
-      } catch {
-        // ignore
-      }
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
-  }, []);
+  }, [listReady, runPoll]);
 
   return {
     hasNewTickets: newTicketsCount > 0,

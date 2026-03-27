@@ -18,8 +18,7 @@ const REF_CACHE_TTL_MS = 60_000; // 60s
 
 const STATUS_OPTIONS = [
   { value: "open", label: "Open" },
-  { value: "open_frt", label: "Mark FRT" },
-  { value: "assigned", label: "Assigned" },
+  { value: "open_frt", label: "Open FRT" },
   { value: "in_progress", label: "In Progress" },
   { value: "resolved", label: "Resolved" },
   { value: "closed", label: "Closed" },
@@ -99,18 +98,33 @@ export async function GET() {
     let tags: Array<{ id: number; tagCode: string; tagName: string }> = [];
 
     try {
-      const groupRows = await sql`
-        SELECT id, group_code, group_name
-        FROM ticket_groups
-        WHERE is_active = true
-        ORDER BY display_order ASC NULLS LAST, group_name ASC
-      `;
-      groups = (groupRows || []).map((r: Record<string, unknown>) => ({
-        id: Number(r.id),
-        groupCode: String(r.group_code ?? r.groupCode ?? ""),
-        groupName: String(r.group_name ?? r.groupName ?? r.group_code ?? r.groupCode ?? ""),
-      }));
-    } catch {
+      let groupRows: Record<string, unknown>[] = [];
+      try {
+        groupRows = (await sql`
+          SELECT id, group_code, group_name
+          FROM ticket_groups
+          WHERE COALESCE(is_active, true) = true
+          ORDER BY display_order ASC NULLS LAST, group_name ASC
+        `) as unknown as Record<string, unknown>[];
+      } catch {
+        // Fallback for environments where search_path doesn't include public schema.
+        groupRows = (await sql`
+          SELECT id, group_code, group_name
+          FROM public.ticket_groups
+          WHERE COALESCE(is_active, true) = true
+          ORDER BY display_order ASC NULLS LAST, group_name ASC
+        `) as unknown as Record<string, unknown>[];
+      }
+
+      groups = (groupRows || [])
+        .map((r: Record<string, unknown>) => ({
+          id: Number(r.id),
+          groupCode: String(r.group_code ?? r.groupCode ?? ""),
+          groupName: String(r.group_name ?? r.groupName ?? r.group_code ?? r.groupCode ?? ""),
+        }))
+        .filter((g) => Number.isFinite(g.id) && g.id > 0 && g.groupName.trim().length > 0);
+    } catch (groupErr) {
+      console.error("[GET /api/tickets/reference-data] Failed to fetch ticket groups:", groupErr);
       groups = [];
     }
 

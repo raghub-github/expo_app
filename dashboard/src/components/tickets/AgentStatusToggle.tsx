@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Power, Settings, AlertTriangle } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 interface AgentStatus {
   isOnline: boolean;
@@ -12,6 +13,12 @@ interface AgentStatus {
   breakStartedAt: string | null;
   lastOnlineAt: string | null;
 }
+
+const AGENT_STATUS_SNAPSHOT_KEY = "dashboard_snapshot:agentStatus";
+/** Keep last server shape so a full page refresh does not flash Offline / loading before /api responds */
+const AGENT_STATUS_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type AgentStatusResponse = { success: boolean; data: AgentStatus };
 
 export function AgentStatusToggle() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -21,8 +28,13 @@ export function AgentStatusToggle() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  // Fetch current status - keep UI visible on load/error so toggle and gear never disappear
-  const { data: statusData, isLoading } = useQuery<{ success: boolean; data: AgentStatus }>({
+  /** Client-only (see Header dynamic ssr:false) — safe to read snapshot on first paint so refresh does not flash loading. */
+  const initialSnapshot = useMemo(
+    () => loadClientSnapshot<AgentStatusResponse>(AGENT_STATUS_SNAPSHOT_KEY, AGENT_STATUS_SNAPSHOT_TTL_MS) ?? undefined,
+    []
+  );
+
+  const { data: statusData, isPending } = useQuery<AgentStatusResponse>({
     queryKey: ["agentStatus"],
     queryFn: async () => {
       const res = await fetch("/api/agents/status");
@@ -32,7 +44,15 @@ export function AgentStatusToggle() {
     refetchInterval: 30000,
     retry: 2,
     staleTime: 10_000,
+    ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
+    placeholderData: (prev) => prev,
   });
+
+  useEffect(() => {
+    if (statusData && typeof statusData.data !== "undefined") {
+      saveClientSnapshot(AGENT_STATUS_SNAPSHOT_KEY, statusData);
+    }
+  }, [statusData]);
 
   // Update status mutation
   const updateStatusMutation = useMutation({
@@ -57,6 +77,9 @@ export function AgentStatusToggle() {
 
   const currentStatus = statusData?.data?.currentStatus || "offline";
   const isOnline = statusData?.data?.isOnline ?? false;
+
+  /** Pulse only on first-ever load with no snapshot (initialData already covers refresh). */
+  const statusUnknown = isPending && statusData == null;
 
   // Position menu below button when opening
   useEffect(() => {
@@ -167,16 +190,16 @@ export function AgentStatusToggle() {
         <button
           ref={buttonRef}
           type="button"
-          onClick={() => !isLoading && setIsMenuOpen(!isMenuOpen)}
-          disabled={isLoading}
+          onClick={() => !statusUnknown && setIsMenuOpen(!isMenuOpen)}
+          disabled={statusUnknown}
           className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all min-w-[72px] justify-center ${
-            isLoading ? "bg-gray-200/80 text-gray-500 animate-pulse" : statusStyles
+            statusUnknown ? "bg-gray-200/80 text-gray-500 animate-pulse" : statusStyles
           }`}
-          title={isLoading ? "Loading…" : isOnline ? "Change status" : "Go online"}
+          title={statusUnknown ? "Loading…" : isOnline ? "Change status" : "Go online"}
           aria-haspopup="menu"
           aria-expanded={isMenuOpen}
         >
-          {isLoading ? (
+          {statusUnknown ? (
             <div className="h-3.5 w-3.5 rounded-full bg-gray-400 animate-pulse" />
           ) : (
             <Power
@@ -185,7 +208,7 @@ export function AgentStatusToggle() {
               }`}
             />
           )}
-          <span className="text-xs font-medium">{isLoading ? "…" : statusLabel}</span>
+          <span className="text-xs font-medium">{statusUnknown ? "…" : statusLabel}</span>
         </button>
 
         {/* Status Menu - rendered in portal so it's always on top and clickable */}

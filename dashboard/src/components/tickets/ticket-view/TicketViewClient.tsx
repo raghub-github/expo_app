@@ -1,17 +1,17 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { AttachmentModal, isImageUrl } from "./AttachmentModal";
 import { TicketActionBar } from "./TicketActionBar";
 import { TicketHeader } from "./TicketHeader";
 import { ConversationPanel } from "./ConversationPanel";
 import { ActivityTimeline } from "./ActivityTimeline";
 import { addToRecentViewed } from "@/components/search/GlobalSearch";
-import { Paperclip, AlertCircle, RefreshCw } from "lucide-react";
+import { Paperclip } from "lucide-react";
 
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
 
@@ -45,8 +45,9 @@ function setStoredLastViewed(ticketId: number, updatedAt: string, messageCount: 
   } catch {}
 }
 
-export function TicketViewClient({ ticketId }: { ticketId: number }) {
+export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, isFetching, error } = useTicketDetail(ticketId);
+  const [allowErrorRender, setAllowErrorRender] = useState(false);
   const [showActivities, setShowActivities] = useState(false);
   const [showReplySection, setShowReplySection] = useState(false);
   const [attachmentPreview, setAttachmentPreview] = useState<{ url: string; name: string } | null>(null);
@@ -119,61 +120,43 @@ export function TicketViewClient({ ticketId }: { ticketId: number }) {
   }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
 
   // Show skeleton first while loading or fetching without data; only show error after load attempt finishes.
+  useEffect(() => {
+    if (ticket || isLoading || isFetching || !error) {
+      setAllowErrorRender(false);
+      return;
+    }
+    const id = window.setTimeout(() => setAllowErrorRender(true), 2200);
+    return () => clearTimeout(id);
+  }, [ticket, isLoading, isFetching, error]);
+
   const stillLoading = isLoading || (isFetching && !ticket);
   if (stillLoading) {
     return (
-      <div className="flex flex-col min-h-[320px] animate-pulse">
-        <div className="h-10 bg-gray-200 rounded w-48 mb-4" />
-        <div className="h-6 bg-gray-100 rounded w-full max-w-xl mb-2" />
-        <div className="h-4 bg-gray-100 rounded w-3/4 mb-6" />
-        <div className="flex-1 space-y-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="h-20 bg-gray-50 rounded-xl" />
-          ))}
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
+        <LoadingSpinner />
+        <p className="text-sm text-gray-500 max-w-md">Getting everything ready...</p>
+      </div>
+    );
+  }
+
+  if ((error || !ticket) && allowErrorRender) {
+    return (
+      <div className="flex h-full min-h-[70vh] items-center justify-center px-6 text-center">
+        <div className="max-w-md text-gray-800">
+          <p className="text-lg font-semibold tracking-tight">😒 Ohh Nooo......</p>
+          <p className="mt-3 text-base font-normal text-gray-600">You took a wrong turn!</p>
         </div>
       </div>
     );
   }
 
-  if (error || !ticket) {
-    const isTechnicalError =
-      error instanceof Error &&
-      (error.message.includes("column ") ||
-        error.message.includes("does not exist") ||
-        error.message.includes("ECONNREFUSED") ||
-        error.message.includes("Failed to fetch"));
-    const userMessage = isTechnicalError
-      ? "We couldn’t load this ticket. Please try again or go back to the list."
-      : error instanceof Error
-        ? error.message
-        : "This ticket could not be found.";
+  // Safety guard: while ticket is unresolved and error UI is intentionally delayed,
+  // keep showing skeleton so we never access ticket.id on undefined.
+  if (!ticket) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[280px] px-6">
-        <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-8 max-w-md w-full text-center">
-          <div className="flex justify-center mb-4">
-            <div className="rounded-full bg-amber-100 p-4">
-              <AlertCircle className="h-10 w-10 text-amber-600" aria-hidden />
-            </div>
-          </div>
-          <h2 className="text-lg font-semibold text-gray-900 mb-1">Couldn’t load this ticket</h2>
-          <p className="text-sm text-gray-600 mb-6">{userMessage}</p>
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            <Link
-              href="/dashboard/tickets"
-              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Back to tickets
-            </Link>
-            <button
-              type="button"
-              onClick={() => window.location.reload()}
-              className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-gray-800"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Try again
-            </button>
-          </div>
-        </div>
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
+        <LoadingSpinner />
+        <p className="text-sm text-gray-500 max-w-md">Getting everything ready...</p>
       </div>
     );
   }

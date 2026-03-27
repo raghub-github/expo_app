@@ -400,7 +400,7 @@ function DashboardLayoutContent({
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(
-    () => /^\/dashboard\/tickets\/\d+$/.test(cleanPathname),
+    () => /^\/dashboard\/tickets\/[^/]+$/.test(cleanPathname),
     [cleanPathname]
   );
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
@@ -454,7 +454,7 @@ function DashboardLayoutContent({
     isRiderDashboardLayout && Boolean((searchParams.get("search") || "").trim());
 
   const effectiveHasRightSidebar =
-    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
+    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && !isTicketDetailPage;
 
   return (
     <LeftSidebarMobileProvider>

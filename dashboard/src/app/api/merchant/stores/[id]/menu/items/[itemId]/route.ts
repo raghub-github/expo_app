@@ -21,6 +21,60 @@ import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
+function unwrapAttributeValue(v: unknown): unknown {
+  if (v == null) return v;
+  if (typeof v === "object" && !Array.isArray(v)) {
+    const obj = v as Record<string, unknown>;
+    if ("value" in obj) return unwrapAttributeValue(obj.value);
+    if ("raw" in obj) return unwrapAttributeValue(obj.raw);
+    if ("data" in obj) return unwrapAttributeValue(obj.data);
+  }
+  return v;
+}
+
+function attributeValueAsNumber(v: unknown): number | null {
+  const val = unwrapAttributeValue(v);
+  if (val == null) return null;
+  if (typeof val === "number" && Number.isFinite(val)) return val;
+  if (typeof val === "string" && val.trim() !== "") {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function attributeValueAsString(v: unknown): string | null {
+  const val = unwrapAttributeValue(v);
+  if (val == null) return null;
+  if (typeof val === "string") return val;
+  return String(val);
+}
+
+function attributeValueAsBoolean(v: unknown): boolean | null {
+  const val = unwrapAttributeValue(v);
+  if (typeof val === "boolean") return val;
+  if (typeof val === "string") {
+    const x = val.trim().toLowerCase();
+    if (x === "true") return true;
+    if (x === "false") return false;
+  }
+  if (typeof val === "number") return val !== 0;
+  return null;
+}
+
+function extractR2KeyFromProxyUrl(url: string): string {
+  try {
+    const fakeOrigin = "https://local.invalid";
+    const u = url.startsWith("http://") || url.startsWith("https://")
+      ? new URL(url)
+      : new URL(url, fakeOrigin);
+    const key = u.searchParams.get("key");
+    return key ? decodeURIComponent(key) : "";
+  } catch {
+    return "";
+  }
+}
+
 async function getAgentIdForStore(storeId: number): Promise<number | null> {
   const supabase = await createServerSupabaseClient();
   const { data: { user }, error } = await supabase.auth.getUser();
@@ -54,7 +108,7 @@ export async function GET(
              is_popular, is_recommended,
              COALESCE(preparation_time_minutes, preparation_time, 15)::integer AS preparation_time_minutes,
              packaging_charges,
-             serves, serves_label, item_size_value, item_size_unit,
+             serves, serves_label, item_size_value, item_size_unit, available_for_delivery,
              allergens,
              weight_per_serving, weight_per_serving_unit, calories_kcal,
              protein, protein_unit, carbohydrates, carbohydrates_unit,
@@ -153,10 +207,68 @@ export async function GET(
       linked_modifier_groups = [];
     }
 
+    // Unified catalog attributes can be source-of-truth for nutrition/delivery fields.
+    // Keep this best-effort because some environments may not have these tables yet.
+    const itemAttributes = new Map<string, unknown>();
+    try {
+      const itemAttributeRows = await sql`
+        SELECT ad.attribute_name, ia.value
+        FROM item_attributes ia
+        INNER JOIN attribute_definitions ad ON ad.id = ia.attribute_id
+        WHERE ia.item_id = ${menuItemId}
+          AND ad.applies_to IN ('ITEM', 'BOTH')
+      `;
+      for (const row of itemAttributeRows as Array<{ attribute_name: string; value: unknown }>) {
+        if (!row?.attribute_name) continue;
+        itemAttributes.set(row.attribute_name, row.value);
+      }
+    } catch {
+      // ignore unified-attributes errors; fallback to legacy columns
+    }
+    const attrAvailableForDelivery = attributeValueAsBoolean(itemAttributes.get("available_for_delivery"));
+    const attrWeightPerServing = attributeValueAsNumber(itemAttributes.get("weight_per_serving"));
+    const attrWeightPerServingUnit = attributeValueAsString(itemAttributes.get("weight_per_serving_unit"));
+    const attrCalories = attributeValueAsNumber(itemAttributes.get("calories_kcal"));
+    const attrProtein = attributeValueAsNumber(itemAttributes.get("protein"));
+    const attrProteinUnit = attributeValueAsString(itemAttributes.get("protein_unit"));
+    const attrCarbohydrates = attributeValueAsNumber(itemAttributes.get("carbohydrates"));
+    const attrCarbohydratesUnit = attributeValueAsString(itemAttributes.get("carbohydrates_unit"));
+    const attrFat = attributeValueAsNumber(itemAttributes.get("fat"));
+    const attrFatUnit = attributeValueAsString(itemAttributes.get("fat_unit"));
+    const attrFibre = attributeValueAsNumber(itemAttributes.get("fibre"));
+    const attrFibreUnit = attributeValueAsString(itemAttributes.get("fibre_unit"));
+    const attrItemTags = itemAttributes.get("item_tags");
+
     return NextResponse.json({
       success: true,
       item: {
         ...(item as any),
+        available_for_delivery:
+          (item as any).available_for_delivery ?? attrAvailableForDelivery ?? true,
+        weight_per_serving:
+          (item as any).weight_per_serving ?? attrWeightPerServing,
+        weight_per_serving_unit:
+          (item as any).weight_per_serving_unit ?? attrWeightPerServingUnit ?? "grams",
+        calories_kcal:
+          (item as any).calories_kcal ?? attrCalories,
+        protein:
+          (item as any).protein ?? attrProtein,
+        protein_unit:
+          (item as any).protein_unit ?? attrProteinUnit ?? "mg",
+        carbohydrates:
+          (item as any).carbohydrates ?? attrCarbohydrates,
+        carbohydrates_unit:
+          (item as any).carbohydrates_unit ?? attrCarbohydratesUnit ?? "mg",
+        fat:
+          (item as any).fat ?? attrFat,
+        fat_unit:
+          (item as any).fat_unit ?? attrFatUnit ?? "mg",
+        fibre:
+          (item as any).fibre ?? attrFibre,
+        fibre_unit:
+          (item as any).fibre_unit ?? attrFibreUnit ?? "mg",
+        item_tags:
+          (item as any).item_tags ?? (Array.isArray(attrItemTags) ? attrItemTags : null),
         variants: (variants as any[]).map((v: any) => ({
           ...v,
           variant_price: v.variant_price,
@@ -199,7 +311,7 @@ export async function PUT(
              fat, fat_unit, fibre, fibre_unit, item_tags,
              has_customizations, has_addons, has_variants
       FROM merchant_menu_items
-      WHERE id = ${menuItemId} AND store_id = ${storeId} AND (is_deleted IS NULL OR is_deleted = false)
+      WHERE id = ${menuItemId} AND store_id = ${storeId}
       LIMIT 1
     `;
     if (!existing) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
@@ -328,52 +440,54 @@ export async function DELETE(
     if (!access.ok) return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     const sql = getSql();
     const [item] = await sql`
-      SELECT id, item_name, approval_status::text AS approval_status
+      SELECT id, item_name, item_image_url
       FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeId}
     `;
     if (!item) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
 
-    const approvalStatus = (item as any).approval_status as string | null;
     const itemNameForLog = (item as any).item_name as string | null;
-
-    // Approved items: soft delete only (deprecate).
-    if (approvalStatus === "APPROVED") {
-      const result = await sql`
-        UPDATE merchant_menu_items
-        SET is_deleted = true, updated_at = NOW()
-        WHERE id = ${menuItemId} AND store_id = ${storeId}
-      `;
-      if ((result as any)?.count === 0) {
-        return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
-      }
-      try {
-        const agentId = await getAgentIdForStore(storeId);
-        await insertActivityLog({
-          storeId,
-          agentId,
-          changedSection: "menu_items",
-          fieldName: "menu_item",
-          oldValue: JSON.stringify({ item_id: menuItemId, item_name: itemNameForLog }),
-          newValue: null,
-          actionType: "delete",
-        });
-      } catch (_logErr) {}
-      try {
-        await logStoreActivity({ storeId, section: "menu_item", action: "delete", entityId: menuItemId, summary: `Agent deleted menu item #${menuItemId}`, actorType: "agent", source: "dashboard" });
-      } catch (_) {}
-      return NextResponse.json({ success: true, ok: true, mode: "SOFT_DELETE" });
-    }
-
-    // Pending / rejected items: hard delete including images and their R2 objects.
     const images = (await sql`
       SELECT id, r2_key
       FROM merchant_menu_item_images
       WHERE menu_item_id = ${menuItemId}
     `) as { id: number; r2_key: string | null }[];
+    const r2Keys = new Set<string>();
+    for (const image of images) {
+      if (image.r2_key) r2Keys.add(image.r2_key);
+    }
+    const itemImageUrl = String((item as any).item_image_url ?? "");
+    if (itemImageUrl) {
+      const parsed = itemImageUrl.includes("/api/attachments/proxy")
+        ? extractR2KeyFromProxyUrl(itemImageUrl)
+        : itemImageUrl;
+      if (parsed) r2Keys.add(parsed);
+    }
 
     await sql.begin(async (trx) => {
       const run = trx as unknown as typeof sql;
+      await run`
+        DELETE FROM merchant_menu_item_change_requests
+        WHERE menu_item_id = ${menuItemId}
+      `;
+      await run`
+        DELETE FROM merchant_menu_item_addons
+        WHERE customization_id IN (
+          SELECT id FROM merchant_menu_item_customizations WHERE menu_item_id = ${menuItemId}
+        )
+      `;
+      await run`
+        DELETE FROM merchant_menu_item_customizations
+        WHERE menu_item_id = ${menuItemId}
+      `;
+      await run`
+        DELETE FROM merchant_menu_item_variants
+        WHERE menu_item_id = ${menuItemId}
+      `;
+      await run`
+        DELETE FROM merchant_item_modifier_groups
+        WHERE menu_item_id = ${menuItemId}
+      `;
       await run`
         DELETE FROM merchant_menu_item_images
         WHERE menu_item_id = ${menuItemId}
@@ -399,12 +513,10 @@ export async function DELETE(
       await logStoreActivity({ storeId, section: "menu_item", action: "delete", entityId: menuItemId, summary: `Agent deleted menu item #${menuItemId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}
 
-    if (images.length > 0) {
+    if (r2Keys.size > 0) {
       try {
         await Promise.all(
-          images
-            .map((img) => img.r2_key)
-            .filter((key): key is string => !!key)
+          Array.from(r2Keys)
             .map((key) => deleteDocument(key).catch(() => undefined))
         );
       } catch (e) {
@@ -412,7 +524,7 @@ export async function DELETE(
       }
     }
 
-    return NextResponse.json({ success: true, ok: true, mode: "HARD_DELETE" });
+    return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[DELETE /api/merchant/stores/[id]/menu/items/[itemId]]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

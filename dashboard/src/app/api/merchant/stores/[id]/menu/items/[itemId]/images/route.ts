@@ -71,7 +71,7 @@ export async function POST(
     const [itemRow] = await sql`
       SELECT id, item_id
       FROM merchant_menu_items
-      WHERE id = ${menuItemId} AND store_id = ${storeId} AND (is_deleted IS NULL OR is_deleted = false)
+      WHERE id = ${menuItemId} AND store_id = ${storeId}
       LIMIT 1
     `;
     if (!itemRow) return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });

@@ -86,6 +86,7 @@ export function GlobalSearch() {
   const pathname = usePathname();
   const [expanded, setExpanded] = useState(false);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SearchTab>("all");
   const [ticketResults, setTicketResults] = useState<TicketResult[]>([]);
   const [contactResults, setContactResults] = useState<ContactResult[]>([]);
@@ -137,7 +138,14 @@ export function GlobalSearch() {
   }, [expanded]);
 
   useEffect(() => {
-    const q = query.trim();
+    const handle = window.setTimeout(() => {
+      setDebouncedQuery(query.trim());
+    }, 350);
+    return () => window.clearTimeout(handle);
+  }, [query]);
+
+  useEffect(() => {
+    const q = debouncedQuery;
     if (!q) {
       setTicketResults([]);
       setContactResults([]);
@@ -176,7 +184,7 @@ export function GlobalSearch() {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [query]);
+  }, [debouncedQuery]);
 
   const handleSelectRecentSearch = (q: string) => {
     setQuery(q);
@@ -212,11 +220,11 @@ export function GlobalSearch() {
       {expanded ? (
         <>
           {/* Search bar (stays in flow) */}
-          <form onSubmit={handleSubmit} className="w-full min-w-[180px] sm:min-w-[240px] max-w-[400px] md:max-w-[520px] flex items-center gap-2 rounded-xl border border-blue-200 bg-white shadow-md px-3 py-2 ring-1 ring-blue-100">
+          <form onSubmit={handleSubmit} className="w-full min-w-[180px] sm:min-w-[240px] max-w-[380px] md:max-w-[480px] flex items-center gap-2 rounded-xl border border-blue-200 bg-white shadow-md px-3 py-1.5 ring-1 ring-blue-100">
             <Search className="h-5 w-5 text-gray-400 shrink-0" />
             <input
               ref={inputRef}
-              type="search"
+              type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search tickets, contacts…"
@@ -236,15 +244,15 @@ export function GlobalSearch() {
             )}
           </form>
           {/* Dropdown panel - absolute below */}
-          <div className="absolute left-0 right-0 top-full mt-1.5 min-w-[280px] max-w-[min(100vw-2rem,520px)] rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden z-[100]">
+          <div className="absolute left-0 right-0 top-full mt-1.5 min-w-[260px] max-w-[min(100vw-2rem,460px)] rounded-xl border border-gray-200 bg-white shadow-xl overflow-hidden z-[100]">
           {/* Tabs */}
-          <div className="flex items-center gap-1 px-3 pt-2 pb-1 border-b border-gray-100 flex-wrap">
+          <div className="flex items-center gap-1 px-2.5 pt-1.5 pb-1 border-b border-gray-100 flex-wrap">
             {(["all", "tickets", "contacts", "solutions"] as const).map((tab) => (
               <button
                 key={tab}
                 type="button"
                 onClick={() => setActiveTab(tab)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium capitalize transition-colors ${
+                className={`px-2.5 py-1 rounded-lg text-[13px] font-medium capitalize transition-colors ${
                   activeTab === tab
                     ? "bg-blue-600 text-white"
                     : "text-gray-600 hover:bg-gray-100"
@@ -255,17 +263,17 @@ export function GlobalSearch() {
             ))}
             <button
               type="button"
-              className="ml-auto p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+              className="ml-auto p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
               aria-label="Search settings"
             >
               <Settings className="h-4 w-4" />
             </button>
           </div>
 
-          <div className="max-h-[min(70vh,420px)] overflow-y-auto">
+          <div className="max-h-[min(68vh,380px)] overflow-y-auto">
             {showRecent && (
               <>
-                <div className="px-4 py-3">
+                <div className="px-3 py-2.5">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Recently searched</span>
                     {recentSearches.length > 0 && (
@@ -275,7 +283,7 @@ export function GlobalSearch() {
                     )}
                   </div>
                   {recentSearches.length === 0 ? (
-                    <p className="text-sm text-gray-400 py-2">No recent searches</p>
+                    <p className="text-sm text-gray-400 py-1.5">No recent searches</p>
                   ) : (
                     <ul className="space-y-0.5">
                       {recentSearches.slice(0, 8).map((q, i) => (
@@ -283,7 +291,7 @@ export function GlobalSearch() {
                           <button
                             type="button"
                             onClick={() => handleSelectRecentSearch(q)}
-                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-gray-700 hover:bg-gray-50"
                           >
                             <Search className="h-4 w-4 text-gray-400 shrink-0" />
                             <span className="truncate">{q}</span>
@@ -293,7 +301,7 @@ export function GlobalSearch() {
                     </ul>
                   )}
                 </div>
-                <div className="px-4 py-3 border-t border-gray-100">
+                <div className="px-3 py-2.5 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Recently viewed</span>
                     {recentViewed.length > 0 && (
@@ -303,22 +311,22 @@ export function GlobalSearch() {
                     )}
                   </div>
                   {recentViewed.length === 0 ? (
-                    <p className="text-sm text-gray-400 py-2">No recently viewed tickets</p>
+                    <p className="text-sm text-gray-400 py-1.5">No recently viewed tickets</p>
                   ) : (
                     <ul className="space-y-0.5">
-                      {recentViewed.slice(0, 8).map((item) => (
-                        <li key={item.id}>
+                      {recentViewed.slice(0, 8).map((item, index) => (
+                        <li key={`${item.id}-${item.ticketNumber}-${index}`}>
                           <Link
                             href={`/dashboard/tickets/${item.id}`}
                             onClick={() => setExpanded(false)}
-                            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[13px] text-gray-700 hover:bg-gray-50"
                           >
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-                              <Ticket className="h-4 w-4" />
+                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-100 text-emerald-700">
+                              <Ticket className="h-3 w-3" />
                             </div>
                             <div className="min-w-0 flex-1">
-                              <span className="block truncate font-medium">{item.subject || "—"}</span>
-                              <span className="text-xs text-gray-500">#{item.ticketNumber}</span>
+                              <span className="block truncate text-[12.5px] font-medium leading-4">{item.subject || "—"}</span>
+                              <span className="text-[11px] leading-4 text-gray-500">#{item.ticketNumber}</span>
                             </div>
                           </Link>
                         </li>
@@ -330,7 +338,7 @@ export function GlobalSearch() {
             )}
 
             {showResults && (
-              <div className="px-4 py-3 space-y-4">
+              <div className="px-3 py-2.5 space-y-3">
                 {loading ? (
                   <div className="flex items-center justify-center py-8">
                     <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
@@ -364,14 +372,14 @@ export function GlobalSearch() {
                                     if (query.trim()) saveRecentSearch(query.trim());
                                     addToRecentViewed({ id: t.id, ticketNumber: t.ticketNumber, subject: t.subject ?? "" });
                                   }}
-                                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-gray-50"
+                                  className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-left hover:bg-gray-50"
                                 >
-                                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700">
-                                    <Ticket className="h-5 w-5" />
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-100 text-emerald-700">
+                                    <Ticket className="h-3.5 w-3.5" />
                                   </div>
                                   <div className="min-w-0 flex-1">
-                                    <span className="block truncate text-sm font-medium text-gray-900">{t.subject || "—"}</span>
-                                    <span className="text-xs text-gray-500">#{t.ticketNumber}</span>
+                                    <span className="block truncate text-[13px] font-medium leading-4 text-gray-900">{t.subject || "—"}</span>
+                                    <span className="text-[11px] leading-4 text-gray-500">#{t.ticketNumber}</span>
                                   </div>
                                 </Link>
                               </li>
@@ -406,14 +414,14 @@ export function GlobalSearch() {
                                     setExpanded(false);
                                     if (query.trim()) saveRecentSearch(query.trim());
                                   }}
-                                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-gray-50"
+                                  className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-left hover:bg-gray-50"
                                 >
-                                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
-                                    <User className="h-5 w-5" />
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-blue-100 text-blue-700">
+                                    <User className="h-3.5 w-3.5" />
                                   </div>
                                   <div className="min-w-0 flex-1">
-                                    <span className="block truncate text-sm font-medium text-gray-900">{c.name}</span>
-                                    {c.email && <span className="block truncate text-xs text-gray-500">{c.email}</span>}
+                                    <span className="block truncate text-[13px] font-medium leading-4 text-gray-900">{c.name}</span>
+                                    {c.email && <span className="block truncate text-[11px] leading-4 text-gray-500">{c.email}</span>}
                                   </div>
                                 </Link>
                               </li>
