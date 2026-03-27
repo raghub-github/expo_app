@@ -50,15 +50,15 @@ export async function GET(
     }
 
     const { id } = await params;
-    const ticketId = parseInt(id, 10);
-
-    if (isNaN(ticketId)) {
+    const rawIdentifier = decodeURIComponent(String(id || "")).trim();
+    if (!rawIdentifier) {
       return NextResponse.json({ success: false, error: "Invalid ticket ID" }, { status: 400 });
     }
+    const numericTicketId = /^\d+$/.test(rawIdentifier) ? parseInt(rawIdentifier, 10) : null;
 
     const sqlClient = getSql();
 
-    // Get ticket from unified_tickets; include group_id, tags, merchant_store_id; join ticket_groups and optionally merchant_stores for store_id
+    // Get ticket by either primary key id or external ticket_id; include group/tags/store joins.
     type TicketRow = Record<string, unknown> & {
       group_id?: number | null; group_code?: string; group_name?: string; tags?: string[] | null;
       merchant_store_id?: number | null; store_number?: string | null; store_parent_id?: number | null;
@@ -91,7 +91,7 @@ export async function GET(
         LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
         LEFT JOIN public.merchant_stores ms ON ms.id = ut.merchant_store_id
         LEFT JOIN public.merchant_parents mp ON mp.id = COALESCE(ut.merchant_parent_id, ms.parent_id)
-        WHERE ut.id = ${ticketId}
+        WHERE ${numericTicketId != null ? sqlClient`ut.id = ${numericTicketId}` : sqlClient`ut.ticket_id = ${rawIdentifier}`}
       `;
       ticketResult = (rows || []) as TicketRow[];
     } catch (colErr) {
@@ -111,7 +111,7 @@ export async function GET(
           ut.metadata
           FROM public.unified_tickets ut
           LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-          WHERE ut.id = ${ticketId}
+          WHERE ${numericTicketId != null ? sqlClient`ut.id = ${numericTicketId}` : sqlClient`ut.ticket_id = ${rawIdentifier}`}
         `;
         ticketResult = (rows || []).map((r: Record<string, unknown>) => ({ ...r, store_number: null })) as TicketRow[];
       } catch {
@@ -126,7 +126,7 @@ export async function GET(
               resolved_at, closed_at, created_at, updated_at,
               sla_due_at, metadata
             FROM public.unified_tickets
-            WHERE id = ${ticketId}
+            WHERE ${numericTicketId != null ? sqlClient`id = ${numericTicketId}` : sqlClient`ticket_id = ${rawIdentifier}`}
           `;
           ticketResult = (fallback as Record<string, unknown>[]).map((r) => ({
             ...r,
@@ -149,7 +149,7 @@ export async function GET(
               assigned_to_agent_id, assigned_to_agent_name,
               resolved_at, closed_at, created_at, updated_at
             FROM public.unified_tickets
-            WHERE id = ${ticketId}
+            WHERE ${numericTicketId != null ? sqlClient`id = ${numericTicketId}` : sqlClient`ticket_id = ${rawIdentifier}`}
           `;
           ticketResult = (minimal as Record<string, unknown>[]).map((r) => ({
             ...r,
@@ -172,6 +172,10 @@ export async function GET(
     }
 
     const row = ticketResult[0] as Record<string, unknown>;
+    const resolvedTicketId = Number(row.id);
+    if (!Number.isFinite(resolvedTicketId)) {
+      return NextResponse.json({ success: false, error: "Ticket not found" }, { status: 404 });
+    }
 
     // Resolve group if not already set: match by service_type, ticket_source, ticket_category, raised_by_type
     let group = (row.group_id != null && row.group_name != null)
@@ -219,7 +223,7 @@ export async function GET(
           SELECT id, ticket_id, message_text, message_type, sender_type, sender_id, sender_name, sender_email,
                  attachments, is_internal_note, created_at, updated_at
           FROM public.unified_ticket_messages
-          WHERE ticket_id = ${ticketId}
+          WHERE ticket_id = ${resolvedTicketId}
           ORDER BY created_at ASC
         `;
       } catch {
@@ -227,7 +231,7 @@ export async function GET(
           SELECT id, ticket_id, message_text, message_type, sender_type, sender_id, sender_name,
                  attachments, is_internal_note, created_at, updated_at
           FROM public.unified_ticket_messages
-          WHERE ticket_id = ${ticketId}
+          WHERE ticket_id = ${resolvedTicketId}
           ORDER BY created_at ASC
         `;
       }

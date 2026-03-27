@@ -14,6 +14,7 @@ import {
   Package,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   FileText,
   Layers,
 } from "lucide-react";
@@ -35,6 +36,7 @@ import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import Link from "next/link";
 import { normalizeMenuItemImageFile, validateMenuItemImageFile } from "@/lib/menuItemImageValidationClient";
 import { ensureStoreCuisinesLinkedForItemNames } from "@/lib/merchant/ensureStoreCuisinesForItem";
+import type { MenuMediaFile } from "@/lib/merchant-menu-media";
 
 const defaultItemFormData: ItemFormData = {
   item_name: "",
@@ -123,13 +125,17 @@ function normalizeCategory(c: {
   display_order?: number | null;
   is_active?: boolean;
 }): MenuCategory {
+  const parentCategoryIdNum =
+    c.parent_category_id == null ? undefined : Number(c.parent_category_id);
+  const cuisineIdNum =
+    c.cuisine_id == null ? undefined : Number(c.cuisine_id);
   return {
     id: c.id ?? 0,
     store_id: Number(c.store_id) ?? 0,
     category_name: c.category_name ?? c.name ?? "—",
     category_description: c.category_description ?? undefined,
-    parent_category_id: c.parent_category_id ?? undefined,
-    cuisine_id: c.cuisine_id != null ? Number(c.cuisine_id) : undefined,
+    parent_category_id: Number.isFinite(parentCategoryIdNum as number) ? parentCategoryIdNum : undefined,
+    cuisine_id: Number.isFinite(cuisineIdNum as number) ? cuisineIdNum : undefined,
     display_order: c.display_order ?? undefined,
     is_active: c.is_active !== false,
   };
@@ -181,6 +187,26 @@ function normalizeItem(
     item_size_value:
       item.item_size_value == null ? null : (Number(item.item_size_value) as number),
     item_size_unit: (item.item_size_unit as string) ?? null,
+    available_for_delivery:
+      (item.available_for_delivery as boolean) ?? true,
+    weight_per_serving:
+      item.weight_per_serving == null ? null : (Number(item.weight_per_serving) as number),
+    weight_per_serving_unit: (item.weight_per_serving_unit as string) ?? null,
+    calories_kcal:
+      item.calories_kcal == null ? null : (Number(item.calories_kcal) as number),
+    protein:
+      item.protein == null ? null : (Number(item.protein) as number),
+    protein_unit: (item.protein_unit as string) ?? null,
+    carbohydrates:
+      item.carbohydrates == null ? null : (Number(item.carbohydrates) as number),
+    carbohydrates_unit: (item.carbohydrates_unit as string) ?? null,
+    fat:
+      item.fat == null ? null : (Number(item.fat) as number),
+    fat_unit: (item.fat_unit as string) ?? null,
+    fibre:
+      item.fibre == null ? null : (Number(item.fibre) as number),
+    fibre_unit: (item.fibre_unit as string) ?? null,
+    item_tags: (item.item_tags as string[] | null) ?? null,
     customizations: (item.customizations as Customization[]) ?? [],
     variants: (item.variants as Variant[]) ?? [],
     allergens: (item.allergens as any) ?? undefined,
@@ -231,10 +257,32 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     addImagePendingFileRef.current = null;
     setShowAddModal(true);
   }, [storeMenuDefaults]);
-  const refreshMenu = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
+  const refreshMenu = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.menu(storeId) });
+    await queryClient.refetchQueries({ queryKey: queryKeys.merchantStore.menu(storeId), type: "active" });
   }, [queryClient, storeId]);
+  const patchMenuItemInCache = useCallback(
+    (itemId: number, patch: Record<string, unknown>) => {
+      queryClient.setQueryData(queryKeys.merchantStore.menu(storeId), (prev: unknown) => {
+        if (!prev || typeof prev !== "object") return prev;
+        const current = prev as { items?: unknown[] };
+        if (!Array.isArray(current.items)) return prev;
+        return {
+          ...(current as Record<string, unknown>),
+          items: current.items.map((row) => {
+            const r = row as Record<string, unknown>;
+            return Number(r.id) === itemId ? { ...r, ...patch } : row;
+          }),
+        };
+      });
+    },
+    [queryClient, storeId]
+  );
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [categoryChipDropdownId, setCategoryChipDropdownId] = useState<number | null>(null);
+  const [subcategoryRowOffset, setSubcategoryRowOffset] = useState(0);
+  const categoryChipRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const subcategoryRowRef = useRef<HTMLDivElement>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED">("ALL");
   const [stockFilter, setStockFilter] = useState<"ALL" | "IN_STOCK" | "OUT_OF_STOCK">("ALL");
@@ -247,11 +295,70 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [changeRequests, setChangeRequests] = useState<any[]>([]);
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
   const menuFileSectionRef = useRef<HTMLDivElement>(null);
+  const [menuReferenceFiles, setMenuReferenceFiles] = useState<MenuMediaFile[]>([]);
+  const [menuReferenceLoading, setMenuReferenceLoading] = useState(false);
+  const [menuReferenceError, setMenuReferenceError] = useState<string | null>(null);
+  const menuReferenceLoadedForStoreRef = useRef<string | null>(null);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showStockModal, setShowStockModal] = useState(false);
+
+  useEffect(() => {
+    if (!showMenuFileSection) return;
+    if (menuReferenceLoadedForStoreRef.current === storeId) return;
+    let cancelled = false;
+    setMenuReferenceLoading(true);
+    setMenuReferenceError(null);
+    (async () => {
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/media?scope=MENU_REFERENCE`, {
+          credentials: "include",
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || json?.success === false) {
+          throw new Error(json?.error || "Failed to load menu files");
+        }
+        const files = Array.isArray(json?.files) ? (json.files as MenuMediaFile[]) : [];
+        if (!cancelled) {
+          setMenuReferenceFiles(files);
+          menuReferenceLoadedForStoreRef.current = storeId;
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setMenuReferenceFiles([]);
+          setMenuReferenceError(e instanceof Error ? e.message : "Failed to load menu files");
+        }
+      } finally {
+        if (!cancelled) setMenuReferenceLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showMenuFileSection, storeId]);
+
+  const isSheetOrPdfFile = useCallback((file: MenuMediaFile) => {
+    const entity = String(file.source_entity ?? "").toUpperCase();
+    if (entity === "ONBOARDING_MENU_PDF" || entity === "ONBOARDING_MENU_SHEET") return true;
+    const name = String(file.original_file_name ?? "").toLowerCase();
+    const mime = String(file.mime_type ?? "").toLowerCase();
+    return (
+      name.endsWith(".pdf") ||
+      name.endsWith(".csv") ||
+      name.endsWith(".xls") ||
+      name.endsWith(".xlsx") ||
+      mime.includes("pdf") ||
+      mime.includes("csv") ||
+      mime.includes("sheet") ||
+      mime.includes("excel") ||
+      mime.includes("spreadsheet")
+    );
+  }, []);
+
+  const menuSheetOrPdfFiles = menuReferenceFiles.filter((f) => isSheetOrPdfFile(f) && !!f.menu_url);
+  const menuImageFiles = menuReferenceFiles.filter((f) => (f.reference_images?.length ?? 0) > 0);
   const [viewCustModal, setViewCustModal] = useState<{ open: boolean; item: MenuItem | null }>({
     open: false,
     item: null,
@@ -265,6 +372,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   });
   const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
   const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [categoryCuisineInput, setCategoryCuisineInput] = useState("");
   const [categorySuggestionsOpen, setCategorySuggestionsOpen] = useState(false);
   const [categoryPeerSuggestions, setCategoryPeerSuggestions] = useState<string[]>([]);
   const [categoryPeerSuggestionsLoading, setCategoryPeerSuggestionsLoading] = useState(false);
@@ -473,6 +581,24 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     if (cid == null || Number.isNaN(Number(cid))) return null;
     return cuisineOptions.find((c) => c.id === Number(cid)) ?? null;
   }, [categoryForm.cuisine_id, cuisineOptions]);
+  const cuisineChipLabel = selectedCuisineForCategory?.name ?? (categoryCuisineInput.trim() || null);
+  const commitTypedCuisineSelection = useCallback(() => {
+    const typed = categoryCuisineInput.trim();
+    if (!typed) {
+      setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
+      return;
+    }
+    const matched = cuisineOptions.find(
+      (c) => c.name.trim().toLowerCase() === typed.toLowerCase()
+    );
+    if (matched) {
+      setCategoryCuisineInput(matched.name);
+      setCategoryForm((prev) => ({ ...prev, cuisine_id: Number(matched.id) }));
+      return;
+    }
+    setCategoryCuisineInput(typed);
+    setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
+  }, [categoryCuisineInput, cuisineOptions]);
 
   const handleApproveCr = async (id: number) => {
     setCrActionLoadingId(id);
@@ -597,10 +723,40 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     for (const list of map.values()) list.sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0));
     return map;
   }, [categories]);
-  const displayCategoriesForChips = useMemo(
-    () => parentCategories.flatMap((p) => [p, ...(childrenByParentId.get(p.id) ?? [])]),
-    [parentCategories, childrenByParentId]
-  );
+  const displayCategoriesForChips = useMemo(() => parentCategories, [parentCategories]);
+  const activeChipSubcategories = useMemo(() => {
+    if (categoryChipDropdownId == null) return [];
+    return categories.filter(
+      (c) =>
+        c.parent_category_id != null &&
+        Number(c.parent_category_id) === Number(categoryChipDropdownId)
+    );
+  }, [categories, categoryChipDropdownId]);
+  useEffect(() => {
+    const updateOffset = () => {
+      if (categoryChipDropdownId == null) {
+        setSubcategoryRowOffset((prev) => (prev === 0 ? prev : 0));
+        return;
+      }
+      const chipEl = categoryChipRefs.current[categoryChipDropdownId];
+      const rowEl = subcategoryRowRef.current;
+      if (!chipEl || !rowEl) {
+        setSubcategoryRowOffset((prev) => (prev === 0 ? prev : 0));
+        return;
+      }
+      const left = chipEl.getBoundingClientRect().left - rowEl.getBoundingClientRect().left;
+      const next = Math.max(0, Math.round(left));
+      setSubcategoryRowOffset((prev) => (prev === next ? prev : next));
+    };
+    updateOffset();
+    const scroller = categoryScrollRef.current;
+    scroller?.addEventListener("scroll", updateOffset, { passive: true });
+    window.addEventListener("resize", updateOffset);
+    return () => {
+      scroller?.removeEventListener("scroll", updateOffset);
+      window.removeEventListener("resize", updateOffset);
+    };
+  }, [categoryChipDropdownId, categories.length]);
 
   /** Same scope as DB unique (store + parent + lower(name)): root vs siblings under a parent. */
   const categoryNameConflictSet = useMemo(() => {
@@ -811,7 +967,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         has_customizations: customizations.length > 0,
         has_addons: customizations.some(
           (c: { addons?: { length?: number }[] }) => (c.addons?.length ?? 0) > 0
-        ),        has_variants: variants.length > 0,
+        ),
+        has_variants: variants.length > 0,
         is_popular: data.is_popular ?? false,
         is_recommended: data.is_recommended ?? false,
         preparation_time_minutes: data.preparation_time_minutes ?? 15,
@@ -821,6 +978,26 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         serves_label: data.serves_label ?? "",
         item_size_value: data.item_size_value != null ? String(data.item_size_value) : "",
         item_size_unit: data.item_size_unit ?? "",
+        available_for_delivery: data.available_for_delivery ?? true,
+        weight_per_serving:
+          data.weight_per_serving != null ? String(data.weight_per_serving) : "",
+        weight_per_serving_unit: data.weight_per_serving_unit ?? "grams",
+        calories_kcal:
+          data.calories_kcal != null ? String(data.calories_kcal) : "",
+        protein: data.protein != null ? String(data.protein) : "",
+        protein_unit: data.protein_unit ?? "mg",
+        carbohydrates:
+          data.carbohydrates != null ? String(data.carbohydrates) : "",
+        carbohydrates_unit: data.carbohydrates_unit ?? "mg",
+        fat: data.fat != null ? String(data.fat) : "",
+        fat_unit: data.fat_unit ?? "mg",
+        fibre: data.fibre != null ? String(data.fibre) : "",
+        fibre_unit: data.fibre_unit ?? "mg",
+        item_tags: Array.isArray(data.item_tags)
+          ? data.item_tags.join(", ")
+          : typeof data.item_tags === "string"
+            ? data.item_tags
+            : "",
         is_active: data.is_active ?? true,
         allergens: allergensString,
         category_id: data.category_id ?? null,
@@ -1310,6 +1487,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         actionStatus: "SUCCESS",
         requestMethod: "PUT",
       });
+      let uploadedImageUrl: string | null = null;
       if (editImageFile) {
         const fd = new FormData();
         fd.append("file", editImageFile);
@@ -1319,7 +1497,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         });
         const img = await imgRes.json().catch(() => ({}));
         if (!imgRes.ok || img?.success === false) throw new Error(img?.error || "Image upload failed");
-        setEditImagePreview(String(img.image_url ?? editImagePreview));
+        uploadedImageUrl = String(img.image_url ?? "");
+        setEditImagePreview(uploadedImageUrl || editImagePreview);
         setEditImageFile(null);
         trackAudit({
           actionType: "UPDATE",
@@ -1330,6 +1509,41 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
           requestMethod: "POST",
         });
       }
+      patchMenuItemInCache(editingId, {
+        item_name: payload.item_name,
+        item_description: payload.item_description,
+        category_id: payload.category_id,
+        food_type: payload.food_type,
+        spice_level: payload.spice_level,
+        cuisine_type: payload.cuisine_type,
+        base_price: payload.base_price,
+        selling_price: payload.selling_price,
+        discount_percentage: payload.discount_percentage,
+        in_stock: payload.in_stock,
+        is_active: payload.is_active,
+        is_popular: payload.is_popular,
+        is_recommended: payload.is_recommended,
+        preparation_time_minutes: payload.preparation_time_minutes,
+        packaging_charges: payload.packaging_charges,
+        serves: payload.serves,
+        serves_label: payload.serves_label,
+        item_size_value: payload.item_size_value,
+        item_size_unit: payload.item_size_unit,
+        available_for_delivery: payload.available_for_delivery,
+        weight_per_serving: payload.weight_per_serving,
+        weight_per_serving_unit: payload.weight_per_serving_unit,
+        calories_kcal: payload.calories_kcal,
+        protein: payload.protein,
+        protein_unit: payload.protein_unit,
+        carbohydrates: payload.carbohydrates,
+        carbohydrates_unit: payload.carbohydrates_unit,
+        fat: payload.fat,
+        fat_unit: payload.fat_unit,
+        fibre: payload.fibre,
+        fibre_unit: payload.fibre_unit,
+        item_tags: payload.item_tags,
+        ...(uploadedImageUrl ? { item_image_url: uploadedImageUrl } : {}),
+      });
       toast("Menu item updated.");
       try {
         const { linked, skippedMessages } = await ensureStoreCuisinesLinkedForItemNames(
@@ -1343,7 +1557,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       } catch {
         /* non-fatal */
       }
-      await refreshMenu();
       setShowEditModal(false);
     } catch {
       setEditError("Error updating item.");
@@ -1510,16 +1723,26 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
 
   const handleDeleteItem = async () => {
     if (deleteItemId == null) return;
+    const deletingId = deleteItemId;
     setIsDeleting(true);
     try {
-      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${deleteItemId}`, { method: "DELETE" });
+      const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${deletingId}`, { method: "DELETE" });
       const r = await res.json().catch(() => ({}));
       if (!res.ok || r?.success === false) throw new Error(r?.error || "Delete failed");
+      queryClient.setQueryData(queryKeys.merchantStore.menu(storeId), (prev: unknown) => {
+        if (!prev || typeof prev !== "object") return prev;
+        const current = prev as { items?: unknown[] };
+        if (!Array.isArray(current.items)) return prev;
+        return {
+          ...(current as Record<string, unknown>),
+          items: current.items.filter((row) => Number((row as { id?: unknown }).id) !== deletingId),
+        };
+      });
       toast("Menu item deleted.");
       trackAudit({
         actionType: "DELETE",
         resourceType: "merchant_menu_items",
-        resourceId: String(deleteItemId),
+        resourceId: String(deletingId),
         actionDetails: { action: "delete_item" },
         actionStatus: "SUCCESS",
         requestMethod: "DELETE",
@@ -1591,6 +1814,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     });
     setParentCategoryIdInForm(null);
     setEditingCategoryId(null);
+    setCategoryCuisineInput("");
     setShowCategoryModal(true);
   };
   const openAddSubcategory = (parent: MenuCategory) => {
@@ -1605,6 +1829,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     });
     setParentCategoryIdInForm(parent.id);
     setEditingCategoryId(null);
+    setCategoryCuisineInput("");
     setShowCategoryModal(true);
   };
   const openEditCategory = (cat: MenuCategory) => {
@@ -1618,6 +1843,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     });
     setParentCategoryIdInForm(cat.parent_category_id ?? null);
     setEditingCategoryId(cat.id);
+    setCategoryCuisineInput(
+      cat.cuisine_id != null
+        ? (cuisineOptions.find((c) => c.id === Number(cat.cuisine_id))?.name ?? "")
+        : ""
+    );
     setShowCategoryModal(true);
     setShowManageCategoriesModal(false);
   };
@@ -1633,16 +1863,42 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       setCategoryError("Category name must not exceed 30 characters");
       return;
     }
-    if (
-      showCuisinePicker &&
-      categoryUiConfig?.cuisine_field.required_for_root &&
-      (categoryForm.cuisine_id == null || Number.isNaN(Number(categoryForm.cuisine_id)))
-    ) {
-      setCategoryError("Select a cuisine for this category");
-      return;
-    }
     setCategoryLoading(true);
     try {
+      let resolvedCuisineId: number | undefined =
+        showCuisinePicker && categoryForm.cuisine_id != null && !Number.isNaN(Number(categoryForm.cuisine_id))
+          ? Number(categoryForm.cuisine_id)
+          : undefined;
+      const typedCuisineName = categoryCuisineInput.trim();
+      if (showCuisinePicker && !resolvedCuisineId && typedCuisineName) {
+        const existingByName = cuisineOptions.find(
+          (c) => c.name.trim().toLowerCase() === typedCuisineName.toLowerCase()
+        );
+        if (existingByName) {
+          resolvedCuisineId = Number(existingByName.id);
+        } else {
+          const createCuisineRes = await fetch(`/api/merchant/stores/${storeId}/menu/cuisines`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: typedCuisineName }),
+          });
+          const created = await createCuisineRes.json().catch(() => ({}));
+          if (!createCuisineRes.ok || created?.success === false || !created?.id) {
+            throw new Error(
+              (typeof created?.message === "string" && created.message) ||
+                (typeof created?.error === "string" && created.error) ||
+                "Failed to add cuisine"
+            );
+          }
+          resolvedCuisineId = Number(created.id);
+          await loadStoreCuisines();
+        }
+      }
+      if (showCuisinePicker && categoryUiConfig?.cuisine_field.required_for_root && !resolvedCuisineId) {
+        setCategoryError("Select a cuisine or type one to add");
+        return;
+      }
+
       const payload: Record<string, unknown> = {
         category_name: name,
         category_description: (categoryForm.category_description ?? "").trim() || null,
@@ -1650,8 +1906,8 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         display_order: Number(categoryForm.display_order) || 0,
         is_active: Boolean(categoryForm.is_active),
       };
-      if (showCuisinePicker && categoryForm.cuisine_id != null && !Number.isNaN(Number(categoryForm.cuisine_id))) {
-        payload.cuisine_id = Number(categoryForm.cuisine_id);
+      if (showCuisinePicker && resolvedCuisineId) {
+        payload.cuisine_id = resolvedCuisineId;
       }
       const isEdit = categoryModalMode === "edit" && editingCategoryId != null;
       const url = isEdit
@@ -1685,6 +1941,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       await refreshMenu();
       setShowCategoryModal(false);
       setCategoryForm({ category_name: "", is_active: true });
+      setCategoryCuisineInput("");
       setEditingCategoryId(null);
       setParentCategoryIdInForm(null);
       setShowManageCategoriesModal(false);
@@ -1769,7 +2026,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
             <button
               onClick={() => openAddItemModal()}
               disabled={!canAddItem}
-              className="flex items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50"
+              className="flex cursor-pointer items-center gap-1.5 px-3 py-1 text-xs sm:text-sm font-semibold rounded-lg transition-colors bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Plus size={16} />
               Add Menu Item
@@ -1833,36 +2090,87 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         {showMenuFileSection && (
           <div
             ref={menuFileSectionRef}
-            className="mx-3 sm:mx-4 mb-2 rounded-2xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-orange-50/80 shadow-sm overflow-hidden"
+            className="mx-3 sm:mx-4 mb-2 rounded-xl border border-amber-200/90 bg-gradient-to-br from-amber-50/95 to-orange-50/80 shadow-sm overflow-hidden"
           >
-            <div className="flex items-start justify-between gap-3 p-3 sm:p-4">
+            <div className="flex items-start justify-between gap-2 p-2.5 sm:p-3">
               <div className="min-w-0 flex-1">
-                <h3 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-amber-100 text-amber-700">
-                    <FileText size={20} />
+                <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                  <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-amber-100 text-amber-700">
+                    <FileText size={16} />
                   </span>
                   Menu file (CSV or image)
                 </h3>
-                <p className="text-sm text-gray-600 mt-1.5">
-                  Upload a CSV or menu card image. This replaces any file uploaded during onboarding. Our team will add items from it (pending until then).
+                <p className="text-xs text-gray-600 mt-1">
+                  Please review the store menu and add item accordingly.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowMenuFileSection(false)}
                 aria-label="Close menu file section"
-                className="flex-shrink-0 p-2 rounded-xl text-gray-500 hover:text-gray-700 hover:bg-white/80 border border-transparent hover:border-gray-200 transition-colors"
+                className="flex-shrink-0 p-1.5 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-white/80 border border-transparent hover:border-gray-200 transition-colors"
               >
-                <X size={20} strokeWidth={2} />
+                <X size={16} strokeWidth={2} />
               </button>
             </div>
-            <div className="px-4 sm:px-5 pb-3 sm:pb-4 pt-0">
-              <p className="text-xs text-gray-500">Select CSV or image and upload. API integration pending.</p>
+            <div className="px-3 sm:px-4 pb-2.5 sm:pb-3 pt-0">
+              {menuReferenceLoading ? (
+                <p className="text-xs text-gray-500">Loading uploaded menu files...</p>
+              ) : menuReferenceError ? (
+                <p className="text-xs text-red-600">{menuReferenceError}</p>
+              ) : (
+                <div className="space-y-2">
+                  {menuSheetOrPdfFiles.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-white/80 p-2">
+                      <div className="text-[11px] font-semibold text-gray-800 mb-1">Menu document(s)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {menuSheetOrPdfFiles.map((f) => (
+                          <a
+                            key={`doc-${f.id}`}
+                            href={String(f.menu_url)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                          >
+                            View {f.original_file_name || `file #${f.id}`}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {menuImageFiles.length > 0 && (
+                    <div className="rounded-lg border border-blue-200 bg-white/80 p-2">
+                      <div className="text-[11px] font-semibold text-gray-800 mb-1">Menu image(s)</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {menuImageFiles.flatMap((file) =>
+                          (file.reference_images ?? []).map((img, idx) => (
+                            <a
+                              key={`img-${file.id}-${img.id}-${idx}`}
+                              href={img.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center rounded-md border border-blue-300 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                            >
+                              View {img.file_name || `image ${idx + 1}`}
+                            </a>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {menuSheetOrPdfFiles.length === 0 && menuImageFiles.length === 0 && (
+                    <p className="text-xs text-gray-500">
+                      No menu file found for this store yet.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 px-3 sm:px-4 pb-2">
+        <div className="px-3 sm:px-4 pb-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
           <div className="order-2 sm:order-1">
             <input
               type="text"
@@ -1914,16 +2222,19 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               </select>
             </div>
           </div>
-          <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-hidden">
+          <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-x-hidden overflow-y-visible">
             <button
-              onClick={() => setSelectedCategoryId(null)}
+              onClick={() => {
+                setSelectedCategoryId(null);
+                setCategoryChipDropdownId(null);
+              }}
               className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap ${
                 selectedCategoryId === null ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200"
               }`}
             >
               All Categories
             </button>
-            <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-hidden">
+            <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-x-hidden overflow-y-visible">
               {categories.length > 0 && (
                 <button
                   type="button"
@@ -1936,21 +2247,66 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               )}
               <div
                 ref={categoryScrollRef}
-                className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden hide-scrollbar scroll-smooth touch-pan-x py-0.5"
+                  className="flex-1 min-w-0 overflow-x-auto overflow-y-visible hide-scrollbar scroll-smooth touch-pan-x py-0.5"
               >
                 <div className="flex items-center gap-1.5 flex-nowrap">
-                  {displayCategoriesForChips.map((category) => (
-                    <button
-                      key={category.id}
-                      onClick={() => setSelectedCategoryId(category.id)}
-                      className={`flex-shrink-0 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap max-w-[120px] truncate ${
-                        selectedCategoryId === category.id ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                      }`}
-                      title={category.parent_category_id ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} › ${category.category_name}` : category.category_name}
-                    >
-                      {category.parent_category_id ? `  ${category.category_name}` : category.category_name}
-                    </button>
-                  ))}
+                  {displayCategoriesForChips.map((category) => {
+                    const subcategories = categories.filter(
+                      (c) =>
+                        c.id !== category.id &&
+                        c.parent_category_id != null &&
+                        Number(c.parent_category_id) === Number(category.id)
+                    );
+                    const hasSubcategories = subcategories.length > 0;
+                    return (
+                      <div
+                        key={category.id}
+                        className="relative flex-shrink-0"
+                        ref={(el) => {
+                          categoryChipRefs.current[category.id] = el;
+                        }}
+                      >
+                        <div
+                          className={`flex items-center rounded-md text-[11px] font-medium whitespace-nowrap max-w-[150px] ${
+                            selectedCategoryId === category.id ? "bg-orange-500 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedCategoryId(category.id);
+                              if (!hasSubcategories) setCategoryChipDropdownId(null);
+                            }}
+                            className="px-2.5 py-1 rounded-l-md max-w-[120px] truncate"
+                            title={category.parent_category_id ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ""} › ${category.category_name}` : category.category_name}
+                          >
+                            {category.parent_category_id ? `  ${category.category_name}` : category.category_name}
+                          </button>
+                          {hasSubcategories && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCategoryChipDropdownId((prev) => (prev === category.id ? null : category.id))
+                              }
+                              className={`cursor-pointer px-1.5 py-1 rounded-r-md border-l transition-colors ${
+                                categoryChipDropdownId === category.id
+                                  ? "bg-orange-100 text-orange-700 border-orange-300"
+                                  : selectedCategoryId === category.id
+                                    ? "border-orange-400/60 hover:bg-orange-600"
+                                    : "border-gray-300 hover:bg-gray-300/60"
+                              }`}
+                              aria-label={`Show subcategories for ${category.category_name}`}
+                            >
+                              <ChevronDown
+                                size={12}
+                                className={categoryChipDropdownId === category.id ? "rotate-180 transition-transform" : "transition-transform"}
+                              />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               {categories.length > 0 && (
@@ -1965,6 +2321,38 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               )}
             </div>
           </div>
+          </div>
+          {categoryChipDropdownId != null && activeChipSubcategories.length > 0 && (
+            <div ref={subcategoryRowRef} className="relative w-full mt-1">
+              <span
+                className="absolute -top-2 h-3 w-px bg-orange-500"
+                style={{ left: `${subcategoryRowOffset + 18}px` }}
+                aria-hidden
+              />
+              <div
+                className="relative flex items-center gap-1.5 flex-nowrap overflow-x-auto hide-scrollbar py-0.5"
+                style={{ paddingLeft: `${subcategoryRowOffset}px` }}
+              >
+                {activeChipSubcategories.map((sub) => (
+                  <button
+                    key={sub.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedCategoryId(sub.id);
+                      setCategoryChipDropdownId(null);
+                    }}
+                    className={`px-2 py-1 rounded text-[11px] font-medium ${
+                      selectedCategoryId === sub.id
+                        ? "bg-orange-500 text-white"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    {sub.category_name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </header>
 
@@ -2100,7 +2488,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 const hasDiscount = discount > 0;
                 return (
                   <div
-                    key={item.item_id}
+                    key={item.id}
                     className="bg-white/95 rounded-lg border border-gray-200/80 shadow-sm hover:shadow-md transition-all overflow-hidden"
                   >
                     <div className="flex p-2 h-full gap-3">
@@ -2293,7 +2681,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           )}
                           <button
                             onClick={() => handleOpenEditModal(item)}
-                            className="min-w-0 flex-1 flex items-center justify-center gap-0.5 px-1 py-1 bg-blue-50 text-blue-600 font-bold rounded-md border border-blue-200 hover:bg-blue-100 transition-all text-[10px]"
+                            className="min-w-0 flex-1 flex cursor-pointer items-center justify-center gap-0.5 px-1 py-1 bg-blue-50 text-blue-600 font-bold rounded-md border border-blue-200 hover:bg-blue-100 transition-all text-[10px]"
                           >
                             <Edit2 size={10} />
                             <span className="truncate">Edit</span>
@@ -2303,7 +2691,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                               setDeleteItemId(item.id);
                               setShowDeleteModal(true);
                             }}
-                            className="min-w-0 flex-1 flex items-center justify-center gap-0.5 px-1 py-1 bg-red-50 text-red-600 font-bold rounded-md border border-red-200 hover:bg-red-100 transition-all text-[10px]"
+                            className="min-w-0 flex-1 flex cursor-pointer items-center justify-center gap-0.5 px-1 py-1 bg-red-50 text-red-600 font-bold rounded-md border border-red-200 hover:bg-red-100 transition-all text-[10px]"
                           >
                             <Trash2 size={10} />
                             <span className="truncate">Delete</span>
@@ -2603,16 +2991,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         createPortal(
           <div
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
-            onClick={() => {
-              setShowAddModal(false);
-              setAddCreatedItemId(null);
-              setAddForm(defaultItemFormData);
-              setImagePreview("");
-              setAddImageFile(null);
-              setAddImageValidationError("");
-              setAddImageValidating(false);
-              addImagePendingFileRef.current = null;
-            }}          >
+          >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
                 key={addModalKey}
@@ -2660,12 +3039,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         createPortal(
           <div
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
-            onClick={() => {
-              setShowEditModal(false);
-              setEditImageValidationError("");
-              setEditImageValidating(false);
-              editImagePendingFileRef.current = null;
-            }}          >
+          >
             <div onClick={(e) => e.stopPropagation()}>
               <MenuItemForm
                 isEdit
@@ -2877,18 +3251,13 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
         createPortal(
           <div
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
-            onClick={() => {
-              setShowCategoryModal(false);
-              setCategoryForm({ category_name: "", is_active: true });
-              setEditingCategoryId(null);
-            }}
           >
             <div
-              className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto"
+              className="bg-white rounded-xl shadow-xl w-full max-w-[34rem] mx-3 max-h-[88vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-4">
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-3">
                   <h2 className="text-xl font-bold text-gray-900">
                     {categoryModalMode === "add"
                       ? parentCategoryIdInForm != null
@@ -2909,7 +3278,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     <X size={20} className="text-gray-600" />
                   </button>
                 </div>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {categoryModalMode === "add" && parentCategoryIdInForm != null && (
                     <div className="rounded-lg bg-orange-50 border border-orange-100 px-3 py-2 text-sm text-gray-800">
                       <span className="font-medium">Subcategory under </span>
@@ -2939,6 +3308,35 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                         cuisines on the store profile — use <span className="italic">Edit cuisine list</span> below when
                         it applies.
                       </p>
+                      <input
+                        list="category-cuisine-options"
+                        value={categoryCuisineInput}
+                        onChange={(e) => {
+                          const typed = e.target.value;
+                          setCategoryCuisineInput(typed);
+                          const matched = cuisineOptions.find(
+                            (c) => c.name.trim().toLowerCase() === typed.trim().toLowerCase()
+                          );
+                          setCategoryForm((prev) => ({
+                            ...prev,
+                            cuisine_id: matched ? Number(matched.id) : undefined,
+                          }));
+                        }}
+                        onBlur={() => commitTypedCuisineSelection()}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            commitTypedCuisineSelection();
+                          }
+                        }}
+                        placeholder="Type or select cuisine..."
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
+                      />
+                      <datalist id="category-cuisine-options">
+                        {cuisineOptions.map((c) => (
+                          <option key={`cuisine-name-${c.id}`} value={c.name} />
+                        ))}
+                      </datalist>
                       {categoryUiConfig?.cuisine_field.required_for_root && cuisineOptions.length === 0 && (
                         <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950">
                           No cuisines linked to this store yet. Open{" "}
@@ -2951,46 +3349,25 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                           to add cuisines from the master list first.
                         </div>
                       )}
-                      <select
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:border-orange-400 focus:ring-1 focus:ring-orange-100"
-                        value={categoryForm.cuisine_id != null ? String(categoryForm.cuisine_id) : ""}
-                        onChange={(e) =>
-                          setCategoryForm({
-                            ...categoryForm,
-                            cuisine_id: e.target.value === "" ? undefined : Number(e.target.value),
-                          })
-                        }
-                      >
-                        <option value="">
-                          {categoryUiConfig?.cuisine_field.required_for_root ? "Select cuisine…" : "— Optional —"}
-                        </option>
-                        {cuisineOptions.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                            {!c.is_system_defined ? " (custom)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      {selectedCuisineForCategory != null && (
+                      {cuisineChipLabel != null && (
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className="text-[10px] text-gray-500">Selected for this category:</span>
                           <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 border border-orange-200 px-2 py-0.5 text-xs text-gray-900">
-                            {selectedCuisineForCategory.name}
-                            {!categoryUiConfig?.cuisine_field.required_for_root && (
-                              <button
-                                type="button"
-                                className="text-red-600 hover:text-red-800 font-bold"
-                                title="Clear cuisine for this category"
-                                onClick={() =>
-                                  setCategoryForm((f) => ({
-                                    ...f,
-                                    cuisine_id: undefined,
-                                  }))
-                                }
-                              >
-                                ×
-                              </button>
-                            )}
+                            {cuisineChipLabel}
+                            <button
+                              type="button"
+                              className="text-red-600 hover:text-red-800 font-bold"
+                              title="Remove selected cuisine"
+                              onClick={() => {
+                                setCategoryCuisineInput("");
+                                setCategoryForm((f) => ({
+                                  ...f,
+                                  cuisine_id: undefined,
+                                }));
+                              }}
+                            >
+                              ×
+                            </button>
                           </span>
                         </div>
                       )}
@@ -3184,6 +3561,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                     onClick={() => {
                       setShowCategoryModal(false);
                       setCategoryForm({ category_name: "", is_active: true });
+                      setCategoryCuisineInput("");
                       setEditingCategoryId(null);
                       setParentCategoryIdInForm(null);
                     }}

@@ -22,9 +22,13 @@ export const metadata: Metadata = {
   title: "GatiMitra Control Dashboard",
   description: "Enterprise-grade unified control dashboard",
   icons: {
-    icon: "/favicon.png",
-    shortcut: "/favicon.png",
-    apple: "/favicon.png",
+    icon: [
+      { url: "/favicon.png?v=1", type: "image/png", sizes: "32x32" },
+      { url: "/favicon.png?v=1", type: "image/png", sizes: "192x192" },
+      { url: "/favicon.png?v=1", type: "image/png", sizes: "512x512" },
+    ],
+    shortcut: [{ url: "/favicon.png?v=1", type: "image/png" }],
+    apple: [{ url: "/favicon.png?v=1", type: "image/png", sizes: "180x180" }],
   },
 };
 
@@ -35,6 +39,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Explicit links keep favicon stable across browser fallback behavior. */}
+        <link rel="icon" href="/favicon.png?v=1" type="image/png" sizes="32x32" />
+        <link rel="shortcut icon" href="/favicon.png?v=1" type="image/png" />
+        <link rel="apple-touch-icon" href="/favicon.png?v=1" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >

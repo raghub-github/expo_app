@@ -139,10 +139,10 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");
 
-  // Ticket ID from path (must be before any conditional return to satisfy Rules of Hooks)
+  // Ticket identifier from path (supports numeric id and ticket number like TKT-2026-910001)
   const ticketIdFromPath = useMemo(() => {
-    const match = cleanPathname.match(/^\/dashboard\/tickets\/(\d+)$/);
-    return match ? parseInt(match[1], 10) : null;
+    const match = cleanPathname.match(/^\/dashboard\/tickets\/([^/]+)$/);
+    return match ? decodeURIComponent(match[1]) : null;
   }, [cleanPathname]);
 
   // Store ID when on a merchant store page (for Store Information Card in sidebar)

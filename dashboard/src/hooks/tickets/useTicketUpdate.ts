@@ -12,7 +12,9 @@ export function useTicketUpdate() {
       status,
       priority,
       currentAssigneeUserId,
+      currentAssigneeName,
       groupId,
+      groupName,
       slaDueAt,
       tags,
     }: {
@@ -20,7 +22,9 @@ export function useTicketUpdate() {
       status?: string;
       priority?: string;
       currentAssigneeUserId?: number | null;
+      currentAssigneeName?: string;
       groupId?: number | null;
+      groupName?: string;
       slaDueAt?: string | null;
       tags?: string[];
     }) => {
@@ -40,10 +44,62 @@ export function useTicketUpdate() {
       if (!data.success) throw new Error(data.error || "Update failed");
       return data.data;
     },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.all() });
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.tickets.all() });
       if (variables.ticketId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(variables.ticketId) });
+        await queryClient.cancelQueries({ queryKey: queryKeys.tickets.detail(variables.ticketId) });
+      }
+
+      const patchTicket = (t: any) => {
+        if (!t || t.id !== variables.ticketId) return t;
+        const next = { ...t };
+        if (variables.status !== undefined) next.status = variables.status;
+        if (variables.priority !== undefined) next.priority = variables.priority;
+        if (variables.groupId !== undefined) {
+          if (variables.groupId == null) next.group = null;
+          else {
+            const current = next.group ?? {};
+            next.group = {
+              ...current,
+              id: variables.groupId,
+              name: variables.groupName ?? current.name ?? "",
+              code: current.code ?? "",
+            };
+          }
+        }
+        if (variables.currentAssigneeUserId !== undefined) {
+          if (variables.currentAssigneeUserId == null) next.assignee = null;
+          else {
+            const current = next.assignee ?? {};
+            next.assignee = {
+              ...current,
+              id: variables.currentAssigneeUserId,
+              name: variables.currentAssigneeName ?? current.name ?? "",
+              email: current.email ?? "",
+            };
+          }
+        }
+        if (variables.slaDueAt !== undefined) next.slaDueAt = variables.slaDueAt;
+        if (variables.tags !== undefined) next.tags = variables.tags;
+        return next;
+      };
+
+      queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
+        if (!old || !Array.isArray(old.tickets)) return old;
+        return { ...old, tickets: old.tickets.map((t: any) => patchTicket(t)) };
+      });
+
+      if (variables.ticketId) {
+        queryClient.setQueryData(queryKeys.tickets.detail(variables.ticketId), (old: any) =>
+          old ? patchTicket(old) : old
+        );
+      }
+    },
+    onSuccess: (_, variables) => {
+      // Keep server state synced without forcing visible hard reload/flicker.
+      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.all(), refetchType: "inactive" });
+      if (variables.ticketId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(variables.ticketId), refetchType: "inactive" });
       }
     },
   });

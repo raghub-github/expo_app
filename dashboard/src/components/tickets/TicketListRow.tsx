@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import Link from "next/link";
-import { Clock, AlertCircle, User, FolderGit2, ChevronDown, X, Search } from "lucide-react";
+import { AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 
@@ -11,8 +11,8 @@ interface TicketListRowProps {
   selected: boolean;
   onSelect: (checked: boolean) => void;
   onUpdatePriority: (ticketId: number, priority: string) => void;
-  onUpdateGroup: (ticketId: number, groupId: number | null) => void;
-  onUpdateAssignee: (ticketId: number, userId: number | null) => void;
+  onUpdateGroup: (ticketId: number, groupId: number | null, groupLabel?: string) => void;
+  onUpdateAssignee: (ticketId: number, userId: number | null, assigneeLabel?: string) => void;
   onUpdateStatus: (ticketId: number, status: string) => void;
   priorityOptions: Option[];
   groupOptions: Option[];
@@ -36,6 +36,17 @@ function formatTimeAgo(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
+function formatDateTime(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatOverdue(slaDueAt: string): string {
   const due = new Date(slaDueAt);
   const now = new Date();
@@ -48,6 +59,19 @@ function formatOverdue(slaDueAt: string): string {
   return `${diffDays} day${diffDays !== 1 ? "s" : ""}`;
 }
 
+function getPriorityResponseSlaMs(priority: string | undefined): number {
+  const p = String(priority ?? "").toLowerCase();
+  // Response-SLA window:
+  // Urgent: 10-15m, High: 15-20m, Medium: 20-25m, Low: 25-30m
+  // Use upper bound for breach threshold.
+  if (p === "urgent") return 15 * 60 * 1000;
+  if (p === "high") return 20 * 60 * 1000;
+  if (p === "medium") return 25 * 60 * 1000;
+  if (p === "low") return 30 * 60 * 1000;
+  if (p === "critical") return 10 * 60 * 1000;
+  return 25 * 60 * 1000;
+}
+
 const priorityDotColors: Record<string, string> = {
   low: "bg-gray-400",
   medium: "bg-blue-500",
@@ -55,6 +79,22 @@ const priorityDotColors: Record<string, string> = {
   urgent: "bg-red-500",
   critical: "bg-red-700",
 };
+
+/** Title-case source role (merchant, rider, customer, …) for chips and avatar. */
+function formatTicketSourceRole(role: string): string {
+  return role
+    .trim()
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function ticketTypeAvatarLetter(sourceRole: string | undefined | null): string {
+  if (sourceRole == null || !String(sourceRole).trim()) return "T";
+  const formatted = formatTicketSourceRole(sourceRole);
+  const letter = formatted.charAt(0);
+  return letter ? letter.toUpperCase() : "T";
+}
 
 export const TicketListRow = React.memo(function TicketListRow({
   ticket,
@@ -70,28 +110,6 @@ export const TicketListRow = React.memo(function TicketListRow({
   statusOptions,
   currentUserId,
 }: TicketListRowProps) {
-  const isResolvedOrClosed = ["closed", "resolved"].includes(ticket.status);
-  const isSlaBreached =
-    ticket.slaDueAt &&
-    new Date(ticket.slaDueAt) < new Date() &&
-    !isResolvedOrClosed;
-  const isOverdue15 =
-    !isResolvedOrClosed &&
-    Date.now() - new Date(ticket.createdAt).getTime() > 15 * 60 * 1000;
-  const showOverdue = isSlaBreached || isOverdue15;
-
-  const initial = (ticket.subject || "T").charAt(0).toUpperCase();
-  const sourceLabel = ticket.sourceRole ? ticket.sourceRole.charAt(0).toUpperCase() + ticket.sourceRole.slice(1) : "—";
-  const sectionLabel = ticket.ticketSection ? ticket.ticketSection.charAt(0).toUpperCase() + ticket.ticketSection.slice(1) : "";
-  const categoryLabel = ticket.ticketCategory
-    ? ticket.ticketCategory.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())
-    : "";
-  const serviceLabel = ticket.serviceType
-    ? ticket.serviceType === "person_ride"
-      ? "Ride"
-      : ticket.serviceType.charAt(0).toUpperCase() + ticket.serviceType.slice(1)
-    : "";
-
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -106,12 +124,66 @@ export const TicketListRow = React.memo(function TicketListRow({
     return () => document.removeEventListener("mousedown", onOutside);
   }, [groupAgentOpen]);
 
-  const groupLabel = ticket.group?.name ?? "—";
+  const isResolvedOrClosed = ["closed", "resolved"].includes(ticket.status);
+  const isSlaBreached =
+    ticket.slaDueAt &&
+    new Date(ticket.slaDueAt) < new Date() &&
+    !isResolvedOrClosed;
+  const isOverdue15 =
+    !isResolvedOrClosed &&
+    Date.now() - new Date(ticket.createdAt).getTime() > getPriorityResponseSlaMs(ticket.priority);
+  const showOverdue = isSlaBreached || isOverdue15;
+
+  const sourceLabel = ticket.sourceRole?.trim() ? formatTicketSourceRole(ticket.sourceRole) : "";
+  const typeAvatarLetter = ticketTypeAvatarLetter(ticket.sourceRole);
+  const sectionDisplay = ticket.ticketSection?.trim() ? formatTicketSourceRole(ticket.ticketSection) : "";
+  /** Skip section chip when it duplicates source role (e.g. Merchant + MERCHANT). */
+  const showSectionChip =
+    Boolean(sectionDisplay) && sectionDisplay.toLowerCase() !== sourceLabel.toLowerCase();
+  const categoryLabel = ticket.ticketCategory
+    ? ticket.ticketCategory.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "";
+  const ticketTypeLabel = ticket.ticketCategory?.toLowerCase() === "other"
+    ? "Other"
+    : ticket.ticketType
+      ? ticket.ticketType.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+      : "";
+  const serviceLabel = ticket.serviceType
+    ? ticket.serviceType === "person_ride"
+      ? "Ride"
+      : ticket.serviceType.charAt(0).toUpperCase() + ticket.serviceType.slice(1)
+    : "";
+
+  const onGroupAgentSegmentClick = (segment: "group" | "agent") => {
+    if (!groupAgentOpen) {
+      setGroupAgentTab(segment);
+      setGroupAgentOpen(true);
+      return;
+    }
+    if (groupAgentTab === segment) {
+      setGroupAgentOpen(false);
+      return;
+    }
+    setGroupAgentTab(segment);
+  };
+
+  const queueNameFromRef =
+    ticket.group?.id != null
+      ? groupOptions.find((o) => o.value === String(ticket.group!.id))?.label
+      : undefined;
+  const groupLabel =
+    (ticket.group?.name?.trim() ||
+      ticket.group?.code?.trim() ||
+      queueNameFromRef ||
+      (ticket.group?.id != null ? `Group #${ticket.group.id}` : "")) || "—";
+  const landedLabel = ticket.landedGroup?.name ?? ticket.landedGroup?.code ?? null;
+  const showLandedRow =
+    Boolean(landedLabel) &&
+    (ticket.group == null || ticket.landedGroup == null || ticket.landedGroup.id !== ticket.group.id);
   const agentLabel = ticket.assignee
     ? (ticket.assignee.name ?? ticket.assignee.email ?? `Agent ${ticket.assignee.id}`).trim() || "Unassigned"
     : "Unassigned";
-  const displaySummary = `${groupLabel} / ${agentLabel}`;
-
+  const hasAssignedGroup = ticket.group != null;
   const filteredGroupOptions = searchGroup.trim()
     ? groupOptions.filter((o) => o.label.toLowerCase().includes(searchGroup.toLowerCase()))
     : groupOptions;
@@ -120,9 +192,12 @@ export const TicketListRow = React.memo(function TicketListRow({
     : agentOptions;
 
   return (
-    <div className="flex items-center gap-1.5 border-b border-gray-100 bg-white pl-2 pr-1 py-2 hover:bg-slate-50/80 transition-colors min-h-0 relative group" style={{ overflow: "visible" }}>
-      {/* Checkbox - prevent navigation */}
-      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="flex items-center gap-2.5 border-b border-gray-100 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
+      style={{ overflow: "visible" }}
+    >
+      {/* Checkbox — fixed width column so text column aligns row-to-row */}
+      <div className="shrink-0 w-4 flex justify-center" onClick={(e) => e.stopPropagation()}>
         <input
           type="checkbox"
           checked={selected}
@@ -132,31 +207,41 @@ export const TicketListRow = React.memo(function TicketListRow({
         />
       </div>
 
-      {/* Avatar - clickable */}
+      {/* Avatar: ticket source type (Merchant / Rider / Customer …), first letter only */}
       <Link
         href={`/dashboard/tickets/${ticket.id}`}
-        className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm hover:shadow-md hover:scale-[1.02] transition-all"
-        aria-label={`Open ticket ${ticket.ticketNumber}`}
+        className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-sm font-semibold leading-none tabular-nums shadow-sm hover:shadow-md hover:scale-[1.02] transition-all"
+        aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
+        title={sourceLabel ? `Type: ${sourceLabel}` : undefined}
       >
-        {initial}
+        {typeAvatarLetter}
       </Link>
 
-      {/* Main content - compact */}
-      <div className="flex-1 min-w-0 flex flex-col gap-0.5 py-0">
-        {/* Line 1: Priority + section/service/category chips */}
-        <div className="flex flex-wrap items-center gap-1">
+      {/* Main content — shared left edge for chips, title, meta */}
+      <div className="flex-1 min-w-0 flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-1 w-full min-w-0">
           {showOverdue && (
-            <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
-              <AlertCircle className="h-2.5 w-2.5" />
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
+              <AlertCircle className="h-2.5 w-2.5 shrink-0" />
               Overdue
             </span>
           )}
           <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
             {ticket.priority}
           </span>
-          {sectionLabel && (
+          {ticketTypeLabel && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-100">
+              {ticketTypeLabel}
+            </span>
+          )}
+          {sourceLabel && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-800 border border-violet-100">
+              {sourceLabel}
+            </span>
+          )}
+          {showSectionChip && (
             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700">
-              {sectionLabel}
+              {sectionDisplay}
             </span>
           )}
           {serviceLabel && (
@@ -171,27 +256,42 @@ export const TicketListRow = React.memo(function TicketListRow({
           )}
         </div>
 
-        {/* Line 2: Subject + Ticket ID */}
         <Link
           href={`/dashboard/tickets/${ticket.id}`}
-          className="flex items-baseline gap-1.5 flex-wrap hover:underline underline-offset-1"
+          className="block w-full min-w-0 text-left hover:underline underline-offset-2"
+          title={`${ticket.subject} · #${ticket.ticketNumber || ticket.id}`}
         >
-          <span className="font-medium text-gray-900 text-xs truncate max-w-[300px]" title={ticket.subject}>
-            {ticket.subject}
+          <span className="font-medium text-gray-900 text-xs [overflow-wrap:anywhere]">{ticket.subject}</span>
+          <span className="text-[11px] text-gray-500 font-mono font-normal whitespace-nowrap align-baseline ml-2">
+            #{ticket.ticketNumber || ticket.id}
           </span>
-          <span className="text-[11px] text-gray-500 font-mono shrink-0">#{ticket.ticketNumber || ticket.id}</span>
         </Link>
 
-        {/* Line 3: Agent · Created At · Updated At (no Group) */}
-        <div className="flex items-center gap-2 text-[10px] text-gray-500 flex-wrap">
-          <span><span className="text-gray-600 font-medium">Agent:</span> {agentLabel}</span>
-          <span aria-hidden>·</span>
-          <span>Created {formatTimeAgo(ticket.createdAt)}</span>
-          <span aria-hidden>·</span>
-          <span>Updated {formatTimeAgo(ticket.updatedAt)}</span>
+        <div className="flex w-full min-w-0 items-center gap-x-2 gap-y-0.5 text-[10px] text-gray-500 flex-wrap text-left">
+          <span>
+            <span className="text-gray-600 font-medium">Agent:</span> {agentLabel}
+          </span>
+          <span aria-hidden className="text-gray-300">
+            ·
+          </span>
+          <span>Created {formatDateTime(ticket.createdAt)}</span>
+          <span aria-hidden className="text-gray-300">
+            ·
+          </span>
+          <span>Updated {formatDateTime(ticket.updatedAt)}</span>
+          {ticket.slaDueAt ? (
+            <>
+              <span aria-hidden className="text-gray-300">
+                ·
+              </span>
+              <span>SLA due {formatDateTime(ticket.slaDueAt)}</span>
+            </>
+          ) : null}
           {showOverdue && ticket.slaDueAt && (
             <>
-              <span aria-hidden>·</span>
+              <span aria-hidden className="text-gray-300">
+                ·
+              </span>
               <span className="text-red-600 font-medium">Overdue {formatOverdue(ticket.slaDueAt)}</span>
             </>
           )}
@@ -199,9 +299,9 @@ export const TicketListRow = React.memo(function TicketListRow({
       </div>
 
       {/* Right: Priority, Group/Agent, Status - stacked vertically; same width as header column, shifted left */}
-      <div className="flex flex-col gap-0.5 shrink-0 items-start w-[260px] min-w-[260px] mr-6" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-col gap-px shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
         {/* Priority */}
-        <div className="w-full flex items-center min-h-[26px]">
+        <div className="w-full flex items-center min-h-[22px]">
           <InlineSearchableSelect
             value={ticket.priority}
             options={priorityOptions}
@@ -215,31 +315,84 @@ export const TicketListRow = React.memo(function TicketListRow({
           />
         </div>
         {/* Group / Agent - ONE dropdown */}
-        <div className="relative w-full" ref={groupAgentRef}>
-          <button
-            type="button"
-            onClick={() => setGroupAgentOpen((o) => !o)}
-            className="flex w-full items-center gap-1.5 rounded border border-gray-300 bg-white px-1.5 py-1 text-left text-[11px] text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-1 focus:ring-blue-500 min-h-[24px]"
-            aria-expanded={groupAgentOpen}
-            aria-haspopup="dialog"
-            title={`G - ${groupLabel} · A - ${agentLabel}`}
+        <div
+          className="relative w-full rounded-lg border border-gray-200 bg-gray-50/40 px-1.5 py-1 focus-within:ring-1 focus-within:ring-blue-500 focus-within:ring-offset-0"
+          ref={groupAgentRef}
+          aria-expanded={groupAgentOpen}
+        >
+          <div
+            className="flex w-full items-center gap-1.5"
+            title={
+              [
+                hasAssignedGroup ? `Group: ${groupLabel}` : `Queue: ${groupLabel}`,
+                showLandedRow && landedLabel ? `Landed: ${landedLabel}` : null,
+                `Agent: ${agentLabel}`,
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            }
           >
-            <FolderGit2 className="h-3 w-3 text-gray-500 shrink-0" />
-            <span className="flex-1 min-w-0 whitespace-nowrap overflow-hidden text-ellipsis">
-              G - {groupLabel}
-              <span className="text-gray-400 mx-1" aria-hidden>·</span>
-              A - {agentLabel}
-            </span>
-            <ChevronDown className={`h-3 w-3 text-gray-400 shrink-0 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
-          </button>
+            <FolderGit2 className="h-3.5 w-3.5 text-gray-400 shrink-0" aria-hidden />
+            <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-1 text-[11px] leading-snug">
+                <button
+                  type="button"
+                  onClick={() => onGroupAgentSegmentClick("group")}
+                  className="min-w-0 flex-1 truncate rounded px-0.5 py-0.5 text-left text-gray-800 hover:bg-white/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
+                  aria-haspopup="dialog"
+                  aria-label={
+                    hasAssignedGroup
+                      ? `Group: ${groupLabel}. Open group picker.`
+                      : `Queue: ${groupLabel}. Open group picker.`
+                  }
+                >
+                  {hasAssignedGroup ? (
+                    <span className="font-medium text-gray-900">{groupLabel}</span>
+                  ) : (
+                    <>
+                      <span className="font-medium text-gray-500">Queue:</span>{" "}
+                      <span className="text-gray-600">{groupLabel}</span>
+                    </>
+                  )}
+                </button>
+                <span className="shrink-0 select-none text-gray-300" aria-hidden>
+                  ·
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onGroupAgentSegmentClick("agent")}
+                  className="min-w-0 flex-1 truncate rounded px-0.5 py-0.5 text-left hover:bg-white/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
+                  aria-haspopup="dialog"
+                  aria-label={`Agent: ${agentLabel}. Open agent picker.`}
+                >
+                  <span className="font-medium text-gray-500">A:</span>{" "}
+                  <span className="text-gray-800">{agentLabel}</span>
+                </button>
+              </div>
+              {showLandedRow && landedLabel ? (
+                <span className="truncate text-[10px] leading-snug text-gray-500">
+                  <span className="font-medium text-gray-600">Landed:</span> {landedLabel}
+                </span>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={() => setGroupAgentOpen((o) => !o)}
+              className="shrink-0 rounded p-0.5 text-gray-400 hover:bg-white hover:text-gray-700 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
+              aria-expanded={groupAgentOpen}
+              aria-label="Toggle group and agent menu"
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
+            </button>
+          </div>
           {groupAgentOpen && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
+            <div className="absolute right-0 top-full z-50 mt-1 w-60 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
               {/* Tabs: GROUP | AGENT */}
               <div className="flex border-b border-gray-200">
                 <button
                   type="button"
                   onClick={() => setGroupAgentTab("group")}
-                  className={`flex-1 px-3 py-2 text-xs font-semibold ${
+                  className={`flex-1 cursor-pointer px-2.5 py-1.5 text-[11px] font-semibold ${
                     groupAgentTab === "group"
                       ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50"
                       : "text-gray-600 hover:bg-gray-50"
@@ -250,7 +403,7 @@ export const TicketListRow = React.memo(function TicketListRow({
                 <button
                   type="button"
                   onClick={() => setGroupAgentTab("agent")}
-                  className={`flex-1 px-3 py-2 text-xs font-semibold ${
+                  className={`flex-1 cursor-pointer px-2.5 py-1.5 text-[11px] font-semibold ${
                     groupAgentTab === "agent"
                       ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50"
                       : "text-gray-600 hover:bg-gray-50"
@@ -261,21 +414,27 @@ export const TicketListRow = React.memo(function TicketListRow({
               </div>
               {/* GROUP tab: current group + remove, search, change */}
               {groupAgentTab === "group" && (
-                <div className="p-2">
-                  <div className="flex items-center justify-between gap-2 rounded bg-gray-100 px-2 py-1.5 text-xs">
-                    <span className="truncate font-medium text-gray-800">{groupLabel}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onUpdateGroup(ticket.id, null);
-                        setSearchGroup("");
-                      }}
-                      className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
-                      aria-label="Remove group"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+                <div className="p-1.5">
+                  {hasAssignedGroup ? (
+                    <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
+                      <span className="truncate font-medium text-gray-800">{groupLabel}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateGroup(ticket.id, null, "Unassigned");
+                          setSearchGroup("");
+                        }}
+                        className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
+                        aria-label="Remove group"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="inline-flex items-center rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-500">
+                      Unassigned
+                    </span>
+                  )}
                   <p className="mt-1 text-[10px] text-gray-500">Change group</p>
                   <div className="relative mt-1">
                     <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
@@ -284,19 +443,19 @@ export const TicketListRow = React.memo(function TicketListRow({
                       value={searchGroup}
                       onChange={(e) => setSearchGroup(e.target.value)}
                       placeholder="Search groups..."
-                      className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
-                  <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200 bg-white">
+                  <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
                     {filteredGroupOptions.map((opt) => (
                       <li key={opt.value}>
                         <button
                           type="button"
                           onClick={() => {
-                            onUpdateGroup(ticket.id, parseInt(opt.value, 10));
+                            onUpdateGroup(ticket.id, parseInt(opt.value, 10), opt.label);
                             setGroupAgentOpen(false);
                           }}
-                          className="w-full px-2 py-1.5 text-left text-xs text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
+                          className="w-full cursor-pointer px-2 py-1.5 text-left text-[12px] text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
                         >
                           {opt.label}
                         </button>
@@ -310,14 +469,14 @@ export const TicketListRow = React.memo(function TicketListRow({
               )}
               {/* AGENT tab: current agent + unassign, search, reassign */}
               {groupAgentTab === "agent" && (
-                <div className="p-2">
-                  <div className="flex items-center justify-between gap-2 rounded bg-gray-100 px-2 py-1.5 text-xs">
+                <div className="p-1.5">
+                  <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
                     <span className="truncate font-medium text-gray-800">{agentLabel}</span>
                     {ticket.assignee && (
                       <button
                         type="button"
                         onClick={() => {
-                          onUpdateAssignee(ticket.id, null);
+                          onUpdateAssignee(ticket.id, null, "Unassigned");
                           setSearchAgent("");
                         }}
                         className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
@@ -335,20 +494,24 @@ export const TicketListRow = React.memo(function TicketListRow({
                       value={searchAgent}
                       onChange={(e) => setSearchAgent(e.target.value)}
                       placeholder="Search agents..."
-                      className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-xs focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
-                  <ul className="mt-1 max-h-40 overflow-y-auto rounded border border-gray-200 bg-white">
+                  <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
                     {filteredAgentOptions.map((opt) => (
                       <li key={opt.value}>
                         <button
                           type="button"
                           onClick={() => {
                             const id = opt.value === "me" && currentUserId != null ? currentUserId : opt.value ? parseInt(opt.value, 10) : null;
-                            onUpdateAssignee(ticket.id, Number.isNaN(id as number) ? null : id);
+                            onUpdateAssignee(
+                              ticket.id,
+                              Number.isNaN(id as number) ? null : id,
+                              opt.label
+                            );
                             setGroupAgentOpen(false);
                           }}
-                          className="w-full px-2 py-1.5 text-left text-xs text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
+                          className="w-full cursor-pointer px-2 py-1.5 text-left text-[12px] text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
                         >
                           {opt.label}
                         </button>

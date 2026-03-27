@@ -174,6 +174,15 @@ export function RiderOrdersClient() {
     { skip: riderId == null } as any
   );
 
+  const pendingCreditRows = useMemo(
+    () => (Array.isArray(pendingCredits) ? pendingCredits : []),
+    [pendingCredits]
+  );
+  const approvedCreditRows = useMemo(
+    () => (Array.isArray(approvedCredits) ? approvedCredits : []),
+    [approvedCredits]
+  );
+
   const [addPenaltyMutation, { isLoading: addPenaltyMutating }] = useAddRiderPenaltyMutation();
 
   useEffect(() => setSearchInput(searchValue), [searchValue]);
@@ -223,30 +232,30 @@ export function RiderOrdersClient() {
   }, []);
 
   useEffect(() => {
-    if (!pendingCredits) {
+    if (pendingCreditRows.length === 0) {
       setPendingCreditOrderIds(new Set());
       return;
     }
     const ids = new Set<number>();
-    for (const r of pendingCredits) {
+    for (const r of pendingCreditRows) {
       if (r.orderId != null) ids.add(r.orderId);
     }
     setPendingCreditOrderIds(ids);
-  }, [pendingCredits]);
+  }, [pendingCreditRows]);
 
   useEffect(() => {
-    if (!approvedCredits) {
+    if (approvedCreditRows.length === 0) {
       setApprovedExtraByOrderId(new Map());
       return;
     }
     const map = new Map<number, number>();
-    for (const r of approvedCredits) {
+    for (const r of approvedCreditRows) {
       if (r.orderId == null) continue;
       const amt = Number(r.amount) || 0;
       map.set(r.orderId, (map.get(r.orderId) ?? 0) + amt);
     }
     setApprovedExtraByOrderId(map);
-  }, [approvedCredits]);
+  }, [approvedCreditRows]);
 
   const { data: riderAccess } = useRiderAccessQuery();
   const canAddPenaltyForService = useCallback(

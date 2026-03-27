@@ -288,7 +288,7 @@ export default function RiderDetailsPage() {
   }
 
   // Error state
-  if (error || !riderData) {
+  if (error || !riderData?.rider) {
     return (
       <div className="space-y-6">
         <button

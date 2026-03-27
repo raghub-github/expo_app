@@ -17,8 +17,8 @@ export interface TicketFilterState {
   assignedToIds: string[];
   /** Multi-select: source roles */
   sourceRoles: string[];
-  /** Multi-select: group IDs from ticket_groups */
-  groupIds: number[];
+  /** Multi-select: group IDs as strings, or "unassigned" for tickets with no group */
+  groupIds: string[];
   skill: string;
   tags: string;
   company: string;
@@ -75,7 +75,7 @@ const defaultFilters: TicketFilterState = {
 type FilterAction =
   | { type: "set"; key: keyof TicketFilterState; value: string }
   | { type: "setMulti"; key: "serviceTypes" | "statuses" | "priorities" | "sourceRoles" | "assignedToIds"; value: string[] }
-  | { type: "setGroupIds"; value: number[] }
+  | { type: "setGroupIds"; value: string[] }
   | { type: "setMany"; values: Partial<TicketFilterState> }
   | { type: "reset" };
 
@@ -180,6 +180,29 @@ function parseNumberArrayParam(param: string | null): number[] {
     .filter((n) => !Number.isNaN(n));
 }
 
+function parseGroupIdsParam(param: string | null): string[] {
+  if (!param) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of param.split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (raw.toLowerCase() === "unassigned") {
+      if (!seen.has("unassigned")) {
+        seen.add("unassigned");
+        out.push("unassigned");
+      }
+      continue;
+    }
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n)) continue;
+    const id = String(n);
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
 function initFilters(searchParams: URLSearchParams): TicketFilterState {
   return {
     serviceTypes: parseArrayParam(searchParams.get("serviceType") || searchParams.get("serviceTypes")),
@@ -189,7 +212,7 @@ function initFilters(searchParams: URLSearchParams): TicketFilterState {
     ticketCategory: searchParams.get("ticketCategory") || defaultFilters.ticketCategory,
     assignedToIds: searchParams.get("assignedToIds")?.split(",").filter(Boolean) || defaultFilters.assignedToIds,
     sourceRoles: parseArrayParam(searchParams.get("sourceRole") || searchParams.get("sourceRoles")),
-    groupIds: parseNumberArrayParam(searchParams.get("groupIds") || searchParams.get("groupId")),
+    groupIds: parseGroupIdsParam(searchParams.get("groupIds") || searchParams.get("groupId")),
     skill: searchParams.get("skill") || defaultFilters.skill,
     tags: searchParams.get("tags") || defaultFilters.tags,
     company: searchParams.get("company") || defaultFilters.company,
@@ -211,6 +234,36 @@ function initFilters(searchParams: URLSearchParams): TicketFilterState {
     sortBy: searchParams.get("sortBy") || defaultFilters.sortBy,
     sortOrder: searchParams.get("sortOrder") || defaultFilters.sortOrder,
   };
+}
+
+/**
+ * Counts filters that narrow the ticket list (from URL or draft). Excludes sort-only params.
+ * Used for empty-state copy: "wrong turn" only when count is greater than zero.
+ */
+export function countRestrictiveTicketFilters(f: TicketFilterState): number {
+  let count = 0;
+  if (f.serviceTypes.length > 0) count++;
+  if (f.ticketSection && f.ticketSection !== "all") count++;
+  if (f.statuses.length > 0) count++;
+  if (f.priorities.length > 0) count++;
+  if (f.ticketCategory && f.ticketCategory !== "all") count++;
+  if (f.assignedToIds.length > 0) count++;
+  if (f.sourceRoles.length > 0) count++;
+  if (f.groupIds.length > 0) count++;
+  if (f.skill) count++;
+  if (f.tags) count++;
+  if (f.company) count++;
+  if (f.dateFrom || f.dateTo || (f.createdPreset && f.createdPreset !== "any")) count++;
+  if (f.resolvedFrom || f.resolvedTo || (f.resolvedPreset && f.resolvedPreset !== "any")) count++;
+  if (f.closedFrom || f.closedTo || (f.closedPreset && f.closedPreset !== "any")) count++;
+  const dueNarrowed =
+    Boolean(f.dueFrom || f.dueTo) ||
+    Boolean(f.duePreset && f.duePreset !== "any") ||
+    f.slaBreach === "true";
+  if (dueNarrowed) count++;
+  if (f.searchQuery) count++;
+  if (f.isHighValue === "true") count++;
+  return count;
 }
 
 function reducer(state: TicketFilterState, action: FilterAction): TicketFilterState {
@@ -306,9 +359,7 @@ export function useTicketFilters() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [filters, dispatch] = useReducer(reducer, searchParams, initFilters);
-  const lastParamsRef = useRef<string>("");
   const filtersRef = useRef(filters);
-  const isUpdatingRef = useRef(false);
 
   /** Applied filters (from URL) - use for the ticket list so it only updates on Apply */
   const appliedFilters = useMemo(
@@ -321,28 +372,29 @@ export function useTicketFilters() {
     filtersRef.current = filters;
   }, [filters]);
 
-  // Sync draft from URL when URL changes (after apply or browser back/forward)
-  const prevParamsRef = useRef(searchParams.toString());
+  // Always sync draft panel from URL when the query string changes (Apply, Clear, back/forward).
+  // Depend on `toString()` so unstable `searchParams` identity does not wipe in-progress draft edits.
+  const urlQueryString = searchParams.toString();
+  const prevUrlQueryRef = useRef<string | null>(null);
   useEffect(() => {
-    const current = searchParams.toString();
-    if (current !== prevParamsRef.current && !isUpdatingRef.current) {
-      prevParamsRef.current = current;
-      dispatch({ type: "setMany", values: initFilters(searchParams) });
-    }
-    prevParamsRef.current = current;
-  }, [searchParams]);
+    if (urlQueryString === prevUrlQueryRef.current) return;
+    prevUrlQueryRef.current = urlQueryString;
+    dispatch({ type: "setMany", values: initFilters(searchParams) });
+  }, [urlQueryString, searchParams]);
 
   // Apply filters on submit only (no auto-sync)
   const applyFilters = useCallback(() => {
     const filtersParams = buildSearchParams(filtersRef.current).toString();
     const query = filtersParams ? `?${filtersParams}` : "";
-    isUpdatingRef.current = true;
-    lastParamsRef.current = filtersParams;
     startTransition(() => {
       router.replace(`/dashboard/tickets${query}`, { scroll: false });
-      setTimeout(() => {
-        isUpdatingRef.current = false;
-      }, 0);
+    });
+  }, [router]);
+
+  /** Clear all filters in the URL and reset the sidebar to defaults (full ticket list). */
+  const clearFilters = useCallback(() => {
+    startTransition(() => {
+      router.replace("/dashboard/tickets", { scroll: false });
     });
   }, [router]);
 
@@ -353,12 +405,8 @@ export function useTicketFilters() {
       params.set("sortBy", sortBy);
       params.set("sortOrder", sortOrder);
       const query = params.toString();
-      isUpdatingRef.current = true;
       startTransition(() => {
         router.replace(`/dashboard/tickets${query ? `?${query}` : ""}`, { scroll: false });
-        setTimeout(() => {
-          isUpdatingRef.current = false;
-        }, 0);
       });
     },
     [router, searchParams]
@@ -387,7 +435,7 @@ export function useTicketFilters() {
   const updateAssignedToIds = useCallback((assignedToIds: string[]) => {
     dispatch({ type: "setMulti", key: "assignedToIds", value: assignedToIds });
   }, []);
-  const updateGroupIds = useCallback((groupIds: number[]) => {
+  const updateGroupIds = useCallback((groupIds: string[]) => {
     dispatch({ type: "setGroupIds", value: groupIds });
   }, []);
 
@@ -395,28 +443,11 @@ export function useTicketFilters() {
     dispatch({ type: "reset" });
   }, []);
 
-  const activeFilterCount = useMemo(() => {
-    let count = 0;
-    if (filters.serviceTypes.length > 0) count++;
-    if (filters.ticketSection && filters.ticketSection !== "all") count++;
-    if (filters.statuses.length > 0) count++;
-    if (filters.priorities.length > 0) count++;
-    if (filters.ticketCategory && filters.ticketCategory !== "all") count++;
-    if (filters.assignedToIds.length > 0) count++;
-    if (filters.sourceRoles.length > 0) count++;
-    if (filters.groupIds.length > 0) count++;
-    if (filters.skill) count++;
-    if (filters.tags) count++;
-    if (filters.company) count++;
-    if (filters.dateFrom || filters.dateTo) count++;
-    if (filters.resolvedFrom || filters.resolvedTo) count++;
-    if (filters.closedFrom || filters.closedTo) count++;
-    if (filters.dueFrom || filters.dueTo) count++;
-    if (filters.searchQuery) count++;
-    if (filters.isHighValue === "true") count++;
-    if (filters.slaBreach === "true") count++;
-    return count;
-  }, [filters]);
+  const activeFilterCount = useMemo(() => countRestrictiveTicketFilters(filters), [filters]);
+  const appliedTicketFilterCount = useMemo(
+    () => countRestrictiveTicketFilters(appliedFilters),
+    [appliedFilters]
+  );
 
   return {
     /** Draft filters (form state) - use in filter panel */
@@ -435,6 +466,9 @@ export function useTicketFilters() {
     updateGroupIds,
     resetFilters,
     applyFilters,
+    clearFilters,
     activeFilterCount,
+    /** Restrictive filters currently in the URL (after Apply). For empty list messaging. */
+    appliedTicketFilterCount,
   };
 }

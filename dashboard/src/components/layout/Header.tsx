@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useState, useEffect, useMemo, useRef, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight, User } from "lucide-react";
@@ -11,7 +12,13 @@ import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
-import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
+const AgentStatusToggle = dynamic(
+  () => import("@/components/tickets/AgentStatusToggle").then((m) => m.AgentStatusToggle),
+  {
+    ssr: false,
+    loading: () => <div className="h-7 w-[104px] shrink-0" aria-hidden />,
+  }
+);
 import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";

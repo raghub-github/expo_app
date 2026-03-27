@@ -182,12 +182,12 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
   };
 }
 
-export function useTicketDetail(ticketId: number | null) {
+export function useTicketDetail(ticketId: number | string | null) {
   return useQuery<TicketDetail>({
     queryKey: queryKeys.tickets.detail(ticketId || ""),
     queryFn: async () => {
       if (!ticketId) throw new Error("Ticket ID is required");
-      const response = await fetch(`/api/tickets/${ticketId}`, { credentials: "include" });
+      const response = await fetch(`/api/tickets/${encodeURIComponent(String(ticketId))}`, { credentials: "include" });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         const msg = data?.error ?? (response.status === 404 ? "Ticket not found" : "Failed to fetch ticket detail");

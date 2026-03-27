@@ -16,10 +16,10 @@ export default async function TicketsPage({
 
   const { slug } = await params;
   const idSegment = slug?.[0];
-  const ticketId = idSegment ? parseInt(idSegment, 10) : NaN;
+  const ticketIdentifier = idSegment?.trim() ?? "";
 
-  if (idSegment != null && idSegment !== "" && !isNaN(ticketId) && slug?.length === 1) {
-    return <TicketDetailLoader ticketId={ticketId} />;
+  if (ticketIdentifier !== "" && slug?.length === 1) {
+    return <TicketDetailLoader ticketId={ticketIdentifier} />;
   }
 
   if (slug == null || slug.length === 0) {

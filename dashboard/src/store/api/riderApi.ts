@@ -1,5 +1,12 @@
 import { baseApi } from "./baseApi";
 
+function unwrapApiData<T>(response: unknown): T {
+  if (response && typeof response === "object" && "data" in (response as Record<string, unknown>)) {
+    return ((response as { data?: T }).data ?? (response as T));
+  }
+  return response as T;
+}
+
 // Core rider types derived from existing rider APIs
 export interface RiderCore {
   id: number;
@@ -253,6 +260,7 @@ export const riderApi = baseApi.injectEndpoints({
   endpoints: (build) => ({
     getRiderDetails: build.query<RiderDetailsResponse, number>({
       query: (riderId) => `/riders/${riderId}`,
+      transformResponse: (response: unknown) => unwrapApiData<RiderDetailsResponse>(response),
       providesTags: (result, error, riderId) =>
         result
           ? [
@@ -276,6 +284,7 @@ export const riderApi = baseApi.injectEndpoints({
         const qs = params.toString();
         return qs ? `/riders/${riderId}/ledger?${qs}` : `/riders/${riderId}/ledger`;
       },
+      transformResponse: (response: unknown) => unwrapApiData<RiderLedgerResponse>(response),
       providesTags: (result, error, { riderId }) => [
         { type: "Payment" as const, id: `rider-ledger-${riderId}` },
       ],
@@ -294,6 +303,7 @@ export const riderApi = baseApi.injectEndpoints({
         const qs = params.toString();
         return qs ? `/riders/${riderId}/penalties?${qs}` : `/riders/${riderId}/penalties`;
       },
+      transformResponse: (response: unknown) => unwrapApiData<RiderPenaltiesResponse>(response),
       providesTags: (result, error, { riderId }) => [
         { type: "Rider" as const, id: riderId },
       ],
@@ -341,6 +351,7 @@ export const riderApi = baseApi.injectEndpoints({
         const qs = params.toString();
         return qs ? `/riders/${riderId}/orders?${qs}` : `/riders/${riderId}/orders`;
       },
+      transformResponse: (response: unknown) => unwrapApiData<RiderOrdersResponse>(response),
       providesTags: (result, error, { riderId }) => [
         { type: "Order" as const, id: `rider-orders-${riderId}` },
       ],
@@ -357,6 +368,10 @@ export const riderApi = baseApi.injectEndpoints({
         if (limit != null) params.set("limit", String(limit));
         const qs = params.toString();
         return qs ? `/wallet-credit-requests?${qs}` : `/wallet-credit-requests`;
+      },
+      transformResponse: (response: unknown) => {
+        const rows = unwrapApiData<WalletCreditRequestRow[] | undefined>(response);
+        return Array.isArray(rows) ? rows : [];
       },
       providesTags: (result, error, { riderId, status }) => [
         { type: "Payment" as const, id: `rider-wallet-requests-${riderId}-${status}` },

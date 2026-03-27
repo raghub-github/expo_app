@@ -55,6 +55,34 @@ export async function GET(
         AND COALESCE(is_deleted, FALSE) = FALSE
       ORDER BY parent_category_id NULLS FIRST, display_order ASC, id ASC
     `;
+    const categoryLineageRows = await sql`
+      SELECT id, parent_category_id, COALESCE(is_deleted, FALSE) AS is_deleted
+      FROM merchant_menu_categories
+      WHERE store_id = ${storeId}
+    `;
+    type CategoryLineageRow = { id: number; parent_category_id: number | null; is_deleted: boolean };
+    const lineageById = new Map<number, CategoryLineageRow>();
+    for (const row of categoryLineageRows as CategoryLineageRow[]) lineageById.set(Number(row.id), row);
+    const liveCategoryIds = new Set<number>((categories as Array<{ id: number }>).map((c) => Number(c.id)));
+    const resolveLiveParent = (categoryId: number, directParentId: number | null): number | null => {
+      let cursor = directParentId;
+      const visited = new Set<number>([categoryId]);
+      while (cursor != null && Number.isFinite(cursor) && !visited.has(cursor)) {
+        visited.add(cursor);
+        const parent = lineageById.get(Number(cursor));
+        if (!parent) return null;
+        if (!parent.is_deleted && liveCategoryIds.has(Number(parent.id))) return Number(parent.id);
+        cursor = parent.parent_category_id == null ? null : Number(parent.parent_category_id);
+      }
+      return null;
+    };
+    const normalizedCategories = (categories as Array<Record<string, unknown>>).map((c) => ({
+      ...c,
+      parent_category_id: resolveLiveParent(
+        Number(c.id),
+        c.parent_category_id == null ? null : Number(c.parent_category_id)
+      ),
+    }));
 
     const items = await sql`
       SELECT id, store_id, item_id, item_name, item_description, item_image_url,
@@ -64,6 +92,10 @@ export async function GET(
              has_customizations, has_addons, has_variants,
              is_popular, is_recommended,
              preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit,
+             available_for_delivery,
+             weight_per_serving, weight_per_serving_unit, calories_kcal,
+             protein, protein_unit, carbohydrates, carbohydrates_unit,
+             fat, fat_unit, fibre, fibre_unit, item_tags, allergens,
              approval_status::text,
              (SELECT EXISTS(
                SELECT 1 FROM merchant_menu_item_change_requests r
@@ -88,7 +120,7 @@ export async function GET(
         avg_preparation_time_minutes: (store as any).avg_preparation_time_minutes ?? null,
         packaging_charge_amount: (store as any).packaging_charge_amount ?? null,
       },
-      categories,
+      categories: normalizedCategories,
       items,
     });
   } catch (e) {

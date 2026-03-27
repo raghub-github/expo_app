@@ -64,13 +64,26 @@ function formatTimestamp(dateStr: string): string {
   });
 }
 
+function getPriorityResponseSlaMs(priority: string | undefined): number {
+  // Response-SLA window:
+  // Urgent: 10-15m, High: 15-20m, Medium: 20-25m, Low: 25-30m
+  // Use upper bound for breach threshold.
+  const p = String(priority ?? "").toLowerCase();
+  if (p === "urgent") return 15 * 60 * 1000;
+  if (p === "high") return 20 * 60 * 1000;
+  if (p === "medium") return 25 * 60 * 1000;
+  if (p === "low") return 30 * 60 * 1000;
+  if (p === "critical") return 10 * 60 * 1000;
+  return 25 * 60 * 1000;
+}
+
 export interface TicketGridCardProps {
   ticket: Ticket;
   selected: boolean;
   onSelect: (checked: boolean) => void;
   onUpdatePriority: (ticketId: number, priority: string) => void;
-  onUpdateGroup: (ticketId: number, groupId: number | null) => void;
-  onUpdateAssignee: (ticketId: number, userId: number | null) => void;
+  onUpdateGroup: (ticketId: number, groupId: number | null, groupLabel?: string) => void;
+  onUpdateAssignee: (ticketId: number, userId: number | null, assigneeLabel?: string) => void;
   onUpdateStatus: (ticketId: number, status: string) => void;
   priorityOptions: Option[];
   groupOptions: Option[];
@@ -93,16 +106,6 @@ export function TicketGridCard({
   statusOptions,
   currentUserId,
 }: TicketGridCardProps) {
-  const isResolvedOrClosed = ["closed", "resolved"].includes(ticket.status);
-  const isSlaBreached =
-    ticket.slaDueAt &&
-    new Date(ticket.slaDueAt) < new Date() &&
-    !isResolvedOrClosed;
-  const isOverdue15 =
-    !isResolvedOrClosed &&
-    Date.now() - new Date(ticket.createdAt).getTime() > 15 * 60 * 1000;
-  const showOverdue = isSlaBreached || isOverdue15;
-
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -129,7 +132,29 @@ export function TicketGridCard({
     return () => document.removeEventListener("mousedown", onOutside);
   }, [groupAgentOpen]);
 
-  const groupLabel = ticket.group?.name ?? ticket.group?.code ?? "—";
+  const isResolvedOrClosed = ["closed", "resolved"].includes(ticket.status);
+  const isSlaBreached =
+    ticket.slaDueAt &&
+    new Date(ticket.slaDueAt) < new Date() &&
+    !isResolvedOrClosed;
+  const isOverdue15 =
+    !isResolvedOrClosed &&
+    Date.now() - new Date(ticket.createdAt).getTime() > getPriorityResponseSlaMs(ticket.priority);
+  const showOverdue = isSlaBreached || isOverdue15;
+
+  const queueNameFromRef =
+    ticket.group?.id != null
+      ? groupOptions.find((o) => o.value === String(ticket.group!.id))?.label
+      : undefined;
+  const groupLabel =
+    (ticket.group?.name?.trim() ||
+      ticket.group?.code?.trim() ||
+      queueNameFromRef ||
+      (ticket.group?.id != null ? `Group #${ticket.group.id}` : "")) || "—";
+  const landedLabel = ticket.landedGroup?.name ?? ticket.landedGroup?.code ?? null;
+  const showLandedOnCard =
+    Boolean(landedLabel) &&
+    (ticket.group == null || ticket.landedGroup == null || ticket.landedGroup.id !== ticket.group.id);
   const agentLabel = ticket.assignee
     ? (ticket.assignee.name ?? ticket.assignee.email ?? `Agent ${ticket.assignee.id}`).trim() || "Unassigned"
     : "Unassigned";
@@ -142,6 +167,11 @@ export function TicketGridCard({
     : agentOptions;
 
   const sourceLabel = ticket.sourceRole ? ticket.sourceRole.replace(/_/g, " ").toUpperCase() : "";
+  const ticketTypeLabel = ticket.ticketCategory?.toLowerCase() === "other"
+    ? "Other"
+    : ticket.ticketType
+      ? ticket.ticketType.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+      : "";
 
   // Top gradient: Indian flag style (saffron → white → green)
   const topBorderGradient = "linear-gradient(90deg, #FF9933 0%, #FFFFFF 50%, #138808 100%)";
@@ -161,33 +191,39 @@ export function TicketGridCard({
         <button
           type="button"
           onClick={() => setGroupAgentTab("group")}
-          className={`flex-1 px-2 py-1.5 text-[11px] font-semibold ${groupAgentTab === "group" ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50" : "text-gray-600 hover:bg-gray-50"}`}
+          className={`flex-1 cursor-pointer px-2 py-1 text-[11px] font-semibold ${groupAgentTab === "group" ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50" : "text-gray-600 hover:bg-gray-50"}`}
         >
           GROUP
         </button>
         <button
           type="button"
           onClick={() => setGroupAgentTab("agent")}
-          className={`flex-1 px-2 py-1.5 text-[11px] font-semibold ${groupAgentTab === "agent" ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50" : "text-gray-600 hover:bg-gray-50"}`}
+          className={`flex-1 cursor-pointer px-2 py-1 text-[11px] font-semibold ${groupAgentTab === "agent" ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50" : "text-gray-600 hover:bg-gray-50"}`}
         >
           AGENT
         </button>
       </div>
       {groupAgentTab === "group" && (
-        <div className="p-2">
-          <div className="flex items-center justify-between gap-2 rounded bg-gray-100 px-2 py-1.5 text-[11px]">
-            <span className="truncate font-medium text-gray-800">{groupLabel}</span>
-            <button type="button" onClick={() => { onUpdateGroup(ticket.id, null); setSearchGroup(""); }} className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100" aria-label="Remove group"><X className="h-3 w-3" /></button>
-          </div>
+        <div className="p-1.5">
+          {ticket.group ? (
+            <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
+              <span className="truncate font-medium text-gray-800">{groupLabel}</span>
+              <button type="button" onClick={() => { onUpdateGroup(ticket.id, null, "Unassigned"); setSearchGroup(""); }} className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100" aria-label="Remove group"><X className="h-3 w-3" /></button>
+            </div>
+          ) : (
+            <span className="inline-flex items-center rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-500">
+              Unassigned
+            </span>
+          )}
           <p className="mt-1 text-[10px] text-gray-500">Change group</p>
           <div className="relative mt-1">
             <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
-            <input type="text" value={searchGroup} onChange={(e) => setSearchGroup(e.target.value)} placeholder="Search groups..." className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+            <input type="text" value={searchGroup} onChange={(e) => setSearchGroup(e.target.value)} placeholder="Search groups..." className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
           </div>
           <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
             {filteredGroupOptions.map((opt) => (
               <li key={opt.value}>
-                <button type="button" onClick={() => { onUpdateGroup(ticket.id, parseInt(opt.value, 10)); setGroupAgentOpen(false); }} className="w-full px-2 py-1.5 text-left text-[11px] text-gray-900 hover:bg-blue-50 focus:outline-none">{opt.label}</button>
+                <button type="button" onClick={() => { onUpdateGroup(ticket.id, parseInt(opt.value, 10), opt.label); setGroupAgentOpen(false); }} className="w-full cursor-pointer px-2 py-1.5 text-left text-[11px] text-gray-900 hover:bg-blue-50 focus:outline-none">{opt.label}</button>
               </li>
             ))}
             {filteredGroupOptions.length === 0 && <li className="px-2 py-1.5 text-[11px] text-gray-500">No groups</li>}
@@ -195,20 +231,20 @@ export function TicketGridCard({
         </div>
       )}
       {groupAgentTab === "agent" && (
-        <div className="p-2">
-          <div className="flex items-center justify-between gap-2 rounded bg-gray-100 px-2 py-1.5 text-[11px]">
+        <div className="p-1.5">
+          <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
             <span className="truncate font-medium text-gray-800">{agentLabel}</span>
-            {ticket.assignee && <button type="button" onClick={() => { onUpdateAssignee(ticket.id, null); setSearchAgent(""); }} className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100" aria-label="Unassign"><X className="h-3 w-3" /></button>}
+            {ticket.assignee && <button type="button" onClick={() => { onUpdateAssignee(ticket.id, null, "Unassigned"); setSearchAgent(""); }} className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100" aria-label="Unassign"><X className="h-3 w-3" /></button>}
           </div>
           <p className="mt-1 text-[10px] text-gray-500">Reassign</p>
           <div className="relative mt-1">
             <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
-            <input type="text" value={searchAgent} onChange={(e) => setSearchAgent(e.target.value)} placeholder="Search agents..." className="w-full rounded border border-gray-300 py-1.5 pl-7 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
+            <input type="text" value={searchAgent} onChange={(e) => setSearchAgent(e.target.value)} placeholder="Search agents..." className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500" />
           </div>
           <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
             {filteredAgentOptions.map((opt) => (
               <li key={opt.value}>
-                <button type="button" onClick={() => { const id = opt.value === "me" && currentUserId != null ? currentUserId : opt.value ? parseInt(opt.value, 10) : null; onUpdateAssignee(ticket.id, id != null && !Number.isNaN(id) ? id : null); setGroupAgentOpen(false); }} className="w-full px-2 py-1.5 text-left text-[11px] text-gray-900 hover:bg-blue-50 focus:outline-none">{opt.label}</button>
+                <button type="button" onClick={() => { const id = opt.value === "me" && currentUserId != null ? currentUserId : opt.value ? parseInt(opt.value, 10) : null; onUpdateAssignee(ticket.id, id != null && !Number.isNaN(id) ? id : null, opt.label); setGroupAgentOpen(false); }} className="w-full cursor-pointer px-2 py-1.5 text-left text-[11px] text-gray-900 hover:bg-blue-50 focus:outline-none">{opt.label}</button>
               </li>
             ))}
             {filteredAgentOptions.length === 0 && <li className="px-2 py-1.5 text-[11px] text-gray-500">No agents</li>}
@@ -261,6 +297,11 @@ export function TicketGridCard({
           <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${priorityPillColors[ticket.priority] ?? priorityPillColors.medium}`}>
             {(ticket.priority || "medium").replace(/_/g, " ")}
           </span>
+          {ticketTypeLabel && (
+            <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+              {ticketTypeLabel}
+            </span>
+          )}
         </div>
 
         {/* Title */}
@@ -274,6 +315,21 @@ export function TicketGridCard({
             <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded-full ${modelTagClass}`}>
               {sourceLabel}
             </span>
+          </div>
+        )}
+
+        {(ticket.group || (showLandedOnCard && landedLabel)) && (
+          <div className="text-[10px] text-gray-600 space-y-0.5 min-w-0">
+            {ticket.group ? (
+              <div className="truncate">
+                <span className="font-medium text-gray-700">Queue:</span> {groupLabel}
+              </div>
+            ) : null}
+            {showLandedOnCard && landedLabel ? (
+              <div className="truncate">
+                <span className="font-medium text-gray-700">Landed:</span> {landedLabel}
+              </div>
+            ) : null}
           </div>
         )}
 
