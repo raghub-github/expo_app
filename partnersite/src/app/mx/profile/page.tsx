@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { MXLayoutWhite } from "@/components/MXLayoutWhite";
 import { R2Image } from "@/components/R2Image";
 import { fetchRestaurantById as fetchStoreById, updateStoreInfo } from "@/lib/database";
@@ -244,6 +244,15 @@ export default function ProfilePage() {
   const [storeOptions, setStoreOptions] = useState<Array<{ store_id: string; store_name: string }>>([]);
   const [storeSwitcherOpen, setStoreSwitcherOpen] = useState(false);
   const [showAllCuisines, setShowAllCuisines] = useState(false);
+  const [cuisineEditMode, setCuisineEditMode] = useState(false);
+  const [cuisineDetailRows, setCuisineDetailRows] = useState<
+    Array<{ id: number; name: string; is_system_defined: boolean }>
+  >([]);
+  const [cuisineCatalogRows, setCuisineCatalogRows] = useState<
+    Array<{ id: number; name: string; is_system_defined: boolean }>
+  >([]);
+  const [cuisineSearch, setCuisineSearch] = useState("");
+  const [cuisineMutating, setCuisineMutating] = useState(false);
   const [confirmSave, setConfirmSave] = useState(false);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [uploadingImages, setUploadingImages] = useState<string[]>([]);
@@ -335,6 +344,115 @@ export default function ProfilePage() {
     };
     loadCuisines();
   }, [storeId, store?.cuisine_types]);
+
+  const refreshCuisineManagerData = useCallback(async () => {
+    if (!storeId) return;
+    try {
+      const res = await fetch(`/api/merchant/store-cuisines?storeId=${encodeURIComponent(storeId)}`, {
+        credentials: "include",
+      });
+      if (!res.ok) return;
+      const data = (await res.json().catch(() => ({}))) as {
+        cuisines?: unknown;
+        cuisineDetails?: unknown;
+        catalog?: unknown;
+      };
+      const names = Array.isArray(data.cuisines)
+        ? data.cuisines.filter((c: unknown): c is string => typeof c === "string")
+        : [];
+      setStoreCuisines(names.length > 0 ? names : Array.isArray(store?.cuisine_types) ? (store?.cuisine_types as string[]) : []);
+      const det = Array.isArray(data.cuisineDetails) ? data.cuisineDetails : [];
+      const cat = Array.isArray(data.catalog) ? data.catalog : [];
+      setCuisineDetailRows(
+        det
+          .filter((r: unknown): r is { id: number; name: string; is_system_defined?: boolean } =>
+            r != null &&
+            typeof r === "object" &&
+            typeof (r as { id?: unknown }).id === "number" &&
+            typeof (r as { name?: unknown }).name === "string"
+          )
+          .map((r) => ({
+            id: r.id,
+            name: r.name,
+            is_system_defined: Boolean(r.is_system_defined),
+          }))
+      );
+      setCuisineCatalogRows(
+        cat
+          .filter((r: unknown): r is { id: number; name: string; is_system_defined?: boolean } =>
+            r != null &&
+            typeof r === "object" &&
+            typeof (r as { id?: unknown }).id === "number" &&
+            typeof (r as { name?: unknown }).name === "string"
+          )
+          .map((r) => ({
+            id: r.id,
+            name: r.name,
+            is_system_defined: Boolean(r.is_system_defined),
+          }))
+      );
+    } catch {
+      // ignore
+    }
+  }, [storeId, store?.cuisine_types]);
+
+  const enterCuisineEdit = useCallback(async () => {
+    setCuisineEditMode(true);
+    setCuisineSearch("");
+    await refreshCuisineManagerData();
+  }, [refreshCuisineManagerData]);
+
+  const filteredCuisineCatalog = useMemo(() => {
+    const q = cuisineSearch.trim().toLowerCase();
+    if (!q) return cuisineCatalogRows;
+    return cuisineCatalogRows.filter((c) => c.name.toLowerCase().includes(q));
+  }, [cuisineCatalogRows, cuisineSearch]);
+
+  const linkPartnerCuisine = async (cuisineId: number) => {
+    if (!storeId || cuisineMutating) return;
+    setCuisineMutating(true);
+    try {
+      const res = await fetch("/api/merchant/store-cuisines/link", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storeId, cuisine_id: cuisineId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof j?.message === "string" ? j.message : typeof j?.error === "string" ? j.error : "Failed to add");
+      }
+      toast.success("Cuisine added to store");
+      await refreshCuisineManagerData();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Could not add cuisine");
+    } finally {
+      setCuisineMutating(false);
+    }
+  };
+
+  const unlinkPartnerCuisine = async (cuisineId: number) => {
+    if (!storeId || cuisineMutating) return;
+    setCuisineMutating(true);
+    try {
+      const res = await fetch("/api/merchant/store-cuisines/unlink", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storeId, cuisine_id: cuisineId }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof j?.message === "string" ? j.message : typeof j?.error === "string" ? j.error : "Failed to remove");
+      }
+      toast.success("Cuisine removed");
+      await refreshCuisineManagerData();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Could not remove cuisine");
+    } finally {
+      setCuisineMutating(false);
+    }
+  };
 
   /* ===== CONVERT R2 URLs TO SIGNED URLs (so banner/gallery load from onboarding or dashboard) ===== */
   const convertR2UrlToSigned = async (url: string | null | undefined): Promise<string | null> => {
@@ -687,7 +805,7 @@ export default function ProfilePage() {
     const formData = new FormData();
     formData.append("file", file);
     const ext = file.name.split(".").pop() || "jpg";
-    formData.append("parent", `${getMerchantAssetsPath(storeId, store?.parent_merchant_id ?? undefined)}/${parentFolder}`);
+    formData.append("parent", `${getMerchantAssetsPath(storeId, store?.parent_id != null ? String(store.parent_id) : undefined)}/${parentFolder}`);
     formData.append("filename", filename || `${parentFolder}_${Date.now()}.${ext}`);
     const res = await fetch("/api/upload/r2", { method: "POST", body: formData });
     if (!res.ok) {
@@ -1048,32 +1166,109 @@ export default function ProfilePage() {
                               label="Store Display Name"
                               value={store.store_display_name || '—'}
                             />
-                            {/* Cuisine types: show up to 8, rest behind a 'show more' toggle */}
+                            {/* Cuisine types: plain text by default; Edit → chips + search + master list */}
                             <div>
-                              <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center justify-between mb-1 gap-2">
                                 <span className="text-xs font-medium text-gray-600">Cuisine Types</span>
-                                <span className="text-xs text-red-500 bg-red-50 px-1.5 py-0.5 rounded">
-                                  Read Only
-                                </span>
-                              </div>
-                              {storeCuisines.length === 0 ? (
-                                <div className="text-sm text-gray-400">—</div>
-                              ) : (
-                                <div className="text-sm text-gray-900 font-medium">
-                                  <span>
-                                    {(showAllCuisines ? storeCuisines : storeCuisines.slice(0, 8)).join(', ')}
-                                  </span>
-                                  {storeCuisines.length > 8 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setShowAllCuisines((v) => !v)}
-                                      className="ml-1 text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline"
-                                    >
-                                      {showAllCuisines
-                                        ? 'Show less'
-                                        : `+${storeCuisines.length - 8} more`}
-                                    </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (cuisineEditMode) {
+                                      setCuisineEditMode(false);
+                                      setCuisineSearch("");
+                                    } else {
+                                      void enterCuisineEdit();
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-800 hover:bg-gray-50"
+                                >
+                                  {cuisineEditMode ? (
+                                    <>
+                                      <CheckCircle size={12} className="text-green-600" />
+                                      Done
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Edit2 size={12} className="text-blue-600" />
+                                      Edit
+                                    </>
                                   )}
+                                </button>
+                              </div>
+                              {!cuisineEditMode ? (
+                                storeCuisines.length === 0 ? (
+                                  <div className="text-sm text-gray-400">—</div>
+                                ) : (
+                                  <div className="text-sm text-gray-900 font-medium leading-relaxed">
+                                    <span>
+                                      {(showAllCuisines ? storeCuisines : storeCuisines.slice(0, 8)).join(", ")}
+                                    </span>
+                                    {storeCuisines.length > 8 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowAllCuisines((v) => !v)}
+                                        className="ml-1 text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline"
+                                      >
+                                        {showAllCuisines ? "Show less" : `+${storeCuisines.length - 8} more`}
+                                      </button>
+                                    )}
+                                  </div>
+                                )
+                              ) : (
+                                <div className="space-y-2 rounded-lg border border-blue-100 bg-white p-2">
+                                  {cuisineDetailRows.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      <span className="text-[10px] text-gray-500 w-full">Linked to store:</span>
+                                      {cuisineDetailRows.map((c) => (
+                                        <span
+                                          key={c.id}
+                                          className="inline-flex items-center gap-1 rounded-full bg-gray-100 border border-gray-200 px-2 py-0.5 text-xs text-gray-800"
+                                        >
+                                          {c.name}
+                                          <button
+                                            type="button"
+                                            disabled={cuisineMutating}
+                                            className="text-red-600 hover:text-red-800 font-bold"
+                                            onClick={() => void unlinkPartnerCuisine(c.id)}
+                                          >
+                                            ×
+                                          </button>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="text-[11px] text-amber-800">No cuisines linked. Search below to add from the master list.</p>
+                                  )}
+                                  <div>
+                                    <label className="block text-[10px] font-medium text-gray-600 mb-0.5">Search cuisine master</label>
+                                    <input
+                                      type="search"
+                                      value={cuisineSearch}
+                                      onChange={(e) => setCuisineSearch(e.target.value)}
+                                      placeholder="Type to filter…"
+                                      className="w-full px-2 py-1.5 border border-gray-300 rounded-lg text-xs"
+                                    />
+                                    {filteredCuisineCatalog.length > 0 ? (
+                                      <ul className="mt-1 max-h-32 overflow-y-auto rounded border border-gray-100 divide-y divide-gray-100 bg-gray-50/80">
+                                        {filteredCuisineCatalog.map((c) => (
+                                          <li key={c.id}>
+                                            <button
+                                              type="button"
+                                              disabled={cuisineMutating}
+                                              onClick={() => void linkPartnerCuisine(c.id)}
+                                              className="w-full text-left px-2 py-1.5 text-xs hover:bg-blue-50 disabled:opacity-50"
+                                            >
+                                              + {c.name}
+                                            </button>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : cuisineCatalogRows.length > 0 ? (
+                                      <p className="text-[10px] text-gray-500 mt-1">No matches — try another search.</p>
+                                    ) : cuisineDetailRows.length > 0 ? (
+                                      <p className="text-[10px] text-gray-500 mt-1">All master cuisines are linked.</p>
+                                    ) : null}
+                                  </div>
                                 </div>
                               )}
                             </div>

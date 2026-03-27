@@ -22,6 +22,7 @@ interface UserFormProps {
 
 export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = false, currentUserId = null }: UserFormProps) {
   const router = useRouter();
+  const normalizeRoleValue = (value: string) => value.replace(/\s+/g, " ").trim();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
@@ -48,6 +49,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
   const [availableRoles, setAvailableRoles] = useState<string[]>([]);
   const [selectedDashboards, setSelectedDashboards] = useState<string[]>([]);
   const [selectedAccessPoints, setSelectedAccessPoints] = useState<Record<string, string[]>>({});
+  const [canTogglePortal, setCanTogglePortal] = useState(false);
 
   useEffect(() => {
     if (mode === "edit" && userId) {
@@ -62,7 +64,10 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
         const response = await fetch("/api/users/roles");
         const result = await response.json();
         if (response.ok && result.success && Array.isArray(result.data)) {
-          setAvailableRoles(result.data);
+          const normalized = result.data
+            .map((role: string) => normalizeRoleValue(String(role ?? "")))
+            .filter((role: string) => role.length > 0);
+          setAvailableRoles(Array.from(new Set(normalized)));
         }
       } catch (err) {
         console.error("Error fetching roles:", err);
@@ -125,7 +130,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           email: user.email || "",
           mobile: user.mobile || "",
           alternate_mobile: user.alternateMobile || "",
-          primary_role: user.primaryRole || "",
+          primary_role: normalizeRoleValue(user.primaryRole || ""),
           subrole: user.subrole || "",
           subrole_other: user.subroleOther || "",
           role_display_name: user.roleDisplayName || "",
@@ -138,6 +143,7 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
           locality_code: user.localityCode || "",
           city: user.city || "",
         });
+        setCanTogglePortal(Boolean(user.canTogglePortal));
         
         // Fetch dashboard access if editing
         if (mode === "edit" && userId && isSuperAdmin) {
@@ -161,6 +167,16 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
                 // Include access point group (order_type is handled by the backend)
                 accessPoints[ap.dashboardType].push(ap.accessPointGroup);
               });
+
+              const userCanTogglePortal = Boolean(user.canTogglePortal);
+              if (userCanTogglePortal) {
+                if (!accessPoints.MERCHANT) {
+                  accessPoints.MERCHANT = [];
+                }
+                if (!accessPoints.MERCHANT.includes("MERCHANT_ADMIN_MERCHANT_ACCESS")) {
+                  accessPoints.MERCHANT.push("MERCHANT_ADMIN_MERCHANT_ACCESS");
+                }
+              }
               
               setSelectedDashboards(dashboards.map((d: any) => d.dashboardType));
               setSelectedAccessPoints(accessPoints);
@@ -211,8 +227,9 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
       };
 
       // Only include primary_role if it can be changed
-      if (mode === "create" || canChangeRole) {
-        payload.primary_role = formData.primary_role;
+      const normalizedPrimaryRole = normalizeRoleValue(formData.primary_role || "");
+      if ((mode === "create" || canChangeRole) && normalizedPrimaryRole) {
+        payload.primary_role = normalizedPrimaryRole;
       }
 
       if (formData.first_name) payload.first_name = formData.first_name;
@@ -242,6 +259,10 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
 
       // Include dashboard access and access points if super admin
       if (isSuperAdmin) {
+        const hasAdminMerchantAccess = (selectedAccessPoints.MERCHANT || []).includes(
+          "MERCHANT_ADMIN_MERCHANT_ACCESS"
+        );
+        (payload as any).can_toggle_portal = hasAdminMerchantAccess;
         (payload as any).dashboardAccess = selectedDashboards.map(dashboardType => ({
           dashboardType,
           accessLevel: "FULL_ACCESS", // Default to full access, can be customized later
@@ -467,9 +488,10 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
             required
             value={formData.primary_role}
             onChange={(e) => {
+              const nextRole = normalizeRoleValue(e.target.value);
               setFormData({ 
                 ...formData, 
-                primary_role: e.target.value,
+                primary_role: nextRole,
                 subrole: "", // Reset subrole when role changes
                 subrole_other: "", // Reset subrole_other when role changes
               });
@@ -482,7 +504,14 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white disabled:bg-gray-100 disabled:cursor-not-allowed"
           >
             <option value="">Select Role</option>
-            {(availableRoles.length > 0 ? availableRoles : []).map((role) => (
+            {Array.from(
+              new Set(
+                [
+                  ...(availableRoles.length > 0 ? availableRoles : []),
+                  normalizeRoleValue(formData.primary_role || ""),
+                ].filter((role) => role.length > 0)
+              )
+            ).map((role) => (
               <option key={role} value={role}>
                 {role.replace(/_/g, " ")}
               </option>
@@ -667,6 +696,8 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
                   [dashboardType]: accessPoints,
                 });
               }}
+              canTogglePortal={canTogglePortal}
+              onCanTogglePortalChange={setCanTogglePortal}
               disabled={loading}
             />
           </div>

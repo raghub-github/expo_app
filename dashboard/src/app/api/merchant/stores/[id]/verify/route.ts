@@ -1,7 +1,8 @@
 /**
  * POST /api/merchant/stores/[id]/verify
  * Approve or reject a store (MERCHANT dashboard: agents / area managers / super admin).
- * Sends the provided message to the store owner's registered email.
+ * Persists optional admin note as approval_reason (approve) or rejected_reason (reject).
+ * Sends partner-branded HTML email (SMTP preferred; Resend fallback).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -13,6 +14,11 @@ import { getMerchantStoreById, updateMerchantStore } from "@/lib/db/operations/m
 import { logAreaManagerActivity } from "@/lib/area-manager/activity";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { sendEmail } from "@/lib/email/send";
+import {
+  buildStoreApprovedEmail,
+  buildStoreRejectedEmail,
+} from "@/lib/email/store-verification-templates";
+import { resolveVerificationRecipientEmail } from "@/lib/email/resolve-verification-recipient";
 
 export const runtime = "nodejs";
 
@@ -71,7 +77,8 @@ export async function POST(
 
     const body = await request.json().catch(() => ({}));
     const action = body.action === "reject" ? "reject" : "approve";
-    const reason = typeof body.reason === "string" ? body.reason.trim() : undefined;
+    const reasonField = typeof body.reason === "string" ? body.reason.trim() : "";
+    const messageField = typeof body.message === "string" ? body.message.trim() : "";
 
     if (action === "approve" && !access.can_approve_store) {
       return NextResponse.json(
@@ -93,10 +100,15 @@ export async function POST(
         { status: 403 }
       );
     }
-    const messageToOwner =
-      typeof body.message === "string"
-        ? body.message.trim()
-        : reason ?? (action === "approve" ? "Your store has been approved by the GatiMitra team." : "Your store verification decision has been updated.");
+    if (action === "reject") {
+      const rejectionText = reasonField || messageField;
+      if (!rejectionText) {
+        return NextResponse.json(
+          { success: false, error: "Rejection reason is required", code: "REJECTION_REASON_REQUIRED" },
+          { status: 400 }
+        );
+      }
+    }
 
     let areaManagerId: number | null = null;
     let systemUserId: number | null = null;
@@ -148,12 +160,13 @@ export async function POST(
       approved_at: now,
     };
     if (action === "approve") {
-      updateData.approval_reason = reason ?? null;
+      // UI sends optional admin note in `message` (not `reason`); persist as approval_reason.
+      updateData.approval_reason = messageField || null;
       updateData.rejected_reason = null;
       updateData.onboarding_completed = true;
       updateData.onboarding_completed_at = now;
     } else {
-      updateData.rejected_reason = reason ?? null;
+      updateData.rejected_reason = reasonField || messageField || null;
       updateData.approval_reason = null;
     }
 
@@ -182,7 +195,11 @@ export async function POST(
       {
         resourceType: "store",
         resourceId: String(storeId),
-        actionDetails: { verification: action, reason },
+        actionDetails: {
+          verification: action,
+          message: messageField || null,
+          reason: action === "reject" ? reasonField || messageField || null : null,
+        },
         previousValues: {
           approval_status: currentStatus,
           approval_reason: store.approval_reason ?? null,
@@ -200,20 +217,58 @@ export async function POST(
       }
     );
 
-    const storeEmail =
-      typeof store.store_email === "string" && store.store_email.trim() !== ""
-        ? store.store_email.trim()
-        : null;
-    if (storeEmail && messageToOwner) {
-      const subject =
-        action === "approve"
-          ? `Store ${store.store_id} – Approved`
-          : `Store ${store.store_id} – Verification decision`;
-      await sendEmail({
-        to: storeEmail,
-        subject,
-        text: messageToOwner,
-      });
+    const recipientEmail = await resolveVerificationRecipientEmail(storeId, store.store_email);
+
+    const dashboardUrl =
+      process.env.PARTNER_DASHBOARD_URL?.trim() || "https://partner.gatimitra.com/auth/post-login";
+
+    type EmailNotify = {
+      attempted: boolean;
+      sent: boolean;
+      skippedReason?:
+        | "NO_RECIPIENT"
+        | "NOT_CONFIGURED"
+        | "SMTP_AUTH_FAILED"
+        | "SMTP_ERROR"
+        | "RESEND_ERROR";
+    };
+    const emailNotify: EmailNotify = { attempted: false, sent: false };
+
+    if (recipientEmail) {
+      emailNotify.attempted = true;
+      if (action === "approve") {
+        const { subject, text, html } = buildStoreApprovedEmail({
+          storeName: store.store_name,
+          storePublicId: store.store_id,
+          dashboardUrl,
+        });
+        const outcome = await sendEmail({ to: recipientEmail, subject, text, html });
+        emailNotify.sent = outcome.ok;
+        if (!outcome.ok) emailNotify.skippedReason = outcome.code;
+        if (outcome.ok) {
+          console.log("[verify] Approval email sent to", recipientEmail);
+        }
+      } else {
+        const rejectionBody = reasonField || messageField;
+        const { subject, text, html } = buildStoreRejectedEmail({
+          storeName: store.store_name,
+          storePublicId: store.store_id,
+          dashboardUrl,
+          reason: rejectionBody,
+        });
+        const outcome = await sendEmail({ to: recipientEmail, subject, text, html });
+        emailNotify.sent = outcome.ok;
+        if (!outcome.ok) emailNotify.skippedReason = outcome.code;
+        if (outcome.ok) {
+          console.log("[verify] Rejection email sent to", recipientEmail);
+        }
+      }
+    } else {
+      emailNotify.skippedReason = "NO_RECIPIENT";
+      console.warn(
+        "[verify] No store_email or agreement signer_email; skipping verification email",
+        { storeId: store.id }
+      );
     }
 
     return NextResponse.json({
@@ -223,6 +278,7 @@ export async function POST(
         store_id: updated.store_id,
         approval_status: updated.approval_status,
       },
+      email: emailNotify,
     });
   } catch (e) {
     console.error("[POST /api/merchant/stores/[id]/verify]", e);

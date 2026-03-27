@@ -3,6 +3,12 @@
  * Table may not exist (migration 0096); failures are logged and swallowed so APIs don't break.
  */
 
+/** Postgres.js `sql` from `getSql()`, or a minimal `{ unsafe }` wrapper. */
+export type TicketAuditSqlClient = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- driver `unsafe` uses postgres-specific types
+  unsafe: (query: string, values?: any) => any;
+};
+
 type AuditPayload = {
   ticket_id: number;
   activity_type: string;
@@ -15,6 +21,7 @@ type AuditPayload = {
   actor_role?: string | null;
   assigned_to_user_id?: number | null;
   assigned_to_name?: string | null;
+  unassigned_by_user_id?: number | null;
   assigned_by_type?: string | null;
   previous_assignee_user_id?: number | null;
   previous_assignee_name?: string | null;
@@ -33,12 +40,8 @@ type AuditPayload = {
   new_value?: unknown;
 };
 
-type SqlClient = {
-  unsafe: (query: string, values?: unknown[]) => Promise<unknown[]>;
-};
-
 export async function insertTicketActivityAudit(
-  sqlClient: SqlClient,
+  sqlClient: TicketAuditSqlClient,
   payload: AuditPayload
 ): Promise<void> {
   const cols = [
@@ -53,6 +56,7 @@ export async function insertTicketActivityAudit(
     "actor_role",
     "assigned_to_user_id",
     "assigned_to_name",
+    "unassigned_by_user_id",
     "assigned_by_type",
     "previous_assignee_user_id",
     "previous_assignee_name",

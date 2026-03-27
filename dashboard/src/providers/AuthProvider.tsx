@@ -2,7 +2,6 @@
 
 import React, { createContext, useCallback, useContext, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-
 interface SessionUser {
   id: string;
   email: string;
@@ -29,6 +28,7 @@ interface PermissionsData {
   exists: boolean;
   systemUserId: number | null;
   isSuperAdmin: boolean;
+  canTogglePortal?: boolean;
   roles?: string[];
   permissions?: string[];
   message?: string;
@@ -40,7 +40,6 @@ export interface SystemUserSummary {
   fullName: string;
   email: string;
 }
-
 interface AuthContextValue {
   /** True once bootstrap/auth state has been resolved and queries may run */
   authReady: boolean;
@@ -126,7 +125,7 @@ export function AuthProvider({
       isLoading,
       isAuthenticated,
       isError,
-      error: error instanceof Error ? error : null,
+      error,
       logout,
       refetch,
     }),

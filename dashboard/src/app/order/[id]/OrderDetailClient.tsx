@@ -8,7 +8,7 @@ import MerchantDetails from "./MerchantDetails";
 import PaymentDetails from "./PaymentDetails";
 import RiderDetails from "./RiderDetails";
 import RiderRouteMap from "./RiderRouteMap";
-import { useUserEmail } from "@/hooks/queries/useAuthQuery";
+import { useAuthOptional } from "@/providers/AuthProvider";
 import { ChevronDown, History, X } from "lucide-react";
 
 /** Status options for "Update order status" modal (value = DB enum) */
@@ -228,7 +228,8 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
-  const loggedInEmail = useUserEmail();
+  const auth = useAuthOptional();
+  const loggedInEmail = auth?.user?.email ?? null;
 
   useEffect(() => {
     onLoadingChange?.(loading);

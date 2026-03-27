@@ -115,11 +115,10 @@ export async function GET(
           country: store.country ?? null,
           latitude: store.latitude ?? null,
           longitude: store.longitude ?? null,
-          logo_url: store.logo_url ?? null,
-          banner_url: store.banner_url ?? null,
+          logo_url: null,          banner_url: store.banner_url ?? null,
           gallery_images: store.gallery_images ?? null,
           cuisine_types: store.cuisine_types ?? null,
-          food_categories: store.food_categories ?? null,
+          food_categories: null,
           avg_preparation_time_minutes: store.avg_preparation_time_minutes ?? null,
           min_order_amount: store.min_order_amount ?? null,
           delivery_radius_km: store.delivery_radius_km ?? null,
@@ -173,7 +172,7 @@ export async function GET(
 const PATCH_STRING_KEYS = [
   "store_name", "store_display_name", "store_description", "store_email",
   "full_address", "landmark", "city", "state", "postal_code", "country", "store_type",
-  "logo_url", "banner_url",
+  "banner_url",
 ] as const;
 const PATCH_NUMBER_KEYS = [
   "latitude", "longitude", "avg_preparation_time_minutes", "min_order_amount", "delivery_radius_km",
@@ -263,11 +262,6 @@ export async function PATCH(
         const arr = Array.isArray(v) ? v : (typeof v === "string" ? v.split(/[\s,]+/) : []);
         data.cuisine_types = arr.map((x: unknown) => String(x)).filter(Boolean);
       }
-      if (body.food_categories !== undefined) {
-        const v = body.food_categories;
-        const arr = Array.isArray(v) ? v : (typeof v === "string" ? v.split(/[\s,]+/) : []);
-        data.food_categories = arr.map((x: unknown) => String(x)).filter(Boolean);
-      }
       if (body.gallery_images !== undefined) {
         const v = body.gallery_images;
         data.gallery_images = Array.isArray(v) ? v.map((x: unknown) => String(x)).filter(Boolean) : undefined;
@@ -292,8 +286,8 @@ export async function PATCH(
     const section = "profile";
     try {
       for (const key of Object.keys(data)) {
-        const oldVal = (access.store as Record<string, unknown>)[key];
-        const newVal = (updated as Record<string, unknown>)[key];
+        const oldVal = (access.store as unknown as Record<string, unknown>)[key];
+        const newVal = (updated as unknown as Record<string, unknown>)[key];
         await logFieldChange(
           storeId,
           agentId,

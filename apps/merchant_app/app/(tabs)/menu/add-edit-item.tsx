@@ -42,21 +42,30 @@ import {
   menuKeys,
 } from "@/hooks/useMenuQueries";
 import { useQueryClient } from "@tanstack/react-query";
+import { normalizeMenuItemImageUri } from "@/lib/normalizeMenuItemImage";
 import {
   uploadItemImage,
   fetchStoreProfile,
+  fetchCategoryNameSuggestions,
+  fetchCategoryUiConfig,
+  fetchMenuCuisinesAndCatalog,
+  linkMenuCuisineFromCatalog,
   deleteMenuItem,
   createUpdateRequest,
   fetchItemModifierGroups,
   fetchModifierGroups,
   linkModifierGroupToItem,
   unlinkModifierGroupFromItem,
+  ensureStoreCuisinesLinkedForItemNames,
   type MenuItemPayload,
   type MenuCategory,
+  type CategoryUiConfig,
+  type MenuCuisineOption,
   type LinkedModifierGroup,
   type ModifierGroupRow,
 } from "@/services/menuApi";
 import { resolveImageUrl } from "@/services/outletApi";
+import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -103,7 +112,7 @@ const ITEM_IMAGE_MIN_WIDTH = 400;
 const ITEM_IMAGE_MIN_HEIGHT = 400;
 const ITEM_IMAGE_MAX_WIDTH = 2000;
 const ITEM_IMAGE_MAX_HEIGHT = 2000;
-const ITEM_IMAGE_MAX_FILE_SIZE_MB = 5;
+const ITEM_IMAGE_MAX_FILE_SIZE_MB = 10;
 const ITEM_IMAGE_MAX_FILE_SIZE_BYTES = ITEM_IMAGE_MAX_FILE_SIZE_MB * 1024 * 1024;
 
 function parseOptionalNonNegativeNumber(raw: string): number | null {
@@ -288,6 +297,9 @@ export default function AddEditItemScreen() {
   const [sellingPrice, setSellingPrice] = useState("");
   const [prepTimeMinutes, setPrepTimeMinutes] = useState("");
   const [packagingCharges, setPackagingCharges] = useState("");
+  /** When false, item has no packaging fee (null); when true, amount is editable (prefilled from store default on enable). */
+  const [packagingEnabled, setPackagingEnabled] = useState(false);
+  const [storeDefaultPackaging, setStoreDefaultPackaging] = useState<number | null>(null);
   const [servesLabel, setServesLabel] = useState("");
   const [itemSizeValue, setItemSizeValue] = useState("");
   const [itemSizeUnit, setItemSizeUnit] = useState("piece");
@@ -316,6 +328,9 @@ export default function AddEditItemScreen() {
   const [images, setImages] = useState<Array<{ id: number; image_url: string; is_primary: boolean; display_order: number }>>([]);
   const [pendingImage, setPendingImage] = useState<{ uri: string; type?: string; name?: string } | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [imagePickError, setImagePickError] = useState<string | null>(null);
+  const [imageFixUri, setImageFixUri] = useState<string | null>(null);
+  const [normalizingImage, setNormalizingImage] = useState(false);
 
   // store cuisines (from onboarding) for optional cuisine picker
   const [storeCuisines, setStoreCuisines] = useState<string[]>([]);
@@ -337,6 +352,16 @@ export default function AddEditItemScreen() {
   const [categoryFormName, setCategoryFormName] = useState("");
   const [categoryFormDescription, setCategoryFormDescription] = useState("");
   const [categoryFormOrder, setCategoryFormOrder] = useState("");
+  const [categoryFormCuisineId, setCategoryFormCuisineId] = useState<number | null>(null);
+  const [categoryUiConfig, setCategoryUiConfig] = useState<CategoryUiConfig | null>(null);
+  const [menuCuisineOptions, setMenuCuisineOptions] = useState<MenuCuisineOption[]>([]);
+  const [menuCuisineCatalog, setMenuCuisineCatalog] = useState<MenuCuisineOption[]>([]);
+  const [showAddCatalogCuisineModal, setShowAddCatalogCuisineModal] = useState(false);
+  const [linkingCatalogCuisine, setLinkingCatalogCuisine] = useState(false);
+  const [showCategoryCuisineModal, setShowCategoryCuisineModal] = useState(false);
+  const [categoryPeerSuggestions, setCategoryPeerSuggestions] = useState<string[]>([]);
+  const [categoryPeerSuggestionsLoading, setCategoryPeerSuggestionsLoading] = useState(false);
+  const debouncedCategoryFormName = useDebouncedValue(categoryFormName, 280);
 
   // modals
   const [showServesModal, setShowServesModal] = useState(false);
@@ -369,6 +394,82 @@ export default function AddEditItemScreen() {
     return map;
   }, [categories]);
 
+  const categoryNamesTakenOnStore = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of categories) {
+      if (categoryFormMode === "edit" && categoryFormEditingId != null && c.id === categoryFormEditingId) continue;
+      const n = c.category_name.toLowerCase().trim();
+      if (n) set.add(n);
+    }
+    return set;
+  }, [categories, categoryFormMode, categoryFormEditingId]);
+
+  const showCategoryCuisineField = useMemo(() => {
+    if (!categoryUiConfig?.cuisine_field.visible) return false;
+    if (categoryFormMode === "add_sub") return false;
+    if (categoryFormParentId != null) return false;
+    return categoryFormMode === "add" || categoryFormMode === "edit";
+  }, [categoryUiConfig, categoryFormMode, categoryFormParentId]);
+
+  useEffect(() => {
+    if (!storeId || !token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cfg, cuisinesData] = await Promise.all([
+          fetchCategoryUiConfig(storeId, token),
+          fetchMenuCuisinesAndCatalog(storeId, token).catch(() => ({ cuisines: [], catalog: [] })),
+        ]);
+        if (!cancelled) {
+          setCategoryUiConfig(cfg);
+          setMenuCuisineOptions(cuisinesData.cuisines);
+          setMenuCuisineCatalog(cuisinesData.catalog);
+        }
+      } catch {
+        if (!cancelled) {
+          setCategoryUiConfig(null);
+          setMenuCuisineOptions([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, token]);
+
+  useEffect(() => {
+    if (!showCategoryFormModal || !storeId || !token) {
+      setCategoryPeerSuggestions([]);
+      setCategoryPeerSuggestionsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setCategoryPeerSuggestionsLoading(true);
+      try {
+        const list = await fetchCategoryNameSuggestions(storeId, token, {
+          q: debouncedCategoryFormName,
+          limit: 14,
+          editingCategoryId: categoryFormEditingId,
+        });
+        if (!cancelled) setCategoryPeerSuggestions(list);
+      } catch {
+        if (!cancelled) setCategoryPeerSuggestions([]);
+      } finally {
+        if (!cancelled) setCategoryPeerSuggestionsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    showCategoryFormModal,
+    storeId,
+    token,
+    debouncedCategoryFormName,
+    categoryFormEditingId,
+  ]);
+
   const toggleCategorySheetExpanded = useCallback((parentId: number) => {
     setCategorySheetExpandedIds((prev) => {
       const next = new Set(prev);
@@ -385,6 +486,7 @@ export default function AddEditItemScreen() {
     setCategoryFormName("");
     setCategoryFormDescription("");
     setCategoryFormOrder(String(categoryParentList.length));
+    setCategoryFormCuisineId(null);
     setShowCategoryFormModal(true);
   }, [categoryParentList.length]);
 
@@ -396,6 +498,7 @@ export default function AddEditItemScreen() {
     setCategoryFormDescription("");
     const siblings = categoryChildrenByParentId.get(parent.id) ?? [];
     setCategoryFormOrder(String(siblings.length));
+    setCategoryFormCuisineId(null);
     setShowCategoryFormModal(true);
   }, [categoryChildrenByParentId]);
 
@@ -406,11 +509,20 @@ export default function AddEditItemScreen() {
     setCategoryFormName(c.category_name);
     setCategoryFormDescription(c.category_description ?? "");
     setCategoryFormOrder(String(c.display_order ?? 0));
+    setCategoryFormCuisineId(c.cuisine_id != null ? Number(c.cuisine_id) : null);
     setShowCategoryFormModal(true);
   }, []);
 
   const handleSaveCategoryForm = useCallback(async () => {
     if (!storeId || !token || !categoryFormName.trim()) return;
+    if (
+      showCategoryCuisineField &&
+      categoryUiConfig?.cuisine_field.required_for_root &&
+      (categoryFormCuisineId == null || Number.isNaN(Number(categoryFormCuisineId)))
+    ) {
+      Alert.alert("Cuisine required", "Select a cuisine for this category (from your store’s cuisine list).");
+      return;
+    }
     const order = parseInt(categoryFormOrder, 10) || 0;
     try {
       if (categoryFormMode === "edit" && categoryFormEditingId != null) {
@@ -421,6 +533,9 @@ export default function AddEditItemScreen() {
             category_description: categoryFormDescription.trim() || null,
             display_order: order,
             parent_category_id: categoryFormParentId ?? undefined,
+            ...(showCategoryCuisineField && categoryFormCuisineId != null && !Number.isNaN(Number(categoryFormCuisineId))
+              ? { cuisine_id: Number(categoryFormCuisineId) }
+              : {}),
           },
         });
       } else {
@@ -429,6 +544,9 @@ export default function AddEditItemScreen() {
           category_description: categoryFormDescription.trim() || null,
           display_order: order,
           parent_category_id: categoryFormMode === "add_sub" && categoryFormParentId != null ? categoryFormParentId : undefined,
+          ...(showCategoryCuisineField && categoryFormCuisineId != null && !Number.isNaN(Number(categoryFormCuisineId))
+            ? { cuisine_id: Number(categoryFormCuisineId) }
+            : {}),
         });
       }
       await refetchCategories();
@@ -439,6 +557,7 @@ export default function AddEditItemScreen() {
   }, [
     storeId, token, categoryFormName, categoryFormDescription, categoryFormOrder,
     categoryFormMode, categoryFormEditingId, categoryFormParentId,
+    showCategoryCuisineField, categoryUiConfig, categoryFormCuisineId,
     createCategoryMutation, updateCategoryMutation, refetchCategories,
   ]);
 
@@ -478,12 +597,14 @@ export default function AddEditItemScreen() {
       .then((r) => {
         if (cancelled) return;
         if (r.cuisine_types?.length) setStoreCuisines(r.cuisine_types);
-        // Set default prep time and packaging from store only when not editing (add mode)
+        const storePack = r.packaging_charge_amount ?? null;
+        setStoreDefaultPackaging(storePack != null && storePack > 0 ? storePack : null);
+        // Prep default when adding; packaging is opt-in (toggle) with prefill from store when enabled.
         if (!isEdit) {
           const storePrep = r.avg_preparation_time_minutes ?? 15;
           setPrepTimeMinutes(String(storePrep));
-          const storePack = r.packaging_charge_amount ?? 0;
-          setPackagingCharges(storePack > 0 ? String(storePack) : "");
+          setPackagingEnabled(false);
+          setPackagingCharges("");
         }
       })
       .catch(() => {
@@ -552,6 +673,8 @@ export default function AddEditItemScreen() {
 
   const openImagePicker = useCallback(async () => {
     if (!token || !storeId) return;
+    setImagePickError(null);
+    setImageFixUri(null);
     try {
       const ImagePicker = await import("expo-image-picker");
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync?.();
@@ -567,71 +690,107 @@ export default function AddEditItemScreen() {
       });
       if (result.canceled || !result.assets?.[0]?.uri) return;
       const asset = result.assets[0];
+      const uri = asset.uri;
       const w = (asset as any).width ?? 0;
       const h = (asset as any).height ?? 0;
-      if (w < ITEM_IMAGE_MIN_WIDTH || h < ITEM_IMAGE_MIN_HEIGHT) {
-        Alert.alert(
-          "Image too small",
-          `Image must be at least ${ITEM_IMAGE_MIN_WIDTH}×${ITEM_IMAGE_MIN_HEIGHT} px. Current: ${w}×${h}. Please choose a larger image.`
+      const fileSize = (asset as any).fileSize as number | undefined;
+
+      const fail = (message: string, offerFix: boolean) => {
+        setImagePickError(message);
+        setImageFixUri(offerFix ? uri : null);
+      };
+
+      if (typeof fileSize === "number" && fileSize > ITEM_IMAGE_MAX_FILE_SIZE_BYTES) {
+        fail(`Image must be at most ${ITEM_IMAGE_MAX_FILE_SIZE_MB} MB. Try Auto-fix to compress.`, true);
+        return;
+      }
+      if (w > 0 && h > 0 && w !== h) {
+        fail(`Image must be square (1:1). Got ${w}×${h} px. Tap Auto-fix to crop the center square.`, true);
+        return;
+      }
+      if (w > 0 && h > 0 && (w < ITEM_IMAGE_MIN_WIDTH || h < ITEM_IMAGE_MIN_HEIGHT)) {
+        fail(
+          `Image must be at least ${ITEM_IMAGE_MIN_WIDTH}×${ITEM_IMAGE_MIN_HEIGHT} px. Got ${w}×${h}. Tap Auto-fix to upscale the crop if possible, or pick a larger photo.`,
+          true
         );
         return;
       }
-      if (w > ITEM_IMAGE_MAX_WIDTH || h > ITEM_IMAGE_MAX_HEIGHT) {
-        Alert.alert(
-          "Image too large",
-          `Image must be at most ${ITEM_IMAGE_MAX_WIDTH}×${ITEM_IMAGE_MAX_HEIGHT} px. Current: ${w}×${h}. Please choose a smaller image or crop.`
+      if (w > 0 && h > 0 && (w > ITEM_IMAGE_MAX_WIDTH || h > ITEM_IMAGE_MAX_HEIGHT)) {
+        fail(
+          `Image must be at most ${ITEM_IMAGE_MAX_WIDTH}×${ITEM_IMAGE_MAX_HEIGHT} px. Got ${w}×${h}. Tap Auto-fix to resize.`,
+          true
         );
         return;
       }
+      if (w === 0 || h === 0) {
+        fail(
+          "Could not read image size from your device. Tap Auto-fix to process the file, or try another photo.",
+          true
+        );
+        return;
+      }
+
+      setImagePickError(null);
+      setImageFixUri(null);
       const fileInfo = {
-        uri: asset.uri,
+        uri,
         type: (asset as any).mimeType ?? "image/jpeg",
         name: (asset as any).fileName ?? "image.jpg",
       };
-      // Add mode: store for upload after item is created
       if (!isEdit || itemId == null || Number.isNaN(itemId)) {
         setPendingImage(fileInfo);
         return;
       }
-      // Edit mode: upload immediately (backend replaces previous primary image in R2)
       setUploadingImage(true);
       const uploaded = await uploadItemImage(storeId, itemId, token, fileInfo);
-      setImages([
-        { id: uploaded.id, image_url: uploaded.image_url, is_primary: true, display_order: 0 },
-      ]);
+      setImages([{ id: uploaded.id, image_url: uploaded.image_url, is_primary: true, display_order: 0 }]);
     } catch (e) {
-      Alert.alert("Upload failed", e instanceof Error ? e.message : "Could not upload image.");
+      Alert.alert("Image error", e instanceof Error ? e.message : "Could not use this image.");
     } finally {
       setUploadingImage(false);
     }
   }, [token, storeId, itemId, isEdit]);
 
+  const handleAutoFixImage = useCallback(async () => {
+    if (!imageFixUri || !token || !storeId) return;
+    setNormalizingImage(true);
+    setImagePickError(null);
+    try {
+      const res = await normalizeMenuItemImageUri(imageFixUri);
+      if (!res.ok) {
+        setImagePickError(res.error);
+        Alert.alert("Could not fix image", res.error);
+        return;
+      }
+      const fileInfo = { uri: res.file.uri, type: res.file.type, name: res.file.name };
+      setImageFixUri(null);
+      if (!isEdit || itemId == null || Number.isNaN(itemId)) {
+        setPendingImage(fileInfo);
+        return;
+      }
+      setUploadingImage(true);
+      try {
+        const uploaded = await uploadItemImage(storeId, itemId, token, fileInfo);
+        setImages([{ id: uploaded.id, image_url: uploaded.image_url, is_primary: true, display_order: 0 }]);
+      } finally {
+        setUploadingImage(false);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not process image.";
+      setImagePickError(msg);
+      Alert.alert("Auto-fix failed", msg);
+    } finally {
+      setNormalizingImage(false);
+    }
+  }, [imageFixUri, token, storeId, isEdit, itemId]);
+
   const removePendingImage = useCallback(() => {
     setPendingImage(null);
+    setImagePickError(null);
+    setImageFixUri(null);
   }, []);
 
   // ── save ──
-
-  const handleSaveConfirm = useCallback(() => {
-    if (!token || !storeId || !itemName.trim()) return;
-    const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
-    const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
-    if (baseParsed == null && sellingParsed == null) {
-      Alert.alert("Invalid price", "Enter a valid non-negative base or selling price.");
-      return;
-    }
-    Alert.alert(
-      isEdit ? "Save changes?" : "Create item?",
-      isEdit ? "Your updates will be saved." : "This menu item will be added to your catalog.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Save", onPress: () => handleSave() },
-      ]
-    );
-  }, [
-    token, storeId, itemName, basePrice, sellingPrice, isEdit,
-    handleSave,
-  ]);
 
   const handleSave = useCallback(async () => {
     if (!token || !storeId || !itemName.trim()) return;
@@ -656,7 +815,15 @@ export default function AddEditItemScreen() {
         : null;
 
     const prepMins = parseOptionalNonNegativeNumber(prepTimeMinutes);
-    const packagingNum = parseOptionalNonNegativeNumber(packagingCharges);
+    let packagingOut: number | null = null;
+    if (packagingEnabled) {
+      const packagingNum = parseOptionalNonNegativeNumber(packagingCharges);
+      if (packagingNum === null) {
+        Alert.alert("Packaging", "Enter a valid packaging amount (₹), or turn off packaging for this item.");
+        return;
+      }
+      packagingOut = packagingNum;
+    }
 
     const payload: MenuItemPayload = {
       item_name: itemName.trim(),
@@ -667,7 +834,7 @@ export default function AddEditItemScreen() {
       base_price: base,
       selling_price: selling,
       preparation_time_minutes: prepMins ?? null,
-      packaging_charges: packagingNum ?? null,
+      packaging_charges: packagingOut,
       serves_label: servesLabel || null,
       serves: servesNumber,
       item_size_value: parseOptionalNonNegativeNumber(itemSizeValue || ""),
@@ -708,6 +875,11 @@ export default function AddEditItemScreen() {
       } else {
         const created = await createMutation.mutateAsync(payload);
         const newId = created.id;
+        try {
+          await ensureStoreCuisinesLinkedForItemNames(storeId, token, cuisineType);
+        } catch {
+          /* non-fatal */
+        }
         if (pendingImage && token && storeId) {
           let rolledBack = false;
           try {
@@ -752,11 +924,32 @@ export default function AddEditItemScreen() {
     }
   }, [
     storeId, isEdit, itemId, itemName, description, foodType, categoryId, cuisineType, pendingImage, token,
-    basePrice, sellingPrice, prepTimeMinutes, packagingCharges, servesLabel, itemSizeValue, itemSizeUnit,
+    basePrice, sellingPrice, prepTimeMinutes, packagingEnabled, packagingCharges, servesLabel, itemSizeValue, itemSizeUnit,
     availableForDelivery, weightPerServing, weightUnit, caloriesKcal,
     proteinVal, proteinUnit, carbsVal, carbsUnit, fatVal, fatUnit,
     fibreVal, fibreUnit, selectedAllergens, selectedTags, router,
     createMutation, updateMutation, itemData?.approval_status,
+  ]);
+
+  const handleSaveConfirm = useCallback(() => {
+    if (!token || !storeId || !itemName.trim()) return;
+    const baseParsed = parseOptionalNonNegativeNumber(basePrice || "");
+    const sellingParsed = parseOptionalNonNegativeNumber(sellingPrice || "");
+    if (baseParsed == null && sellingParsed == null) {
+      Alert.alert("Invalid price", "Enter a valid non-negative base or selling price.");
+      return;
+    }
+    Alert.alert(
+      isEdit ? "Save changes?" : "Create item?",
+      isEdit ? "Your updates will be saved." : "This menu item will be added to your catalog.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Save", onPress: () => handleSave() },
+      ]
+    );
+  }, [
+    token, storeId, itemName, basePrice, sellingPrice, isEdit,
+    handleSave,
   ]);
 
   // ── category helpers ──
@@ -828,7 +1021,7 @@ export default function AddEditItemScreen() {
           style={styles.imageUploadArea}
           onPress={openImagePicker}
           activeOpacity={0.8}
-          disabled={uploadingImage}
+          disabled={uploadingImage || normalizingImage}
         >
           {images.length > 0 ? (
             <Image
@@ -843,7 +1036,7 @@ export default function AddEditItemScreen() {
                 <Ionicons name="close-circle" size={28} color={GatiMitraMerchant.error} />
               </TouchableOpacity>
             </View>
-          ) : uploadingImage ? (
+          ) : uploadingImage || normalizingImage ? (
             <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
           ) : (
             <>
@@ -856,6 +1049,23 @@ export default function AddEditItemScreen() {
         <Text style={styles.imageRequirements}>
           Ratio 1:1 · {ITEM_IMAGE_MIN_WIDTH}–{ITEM_IMAGE_MAX_WIDTH} px (width & height) · max {ITEM_IMAGE_MAX_FILE_SIZE_MB} MB
         </Text>
+        {imagePickError ? (
+          <View style={styles.imageErrorWrap}>
+            <Text style={styles.imageErrorText}>{imagePickError}</Text>
+            {imageFixUri ? (
+              <TouchableOpacity
+                style={styles.autoFixBtn}
+                onPress={() => void handleAutoFixImage()}
+                disabled={normalizingImage || uploadingImage}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.autoFixBtnText}>
+                  {normalizingImage ? "Fixing…" : "Auto-fix (square crop and resize)"}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
 
         {images.length > 1 && (
           <ScrollView horizontal style={styles.thumbnailScroll} showsHorizontalScrollIndicator={false}>
@@ -1051,10 +1261,10 @@ export default function AddEditItemScreen() {
               </View>
               <ScrollView style={styles.categorySheetList} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 <TouchableOpacity
-                  style={[modalStyles.optionRow, categoryId === null && styles.categorySheetRowActive]}
+                  style={[styles.categorySheetNoneRow, categoryId === null && styles.categorySheetRowActive]}
                   onPress={() => { setCategoryId(null); setShowCategorySheet(false); }}
                 >
-                  <Text style={[modalStyles.optionText, categoryId === null && styles.categorySheetRowActiveText]}>None</Text>
+                  <Text style={[styles.categorySheetNoneText, categoryId === null && styles.categorySheetRowActiveText]}>No category</Text>
                   {categoryId === null && <Ionicons name="checkmark-circle" size={22} color={GatiMitraMerchant.primary} />}
                 </TouchableOpacity>
                 {categoryParentList
@@ -1065,53 +1275,89 @@ export default function AddEditItemScreen() {
                       ? children.filter((ch) => ch.category_name.toLowerCase().includes(categorySearch.trim().toLowerCase()))
                       : children;
                     const isExpanded = categorySheetExpandedIds.has(parent.id);
+                    const forceExpandForSearch =
+                      Boolean(categorySearch.trim()) && filteredChildren.length > 0;
+                    const showSubcategories = forceExpandForSearch || isExpanded;
                     const showParent = !categorySearch.trim() || parent.category_name.toLowerCase().includes(categorySearch.trim().toLowerCase());
                     if (!showParent && filteredChildren.length === 0) return null;
+                    const hasChildren = children.length > 0;
                     return (
-                      <View key={parent.id} style={styles.categorySheetParentBlock}>
-                        <View style={[modalStyles.optionRow, styles.categorySheetParentRow]}>
-                          <TouchableOpacity onPress={() => toggleCategorySheetExpanded(parent.id)} style={styles.categorySheetChevron}>
-                            <Ionicons name={isExpanded ? "chevron-down" : "chevron-forward"} size={20} color={GatiMitraMerchant.textSecondary} />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={[styles.categorySheetNameWrap, categoryId === parent.id && styles.categorySheetRowActive]}
-                            onPress={() => { setCategoryId(parent.id); setShowCategorySheet(false); }}
-                          >
-                            <Text style={[modalStyles.optionText, categoryId === parent.id && styles.categorySheetRowActiveText]} numberOfLines={1}>{parent.category_name}</Text>
-                            {categoryId === parent.id && <Ionicons name="checkmark-circle" size={22} color={GatiMitraMerchant.primary} />}
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => openEditCategoryFromItem(parent)} style={styles.categorySheetActionBtn} hitSlop={8}>
-                            <Ionicons name="pencil" size={18} color={GatiMitraMerchant.primary} />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => handleDeleteCategoryFromItem(parent)} style={styles.categorySheetActionBtn} hitSlop={8}>
-                            <Ionicons name="trash-outline" size={18} color={GatiMitraMerchant.error} />
-                          </TouchableOpacity>
-                        </View>
-                        {isExpanded && (
-                          <>
-                            {filteredChildren.map((child) => (
-                              <View key={child.id} style={[modalStyles.optionRow, styles.categorySheetChildRow]}>
-                                <TouchableOpacity
-                                  style={[styles.categorySheetNameWrap, categoryId === child.id && styles.categorySheetRowActive]}
-                                  onPress={() => { setCategoryId(child.id); setShowCategorySheet(false); }}
-                                >
-                                  <Text style={[modalStyles.optionText, categoryId === child.id && styles.categorySheetRowActiveText]} numberOfLines={1}>{child.category_name}</Text>
-                                  {categoryId === child.id && <Ionicons name="checkmark-circle" size={22} color={GatiMitraMerchant.primary} />}
-                                </TouchableOpacity>
-                                <TouchableOpacity onPress={() => openEditCategoryFromItem(child)} style={styles.categorySheetActionBtn} hitSlop={8}>
-                                  <Ionicons name="pencil" size={16} color={GatiMitraMerchant.primary} />
-                                </TouchableOpacity>
-                                <TouchableOpacity onPress={() => handleDeleteCategoryFromItem(child)} style={styles.categorySheetActionBtn} hitSlop={8}>
-                                  <Ionicons name="trash-outline" size={16} color={GatiMitraMerchant.error} />
-                                </TouchableOpacity>
-                              </View>
-                            ))}
-                            <TouchableOpacity style={styles.categorySheetAddSubRow} onPress={() => openAddSubcategoryFromItem(parent)}>
-                              <Ionicons name="add-circle-outline" size={18} color={GatiMitraMerchant.primary} />
-                              <Text style={styles.categorySheetAddSubText}>Add subcategory under {parent.category_name}</Text>
+                      <View key={parent.id} style={styles.categorySheetGroupCard}>
+                        <View style={styles.categorySheetGroupAccent} />
+                        <View style={styles.categorySheetGroupInner}>
+                          <View style={styles.categorySheetGroupHeader}>
+                            <Text style={styles.categorySheetGroupLabel}>{hasChildren ? "Category" : "Main category"}</Text>
+                            <View style={styles.categorySheetGroupHeaderActions}>
+                              <TouchableOpacity onPress={() => openEditCategoryFromItem(parent)} style={styles.categorySheetActionBtn} hitSlop={8}>
+                                <Ionicons name="pencil" size={17} color={GatiMitraMerchant.primary} />
+                              </TouchableOpacity>
+                              <TouchableOpacity onPress={() => handleDeleteCategoryFromItem(parent)} style={styles.categorySheetActionBtn} hitSlop={8}>
+                                <Ionicons name="trash-outline" size={17} color={GatiMitraMerchant.error} />
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                          <View style={[styles.categorySheetParentRow, categoryId === parent.id && styles.categorySheetRowActive]}>
+                            {hasChildren ? (
+                              <TouchableOpacity onPress={() => toggleCategorySheetExpanded(parent.id)} style={styles.categorySheetChevron}>
+                                <Ionicons
+                                  name={showSubcategories ? "chevron-down" : "chevron-forward"}
+                                  size={20}
+                                  color={GatiMitraMerchant.textSecondary}
+                                />
+                              </TouchableOpacity>
+                            ) : (
+                              <View style={styles.categorySheetChevronSpacer} />
+                            )}
+                            <TouchableOpacity
+                              style={styles.categorySheetNameWrap}
+                              onPress={() => { setCategoryId(parent.id); setShowCategorySheet(false); }}
+                            >
+                              <Text style={[styles.categorySheetParentTitle, categoryId === parent.id && styles.categorySheetRowActiveText]} numberOfLines={2}>
+                                {parent.category_name}
+                              </Text>
+                              {categoryId === parent.id && <Ionicons name="checkmark-circle" size={22} color={GatiMitraMerchant.primary} />}
                             </TouchableOpacity>
-                          </>
-                        )}
+                          </View>
+                          {hasChildren && showSubcategories && (
+                            <View style={styles.categorySheetSubWrap}>
+                              <Text style={styles.categorySheetSubHeading}>Subcategories — tap to assign</Text>
+                              {filteredChildren.map((child) => (
+                                <View
+                                  key={child.id}
+                                  style={[styles.categorySheetChildCard, categoryId === child.id && styles.categorySheetChildCardActive]}
+                                >
+                                  <TouchableOpacity
+                                    style={styles.categorySheetChildPress}
+                                    onPress={() => { setCategoryId(child.id); setShowCategorySheet(false); }}
+                                  >
+                                    <Text style={styles.categorySheetChildTitle} numberOfLines={2}>
+                                      <Text style={[styles.categorySheetChildBold, categoryId === child.id && styles.categorySheetRowActiveText]}>
+                                        {parent.category_name}
+                                      </Text>
+                                      <Text style={[styles.categorySheetChildParen, categoryId === child.id && styles.categorySheetRowActiveText]}>
+                                        {" "}
+                                        ({child.category_name})
+                                      </Text>
+                                    </Text>
+                                    {categoryId === child.id && <Ionicons name="checkmark-circle" size={22} color={GatiMitraMerchant.primary} />}
+                                  </TouchableOpacity>
+                                  <View style={styles.categorySheetChildActions}>
+                                    <TouchableOpacity onPress={() => openEditCategoryFromItem(child)} style={styles.categorySheetActionBtn} hitSlop={8}>
+                                      <Ionicons name="pencil" size={16} color={GatiMitraMerchant.primary} />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity onPress={() => handleDeleteCategoryFromItem(child)} style={styles.categorySheetActionBtn} hitSlop={8}>
+                                      <Ionicons name="trash-outline" size={16} color={GatiMitraMerchant.error} />
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              ))}
+                              <TouchableOpacity style={styles.categorySheetAddSubRow} onPress={() => openAddSubcategoryFromItem(parent)}>
+                                <Ionicons name="add-circle-outline" size={18} color={GatiMitraMerchant.primary} />
+                                <Text style={styles.categorySheetAddSubText}>Add subcategory under {parent.category_name}</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
                       </View>
                     );
                   })}
@@ -1141,7 +1387,14 @@ export default function AddEditItemScreen() {
                 </TouchableOpacity>
               </View>
               <ScrollView style={{ paddingHorizontal: H_PADDING }} showsVerticalScrollIndicator={false}>
-                {categoryFormMode !== "add_sub" ? (
+                {categoryFormMode === "add_sub" ? (
+                  <Text style={styles.fieldLabel}>
+                    Subcategory under{" "}
+                    <Text style={{ fontWeight: "700", color: GatiMitraMerchant.textPrimary }}>
+                      {categoryParentList.find((p) => p.id === categoryFormParentId)?.category_name ?? ""}
+                    </Text>
+                  </Text>
+                ) : categoryFormMode === "edit" ? (
                   <>
                     <Text style={styles.fieldLabel}>Parent (optional)</Text>
                     <View style={styles.categoryFormParentChips}>
@@ -1162,17 +1415,115 @@ export default function AddEditItemScreen() {
                       ))}
                     </View>
                   </>
-                ) : (
-                  <Text style={styles.fieldLabel}>Under: {categoryParentList.find((p) => p.id === categoryFormParentId)?.category_name ?? ""}</Text>
-                )}
+                ) : null}
+                {categoryFormMode === "add_sub" && categoryUiConfig?.cuisine_field.visible ? (() => {
+                  const p = categoryParentList.find((x) => x.id === categoryFormParentId);
+                  const ok = p != null && p.cuisine_id != null && !Number.isNaN(Number(p.cuisine_id));
+                  return !ok ? (
+                    <Text style={styles.categoryDuplicateWarning}>
+                      This parent has no cuisine set. Edit the parent category to assign a cuisine first.
+                    </Text>
+                  ) : null;
+                })() : null}
+                {showCategoryCuisineField ? (
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={styles.fieldLabel}>
+                      Cuisine{categoryUiConfig?.cuisine_field.required_for_root ? " *" : ""}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.textInput}
+                      onPress={() => {
+                        if (menuCuisineOptions.length === 0) {
+                          Alert.alert(
+                            "No cuisines",
+                            "Link cuisines from the cuisine master for this store (category form → add from master list), or set them in store profile/onboarding."
+                          );
+                          return;
+                        }
+                        setShowCategoryCuisineModal(true);
+                      }}
+                    >
+                      <Text
+                        style={{
+                          paddingVertical: 4,
+                          color:
+                            categoryFormCuisineId != null
+                              ? GatiMitraMerchant.textPrimary
+                              : GatiMitraMerchant.textTertiary,
+                        }}
+                      >
+                        {categoryFormCuisineId != null
+                          ? menuCuisineOptions.find((x) => x.id === categoryFormCuisineId)?.name ??
+                            `ID ${categoryFormCuisineId}`
+                          : "Select cuisine…"}
+                      </Text>
+                    </TouchableOpacity>
+                    {categoryUiConfig?.allow_create_custom_cuisine ? (
+                      <View style={{ marginTop: 10 }}>
+                        {menuCuisineCatalog.length > 0 ? (
+                          <TouchableOpacity
+                            style={[
+                              styles.textInput,
+                              { justifyContent: "center", marginBottom: 0 },
+                              linkingCatalogCuisine && styles.saveBtnDisabled,
+                            ]}
+                            disabled={linkingCatalogCuisine || !storeId || !token}
+                            onPress={() => setShowAddCatalogCuisineModal(true)}
+                          >
+                            <Text style={{ color: GatiMitraMerchant.primary, fontWeight: "600" }}>
+                              Add cuisine from master list…
+                            </Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <Text style={styles.categoryDuplicateWarning}>
+                            All cuisines from the master list are already on this store, or the catalog is empty. Contact
+                            support to add entries in cuisine_master.
+                          </Text>
+                        )}
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
                 <Text style={styles.fieldLabel}>Category name *</Text>
                 <TextInput
                   style={styles.textInput}
-                  placeholder="e.g. Biriyani"
+                  placeholder="Start typing — names from other stores"
                   placeholderTextColor={GatiMitraMerchant.textTertiary}
                   value={categoryFormName}
                   onChangeText={setCategoryFormName}
+                  maxLength={30}
                 />
+                {categoryPeerSuggestionsLoading ? (
+                  <ActivityIndicator style={{ marginVertical: 10 }} color={GatiMitraMerchant.primary} />
+                ) : (
+                  <ScrollView style={styles.categorySuggestionScroll} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {categoryPeerSuggestions
+                      .filter((s) => !categoryNamesTakenOnStore.has(String(s).toLowerCase().trim()))
+                      .map((s) => (
+                        <TouchableOpacity
+                          key={s}
+                          style={styles.categorySuggestionRow}
+                          onPress={() => setCategoryFormName(s.slice(0, 30))}
+                        >
+                          <Text style={styles.categorySuggestionRowText}>{s}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    {!categoryPeerSuggestionsLoading &&
+                      categoryPeerSuggestions.filter(
+                        (s) => !categoryNamesTakenOnStore.has(String(s).toLowerCase().trim())
+                      ).length === 0 && (
+                        <Text style={styles.categorySuggestionHint}>
+                          {categoryFormName.trim()
+                            ? "No matches from other stores — use your own name."
+                            : "Popular category names from other stores."}
+                        </Text>
+                      )}
+                  </ScrollView>
+                )}
+                {categoryFormName.trim().length > 0 &&
+                  categoryNamesTakenOnStore.has(categoryFormName.trim().toLowerCase()) && (
+                    <Text style={styles.categoryDuplicateWarning}>This store already uses this category name.</Text>
+                  )}
                 <Text style={styles.fieldLabel}>Description (optional)</Text>
                 <TextInput
                   style={[styles.textInput, { minHeight: 60 }]}
@@ -1211,6 +1562,66 @@ export default function AddEditItemScreen() {
             </View>
           </View>
         </Modal>
+
+        <BottomModal
+          visible={showCategoryCuisineModal}
+          title="Category cuisine"
+          onClose={() => setShowCategoryCuisineModal(false)}
+        >
+          {menuCuisineOptions.map((c) => (
+            <TouchableOpacity
+              key={c.id}
+              style={modalStyles.optionRow}
+              onPress={() => {
+                setCategoryFormCuisineId(c.id);
+                setShowCategoryCuisineModal(false);
+              }}
+            >
+              <Text style={modalStyles.optionText}>
+                {c.name}
+                {!c.is_system_defined ? " (custom)" : ""}
+              </Text>
+              {categoryFormCuisineId === c.id ? (
+                <Ionicons name="checkmark" size={20} color={GatiMitraMerchant.primary} />
+              ) : null}
+            </TouchableOpacity>
+          ))}
+        </BottomModal>
+
+        <BottomModal
+          visible={showAddCatalogCuisineModal}
+          title="Add from cuisine master"
+          onClose={() => {
+            if (!linkingCatalogCuisine) setShowAddCatalogCuisineModal(false);
+          }}
+        >
+          {menuCuisineCatalog.map((c) => (
+            <TouchableOpacity
+              key={c.id}
+              style={modalStyles.optionRow}
+              disabled={linkingCatalogCuisine}
+              onPress={async () => {
+                if (!storeId || !token) return;
+                setLinkingCatalogCuisine(true);
+                try {
+                  await linkMenuCuisineFromCatalog(storeId, token, c.id);
+                  const { cuisines, catalog } = await fetchMenuCuisinesAndCatalog(storeId, token);
+                  setMenuCuisineOptions(cuisines);
+                  setMenuCuisineCatalog(catalog);
+                  setCategoryFormCuisineId(c.id);
+                  setShowAddCatalogCuisineModal(false);
+                } catch (e) {
+                  Alert.alert("Error", e instanceof Error ? e.message : "Could not add cuisine");
+                } finally {
+                  setLinkingCatalogCuisine(false);
+                }
+              }}
+            >
+              <Text style={modalStyles.optionText}>{c.name}</Text>
+              {linkingCatalogCuisine ? <ActivityIndicator size="small" color={GatiMitraMerchant.primary} /> : null}
+            </TouchableOpacity>
+          ))}
+        </BottomModal>
 
         {/* ── Cuisine (optional; from store onboarding) ── */}
         <View style={styles.section}>
@@ -1364,14 +1775,14 @@ export default function AddEditItemScreen() {
           </View>
         </View>
 
-        {/* ── Prep time & packaging (default from store, editable per item) ── */}
+        {/* ── Prep / ETA & packaging (store defaults; editable per item only) ── */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeading}>Prep time & packaging</Text>
+          <Text style={styles.sectionHeading}>Prep / ETA & packaging</Text>
           <Text style={styles.sectionSubheading}>
-            Defaults are from your store settings. Change here only if this item is different.
+            Prep defaults from your store; override here if this item is different. Packaging is optional per item and does not change your store default.
           </Text>
           <View style={styles.fieldWrap}>
-            <Text style={styles.fieldLabel}>Prep time (minutes)</Text>
+            <Text style={styles.fieldLabel}>Prep / ETA (minutes)</Text>
             <TextInput
               style={styles.textInput}
               value={prepTimeMinutes}
@@ -1381,17 +1792,48 @@ export default function AddEditItemScreen() {
               keyboardType="number-pad"
             />
           </View>
-          <View style={styles.fieldWrap}>
-            <Text style={styles.fieldLabel}>Packaging charges (₹)</Text>
-            <TextInput
-              style={styles.textInput}
-              value={packagingCharges}
-              onChangeText={setPackagingCharges}
-              placeholder="e.g. 0"
-              placeholderTextColor={GatiMitraMerchant.textTertiary}
-              keyboardType="decimal-pad"
+          <View style={styles.packagingToggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.fieldLabel}>Packaging charge for this item</Text>
+              {storeDefaultPackaging != null ? (
+                <Text style={styles.packagingHintText}>
+                  Store default ₹{storeDefaultPackaging.toFixed(0)} — we prefill when you enable, you can change for this item only.
+                </Text>
+              ) : (
+                <Text style={styles.packagingHintText}>Enable to add a packaging fee for this item.</Text>
+              )}
+            </View>
+            <Switch
+              value={packagingEnabled}
+              onValueChange={(v) => {
+                setPackagingEnabled(v);
+                if (v) {
+                  setPackagingCharges((prev) => {
+                    if (prev.trim()) return prev;
+                    if (storeDefaultPackaging != null && storeDefaultPackaging > 0) return String(storeDefaultPackaging);
+                    return prev;
+                  });
+                } else {
+                  setPackagingCharges("");
+                }
+              }}
+              trackColor={{ false: GatiMitraMerchant.border, true: GatiMitraMerchant.primary }}
+              thumbColor="#fff"
             />
           </View>
+          {packagingEnabled ? (
+            <View style={styles.fieldWrap}>
+              <Text style={styles.fieldLabel}>Amount (₹)</Text>
+              <TextInput
+                style={styles.textInput}
+                value={packagingCharges}
+                onChangeText={setPackagingCharges}
+                placeholder={storeDefaultPackaging != null ? `e.g. ${storeDefaultPackaging.toFixed(0)}` : "e.g. 10"}
+                placeholderTextColor={GatiMitraMerchant.textTertiary}
+                keyboardType="decimal-pad"
+              />
+            </View>
+          ) : null}
         </View>
 
         <SectionDivider />
@@ -1715,6 +2157,25 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginHorizontal: H_PADDING,
   },
+  imageErrorWrap: {
+    marginTop: 8,
+    marginHorizontal: H_PADDING,
+    padding: 12,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: "rgba(239, 68, 68, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.35)",
+  },
+  imageErrorText: { fontSize: 13, color: GatiMitraMerchant.error, lineHeight: 18 },
+  autoFixBtn: {
+    marginTop: 10,
+    alignSelf: "flex-start",
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: BUTTON_RADIUS,
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  autoFixBtnText: { fontSize: 13, fontWeight: "700", color: "#fff" },
   manageOptionsCard: {
     marginTop: 12,
     marginHorizontal: H_PADDING,
@@ -1769,24 +2230,149 @@ const styles = StyleSheet.create({
     borderColor: GatiMitraMerchant.border,
   },
   categorySheetSearchInput: { flex: 1, fontSize: 15, color: GatiMitraMerchant.textPrimary, paddingVertical: 0 },
-  categorySheetList: { maxHeight: 320, paddingHorizontal: H_PADDING },
-  categorySheetRowActive: { backgroundColor: GatiMitraMerchant.primaryLight + "40" },
+  categorySheetList: { maxHeight: 340, paddingHorizontal: H_PADDING, paddingBottom: 8 },
+  categorySheetNoneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.cardBg,
+  },
+  categorySheetNoneText: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  categorySheetRowActive: {
+    backgroundColor: GatiMitraMerchant.primaryLight + "55",
+    borderColor: GatiMitraMerchant.primary,
+    borderWidth: 1,
+  },
   categorySheetRowActiveText: { fontWeight: "700", color: GatiMitraMerchant.primary },
-  categorySheetParentBlock: { marginBottom: 4 },
-  categorySheetParentRow: { paddingVertical: 12 },
-  categorySheetChevron: { padding: 4, marginRight: 4 },
-  categorySheetNameWrap: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  categorySheetGroupCard: {
+    position: "relative",
+    marginBottom: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    overflow: "hidden",
+  },
+  categorySheetGroupAccent: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    backgroundColor: GatiMitraMerchant.primary,
+    borderTopLeftRadius: 16,
+    borderBottomLeftRadius: 16,
+  },
+  categorySheetGroupInner: { paddingLeft: 12, paddingRight: 10, paddingVertical: 10 },
+  categorySheetGroupHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+    paddingLeft: 4,
+  },
+  categorySheetGroupLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+    color: GatiMitraMerchant.textTertiary,
+    textTransform: "uppercase",
+  },
+  categorySheetGroupHeaderActions: { flexDirection: "row", alignItems: "center", gap: 2 },
+  categorySheetParentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  categorySheetChevron: { padding: 4, marginRight: 2 },
+  categorySheetChevronSpacer: { width: 28 },
+  categorySheetNameWrap: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  categorySheetParentTitle: { flex: 1, fontSize: 16, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
   categorySheetActionBtn: { padding: 4 },
-  categorySheetChildRow: { paddingVertical: 10, paddingLeft: 32, backgroundColor: GatiMitraMerchant.surfaceSubtle },
-  categorySheetAddSubRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 10, paddingLeft: 32 },
+  categorySheetSubWrap: {
+    marginTop: 6,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: GatiMitraMerchant.border,
+    paddingLeft: 4,
+    paddingRight: 0,
+  },
+  categorySheetSubHeading: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textTertiary,
+    marginBottom: 8,
+    paddingLeft: 2,
+  },
+  categorySheetChildCard: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    marginBottom: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    overflow: "hidden",
+  },
+  categorySheetChildCardActive: {
+    borderColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.primaryLight + "35",
+  },
+  categorySheetChildPress: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  categorySheetChildTitle: { flex: 1, fontSize: 14, lineHeight: 20, color: GatiMitraMerchant.textPrimary },
+  categorySheetChildBold: { fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  categorySheetChildParen: { fontWeight: "600", color: GatiMitraMerchant.textSecondary },
+  categorySheetChildActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingRight: 6,
+    borderLeftWidth: 1,
+    borderLeftColor: GatiMitraMerchant.border,
+    backgroundColor: GatiMitraMerchant.cardBg,
+  },
+  categorySheetAddSubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    marginTop: 4,
+  },
   categorySheetAddSubText: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.primary },
-  categorySheetAddMainBtn: { flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: H_PADDING, marginTop: 12, paddingVertical: 12 },
+  categorySheetAddMainBtn: { flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: H_PADDING, marginTop: 4, paddingVertical: 12 },
   categorySheetAddMainText: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.primary },
   categoryFormParentChips: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
   categoryFormChip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: GatiMitraMerchant.surfaceSubtle, borderWidth: 1, borderColor: GatiMitraMerchant.border },
   categoryFormChipActive: { backgroundColor: GatiMitraMerchant.primaryLight, borderColor: GatiMitraMerchant.primary },
   categoryFormChipText: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   categoryFormChipTextActive: { color: GatiMitraMerchant.navy },
+  categorySuggestionScroll: { maxHeight: 140, marginBottom: 8 },
+  categorySuggestionRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  categorySuggestionRowText: { fontSize: 14, color: GatiMitraMerchant.textPrimary },
+  categorySuggestionHint: { fontSize: 12, color: GatiMitraMerchant.textTertiary, paddingVertical: 8 },
+  categoryDuplicateWarning: { fontSize: 12, color: GatiMitraMerchant.error, marginBottom: 8 },
   categoryFormButtons: { flexDirection: "row", gap: 12, marginTop: 20, marginBottom: 24 },
   categoryFormCancelBtn: { flex: 1, paddingVertical: 14, borderRadius: BUTTON_RADIUS, alignItems: "center", backgroundColor: GatiMitraMerchant.surfaceSubtle, borderWidth: 1, borderColor: GatiMitraMerchant.border },
   categoryFormSaveBtn: { flex: 1, paddingVertical: 14, borderRadius: BUTTON_RADIUS, alignItems: "center", backgroundColor: GatiMitraMerchant.primary },
@@ -1807,6 +2393,15 @@ const styles = StyleSheet.create({
   section: { paddingHorizontal: H_PADDING, marginBottom: 8 },
   sectionHeading: { fontSize: 16, fontWeight: "700", color: GatiMitraMerchant.textPrimary, marginBottom: 6 },
   sectionSubheading: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginBottom: 12 },
+  packagingToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: H_PADDING,
+    marginBottom: 12,
+    paddingVertical: 4,
+  },
+  packagingHintText: { fontSize: 11, color: GatiMitraMerchant.textTertiary, marginTop: 4, lineHeight: 15 },
 
   fieldWrap: { paddingHorizontal: H_PADDING, marginBottom: 12 },
   fieldLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textSecondary, marginBottom: 8 },

@@ -7,9 +7,10 @@ import "../global.css";
 import { useFonts } from "expo-font";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useCallback } from "react";
-import { View, ActivityIndicator, Text, Image, LogBox, Alert } from "react-native";
+import { useEffect, useCallback, useRef } from "react";
+import { View, ActivityIndicator, Text, Image, LogBox, Alert, AppState, type AppStateStatus } from "react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
@@ -22,6 +23,7 @@ import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { setOnSessionRevoked } from "@/services/api";
+import { profileService } from "@/services/profile.service";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import "@/lib/i18n";
@@ -54,12 +56,20 @@ export default function RootLayout() {
   const hydrateAuth = useAuthStore((s) => s.hydrate);
   const hydrateCart = useCartStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
+  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
 
   useEffect(() => {
     hydrateAuth();
     hydrateCart();
     hydrateLanguage();
   }, [hydrateAuth, hydrateCart, hydrateLanguage]);
+
+  // Zomato/Swiggy-style: on every cold app start, always fetch fresh GPS location.
+  // No persistence/restore of previously selected locations.
+  useEffect(() => {
+    if (!hydrated || !cartHydrated) return;
+    void requestPermissionAndFetch({ forceDevice: true });
+  }, [hydrated, cartHydrated, requestPermissionAndFetch]);
 
   const onLayoutRootView = useCallback(() => {
     if (fontsLoaded && hydrated && cartHydrated) {
@@ -89,6 +99,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <StoreStatusRealtimeSync />
         <SessionRevokedHandler />
+        <LocationPermissionRealtimeSync />
         <LanguageSync />
         <RootStack onLayoutRootView={onLayoutRootView} />
         <GlobalFloatingCart />
@@ -140,6 +151,49 @@ function SessionRevokedHandler() {
     });
     return () => setOnSessionRevoked(null);
   }, [router]);
+  return null;
+}
+
+function LocationPermissionRealtimeSync() {
+  const session = useAuthStore((s) => s.session);
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const lastSyncedRef = useRef<boolean | null>(null);
+
+  const syncLocationPermission = useCallback(async () => {
+    if (!hydrated || !session) return;
+    try {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      const granted = status === "granted";
+      if (lastSyncedRef.current === granted) return;
+
+      const currentCoords = useLocationStore.getState().coords;
+      await profileService.updateProfile({
+        location_permission: granted,
+        ...(granted && currentCoords
+          ? { latitude: currentCoords.latitude, longitude: currentCoords.longitude }
+          : {}),
+      });
+
+      lastSyncedRef.current = granted;
+    } catch {
+      // Keep silent; we'll retry on next app active tick.
+    }
+  }, [hydrated, session]);
+
+  useEffect(() => {
+    void syncLocationPermission();
+    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if (nextState === "active") void syncLocationPermission();
+    });
+    const interval = setInterval(() => {
+      if (AppState.currentState === "active") void syncLocationPermission();
+    }, 15000);
+    return () => {
+      sub.remove();
+      clearInterval(interval);
+    };
+  }, [syncLocationPermission]);
+
   return null;
 }
 

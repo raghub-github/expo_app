@@ -4,7 +4,7 @@
  * Renders only from API data; no dummy/fallback values.
  */
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { setStoreBookmark } from "@/services/merchant.service";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const { width } = Dimensions.get("window");
@@ -70,6 +71,16 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
+  const heroUri = useMemo(
+    () => toAbsoluteImageUrl(merchant.displayImage ?? merchant.banner_url ?? null),
+    [merchant.displayImage, merchant.banner_url]
+  );
+
+  useEffect(() => {
+    setImageLoaded(false);
+    setImageError(false);
+  }, [heroUri]);
+
   const toggleBookmark = useCallback(
     async (e: any) => {
       e?.stopPropagation?.();
@@ -87,7 +98,7 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
     [merchant.id, saved, savedLoading]
   );
 
-  const hasImage = Boolean(merchant.displayImage && !imageError);
+  const hasImage = Boolean(heroUri && !imageError);
   const distanceStr = formatDistance(merchant.distanceKm);
   const hasRating = merchant.avgRating != null && merchant.avgRating >= 0;
   const ratingLabel =
@@ -115,7 +126,7 @@ export function RestaurantCard({ merchant, initialSaved = false }: RestaurantCar
         {hasImage ? (
           <>
             <Image
-              source={{ uri: merchant.displayImage! }}
+              source={{ uri: heroUri! }}
               style={[styles.heroImage, !imageLoaded && styles.heroImageOpaque]}
               resizeMode="cover"
               onLoad={() => setImageLoaded(true)}

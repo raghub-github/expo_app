@@ -9,9 +9,31 @@ const CACHE_TTL_MS = 50 * 60 * 1000; // 50 minutes (renew before 7-day expiry)
 type CacheEntry = { signedUrl: string; expiresAt: number };
 const urlCache = new Map<string, CacheEntry>();
 
+/** Raw S3/R2 object key (e.g. docs/merchants/.../file.jpg) — not a URL path. */
 function isKey(value: string): boolean {
   const s = value?.trim() || '';
-  return s.length > 0 && !s.startsWith('http://') && !s.startsWith('https://') && !s.startsWith('data:') && !s.startsWith('blob:');
+  if (!s) return false;
+  if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:') || s.startsWith('blob:')) return false;
+  // App routes like /api/attachments/proxy?key=... were wrongly treated as keys and broke renew-signed-url.
+  if (s.startsWith('/')) return false;
+  return true;
+}
+
+/** Same-origin attachment proxy — use as img src directly (cookies/session); no signed-URL round trip. */
+function isAttachmentProxyUrl(value: string): boolean {
+  const t = value.trim();
+  if (t.startsWith('/api/attachments/proxy') || t.startsWith('/v1/attachments/proxy')) return true;
+  // Stored without leading slash — invalid as img src unless normalized
+  if (/^api\/attachments\/proxy/i.test(t)) return true;
+  if (t.startsWith('http://') || t.startsWith('https://')) {
+    try {
+      const u = new URL(t);
+      return u.pathname.includes('/attachments/proxy');
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 async function fetchSignedUrlByKey(fileKey: string): Promise<string> {
@@ -83,8 +105,20 @@ export function R2Image({
   const loadingRef = useRef(false);
   const mountedRef = useRef(true);
 
-  const effectiveKey = fileKeyProp ?? (src && isKey(src) ? src : null);
-  const isLegacyUrl = src && !isKey(src) && (src.startsWith('http://') || src.startsWith('https://'));
+  const effectiveKey =
+    fileKeyProp && String(fileKeyProp).trim()
+      ? String(fileKeyProp).trim()
+      : src && isKey(src)
+        ? src.trim()
+        : null;
+  const isLegacyUrl =
+    !!src &&
+    !isAttachmentProxyUrl(src) &&
+    !isKey(src) &&
+    (src.startsWith('http://') || src.startsWith('https://'));
+  /** Local preview from FileReader / URL.createObjectURL — use as-is (no R2 fetch). */
+  const isInlineSrc =
+    !!src && (src.startsWith('data:') || src.startsWith('blob:'));
 
   const loadUrl = useCallback(async (key: string) => {
     if (loadingRef.current) return;
@@ -108,12 +142,26 @@ export function R2Image({
       setRetryCount(0);
       return;
     }
+    const trimmedSrc = src.trim();
+    if (isAttachmentProxyUrl(trimmedSrc)) {
+      const forImg =
+        /^api\/attachments\/proxy/i.test(trimmedSrc) &&
+        !trimmedSrc.startsWith('http://') &&
+        !trimmedSrc.startsWith('https://') &&
+        !trimmedSrc.startsWith('/')
+          ? `/${trimmedSrc}`
+          : trimmedSrc;
+      setDisplayUrl(forImg);
+      setError(false);
+      setRetryCount(0);
+      return;
+    }
     if (effectiveKey) {
       setDisplayUrl(null);
       setError(false);
       setRetryCount(0);
       loadUrl(effectiveKey);
-    } else if (isLegacyUrl) {
+    } else if (isLegacyUrl || isInlineSrc) {
       setDisplayUrl(src);
       setError(false);
       setRetryCount(0);
@@ -124,7 +172,7 @@ export function R2Image({
     return () => {
       mountedRef.current = false;
     };
-  }, [src, effectiveKey, isLegacyUrl, loadUrl]);
+  }, [src, effectiveKey, isLegacyUrl, isInlineSrc, loadUrl]);
 
   const handleError = useCallback(() => {
     if (retryCount >= MAX_RETRIES) {
@@ -134,7 +182,7 @@ export function R2Image({
     }
     const doRenew = effectiveKey
       ? fetchSignedUrlByKey(effectiveKey)
-      : isLegacyUrl && src
+      : isLegacyUrl && src && !isAttachmentProxyUrl(src)
         ? fetchSignedUrlByUrl(src)
         : null;
     if (!doRenew) {

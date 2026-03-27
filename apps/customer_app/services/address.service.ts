@@ -29,9 +29,13 @@ export type ActiveLocation = {
   lockedForOrder: boolean;
 };
 
+const ADDRESSES_REQ_TIMEOUT_MS = 18_000;
+
 export const addressService = {
   async getAddresses(): Promise<Address[]> {
-    const { data } = await api.get<Address[]>("/v1/me/addresses");
+    const { data } = await api.get<Address[]>("/v1/me/addresses", {
+      timeout: ADDRESSES_REQ_TIMEOUT_MS,
+    });
     return Array.isArray(data) ? data : [];
   },
 
@@ -80,7 +84,9 @@ export const addressService = {
   },
 
   async getActiveLocation(): Promise<ActiveLocation> {
-    const { data } = await api.get<ActiveLocation>("/v1/me/active-location");
+    const { data } = await api.get<ActiveLocation>("/v1/me/active-location", {
+      timeout: ADDRESSES_REQ_TIMEOUT_MS,
+    });
     return data ?? { latitude: null, longitude: null, address: null, lockedForOrder: false };
   },
 

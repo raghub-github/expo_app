@@ -1,5 +1,21 @@
 import { ulid } from "ulid";
 import { getSql } from "../../db/client.js";
+import {
+  buildFoodLegacyAttributesFromItemRow,
+  loadItemAttributes,
+  loadVariantAttributes,
+  resolveStoreType,
+  upsertVariantAttributes,
+  upsertItemAttributes,
+  type UnifiedAttributes,
+} from "./unifiedCatalogAttributes.js";
+import {
+  validateCategoryCreate,
+  validateCategoryUpdate,
+  getMerchantParentIdForStore,
+  createCustomCuisine as insertCustomCuisineRow,
+  syncLegacyCuisineTypesToStoreLinks,
+} from "./categoryRules.js";
 
 export type StoreAccess = { storeIdNum: number; storeIdStr: string };
 
@@ -45,6 +61,7 @@ export async function listCategories(storeIdNum: number): Promise<
     category_description: string | null;
     category_image_url: string | null;
     parent_category_id: number | null;
+    cuisine_id: number | null;
     display_order: number;
     is_active: boolean;
     created_at: Date;
@@ -54,15 +71,305 @@ export async function listCategories(storeIdNum: number): Promise<
   const sql = getSql();
   const rows = await sql`
     SELECT id, category_name, category_description, category_image_url,
-           parent_category_id, display_order, is_active, created_at, updated_at
+           parent_category_id, cuisine_id, display_order, is_active, created_at, updated_at
     FROM merchant_menu_categories
     WHERE store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
     ORDER BY parent_category_id NULLS FIRST, display_order ASC, id ASC
   `;
   return rows as any;
 }
 
-/** Create category. */
+/** Map row to JSON-safe numbers (bigint-safe). */
+function mapCuisineRow(r: { id: unknown; name: unknown; is_system_defined: unknown }): {
+  id: number;
+  name: string;
+  is_system_defined: boolean;
+} {
+  const rawId = r.id;
+  const id =
+    typeof rawId === "bigint" ? Number(rawId) : typeof rawId === "number" ? rawId : Number(rawId);
+  return {
+    id: Number.isFinite(id) && id > 0 ? id : 0,
+    name: typeof r.name === "string" ? r.name : String(r.name ?? ""),
+    is_system_defined: Boolean(r.is_system_defined),
+  };
+}
+
+/** Cuisines linked to the store (merchant_store_cuisines + cuisine_master); display name prefers custom_name. */
+export async function listCuisinesForStore(storeIdNum: number): Promise<
+  Array<{ id: number; name: string; is_system_defined: boolean }>
+> {
+  await syncLegacyCuisineTypesToStoreLinks(storeIdNum);
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      cm.id,
+      COALESCE(NULLIF(trim(msc.custom_name), ''), cm.name) AS name,
+      cm.is_default AS is_system_defined
+    FROM merchant_store_cuisines msc
+    JOIN cuisine_master cm ON cm.id = msc.cuisine_id
+    WHERE msc.store_id = ${storeIdNum}
+      AND cm.is_active = TRUE
+    ORDER BY cm.is_default DESC, lower(trim(COALESCE(NULLIF(trim(msc.custom_name), ''), cm.name))) ASC
+  `;
+  const arr = Array.isArray(rows) ? rows : [];
+  return arr
+    .map((r) => mapCuisineRow(r as { id: unknown; name: unknown; is_system_defined: unknown }))
+    .filter((r) => r.id > 0 && r.name.trim().length > 0);
+}
+
+export async function createMerchantCuisine(storeIdNum: number, name: string): Promise<{ id: number }> {
+  const parentId = await getMerchantParentIdForStore(storeIdNum);
+  if (parentId == null) throw new Error("store_parent_not_found");
+  return insertCustomCuisineRow({ parentId, storeIdNum, name });
+}
+
+/**
+ * Category name type-ahead: distinct names used by *other* stores, ranked by popularity.
+ * Excludes names already used by this store (case-insensitive) so duplicates are not suggested.
+ * When editing, pass editingCategoryId so the current row's name is not treated as a "taken" slot.
+ */
+function tokenizeCategoryQuery(q: string): string[] {
+  return q
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .map((t) => t.replace(/[^a-z0-9]+/gi, ""))
+    .filter((t) => t.length > 0)
+    .slice(0, 6);
+}
+
+function wordsFromCategoryName(nameLower: string): string[] {
+  return nameLower
+    .split(/[^a-z0-9]+/i)
+    .map((w) => w.toLowerCase())
+    .filter(Boolean);
+}
+
+/** Every query token matches the start of some word in the category name (e.g. "bi ri" → Biryani). */
+function allTokensMatchWordStarts(nameLower: string, tokens: string[]): boolean {
+  if (tokens.length === 0) return false;
+  const words = wordsFromCategoryName(nameLower);
+  return tokens.every((tok) => words.some((w) => w.startsWith(tok)));
+}
+
+export async function suggestPeerCategoryNames(
+  storeIdNum: number,
+  opts: { q: string; limit?: number; editingCategoryId?: number | null }
+): Promise<string[]> {
+  const sql = getSql();
+  const limit = Math.min(Math.max(opts.limit ?? 12, 1), 30);
+  const qRaw = (opts.q ?? "").trim().slice(0, 30);
+  const qNorm = qRaw.toLowerCase();
+  const tokens = tokenizeCategoryQuery(qRaw);
+  const editingId = opts.editingCategoryId ?? null;
+
+  const forbiddenRows =
+    editingId != null
+      ? await sql<{ n: string }[]>`
+          SELECT LOWER(TRIM(category_name)) AS n
+          FROM merchant_menu_categories
+          WHERE store_id = ${storeIdNum} AND id <> ${editingId}
+            AND COALESCE(is_deleted, FALSE) = FALSE
+        `
+      : await sql<{ n: string }[]>`
+          SELECT LOWER(TRIM(category_name)) AS n
+          FROM merchant_menu_categories
+          WHERE store_id = ${storeIdNum}
+            AND COALESCE(is_deleted, FALSE) = FALSE
+        `;
+  const forbidden = new Set(
+    forbiddenRows.map((r) => r.n).filter((x) => x != null && x !== "")
+  );
+
+  type Row = { name: string; store_count: number };
+  let rows: Row[];
+
+  if (tokens.length === 0) {
+    rows = await sql<Row[]>`
+      SELECT TRIM(category_name) AS name, COUNT(DISTINCT store_id)::int AS store_count
+      FROM merchant_menu_categories
+      WHERE store_id <> ${storeIdNum}
+        AND COALESCE(is_deleted, FALSE) = FALSE
+        AND LENGTH(TRIM(category_name)) BETWEEN 1 AND 30
+      GROUP BY TRIM(category_name)
+      ORDER BY COUNT(DISTINCT store_id) DESC, LENGTH(TRIM(category_name)) ASC, TRIM(category_name) ASC
+      LIMIT 250
+    `;
+  } else {
+    let tokenCond = sql`TRUE`;
+    for (const t of tokens) {
+      tokenCond = sql`${tokenCond} AND POSITION(${t} IN LOWER(TRIM(category_name))) > 0`;
+    }
+    rows = await sql<Row[]>`
+      SELECT TRIM(category_name) AS name, COUNT(DISTINCT store_id)::int AS store_count
+      FROM merchant_menu_categories
+      WHERE store_id <> ${storeIdNum}
+        AND COALESCE(is_deleted, FALSE) = FALSE
+        AND LENGTH(TRIM(category_name)) BETWEEN 1 AND 30
+        AND ${tokenCond}
+      GROUP BY TRIM(category_name)
+      ORDER BY COUNT(DISTINCT store_id) DESC, LENGTH(TRIM(category_name)) ASC, TRIM(category_name) ASC
+      LIMIT 200
+    `;
+  }
+
+  const filtered = rows.filter((r) => {
+    const ln = String(r.name).toLowerCase().trim();
+    return ln.length > 0 && !forbidden.has(ln);
+  });
+
+  const rank = (r: Row): [number, number, number, number, number, number, string] => {
+    const name = String(r.name);
+    const ln = name.toLowerCase().trim();
+    const hasQ = tokens.length > 0 || qNorm.length > 0;
+
+    const exact = hasQ && ln === qNorm ? 0 : 1;
+    const prefix = hasQ && ln.startsWith(qNorm) ? 0 : 1;
+    const wordStarts =
+      tokens.length > 0 ? (allTokensMatchWordStarts(ln, tokens) ? 0 : 1) : 1;
+    const contains =
+      tokens.length > 0
+        ? tokens.every((t) => ln.includes(t))
+          ? 0
+          : 1
+        : 0;
+
+    return [exact, prefix, wordStarts, contains, -r.store_count, name.length, name];
+  };
+
+  filtered.sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    for (let i = 0; i < ra.length; i++) {
+      if (ra[i] < rb[i]) return -1;
+      if (ra[i] > rb[i]) return 1;
+    }
+    return 0;
+  });
+
+  return filtered.slice(0, limit).map((r) => r.name);
+}
+
+/**
+ * Type-ahead for subcategory names: distinct names used as subcategories (parent set) on other stores.
+ * Excludes names already used under the same parent on this store (matches unique index on store+parent+name).
+ */
+export async function suggestPeerSubcategoryNames(
+  storeIdNum: number,
+  opts: {
+    q: string;
+    limit?: number;
+    parentCategoryId: number;
+    editingCategoryId?: number | null;
+  }
+): Promise<string[]> {
+  const parentId = opts.parentCategoryId;
+  if (!Number.isFinite(parentId) || parentId <= 0) {
+    return [];
+  }
+
+  const sql = getSql();
+  const limit = Math.min(Math.max(opts.limit ?? 12, 1), 30);
+  const qRaw = (opts.q ?? "").trim().slice(0, 30);
+  const qNorm = qRaw.toLowerCase();
+  const tokens = tokenizeCategoryQuery(qRaw);
+  const editingId = opts.editingCategoryId ?? null;
+
+  const forbiddenRows =
+    editingId != null
+      ? await sql<{ n: string }[]>`
+          SELECT LOWER(TRIM(category_name)) AS n
+          FROM merchant_menu_categories
+          WHERE store_id = ${storeIdNum}
+            AND parent_category_id = ${parentId}
+            AND id <> ${editingId}
+            AND COALESCE(is_deleted, FALSE) = FALSE
+        `
+      : await sql<{ n: string }[]>`
+          SELECT LOWER(TRIM(category_name)) AS n
+          FROM merchant_menu_categories
+          WHERE store_id = ${storeIdNum}
+            AND parent_category_id = ${parentId}
+            AND COALESCE(is_deleted, FALSE) = FALSE
+        `;
+  const forbidden = new Set(
+    forbiddenRows.map((r) => r.n).filter((x) => x != null && x !== "")
+  );
+
+  type Row = { name: string; store_count: number };
+  let rows: Row[];
+
+  if (tokens.length === 0) {
+    rows = await sql<Row[]>`
+      SELECT TRIM(category_name) AS name, COUNT(DISTINCT store_id)::int AS store_count
+      FROM merchant_menu_categories
+      WHERE store_id <> ${storeIdNum}
+        AND parent_category_id IS NOT NULL
+        AND COALESCE(is_deleted, FALSE) = FALSE
+        AND LENGTH(TRIM(category_name)) BETWEEN 1 AND 30
+      GROUP BY TRIM(category_name)
+      ORDER BY COUNT(DISTINCT store_id) DESC, LENGTH(TRIM(category_name)) ASC, TRIM(category_name) ASC
+      LIMIT 250
+    `;
+  } else {
+    let tokenCond = sql`TRUE`;
+    for (const t of tokens) {
+      tokenCond = sql`${tokenCond} AND POSITION(${t} IN LOWER(TRIM(category_name))) > 0`;
+    }
+    rows = await sql<Row[]>`
+      SELECT TRIM(category_name) AS name, COUNT(DISTINCT store_id)::int AS store_count
+      FROM merchant_menu_categories
+      WHERE store_id <> ${storeIdNum}
+        AND parent_category_id IS NOT NULL
+        AND COALESCE(is_deleted, FALSE) = FALSE
+        AND LENGTH(TRIM(category_name)) BETWEEN 1 AND 30
+        AND ${tokenCond}
+      GROUP BY TRIM(category_name)
+      ORDER BY COUNT(DISTINCT store_id) DESC, LENGTH(TRIM(category_name)) ASC, TRIM(category_name) ASC
+      LIMIT 200
+    `;
+  }
+
+  const filtered = rows.filter((r) => {
+    const ln = String(r.name).toLowerCase().trim();
+    return ln.length > 0 && !forbidden.has(ln);
+  });
+
+  const rank = (r: Row): [number, number, number, number, number, number, string] => {
+    const name = String(r.name);
+    const ln = name.toLowerCase().trim();
+    const hasQ = tokens.length > 0 || qNorm.length > 0;
+
+    const exact = hasQ && ln === qNorm ? 0 : 1;
+    const prefix = hasQ && ln.startsWith(qNorm) ? 0 : 1;
+    const wordStarts =
+      tokens.length > 0 ? (allTokensMatchWordStarts(ln, tokens) ? 0 : 1) : 1;
+    const contains =
+      tokens.length > 0
+        ? tokens.every((t) => ln.includes(t))
+          ? 0
+          : 1
+        : 0;
+
+    return [exact, prefix, wordStarts, contains, -r.store_count, name.length, name];
+  };
+
+  filtered.sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    for (let i = 0; i < ra.length; i++) {
+      if (ra[i] < rb[i]) return -1;
+      if (ra[i] > rb[i]) return 1;
+    }
+    return 0;
+  });
+
+  return filtered.slice(0, limit).map((r) => r.name);
+}
+
+/** Create category (store-type + plan rules applied in route layer via validateCategoryCreate). */
 export async function createCategory(
   storeIdNum: number,
   body: {
@@ -70,14 +377,36 @@ export async function createCategory(
     category_description?: string | null;
     category_image_url?: string | null;
     parent_category_id?: number | null;
+    cuisine_id?: number | null;
     display_order?: number;
     is_active?: boolean;
   }
 ): Promise<{ id: number }> {
   const sql = getSql();
+  const storeType = await resolveStoreType(storeIdNum);
+  const { cuisine_id } = await validateCategoryCreate({
+    storeIdNum,
+    storeType,
+    parent_category_id: body.parent_category_id,
+    cuisine_id: body.cuisine_id,
+    category_name: body.category_name,
+  });
   const [row] = await sql`
-    INSERT INTO merchant_menu_categories (store_id, category_name, category_description, category_image_url, parent_category_id, display_order, is_active)
-    VALUES (${storeIdNum}, ${body.category_name}, ${body.category_description ?? null}, ${body.category_image_url ?? null}, ${body.parent_category_id ?? null}, ${body.display_order ?? 0}, ${body.is_active ?? true})
+    INSERT INTO merchant_menu_categories (
+      store_id, category_name, category_description, category_image_url,
+      parent_category_id, cuisine_id, display_order, is_active, is_deleted
+    )
+    VALUES (
+      ${storeIdNum},
+      ${body.category_name},
+      ${body.category_description ?? null},
+      ${body.category_image_url ?? null},
+      ${body.parent_category_id ?? null},
+      ${cuisine_id},
+      ${body.display_order ?? 0},
+      ${body.is_active ?? true},
+      FALSE
+    )
     RETURNING id
   `;
   return { id: Number((row as any).id) };
@@ -92,50 +421,94 @@ export async function updateCategory(
     category_description?: string | null;
     category_image_url?: string | null;
     parent_category_id?: number | null;
+    cuisine_id?: number | null;
     display_order?: number;
     is_active?: boolean;
   }
 ): Promise<boolean> {
   const sql = getSql();
+  const storeType = await resolveStoreType(storeIdNum);
+  await validateCategoryUpdate({
+    storeIdNum,
+    storeType,
+    categoryId,
+    cuisine_id: body.cuisine_id,
+  });
+
   const [existing] = await sql`
-    SELECT category_name, category_description, category_image_url, parent_category_id, display_order, is_active
-    FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+    SELECT category_name, category_description, category_image_url, parent_category_id, cuisine_id, display_order, is_active
+    FROM merchant_menu_categories
+    WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
   `;
   if (!existing) return false;
   const e = existing as any;
+  const nextCuisine =
+    body.cuisine_id !== undefined ? body.cuisine_id : e.cuisine_id != null ? Number(e.cuisine_id) : null;
   const result = await sql`
     UPDATE merchant_menu_categories
     SET category_name = ${body.category_name ?? e.category_name},
         category_description = ${body.category_description !== undefined ? body.category_description : e.category_description},
         category_image_url = ${body.category_image_url !== undefined ? body.category_image_url : e.category_image_url},
         parent_category_id = ${body.parent_category_id !== undefined ? body.parent_category_id : e.parent_category_id},
+        cuisine_id = ${body.cuisine_id !== undefined ? body.cuisine_id : e.cuisine_id},
         display_order = ${body.display_order ?? e.display_order},
         is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
         updated_at = NOW()
     WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
   `;
   return (result.count ?? 0) > 0;
 }
 
-/** Delete category only when it has no items. Returns { ok, error?, itemCount? }. */
+/** Soft-delete category when it has no items and no subcategories. */
 export async function deleteCategory(
   categoryId: number,
   storeIdNum: number
-): Promise<{ ok: true } | { ok: false; error: "category_not_found" | "category_has_items"; itemCount?: number }> {
+): Promise<
+  | { ok: true }
+  | {
+      ok: false;
+      error: "category_not_found" | "category_has_items" | "category_has_subcategories";
+      itemCount?: number;
+      subcategoryCount?: number;
+    }
+> {
   const sql = getSql();
   const [exists] = await sql`
-    SELECT 1 FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+    SELECT 1 FROM merchant_menu_categories
+    WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
   `;
   if (!exists) return { ok: false, error: "category_not_found" };
 
+  const [subRow] = await sql<{ c: string }[]>`
+    SELECT COUNT(*)::text AS c FROM merchant_menu_categories
+    WHERE store_id = ${storeIdNum} AND parent_category_id = ${categoryId}
+      AND COALESCE(is_deleted, FALSE) = FALSE
+  `;
+  const subCount = Number(subRow?.c ?? 0);
+  if (subCount > 0) {
+    return {
+      ok: false,
+      error: "category_has_subcategories",
+      subcategoryCount: subCount,
+    };
+  }
+
   const [countRow] = await sql`
-    SELECT COUNT(*)::int AS c FROM merchant_menu_items WHERE category_id = ${categoryId}
+    SELECT COUNT(*)::int AS c FROM merchant_menu_items
+    WHERE category_id = ${categoryId}
+      AND (is_deleted IS NULL OR is_deleted = FALSE)
   `;
   const itemCount = Number((countRow as { c: number })?.c ?? 0);
   if (itemCount > 0) return { ok: false, error: "category_has_items", itemCount };
 
   const result = await sql`
-    DELETE FROM merchant_menu_categories WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+    UPDATE merchant_menu_categories
+    SET is_deleted = TRUE, updated_at = NOW()
+    WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
   `;
   return (result.count ?? 0) > 0 ? { ok: true } : { ok: false, error: "category_not_found" };
 }
@@ -223,7 +596,7 @@ export async function listItems(
            base_price, selling_price, discount_percentage, tax_percentage,
            in_stock, is_active, is_deleted, display_order,
            has_customizations, has_addons, has_variants, is_popular, is_recommended,
-           preparation_time_minutes, serves, serves_label, item_size_value, item_size_unit,
+           preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit,
            approval_status,
            (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
            (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type
@@ -396,9 +769,92 @@ export async function getItem(
     linkedModifierGroups = [];
   }
 
+  const storeType = (await resolveStoreType(storeIdNum)) ?? "FOOD";
+  const legacyAttrs =
+    storeType === "FOOD" ? buildFoodLegacyAttributesFromItemRow(itemRow) : {};
+  const dbAttrs = await loadItemAttributes(itemId, storeType);
+  const attributes: UnifiedAttributes = {
+    ...legacyAttrs,
+    ...dbAttrs,
+  };
+
+  // Per-item addon groups (legacy `merchant_menu_addon_groups` system).
+  const perItemAddonGroups = (await sql`
+    SELECT id, group_name, min_selection, max_selection, is_required, display_order
+    FROM merchant_menu_addon_groups
+    WHERE menu_item_id = ${itemId}
+    ORDER BY display_order ASC, id ASC
+  `) as any[];
+
+  const perItemAddonOptionsRows = await Promise.all(
+    perItemAddonGroups.map((g: any) =>
+      sql`
+        SELECT id, addon_name, addon_price, in_stock, display_order
+        FROM merchant_menu_addons
+        WHERE addon_group_id = ${g.id}
+        ORDER BY display_order ASC, id ASC
+      `
+    )
+  );
+
+  const variantAttributesList = await Promise.all(
+    (variants as any[]).map((v: any) => loadVariantAttributes(v.id, storeType))
+  );
+
+  const addon_groups = [
+    ...customizationsWithOptions.map((c: any) => ({
+      id: c.id,
+      title: c.customization_title,
+      description: null,
+      selection_type: c.max_selection === 1 ? "single" : "multiple",
+      required: c.is_required ?? false,
+      min_selection: c.min_selection ?? 0,
+      max_selection: c.max_selection ?? 1,
+      addon_items: (c.options ?? []).map((o: any) => ({
+        id: o.id,
+        name: o.addon_name,
+        price_delta: o.addon_price,
+        in_stock: o.in_stock ?? true,
+        display_order: o.display_order ?? 0,
+      })),
+    })),
+    ...linkedModifierGroups.map((g: any) => ({
+      id: g.id,
+      title: g.title,
+      description: g.description ?? null,
+      selection_type: g.max_selection === 1 ? "single" : "multiple",
+      required: g.is_required ?? false,
+      min_selection: g.min_selection ?? 0,
+      max_selection: g.max_selection ?? 1,
+      addon_items: (g.options ?? []).map((o: any) => ({
+        id: o.id,
+        name: o.name,
+        price_delta: o.price_delta,
+        in_stock: o.in_stock ?? true,
+        display_order: o.display_order ?? 0,
+      })),
+    })),
+    ...perItemAddonGroups.map((g: any, idx: number) => ({
+      id: g.id,
+      title: g.group_name,
+      description: null,
+      selection_type: g.max_selection === 1 ? "single" : "multiple",
+      required: g.is_required ?? false,
+      min_selection: g.min_selection ?? 0,
+      max_selection: g.max_selection ?? 1,
+      addon_items: ((perItemAddonOptionsRows[idx] ?? []) as any[]).map((o: any) => ({
+        id: o.id,
+        name: o.addon_name,
+        price_delta: o.addon_price,
+        in_stock: o.in_stock ?? true,
+        display_order: o.display_order ?? 0,
+      })),
+    })),
+  ];
+
   return {
     ...itemRow,
-    variants: (variants as any[]).map((v: any) => ({
+    variants: (variants as any[]).map((v: any, idx: number) => ({
       id: v.id,
       variant_id: v.variant_id,
       variant_name: v.variant_name,
@@ -407,6 +863,7 @@ export async function getItem(
       is_default: v.is_default ?? false,
       display_order: v.display_order ?? 0,
       in_stock: v.in_stock ?? true,
+      attributes: (variantAttributesList as any[])[idx] ?? {},
     })),
     customizations: customizationsWithOptions,
     images: (imagesRows as any[]).map((i: any) => ({
@@ -416,6 +873,9 @@ export async function getItem(
       display_order: i.display_order ?? 0,
     })),
     linked_modifier_groups: linkedModifierGroups,
+    // Unified catalog fields (new):
+    attributes,
+    addon_groups,
   };
 }
 
@@ -455,6 +915,11 @@ export type ItemBodyFields = {
   fibre_unit?: string | null;
   allergens?: string[] | null;
   item_tags?: string[] | null;
+  /**
+   * Unified, schema-driven attributes.
+   * If omitted, FOOD attributes are computed from legacy columns (backwards compatible).
+   */
+  attributes?: UnifiedAttributes;
 };
 
 /** Create item. When createdByRole is 'agent' or 'admin', item is APPROVED; otherwise PENDING. */
@@ -495,7 +960,17 @@ export async function createItem(
     RETURNING id, item_id
   `;
   const r = row as any;
-  return { id: Number(r.id), item_id: r.item_id };
+  const createdId = Number(r.id);
+
+  // Persist unified attribute values when definitions exist.
+  // FOOD remains backwards compatible: if `body.attributes` is omitted, we derive from legacy columns.
+  const storeType = (await resolveStoreType(storeIdNum)) ?? "FOOD";
+  const legacyAttrs = buildFoodLegacyAttributesFromItemRow(body as any);
+  const attrsToPersist: UnifiedAttributes =
+    body.attributes ?? (storeType === "FOOD" ? legacyAttrs : {});
+  await upsertItemAttributes(createdId, storeType, attrsToPersist);
+
+  return { id: createdId, item_id: r.item_id };
 }
 
 /** Update item. When updatedByRole is 'merchant', item is set back to PENDING and logged. */
@@ -558,6 +1033,49 @@ export async function updateItem(
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
   const updated = (result.count ?? 0) > 0;
+
+  // Persist unified attribute values when definitions exist.
+  if (updated) {
+    const storeType = (await resolveStoreType(storeIdNum)) ?? "FOOD";
+    const existingAttrs = await loadItemAttributes(itemId, storeType);
+
+    if (storeType === "FOOD") {
+      // Derive from legacy columns so FOOD behavior stays consistent.
+      const legacyAttrs: UnifiedAttributes = buildFoodLegacyAttributesFromItemRow({
+        food_type: v("food_type", e.food_type),
+        spice_level: v("spice_level", e.spice_level),
+        cuisine_type: v("cuisine_type", e.cuisine_type),
+        serves: v("serves", e.serves),
+        serves_label: v("serves_label", e.serves_label),
+        item_size_value: v("item_size_value", e.item_size_value),
+        item_size_unit: v("item_size_unit", e.item_size_unit),
+        available_for_delivery: v("available_for_delivery", e.available_for_delivery),
+        weight_per_serving: v("weight_per_serving", e.weight_per_serving),
+        weight_per_serving_unit: v("weight_per_serving_unit", e.weight_per_serving_unit),
+        calories_kcal: v("calories_kcal", e.calories_kcal),
+        protein: v("protein", e.protein),
+        protein_unit: v("protein_unit", e.protein_unit),
+        carbohydrates: v("carbohydrates", e.carbohydrates),
+        carbohydrates_unit: v("carbohydrates_unit", e.carbohydrates_unit),
+        fat: v("fat", e.fat),
+        fat_unit: v("fat_unit", e.fat_unit),
+        fibre: v("fibre", e.fibre),
+        fibre_unit: v("fibre_unit", e.fibre_unit),
+        allergens: v("allergens", e.allergens),
+        item_tags: v("item_tags", e.item_tags),
+      });
+
+      const merged = { ...existingAttrs, ...legacyAttrs };
+      await upsertItemAttributes(itemId, storeType, merged);
+    } else {
+      // For non-FOOD store types:
+      // - If client sends `attributes`, merge patch onto existing values.
+      // - If client omits `attributes`, keep existing values but still validate required fields.
+      const merged = body.attributes ? { ...existingAttrs, ...body.attributes } : existingAttrs;
+      await upsertItemAttributes(itemId, storeType, merged);
+    }
+  }
+
   if (updated && opts?.updatedByRole === "merchant" && opts?.updatedBySub) {
     await setItemPendingForReReview(itemId, storeIdNum, { changed_by: opts.updatedBySub, changed_by_role: "merchant" });
   }
@@ -756,7 +1274,14 @@ export async function patchItemStock(
 export async function addVariant(
   menuItemId: number,
   storeIdNum: number,
-  body: { variant_name: string; variant_type?: string | null; variant_price: number; is_default?: boolean; display_order?: number }
+  body: {
+    variant_name: string;
+    variant_type?: string | null;
+    variant_price: number;
+    is_default?: boolean;
+    display_order?: number;
+    attributes?: UnifiedAttributes;
+  }
 ): Promise<{ id: number }> {
   const sql = getSql();
   await assertItemOwnership(menuItemId, storeIdNum);
@@ -766,7 +1291,13 @@ export async function addVariant(
     VALUES (${menuItemId}, ${variantId}, ${body.variant_name}, ${body.variant_type ?? null}, ${body.variant_price}, ${body.is_default ?? false}, ${body.display_order ?? 0})
     RETURNING id
   `;
-  return { id: Number((row as any).id) };
+  const createdVariantRowId = Number((row as any).id);
+
+  // Persist unified variant-scope attributes (when seeded for this store type).
+  const storeType = (await resolveStoreType(storeIdNum)) ?? "GENERAL";
+  await upsertVariantAttributes(createdVariantRowId, storeType, body.attributes ?? {});
+
+  return { id: createdVariantRowId };
 }
 
 async function assertItemOwnership(menuItemId: number, storeIdNum: number): Promise<void> {
@@ -778,7 +1309,15 @@ async function assertItemOwnership(menuItemId: number, storeIdNum: number): Prom
 export async function updateVariant(
   variantId: number,
   storeIdNum: number,
-  body: { variant_name?: string; variant_type?: string | null; variant_price?: number; is_default?: boolean; display_order?: number; in_stock?: boolean }
+  body: {
+    variant_name?: string;
+    variant_type?: string | null;
+    variant_price?: number;
+    is_default?: boolean;
+    display_order?: number;
+    in_stock?: boolean;
+    attributes?: UnifiedAttributes;
+  }
 ): Promise<boolean> {
   const sql = getSql();
   const [v] = await sql`
@@ -799,7 +1338,14 @@ export async function updateVariant(
         updated_at = NOW()
     WHERE id = ${variantId}
   `;
-  return (result.count ?? 0) > 0;
+  const updated = (result.count ?? 0) > 0;
+  if (updated) {
+    const storeType = (await resolveStoreType(storeIdNum)) ?? "GENERAL";
+    const existingAttrs = await loadVariantAttributes(variantId, storeType);
+    const merged = body.attributes ? { ...existingAttrs, ...body.attributes } : existingAttrs;
+    await upsertVariantAttributes(variantId, storeType, merged);
+  }
+  return updated;
 }
 
 export async function deleteVariant(variantId: number, storeIdNum: number): Promise<boolean> {
@@ -1146,11 +1692,24 @@ export async function deleteAddon(addonId: number, storeIdNum: number): Promise<
 
 // --- Combos
 export async function listCombos(storeIdNum: number): Promise<
-  Array<{ id: number; combo_name: string; description: string | null; combo_price: string; image_url: string | null; is_active: boolean; is_deleted: boolean; display_order: number }>
+  Array<{
+    id: number;
+    combo_name: string;
+    description: string | null;
+    combo_price: string;
+    image_url: string | null;
+    is_active: boolean;
+    is_deleted: boolean;
+    display_order: number;
+    combo_type: string;
+    pricing_strategy: string;
+    combo_metadata: object;
+  }>
 > {
   const sql = getSql();
   const rows = await sql`
-    SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order
+    SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order,
+           combo_type, pricing_strategy, combo_metadata
     FROM merchant_menu_combos WHERE store_id = ${storeIdNum} AND (is_deleted IS NULL OR is_deleted = false)
     ORDER BY display_order ASC, id ASC
   `;
@@ -1159,12 +1718,34 @@ export async function listCombos(storeIdNum: number): Promise<
 
 export async function createCombo(
   storeIdNum: number,
-  body: { combo_name: string; description?: string | null; combo_price: number; image_url?: string | null; display_order?: number }
+  body: {
+    combo_name: string;
+    description?: string | null;
+    combo_price: number;
+    image_url?: string | null;
+    display_order?: number;
+    combo_type?: string | null;
+    pricing_strategy?: string | null;
+    combo_metadata?: object | null;
+  }
 ): Promise<{ id: number }> {
   const sql = getSql();
   const [row] = await sql`
-    INSERT INTO merchant_menu_combos (store_id, combo_name, description, combo_price, image_url, display_order)
-    VALUES (${storeIdNum}, ${body.combo_name}, ${body.description ?? null}, ${body.combo_price}, ${body.image_url ?? null}, ${body.display_order ?? 0})
+    INSERT INTO merchant_menu_combos (
+      store_id, combo_name, description, combo_price, image_url, display_order,
+      combo_type, pricing_strategy, combo_metadata
+    )
+    VALUES (
+      ${storeIdNum},
+      ${body.combo_name},
+      ${body.description ?? null},
+      ${body.combo_price},
+      ${body.image_url ?? null},
+      ${body.display_order ?? 0},
+      ${body.combo_type ?? "FIXED"},
+      ${body.pricing_strategy ?? "FIXED_PRICE"},
+      ${JSON.stringify(body.combo_metadata ?? {})}::jsonb
+    )
     RETURNING id
   `;
   return { id: Number((row as any).id) };
@@ -1179,11 +1760,15 @@ export async function getCombo(comboId: number, storeIdNum: number): Promise<{
   is_active: boolean;
   is_deleted: boolean;
   display_order: number;
+  combo_type: string;
+  pricing_strategy: string;
+  combo_metadata: object;
   components: Array<{ id: number; menu_item_id: number; variant_id: number | null; quantity: number; display_order: number }>;
 } | null> {
   const sql = getSql();
   const [c] = await sql`
-    SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order
+    SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order,
+           combo_type, pricing_strategy, combo_metadata
     FROM merchant_menu_combos WHERE id = ${comboId} AND store_id = ${storeIdNum}
   `;
   if (!c) return null;
@@ -1197,11 +1782,22 @@ export async function getCombo(comboId: number, storeIdNum: number): Promise<{
 export async function updateCombo(
   comboId: number,
   storeIdNum: number,
-  body: { combo_name?: string; description?: string | null; combo_price?: number; image_url?: string | null; is_active?: boolean; display_order?: number }
+  body: {
+    combo_name?: string;
+    description?: string | null;
+    combo_price?: number;
+    image_url?: string | null;
+    is_active?: boolean;
+    display_order?: number;
+    combo_type?: string | null;
+    pricing_strategy?: string | null;
+    combo_metadata?: object | null;
+  }
 ): Promise<boolean> {
   const sql = getSql();
   const [existing] = await sql`
-    SELECT combo_name, description, combo_price, image_url, is_active, display_order
+    SELECT combo_name, description, combo_price, image_url, is_active, display_order,
+           combo_type, pricing_strategy, combo_metadata
     FROM merchant_menu_combos WHERE id = ${comboId} AND store_id = ${storeIdNum}
   `;
   if (!existing) return false;
@@ -1214,6 +1810,13 @@ export async function updateCombo(
         image_url = ${body.image_url !== undefined ? body.image_url : e.image_url},
         is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
         display_order = ${body.display_order ?? e.display_order},
+        combo_type = ${body.combo_type !== undefined ? body.combo_type : e.combo_type},
+        pricing_strategy = ${body.pricing_strategy !== undefined ? body.pricing_strategy : e.pricing_strategy},
+        combo_metadata = ${
+          body.combo_metadata !== undefined
+            ? JSON.stringify(body.combo_metadata ?? {})
+            : JSON.stringify(e.combo_metadata ?? {})
+        }::jsonb,
         updated_at = NOW()
     WHERE id = ${comboId} AND store_id = ${storeIdNum}
   `;
@@ -1241,7 +1844,10 @@ export async function addComboComponent(
     VALUES (${comboId}, ${body.menu_item_id}, ${body.variant_id ?? null}, ${body.quantity ?? 1}, ${body.display_order ?? 0})
     RETURNING id
   `;
-  return { id: Number((row as any).id) };
+  const createdId = Number((row as any).id);
+  // Keep combo_price consistent with derived components pricing.
+  await recomputeComboPriceFromComponents(comboId, storeIdNum);
+  return { id: createdId };
 }
 
 export async function deleteComboComponent(componentId: number, storeIdNum: number): Promise<boolean> {
@@ -1252,8 +1858,40 @@ export async function deleteComboComponent(componentId: number, storeIdNum: numb
     WHERE cc.id = ${componentId}
   `;
   if (!comp) return false;
+  const [comboLookup] = await sql`
+    SELECT cc.combo_id
+    FROM merchant_menu_combo_components cc
+    INNER JOIN merchant_menu_combos c ON c.id = cc.combo_id AND c.store_id = ${storeIdNum}
+    WHERE cc.id = ${componentId}
+    LIMIT 1
+  `;
+  const comboId = comboLookup ? (comboLookup as any).combo_id : null;
+
   const result = await sql`DELETE FROM merchant_menu_combo_components WHERE id = ${componentId}`;
+  if ((result.count ?? 0) > 0 && comboId != null) {
+    await recomputeComboPriceFromComponents(comboId, storeIdNum);
+  }
   return (result.count ?? 0) > 0;
+}
+
+async function recomputeComboPriceFromComponents(comboId: number, storeIdNum: number): Promise<void> {
+  const sql = getSql();
+  // Pricing model: derived combo_price = SUM(component_item.selling_price * quantity).
+  // Note: selling_price is NUMERIC so cast to numeric for multiplication.
+  const [row] = await sql`
+    SELECT COALESCE(SUM((m.selling_price::numeric) * cc.quantity), 0)::numeric AS derived_price
+    FROM merchant_menu_combo_components cc
+    INNER JOIN merchant_menu_items m ON m.id = cc.menu_item_id AND m.store_id = ${storeIdNum}
+    WHERE cc.combo_id = ${comboId}
+  `;
+
+  const derivedPrice = (row as any)?.derived_price ?? 0;
+  await sql`
+    UPDATE merchant_menu_combos
+    SET combo_price = ${derivedPrice},
+        updated_at = NOW()
+    WHERE id = ${comboId} AND store_id = ${storeIdNum}
+  `;
 }
 
 // --- Category availability

@@ -4,7 +4,22 @@
 
 import { getDb } from "@/lib/db/client";
 import { riders, activityLogs, stores, areaManagers, systemUsers } from "@/lib/db/schema";
-import { eq, and, lt, isNull, or, ilike, desc, sql, type SQL } from "drizzle-orm";
+import {
+  eq,
+  and,
+  lt,
+  isNull,
+  or,
+  ilike,
+  desc,
+  sql,
+  type SQL,
+  type InferInsertModel,
+} from "drizzle-orm";
+
+export type RiderScopedUpdate = Partial<
+  Pick<InferInsertModel<typeof riders>, "status" | "availabilityStatus" | "localityCode" | "updatedBy">
+>;
 
 export interface AreaManagerListRow {
   id: number;
@@ -241,11 +256,10 @@ export async function countRidersByAvailability(
   const baseWhere = isNull(riders.deletedAt);
   let scopeWhere: SQL = baseWhere;
   if (areaManagerId !== null) {
-    scopeWhere = and(scopeWhere, eq(riders.areaManagerId, areaManagerId));
+    scopeWhere = and(scopeWhere, eq(riders.areaManagerId, areaManagerId))!;
   }
   if (localityCode?.trim()) {
-    scopeWhere = and(scopeWhere, eq(riders.localityCode, localityCode.trim()));
-  }
+    scopeWhere = and(scopeWhere, eq(riders.localityCode, localityCode.trim()))!;  }
 
   const [online] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -395,7 +409,7 @@ export async function getRiderByIdScoped(
 export async function updateRiderScoped(
   riderId: number,
   areaManagerId: number | null,
-  data: { status?: string; availabilityStatus?: string; localityCode?: string | null; updatedBy?: number }
+  data: RiderScopedUpdate
 ) {
   const db = getDb();
   const conditions = [eq(riders.id, riderId), isNull(riders.deletedAt)];
@@ -404,7 +418,7 @@ export async function updateRiderScoped(
   }
   const [row] = await db
     .update(riders)
-    .set({ ...data, updatedAt: new Date() })
+    .set({ ...data, updatedAt: new Date() } as Partial<typeof riders.$inferInsert>)
     .where(and(...conditions))
     .returning();
   return row ?? null;

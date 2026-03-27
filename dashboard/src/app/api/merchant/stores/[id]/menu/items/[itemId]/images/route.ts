@@ -14,15 +14,14 @@ import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
 import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
+import { validateMenuItemSquareImage } from "@/lib/menuItemImageValidation";
 import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
 
-function getBaseUrl(request: NextRequest): string {
-  const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "";
-  const proto = request.headers.get("x-forwarded-proto") || "https";
-  if (host) return `${proto === "https" ? "https" : "http"}://${host}`;
-  return process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "";
+/** Same as documents upload: never persist absolute R2/CDN URLs (portable, non-expiring proxy). */
+function buildStoredImageUrl(r2Key: string): string {
+  return `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
 }
 
 function extFromName(name: string): string {
@@ -83,10 +82,15 @@ export async function POST(
     const fileId = randomUUID();
     const r2Key = `merchant-menu/stores/${storePublicId}/items/${itemPublicId}/images/${fileId}.${ext}`;
 
+    const arrayBuffer = await file.arrayBuffer();
+    const dim = validateMenuItemSquareImage(Buffer.from(arrayBuffer));
+    if (!dim.ok) {
+      return NextResponse.json({ success: false, error: dim.error }, { status: 400 });
+    }
+
     await uploadWithKey(file, r2Key);
 
-    const baseUrl = getBaseUrl(request);
-    const imageUrl = `${baseUrl}/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+    const imageUrl = buildStoredImageUrl(r2Key);
 
     const [existingPrimary] = await sql`
       SELECT id, r2_key FROM merchant_menu_item_images

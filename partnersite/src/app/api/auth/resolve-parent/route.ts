@@ -1,7 +1,17 @@
-
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { normalizePhone } from '@/lib/utils';
+import { fetchVerificationRejectionsByStoreIds } from '@/lib/onboarding/partner-verification-rejections';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+function getSupabaseAdmin() {
+  return createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -30,7 +40,7 @@ export async function POST(req: NextRequest) {
     // Fetch child stores for this parent
     const { data: stores, error: storesError } = await supabase
       .from('merchant_stores')
-      .select('store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed')
+      .select('id, store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed')
       .eq('parent_id', parent.id);
 
     if (storesError) {
@@ -47,7 +57,23 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    const storeList = stores || [];
+    const storeListRaw = stores || [];
+    const internalIds = storeListRaw
+      .map((s) => (typeof s.id === 'number' ? s.id : parseInt(String(s.id), 10)))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const admin = getSupabaseAdmin();
+    const rejectionByStore =
+      internalIds.length > 0
+        ? await fetchVerificationRejectionsByStoreIds(admin, internalIds)
+        : {};
+    const storeList = storeListRaw.map((s) => {
+      const sid = typeof s.id === 'number' ? s.id : parseInt(String(s.id), 10);
+      return {
+        ...s,
+        verification_step_rejections:
+          Number.isFinite(sid) && sid > 0 ? (rejectionByStore[sid] ?? []) : [],
+      };
+    });
     // Only treat as "incomplete draft" when there is an actual DRAFT store (avoids stale progress banner)
     const hasDraftStore = storeList.some((s) => (s.approval_status || '').toUpperCase() === 'DRAFT');
     const onboardingProgress = progress && hasDraftStore ? progress : null;

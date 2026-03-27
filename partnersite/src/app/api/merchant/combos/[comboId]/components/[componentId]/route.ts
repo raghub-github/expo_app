@@ -64,5 +64,49 @@ export async function DELETE(
     });
   } catch (_) {}
 
+  // Backend-derived combo_price: SUM(menu_item.selling_price * quantity)
+  try {
+    const { data: components } = await supabase
+      .from('merchant_menu_combo_components')
+      .select('menu_item_id, quantity')
+      .eq('combo_id', cId)
+
+    const comps = components ?? []
+    const menuItemIds = Array.from(
+      new Set(
+        comps
+          .map((c: any) => Number(c.menu_item_id))
+          .filter((n: number) => Number.isFinite(n))
+      )
+    )
+
+    let derivedPrice = 0
+    if (menuItemIds.length) {
+      const { data: items } = await supabase
+        .from('merchant_menu_items')
+        .select('id, selling_price')
+        .in('id', menuItemIds)
+        .eq('store_id', access.storeIdNum)
+
+      const priceById = new Map(
+        (items ?? []).map((it: any) => [Number(it.id), Number(it.selling_price) || 0])
+      )
+
+      for (const comp of comps) {
+        const mid = Number((comp as any).menu_item_id)
+        const qty = Number((comp as any).quantity) || 1
+        derivedPrice += (priceById.get(mid) ?? 0) * qty
+      }
+    }
+
+    await supabase
+      .from('merchant_menu_combos')
+      .update({ combo_price: derivedPrice })
+      .eq('id', cId)
+      .eq('store_id', access.storeIdNum)
+  } catch (err) {
+    console.error('[DELETE /api/merchant/combos/.../components/[componentId]] combo_price recompute failed', err)
+  }
+
   return NextResponse.json({ success: true, ok: true })
 }

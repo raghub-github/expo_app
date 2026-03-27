@@ -30,6 +30,7 @@ export interface CreateUserData {
 }
 
 export interface UpdateUserData {
+  system_user_id?: string;
   full_name?: string;
   first_name?: string;
   last_name?: string;
@@ -50,6 +51,7 @@ export interface UpdateUserData {
   is_email_verified?: boolean;
   is_mobile_verified?: boolean;
   two_factor_enabled?: boolean;
+  can_toggle_portal?: boolean;
   approved_by?: number;
   approved_at?: Date;
 }
@@ -201,6 +203,7 @@ export async function updateSystemUser(id: number, updates: UpdateUserData) {
   if (updates.is_email_verified !== undefined) updateData.isEmailVerified = updates.is_email_verified;
   if (updates.is_mobile_verified !== undefined) updateData.isMobileVerified = updates.is_mobile_verified;
   if (updates.two_factor_enabled !== undefined) updateData.twoFactorEnabled = updates.two_factor_enabled;
+  if (updates.can_toggle_portal !== undefined) updateData.canTogglePortal = updates.can_toggle_portal;
   if (updates.approved_by !== undefined) updateData.approvedBy = updates.approved_by;
   if (updates.approved_at !== undefined) updateData.approvedAt = updates.approved_at;
   
@@ -282,9 +285,8 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   const limit = filters.limit || 20;
   const offset = (page - 1) * limit;
   
-  let query = db.select().from(systemUsers);
-  
-  // Build where conditions
+  let query = db.select().from(systemUsers).$dynamic();
+    // Build where conditions
   const conditions = [];
   
   // Exclude soft-deleted users
@@ -317,12 +319,9 @@ export async function listSystemUsers(filters: UserFilters = {}) {
     conditions.push(eq(systemUsers.department, filters.department));
   }
   
-  // Apply where conditions
-  if (conditions.length > 0) {
-    query = query.where(and(...conditions));
-  }
-  
-  // Sorting
+  const filteredQuery =
+    conditions.length > 0 ? db.select().from(systemUsers).where(and(...conditions)) : db.select().from(systemUsers);
+
   const sortBy = filters.sortBy || "createdAt";
   const sortOrder = filters.sortOrder || "desc";
   
@@ -337,14 +336,14 @@ export async function listSystemUsers(filters: UserFilters = {}) {
   }
   
   // Get total count for pagination
-  const countQuery = db
+  let countQuery = db
     .select({ count: sql<number>`count(*)::int` })
-    .from(systemUsers);
-  
+    .from(systemUsers)
+    .$dynamic();
+
   if (conditions.length > 0) {
-    countQuery.where(and(...conditions));
+    countQuery = countQuery.where(and(...conditions));
   }
-  
   const [{ count: total }] = await countQuery;
   
   // Apply pagination
@@ -450,7 +449,7 @@ export async function incrementFailedLoginAttempts(id: number) {
     .returning();
   
   // Lock account after 5 failed attempts
-  if (updated && updated.failedLoginAttempts >= 5) {
+  if (updated && (updated.failedLoginAttempts ?? 0) >= 5) {
     await db
       .update(systemUsers)
       .set({
@@ -493,11 +492,11 @@ export async function getUniqueRoles(): Promise<string[]> {
       sql`SELECT DISTINCT primary_role as role FROM system_users WHERE deleted_at IS NULL ORDER BY role`
     );
     
-    // Extract roles
-    const roles = result.rows.map((row: any) => row.role as string).filter(Boolean);
-    
+    // Extract roles (execute() returns RowList / iterable, not node-pg { rows })
+    const rows = Array.from(result as Iterable<Record<string, unknown>>);
+    const roles = rows.map((row) => row.role as string).filter(Boolean);    
     // Sort roles alphabetically, but put SUPER_ADMIN first if it exists
-    return roles.sort((a, b) => {
+    return roles.sort((a: string, b: string) => {
       if (a === "SUPER_ADMIN") return -1;
       if (b === "SUPER_ADMIN") return 1;
       return a.localeCompare(b);

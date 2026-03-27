@@ -1,8 +1,3 @@
-/**
- * Onboarding Step 2 – Permission modals (SMS → Notification → Location).
- * When denied/blocked, open app settings. Location required; skip location modal if already granted.
- */
-
 import { useState, useEffect, useRef } from "react";
 import {
   View,
@@ -16,21 +11,26 @@ import {
   Linking,
   Alert,
   AppState,
+  Platform,
+  PermissionsAndroid,
   type AppStateStatus,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
+import * as Contacts from "expo-contacts";
 import { profileService } from "@/services/profile.service";
 
-async function requestNotificationPermission(): Promise<"granted" | "denied"> {
+async function requestSmsPermission(): Promise<"granted" | "denied"> {
+  if (Platform.OS !== "android") return "granted";
   try {
-    const Constants = (await import("expo-constants")).default;
-    if (Constants.appOwnership === "expo") return "granted";
-    const Notifications = await import("expo-notifications");
-    const { status } = await Notifications.requestPermissionsAsync();
-    return status === "granted" ? "granted" : "denied";
+    const read = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.READ_SMS);
+    const receive = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS);
+    return read === PermissionsAndroid.RESULTS.GRANTED &&
+      receive === PermissionsAndroid.RESULTS.GRANTED
+      ? "granted"
+      : "denied";
   } catch {
     return "denied";
   }
@@ -60,11 +60,11 @@ const PERMISSIONS = [
     description: "Automatically verify your login and receive instant order updates.",
   },
   {
-    id: "notification" as const,
-    icon: "notifications-outline" as const,
-    title: "Notification Permission",
-    subtitle: "Required for order updates and delivery alerts",
-    description: "Get order updates and delivery alerts so you never miss a status change.",
+    id: "contacts" as const,
+    icon: "people-outline" as const,
+    title: "Contacts Permission",
+    subtitle: "Required to quickly invite and select saved contacts",
+    description: "Allow contacts so we can help you pick recipients and share orders faster.",
   },
   {
     id: "location" as const,
@@ -81,57 +81,63 @@ export default function OnboardingPermissionsScreen() {
   const [modalIndex, setModalIndex] = useState(0);
   const [status, setStatus] = useState<Record<string, PermissionStatus>>({
     sms: "pending",
-    notification: "pending",
+    contacts: "pending",
     location: "pending",
   });
   const [loading, setLoading] = useState<string | null>(null);
-  const [locationModalReady, setLocationModalReady] = useState(false);
-  const didCheckLocationGranted = useRef(false);
+  const [allDoneSaved, setAllDoneSaved] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
 
   const allDone = modalIndex >= PERMISSIONS.length;
   const currentPermission = !allDone ? PERMISSIONS[modalIndex] : null;
-  const isLocationStep = currentPermission?.id === "location";
-  const showLocationModal = isLocationStep && locationModalReady;
-
-  const permissionsToSave = useRef<{ sms: boolean; location: boolean; contacts: boolean } | null>(null);
+  const permissionsToSave = useRef<{ sms: boolean; location: boolean; contacts: boolean }>({
+    sms: false,
+    location: false,
+    contacts: false,
+  });
   const didRunAllDone = useRef(false);
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  // When we reach the location step: if already granted, skip modal and save lat/lon; else show modal
-  useEffect(() => {
-    if (!isLocationStep || didCheckLocationGranted.current) return;
-    didCheckLocationGranted.current = true;
-    (async () => {
-      const { status: locStatus } = await Location.getForegroundPermissionsAsync();
-      if (locStatus === "granted") {
-        setStatus((s) => ({ ...s, location: "granted" }));
-        permissionsToSave.current = {
-          ...(permissionsToSave.current ?? {
-            sms: status.sms === "granted",
-            location: true,
-            contacts: status.notification === "granted",
-          }),
-          location: true,
-        };
-        try {
-          const { coords } = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
-          await profileService.updateProfile({
-            location_permission: true,
-            latitude: coords.latitude,
-            longitude: coords.longitude,
-          });
-        } catch {
-          await profileService.updateProfile({ location_permission: true });
+  const syncPermissions = async (
+    nextFlags: Partial<{ sms: boolean; location: boolean; contacts: boolean }>,
+    coords?: { latitude: number; longitude: number }
+  ) => {
+    permissionsToSave.current = { ...permissionsToSave.current, ...nextFlags };
+    await profileService.updateProfile({
+      sms_permission: permissionsToSave.current.sms,
+      location_permission: permissionsToSave.current.location,
+      contacts_permission: permissionsToSave.current.contacts,
+      ...(coords ? { latitude: coords.latitude, longitude: coords.longitude } : {}),
+    });
+  };
+
+  const getHighAccuracyLocationWithRetry = async (): Promise<{ latitude: number; longitude: number } | null> => {
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    if (!servicesEnabled) {
+      Alert.alert("Turn on GPS", "Please enable device location services (GPS) and try again.");
+      return null;
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { coords } = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Highest,
+          mayShowUserSettingsDialog: true,
+        });
+        if (
+          coords &&
+          Number.isFinite(coords.latitude) &&
+          Number.isFinite(coords.longitude) &&
+          (coords.accuracy == null || coords.accuracy <= 100)
+        ) {
+          return { latitude: coords.latitude, longitude: coords.longitude };
         }
-        setModalIndex(PERMISSIONS.length);
-      } else {
-        setLocationModalReady(true);
+      } catch {
+        // Retry using fresh GPS fix.
       }
-    })();
-  }, [isLocationStep]);
+    }
+    return null;
+  };
 
   useEffect(() => {
     if (!allDone || didRunAllDone.current) return;
@@ -141,27 +147,30 @@ export default function OnboardingPermissionsScreen() {
       const p = permissionsToSave.current ?? {
         sms: status.sms === "granted",
         location: status.location === "granted",
-        contacts: status.notification === "granted",
+        contacts: status.contacts === "granted",
       };
       try {
+        setFinalizing(true);
         await profileService.updateProfile({
           sms_permission: p.sms,
           location_permission: p.location,
           contacts_permission: p.contacts,
         });
-        if (!cancelled) router.replace("/(tabs)/");
+        if (!cancelled) setAllDoneSaved(true);
       } catch {
-        if (!cancelled) router.replace("/(tabs)/");
+        if (!cancelled) setAllDoneSaved(true);
+      } finally {
+        if (!cancelled) setFinalizing(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [allDone, status.sms, status.notification, status.location]);
+  }, [allDone, status.sms, status.contacts, status.location]);
 
   const updatePermissionsRef = (nextStatus: Record<string, PermissionStatus>) => {
     permissionsToSave.current = {
       sms: nextStatus.sms === "granted",
       location: nextStatus.location === "granted",
-      contacts: nextStatus.notification === "granted",
+      contacts: nextStatus.contacts === "granted",
     };
   };
 
@@ -193,35 +202,33 @@ export default function OnboardingPermissionsScreen() {
             const next = { ...latestStatus, location: "granted" as const };
             setStatus(next);
             updatePermissionsRef(next);
-            try {
-              const { coords } = await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.Balanced,
-              });
-              await profileService.updateProfile({
-                location_permission: true,
-                latitude: coords.latitude,
-                longitude: coords.longitude,
-              });
-            } catch {
-              await profileService.updateProfile({ location_permission: true });
-            }
+            const preciseLocation = await getHighAccuracyLocationWithRetry();
+            await syncPermissions(
+              { location: true },
+              preciseLocation
+                ? { latitude: preciseLocation.latitude, longitude: preciseLocation.longitude }
+                : undefined
+            );
             goNext();
           }
-        } else if (permissionId === "notification") {
-          const Notifications = await import("expo-notifications");
-          const { status: notifStatus } = await Notifications.getPermissionsAsync();
-          if (notifStatus === "granted") {
-            const next = { ...latestStatus, notification: "granted" as const };
+        } else if (permissionId === "contacts") {
+          const { status: contactsStatus } = await Contacts.getPermissionsAsync();
+          if (contactsStatus === "granted") {
+            const next = { ...latestStatus, contacts: "granted" as const };
             setStatus(next);
             updatePermissionsRef(next);
+            await syncPermissions({ contacts: true });
             goNext();
           }
         } else if (permissionId === "sms") {
-          // SMS: no Expo API to check; assume user enabled in Settings and advance
-          const next = { ...latestStatus, sms: "granted" as const };
-          setStatus(next);
-          updatePermissionsRef(next);
-          goNext();
+          const smsStatus = await requestSmsPermission();
+          if (smsStatus === "granted") {
+            const next = { ...latestStatus, sms: "granted" as const };
+            setStatus(next);
+            updatePermissionsRef(next);
+            await syncPermissions({ sms: true });
+            goNext();
+          }
         }
       } finally {
         setLoading(null);
@@ -240,18 +247,13 @@ export default function OnboardingPermissionsScreen() {
         setStatus(next);
         updatePermissionsRef(next);
         if (locStatus === "granted") {
-          try {
-            const { coords } = await Location.getCurrentPositionAsync({
-              accuracy: Location.Accuracy.Balanced,
-            });
-            await profileService.updateProfile({
-              location_permission: true,
-              latitude: coords.latitude,
-              longitude: coords.longitude,
-            });
-          } catch {
-            await profileService.updateProfile({ location_permission: true });
-          }
+          const preciseLocation = await getHighAccuracyLocationWithRetry();
+          await syncPermissions(
+            { location: true },
+            preciseLocation
+              ? { latitude: preciseLocation.latitude, longitude: preciseLocation.longitude }
+              : undefined
+          );
           goNext();
         } else {
           openAppSettings();
@@ -261,35 +263,41 @@ export default function OnboardingPermissionsScreen() {
             [{ text: "OK" }]
           );
         }
-      } else if (id === "notification") {
-        const notifStatus = await requestNotificationPermission();
-        next = { ...status, notification: notifStatus };
+      } else if (id === "contacts") {
+        const { status: contactsStatus } = await Contacts.requestPermissionsAsync();
+        next = { ...status, contacts: contactsStatus === "granted" ? "granted" : "denied" };
         setStatus(next);
         updatePermissionsRef(next);
-        if (notifStatus === "granted") {
+        if (contactsStatus === "granted") {
+          await syncPermissions({ contacts: true });
+          try {
+            await Contacts.getContactsAsync({ pageSize: 1 });
+          } catch {
+            // DB flag was already synced.
+          }
           goNext();
         } else {
-          handleOpenSettings("notification");
+          handleOpenSettings("contacts");
         }
       } else if (id === "sms") {
-        // SMS permission cannot be requested in-app on Expo; open Settings. On return, AppState will re-check and goNext()
-        openAppSettings();
-        Alert.alert(
-          "SMS permission",
-          "To allow automatic OTP verification, enable SMS permission in Settings, then return to the app.",
-          [{ text: "OK" }]
-        );
-        next = { ...status, sms: "pending" };
+        const smsStatus = await requestSmsPermission();
+        next = { ...status, sms: smsStatus };
         setStatus(next);
         updatePermissionsRef(next);
+        if (smsStatus === "granted") {
+          await syncPermissions({ sms: true });
+          goNext();
+        } else {
+          handleOpenSettings("sms");
+        }
       } else {
-        next = { ...status, [id]: "granted" };
+        next = { ...status, [id]: "granted" as PermissionStatus };
         setStatus(next);
         updatePermissionsRef(next);
         goNext();
       }
     } catch {
-      const next = { ...status, [id]: "granted" };
+      const next = { ...status, [id]: "granted" as PermissionStatus };
       setStatus(next);
       updatePermissionsRef(next);
       goNext();
@@ -300,9 +308,14 @@ export default function OnboardingPermissionsScreen() {
 
   const handleSkip = (id: string) => {
     if (id === "location") return;
-    const next = { ...status, [id]: "skipped" };
+    const next = { ...status, [id]: "skipped" as PermissionStatus };
     setStatus(next);
     updatePermissionsRef(next);
+    if (id === "sms") {
+      void syncPermissions({ sms: false });
+    } else if (id === "contacts") {
+      void syncPermissions({ contacts: false });
+    }
     goNext();
   };
 
@@ -312,7 +325,7 @@ export default function OnboardingPermissionsScreen() {
         <Text style={styles.subtitle}>We need a few permissions for a smooth and secure experience.</Text>
       </View>
 
-      {currentPermission && (currentPermission.id !== "location" || showLocationModal) && (
+      {currentPermission && (
         <Modal
           key={`permission-${modalIndex}-${currentPermission.id}`}
           visible
@@ -325,7 +338,7 @@ export default function OnboardingPermissionsScreen() {
               <View style={styles.modalCard}>
                 <View style={styles.cardHeader}>
                   <View style={styles.cardHeaderSpacer} />
-                  {!isLocationStep && (
+                  {currentPermission.id !== "location" && (
                     <TouchableOpacity
                       style={styles.skipBtn}
                       onPress={() => handleSkip(currentPermission.id)}
@@ -359,6 +372,32 @@ export default function OnboardingPermissionsScreen() {
                 </Text>
               </View>
             </Animated.View>
+          </Pressable>
+        </Modal>
+      )}
+
+      {allDone && (
+        <Modal visible transparent animationType="fade" statusBarTranslucent>
+          <Pressable style={styles.overlay} onPress={() => {}}>
+            <View style={styles.modalCardWrap}>
+              <View style={styles.modalCard}>
+                <Text style={styles.modalTitle}>All set!</Text>
+                <Text style={styles.modalDesc}>
+                  Permissions were saved successfully. You can continue to the app now.
+                </Text>
+                <TouchableOpacity
+                  style={[styles.allowBtn, (!allDoneSaved || finalizing) && styles.allowBtnDisabled]}
+                  disabled={!allDoneSaved || finalizing}
+                  onPress={() => router.replace("/(tabs)/")}
+                >
+                  {finalizing ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.allowBtnText}>Continue</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
           </Pressable>
         </Modal>
       )}

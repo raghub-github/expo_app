@@ -11,8 +11,10 @@
  */
 
 import { getDb, getSql } from "../db/client";
-import { eq, and, isNull, sql } from "drizzle-orm";
+import { eq, and, isNull, sql, type InferSelectModel } from "drizzle-orm";
 import { systemUsers } from "../db/schema";
+
+type SystemUserRow = InferSelectModel<typeof systemUsers>;
 
 export interface SystemUser {
   id: number;
@@ -22,6 +24,7 @@ export interface SystemUser {
   full_name: string;
   primary_role: string;
   status: string;
+  can_toggle_portal: boolean;
   supabase_auth_id?: string; // Supabase auth.users.id (UUID)
 }
 
@@ -78,6 +81,7 @@ export async function getSystemUserByEmail(
         full_name: systemUsers.fullName,
         primary_role: systemUsers.primaryRole,
         status: systemUsers.status,
+        can_toggle_portal: systemUsers.canTogglePortal,
       })
       .from(systemUsers)
       .where(and(eq(systemUsers.email, normalizedEmail), notDeleted))
@@ -88,7 +92,7 @@ export async function getSystemUserByEmail(
       try {
         const sqlClient = getSql();
         const rawRows = await sqlClient`
-          SELECT id, system_user_id, email, mobile, full_name, primary_role, status
+          SELECT id, system_user_id, email, mobile, full_name, primary_role, status, can_toggle_portal
           FROM system_users
           WHERE LOWER(TRIM(email)) = ${normalizedEmail}
             AND deleted_at IS NULL
@@ -103,6 +107,7 @@ export async function getSystemUserByEmail(
             full_name: string;
             primary_role: string;
             status: string;
+            can_toggle_portal: boolean | null;
           };
           const numericId = Number(row.id);
           if (!Number.isFinite(numericId)) {
@@ -114,10 +119,10 @@ export async function getSystemUserByEmail(
               email: row.email,
               mobile: row.mobile,
               full_name: row.full_name,
-              primary_role: row.primary_role,
-              status: row.status,
-            }];
-          }
+              primary_role: row.primary_role as SystemUserRow["primaryRole"],
+              status: row.status as SystemUserRow["status"],
+              can_toggle_portal: Boolean(row.can_toggle_portal),
+            }];          }
         }
       } catch {
         // Ignore raw fallback errors; result stays empty
@@ -139,6 +144,7 @@ export async function getSystemUserByEmail(
         full_name: user.full_name,
         primary_role: user.primary_role,
         status: user.status,
+        can_toggle_portal: Boolean(user.can_toggle_portal),
       };
     }
 

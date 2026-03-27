@@ -51,7 +51,8 @@ export async function POST(
 
     const body = await request.json().catch(() => ({}));
     const message = typeof body.message === "string" ? body.message.trim() : "";
-    const images = Array.isArray(body.images) ? body.images.filter((u): u is string => typeof u === "string") : [];
+    const images = Array.isArray(body.images)      ? body.images.filter((u: unknown): u is string => typeof u === "string")
+      : [];
     if (!message && images.length === 0) {
       return NextResponse.json({ success: false, error: "Message or images required" }, { status: 400 });
     }
@@ -71,7 +72,7 @@ export async function POST(
     const messageText = message + (images.length > 0 ? "\n[IMAGES:" + JSON.stringify(images) + "]" : "");
     const senderName = access.store.store_display_name || access.store.store_name || "Store";
 
-    const attachmentsForDb = images.map((urlOrKey) =>
+    const attachmentsForDb = images.map((urlOrKey: string) =>
       JSON.stringify({ storageKey: urlOrKey, name: "image", mimeType: "image/jpeg" })
     );
 

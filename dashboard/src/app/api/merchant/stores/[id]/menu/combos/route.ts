@@ -67,11 +67,20 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Valid combo_price required" }, { status: 400 });
     }
 
+    const description =
+      body.description != null && String(body.description).trim() !== ""
+        ? String(body.description)
+        : null;
+    const imageUrl =
+      body.image_url != null && String(body.image_url).trim() !== ""
+        ? String(body.image_url)
+        : null;
+    const displayOrderRaw = Number(body.display_order);
+    const displayOrder = Number.isFinite(displayOrderRaw) ? displayOrderRaw : 0;
     const sql = getSql();
     const [row] = await sql`
       INSERT INTO merchant_menu_combos (store_id, combo_name, description, combo_price, image_url, display_order)
-      VALUES (${storeId}, ${combo_name}, ${body.description ?? null}, ${combo_price}, ${body.image_url ?? null}, ${body.display_order ?? 0})
-      RETURNING id
+      VALUES (${storeId}, ${combo_name}, ${description}, ${combo_price}, ${imageUrl}, ${displayOrder})      RETURNING id
     `;
     try {
       const agentId = await getAgentIdForStore(storeId);
@@ -81,7 +90,7 @@ export async function POST(
         changedSection: "menu_combos",
         fieldName: "combo",
         oldValue: null,
-        newValue: JSON.stringify({ combo_name, description: body.description ?? null, combo_price }),
+        newValue: JSON.stringify({ combo_name, description, combo_price }),
         actionType: "create",
       });
     } catch (_logErr) {}

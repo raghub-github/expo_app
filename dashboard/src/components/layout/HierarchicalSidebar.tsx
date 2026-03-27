@@ -176,7 +176,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   if (showSkeleton) {
     return (
       <aside className={sidebarBase} style={asideStyle}>
-        <div className="flex h-[52px] min-h-[52px] items-center justify-between border-b border-white/10 px-3 shrink-0">
+        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <div className="flex items-center gap-2.5 flex-1 min-w-0">
               <div className="h-9 w-9 rounded-xl bg-white/15 animate-pulse shrink-0" />
@@ -213,7 +213,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     <>
       <aside className={sidebarBase} style={asideStyle}>
         {/* LOGO - top */}
-        <div className="flex h-[52px] min-h-[52px] items-center justify-between border-b border-white/10 px-3 shrink-0">
+        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <>
               <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>

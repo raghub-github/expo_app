@@ -1,12 +1,9 @@
 /**
  * Last 20 successfully selected locations – for search ranking (user_history_boost).
- * Persisted to AsyncStorage so relevance survives app restarts.
+ * In-memory only (no persistence). Cleared on app restart.
  */
 
 import { create } from "zustand";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
-const STORAGE_KEY = "@gatimitra/recent_locations";
 const MAX_RECENT = 20;
 
 export type RecentLocationItem = {
@@ -26,6 +23,7 @@ type RecentLocationState = {
   items: RecentLocationItem[];
   hydrated: boolean;
   addRecentLocation: (place: RecentLocationItem) => void;
+  clearRecentLocations: () => void;
   getRecentLocationKeys: () => Set<string>;
   hydrate: () => Promise<void>;
 };
@@ -43,9 +41,12 @@ export const useRecentLocationStore = create<RecentLocationState>((set, get) => 
           (i) => locationKey(i.latitude, i.longitude, i.primary) !== key
         ),
       ].slice(0, MAX_RECENT);
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
       return { items: next };
     });
+  },
+
+  clearRecentLocations: () => {
+    set({ items: [] });
   },
 
   getRecentLocationKeys: () => {
@@ -56,13 +57,6 @@ export const useRecentLocationStore = create<RecentLocationState>((set, get) => 
   hydrate: async () => {
     const { hydrated } = get();
     if (hydrated) return;
-    try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      const items = Array.isArray(parsed) ? parsed.slice(0, MAX_RECENT) : [];
-      set({ items, hydrated: true });
-    } catch {
-      set({ items: [], hydrated: true });
-    }
+    set({ hydrated: true });
   },
 }));

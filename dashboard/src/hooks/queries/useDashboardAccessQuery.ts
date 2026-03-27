@@ -1,12 +1,13 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
 import type { DashboardType, AccessPointGroup } from "@/lib/db/schema";
 
 const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
+let dashboardAccessInFlight: Promise<DashboardAccessData> | null = null;
 
 interface DashboardAccess {
   dashboardType: string;
@@ -14,7 +15,7 @@ interface DashboardAccess {
   isActive: boolean;
 }
 
-interface AccessPoint {
+export interface AccessPoint {
   dashboardType: string;
   accessPointGroup: string;
   accessPointName: string;
@@ -35,6 +36,8 @@ interface DashboardAccessResponse {
 
 /** Exported for prefetch in dashboard layout */
 export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
+  if (dashboardAccessInFlight) return dashboardAccessInFlight;
+  dashboardAccessInFlight = (async () => {
   const response = await fetch("/api/auth/dashboard-access", {
     credentials: "include",
     cache: "no-store",
@@ -70,6 +73,12 @@ export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
   }
 
   return result.data;
+  })();
+  try {
+    return await dashboardAccessInFlight;
+  } finally {
+    dashboardAccessInFlight = null;
+  }
 }
 
 /**
@@ -77,22 +86,17 @@ export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
  * Uses React Query for automatic caching and refetching
  */
 export function useDashboardAccessQuery() {
+  const queryClient = useQueryClient();
   const staticConfig = getCacheConfig(CacheTier.STATIC);
-  
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useDashboardAccessQuery.ts:79',message:'useDashboardAccessQuery hook called',data:{cacheConfig:staticConfig},timestamp:Date.now(),runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-  // #endregion
-  
+
   return useQuery({
     queryKey: queryKeys.dashboardAccess(),
     queryFn: fetchDashboardAccess,
-    ...staticConfig,
-    placeholderData: (previousData) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useDashboardAccessQuery.ts:86',message:'placeholderData check',data:{hasPreviousData:!!previousData},timestamp:Date.now(),runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
-      return previousData;
+    initialData: () => {
+      return queryClient.getQueryData<DashboardAccessData>(queryKeys.dashboardAccess());
     },
+    ...staticConfig,
+    placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
       if (failureCount >= 3) return false;
       if (error instanceof Error) {

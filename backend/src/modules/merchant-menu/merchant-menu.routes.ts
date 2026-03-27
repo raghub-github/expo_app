@@ -3,13 +3,15 @@ import type { FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { auth } from "../../plugins/auth.js";
 import { randomUUID } from "crypto";
-import { getEnv } from "../../config/env.js";
 import { uploadToR2, deleteFromR2, getR2SignedUrl } from "../../services/r2/r2Service.js";
-import { buildMenuItemImageKey, buildPublicUrl } from "../../services/r2/merchantMenuR2Paths.js";
+import { buildMenuItemImageKey } from "../../services/r2/merchantMenuR2Paths.js";
+import { validateMenuItemSquareImage } from "../../utils/menuItemImageValidation.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
 import {
   assertStoreAccess,
   listCategories,
+  suggestPeerCategoryNames,
+  suggestPeerSubcategoryNames,
   createCategory,
   updateCategory,
   deleteCategory,
@@ -45,6 +47,8 @@ import {
   addComboComponent,
   deleteComboComponent,
   addItemImageRow,
+  listCuisinesForStore,
+  createMerchantCuisine,
   listCategoryAvailability,
   getCategoryAvailabilityCounts,
   addCategoryAvailability,
@@ -78,6 +82,19 @@ import {
   getModifierGroupUsageCount,
 } from "./merchant-menu.service.js";
 
+import {
+  getAttributeDefinitionsByStoreType,
+  getStoreTypeConfig,
+  resolveStoreType,
+} from "./unifiedCatalogAttributes.js";
+import {
+  CategoryRuleError,
+  buildCategoryUiConfig,
+  listCatalogCuisinesNotLinkedForStore,
+  linkExistingCuisineToStore,
+  unlinkCuisineFromStore,
+} from "./categoryRules.js";
+
 // Allow parent_category_id as number or string (client may send string); preserve null/undefined
 const parentCategoryIdSchema = z.preprocess(
   (v) => {
@@ -92,11 +109,21 @@ const parentCategoryIdSchema = z.preprocess(
   z.number().int().positive().optional().nullable()
 );
 
+const cuisineIdSchema = z.preprocess(
+  (v) => {
+    if (v === null || v === undefined || v === "") return v;
+    const n = Number(v);
+    return Number.isNaN(n) ? undefined : n;
+  },
+  z.union([z.number().int().positive(), z.null()]).optional()
+);
+
 const categoryCreateSchema = z.object({
   category_name: z.string().min(1).max(200),
   category_description: z.string().max(2000).optional().nullable(),
   category_image_url: z.string().url().max(2000).optional().nullable(),
   parent_category_id: parentCategoryIdSchema,
+  cuisine_id: cuisineIdSchema,
   display_order: z.number().int().min(0).optional(),
   is_active: z.boolean().optional(),
 });
@@ -106,8 +133,17 @@ const categoryUpdateSchema = z.object({
   category_description: z.string().max(2000).optional().nullable(),
   category_image_url: z.string().url().max(2000).optional().nullable(),
   parent_category_id: parentCategoryIdSchema,
+  cuisine_id: cuisineIdSchema,
   display_order: z.number().int().min(0).optional(),
   is_active: z.boolean().optional(),
+});
+
+const cuisineCreateBodySchema = z.object({
+  name: z.string().min(1).max(120),
+});
+
+const cuisineLinkBodySchema = z.object({
+  cuisine_id: z.number().int().positive(),
 });
 
 const nutritionalFields = {
@@ -145,6 +181,11 @@ const itemCreateSchema = z.object({
   short_name: z.string().max(100).optional().nullable(),
   display_order: z.number().int().min(0).optional(),
   ...nutritionalFields,
+  /**
+   * Unified, schema-driven attributes (optional).
+   * If omitted, FOOD attributes are computed from legacy columns (backwards compatible).
+   */
+  attributes: z.record(z.string(), z.any()).optional(),
 });
 
 const itemUpdateSchema = z.object({
@@ -163,6 +204,7 @@ const itemUpdateSchema = z.object({
   display_order: z.number().int().min(0).optional(),
   is_active: z.boolean().optional(),
   ...nutritionalFields,
+  attributes: z.record(z.string(), z.any()).optional(),
 });
 
 const stockPatchSchema = z.object({
@@ -176,6 +218,7 @@ const variantCreateSchema = z.object({
   variant_price: z.number().min(0),
   is_default: z.boolean().optional(),
   display_order: z.number().int().min(0).optional(),
+  attributes: z.record(z.string(), z.any()).optional(),
 });
 
 const variantUpdateSchema = z.object({
@@ -185,6 +228,7 @@ const variantUpdateSchema = z.object({
   is_default: z.boolean().optional(),
   display_order: z.number().int().min(0).optional(),
   in_stock: z.boolean().optional(),
+  attributes: z.record(z.string(), z.any()).optional(),
 });
 
 const customizationGroupCreateSchema = z.object({
@@ -237,6 +281,21 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         return access;
       }
 
+      function getDefaultStoreTypeConfig() {
+        return {
+          enable_addons: true,
+          enable_combos: true,
+          enable_expiry: false,
+          enable_prescription: false,
+          enable_weight: false,
+        };
+      }
+
+      async function getStoreTypeConfigForStore(storeIdNum: number) {
+        const storeType = (await resolveStoreType(storeIdNum)) ?? "GENERAL";
+        return (await getStoreTypeConfig(storeType)) ?? getDefaultStoreTypeConfig();
+      }
+
       // Categories
       protectedApp.get<{ Params: { storeId: string } }>(
         "/:storeId/categories",
@@ -247,6 +306,66 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           return reply.send({ categories: list });
         }
       );
+
+      /** Debounced client: names from other stores' menus; excludes names already on this store. */
+      protectedApp.get<{
+        Params: { storeId: string };
+        Querystring: { q?: string; limit?: string; editingCategoryId?: string };
+      }>("/:storeId/category-name-suggestions", async (req, reply) => {
+        const access = await getStore(req, reply, req.params.storeId);
+        if (!access) return;
+        const q = typeof req.query.q === "string" ? req.query.q : "";
+        const limitRaw = req.query.limit != null ? parseInt(String(req.query.limit), 10) : 12;
+        const limit = Number.isFinite(limitRaw) ? limitRaw : 12;
+        const editRaw =
+          req.query.editingCategoryId != null && req.query.editingCategoryId !== ""
+            ? parseInt(String(req.query.editingCategoryId), 10)
+            : NaN;
+        const editingCategoryId = Number.isFinite(editRaw) ? editRaw : null;
+        const suggestions = await suggestPeerCategoryNames(access.storeIdNum, {
+          q,
+          limit,
+          editingCategoryId,
+        });
+        return reply.send({ suggestions });
+      });
+
+      /** Subcategory name suggestions from other stores' subcategories; excludes names already under this parent. */
+      protectedApp.get<{
+        Params: { storeId: string };
+        Querystring: {
+          q?: string;
+          limit?: string;
+          parentCategoryId: string;
+          editingCategoryId?: string;
+        };
+      }>("/:storeId/subcategory-name-suggestions", async (req, reply) => {
+        const access = await getStore(req, reply, req.params.storeId);
+        if (!access) return;
+        const parentRaw = req.query.parentCategoryId;
+        const parentParsed =
+          parentRaw != null && String(parentRaw).trim() !== ""
+            ? parseInt(String(parentRaw), 10)
+            : NaN;
+        if (!Number.isFinite(parentParsed) || parentParsed <= 0) {
+          return reply.status(400).send({ message: "parentCategoryId is required" });
+        }
+        const q = typeof req.query.q === "string" ? req.query.q : "";
+        const limitRaw = req.query.limit != null ? parseInt(String(req.query.limit), 10) : 12;
+        const limit = Number.isFinite(limitRaw) ? limitRaw : 12;
+        const editRaw =
+          req.query.editingCategoryId != null && req.query.editingCategoryId !== ""
+            ? parseInt(String(req.query.editingCategoryId), 10)
+            : NaN;
+        const editingCategoryId = Number.isFinite(editRaw) ? editRaw : null;
+        const suggestions = await suggestPeerSubcategoryNames(access.storeIdNum, {
+          q,
+          limit,
+          parentCategoryId: parentParsed,
+          editingCategoryId,
+        });
+        return reply.send({ suggestions });
+      });
 
       /** Category availability window counts per category (for UI "Hours set" badges). */
       protectedApp.get<{ Params: { storeId: string } }>(
@@ -259,15 +378,205 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         }
       );
 
+      // Catalog schema (UI-driven): store_type_config + attribute_definitions
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/:storeId/catalog-schema",
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+
+          const storeType = (await resolveStoreType(access.storeIdNum)) ?? "GENERAL";
+          const config =
+            (await getStoreTypeConfig(storeType)) ?? {
+              enable_addons: true,
+              enable_combos: true,
+              enable_expiry: false,
+              enable_prescription: false,
+              enable_weight: false,
+            };
+          const attributeDefinitions = await getAttributeDefinitionsByStoreType(storeType, "ITEM");
+          const variantAttributeDefinitions = await getAttributeDefinitionsByStoreType(storeType, "VARIANT");
+
+          return reply.send({
+            store_type: storeType,
+            store_type_config: config,
+            attribute_definitions: attributeDefinitions,
+            variant_attribute_definitions: variantAttributeDefinitions,
+          });
+        }
+      );
+
+      /** Config-driven category form: store_type rules + plan limits + cuisine visibility */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/:storeId/category-config",
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          const storeType = await resolveStoreType(access.storeIdNum);
+          const config = await buildCategoryUiConfig(access.storeIdNum, storeType);
+          return reply.send(config);
+        }
+      );
+
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/:storeId/cuisines",
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          const rawCuisines = await listCuisinesForStore(access.storeIdNum);
+          const rawCatalog = await listCatalogCuisinesNotLinkedForStore(access.storeIdNum);
+          const norm = (rows: unknown[]) =>
+            rows
+              .map((r) => {
+                const x = r as { id?: unknown; name?: unknown; is_system_defined?: unknown };
+                const id = Number(x.id);
+                if (!Number.isFinite(id) || id <= 0) return null;
+                if (typeof x.name !== "string") return null;
+                return {
+                  id,
+                  name: x.name,
+                  is_system_defined: Boolean(x.is_system_defined),
+                };
+              })
+              .filter((r): r is NonNullable<typeof r> => r != null);
+          return reply.send({ cuisines: norm(rawCuisines as unknown[]), catalog: norm(rawCatalog as unknown[]) });
+        }
+      );
+
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: z.infer<typeof cuisineLinkBodySchema>;
+      }>(
+        "/:storeId/cuisines/link",
+        { schema: { body: cuisineLinkBodySchema } },
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          try {
+            await linkExistingCuisineToStore(access.storeIdNum, req.body.cuisine_id);
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "category",
+                action: "update",
+                entityId: req.body.cuisine_id,
+                summary: `Linked cuisine #${req.body.cuisine_id} to store`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.send({ ok: true });
+          } catch (e) {
+            if (e instanceof CategoryRuleError) {
+              return reply.code(e.httpStatus).send({ error: e.code, message: e.message });
+            }
+            throw e;
+          }
+        }
+      );
+
+      protectedApp.delete<{ Params: { storeId: string; cuisineId: string } }>(
+        "/:storeId/cuisines/:cuisineId",
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          const cuisineId = parseInt(req.params.cuisineId, 10);
+          if (Number.isNaN(cuisineId)) {
+            return reply.code(400).send({ error: "invalid_cuisine_id" });
+          }
+          try {
+            await unlinkCuisineFromStore(access.storeIdNum, cuisineId);
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "category",
+                action: "delete",
+                entityId: cuisineId,
+                summary: `Unlinked cuisine #${cuisineId} from store`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.send({ ok: true });
+          } catch (e) {
+            if (e instanceof CategoryRuleError) {
+              return reply.code(e.httpStatus).send({ error: e.code, message: e.message });
+            }
+            throw e;
+          }
+        }
+      );
+
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: z.infer<typeof cuisineCreateBodySchema>;
+      }>(
+        "/:storeId/cuisines",
+        { schema: { body: cuisineCreateBodySchema } },
+        async (req, reply) => {
+          const access = await getStore(req, reply, req.params.storeId);
+          if (!access) return;
+          try {
+            const created = await createMerchantCuisine(access.storeIdNum, req.body.name);
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "category",
+                action: "create",
+                entityId: created.id,
+                entityName: req.body.name.trim(),
+                summary: `Merchant linked cuisine from master list '${req.body.name.trim()}'`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.code(201).send(created);
+          } catch (e) {
+            if (e instanceof CategoryRuleError) {
+              return reply.code(e.httpStatus).send({ error: e.code, message: e.message });
+            }
+            const msg = String((e as Error)?.message || e);
+            if (msg.includes("duplicate") || (e as { code?: string })?.code === "23505") {
+              return reply.code(409).send({ error: "duplicate_cuisine_name", message: "Cuisine name already exists" });
+            }
+            throw e;
+          }
+        }
+      );
+
       protectedApp.post<{ Params: { storeId: string }; Body: z.infer<typeof categoryCreateSchema> }>(
         "/:storeId/categories",
         { schema: { body: categoryCreateSchema } },
         async (req, reply) => {
           const access = await getStore(req, reply, req.params.storeId);
           if (!access) return;
-          const created = await createCategory(access.storeIdNum, req.body);
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "category", action: "create", entityId: created?.id ?? null, entityName: req.body.category_name, summary: `Merchant created category '${req.body.category_name}'`, actorType: "merchant", source: "merchant_app" }); } catch {}
-          return reply.code(201).send(created);
+          try {
+            const created = await createCategory(access.storeIdNum, req.body);
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "category",
+                action: "create",
+                entityId: created?.id ?? null,
+                entityName: req.body.category_name,
+                summary: `Merchant created category '${req.body.category_name}'`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.code(201).send(created);
+          } catch (e) {
+            if (e instanceof CategoryRuleError) {
+              return reply.code(e.httpStatus).send({ error: e.code, message: e.message });
+            }
+            const msg = String((e as Error)?.message || e);
+            if (msg.includes("duplicate") || (e as { code?: string })?.code === "23505") {
+              return reply
+                .code(409)
+                .send({ error: "duplicate_category_name", message: "A category with this name already exists for this store" });
+            }
+            throw e;
+          }
         }
       );
 
@@ -285,10 +594,34 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!access) return;
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_category_id" });
-          const ok = await updateCategory(id, access.storeIdNum, req.body);
-          if (!ok) return reply.code(404).send({ error: "category_not_found" });
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "category", action: "update", entityId: id, entityName: req.body.category_name ?? null, summary: `Merchant updated category #${id}${req.body.category_name ? ` '${req.body.category_name}'` : ""}`, actorType: "merchant", source: "merchant_app" }); } catch {}
-          return reply.send({ ok: true });
+          try {
+            const ok = await updateCategory(id, access.storeIdNum, req.body);
+            if (!ok) return reply.code(404).send({ error: "category_not_found" });
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "category",
+                action: "update",
+                entityId: id,
+                entityName: req.body.category_name ?? null,
+                summary: `Merchant updated category #${id}${req.body.category_name ? ` '${req.body.category_name}'` : ""}`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.send({ ok: true });
+          } catch (e) {
+            if (e instanceof CategoryRuleError) {
+              return reply.code(e.httpStatus).send({ error: e.code, message: e.message });
+            }
+            const msg = String((e as Error)?.message || e);
+            if (msg.includes("duplicate") || (e as { code?: string })?.code === "23505") {
+              return reply
+                .code(409)
+                .send({ error: "duplicate_category_name", message: "A category with this name already exists for this store" });
+            }
+            throw e;
+          }
         }
       );
 
@@ -305,6 +638,11 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!out.ok) {
             if (out.error === "category_has_items")
               return reply.code(400).send({ error: out.error, itemCount: out.itemCount });
+            if (out.error === "category_has_subcategories")
+              return reply.code(400).send({
+                error: out.error,
+                subcategoryCount: out.subcategoryCount,
+              });
             return reply.code(404).send({ error: out.error });
           }
           try { await logStoreActivity({ storeId: access.storeIdNum, section: "category", action: "delete", entityId: id, summary: `Merchant deleted category #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
@@ -363,11 +701,38 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           const access = await getStore(req, reply, req.params.storeId);
           if (!access) return;
           const role = req.auth?.role ?? "merchant";
-          const created = await createItem(access.storeIdNum, req.body, {
-            createdByRole: role,
-            createdBySub: req.auth?.sub ?? null,
-          });
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "create", entityId: created?.id ?? null, entityName: req.body.item_name, summary: `Merchant created item '${req.body.item_name}'`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          let created: { id: number; item_id: string };
+          try {
+            created = await createItem(access.storeIdNum, req.body, {
+              createdByRole: role,
+              createdBySub: req.auth?.sub ?? null,
+            });
+          } catch (e: any) {
+            return reply.code(400).send({
+              error: "invalid_attributes",
+              message: e?.message ?? "invalid_attributes",
+            });
+          }
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "menu_item",
+              action: "create",
+              entityId: created?.id ?? null,
+              entityName: req.body.item_name,
+              summary: `Merchant created item '${req.body.item_name}'`,
+              diff: {
+                attributes: req.body.attributes ?? null,
+                legacy: {
+                  food_type: req.body.food_type ?? null,
+                  spice_level: req.body.spice_level ?? null,
+                  cuisine_type: req.body.cuisine_type ?? null,
+                },
+              },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.code(201).send(created);
         }
       );
@@ -397,12 +762,35 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               });
             }
           }
-          const ok = await updateItem(id, access.storeIdNum, req.body, {
-            updatedByRole: role,
-            updatedBySub: req.auth?.sub ?? null,
-          });
+          let ok: boolean;
+          try {
+            ok = await updateItem(id, access.storeIdNum, req.body, {
+              updatedByRole: role,
+              updatedBySub: req.auth?.sub ?? null,
+            });
+          } catch (e: any) {
+            return reply.code(400).send({
+              error: "invalid_attributes",
+              message: e?.message ?? "invalid_attributes",
+            });
+          }
           if (!ok) return reply.code(404).send({ error: "item_not_found" });
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "update", entityId: id, entityName: req.body.item_name ?? null, summary: `Merchant updated item #${id}${req.body.item_name ? ` '${req.body.item_name}'` : ""}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "menu_item",
+              action: "update",
+              entityId: id,
+              entityName: req.body.item_name ?? null,
+              summary: `Merchant updated item #${id}${req.body.item_name ? ` '${req.body.item_name}'` : ""}`,
+              diff: {
+                attributes: req.body.attributes ?? null,
+                patch: req.body,
+              },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.send({ ok: true });
         }
       );
@@ -709,7 +1097,10 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
             return reply.code(201).send(created);
           } catch (e: any) {
             if (e?.message === "ITEM_NOT_FOUND") return reply.code(404).send({ error: "item_not_found" });
-            throw e;
+            return reply.code(400).send({
+              error: "invalid_attributes",
+              message: e?.message ?? "invalid_attributes",
+            });
           }
         }
       );
@@ -728,7 +1119,15 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!access) return;
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_variant_id" });
-          const ok = await updateVariant(id, access.storeIdNum, req.body);
+          let ok: boolean;
+          try {
+            ok = await updateVariant(id, access.storeIdNum, req.body);
+          } catch (e: any) {
+            return reply.code(400).send({
+              error: "invalid_attributes",
+              message: e?.message ?? "invalid_attributes",
+            });
+          }
           if (!ok) return reply.code(404).send({ error: "variant_not_found" });
           if (req.auth?.role === "merchant" && req.auth?.sub) {
             const menuItemId = await getMenuItemIdByVariantId(id);
@@ -938,8 +1337,10 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
             const data = await req.file();
             if (!data) return reply.code(400).send({ error: "No file provided" });
             const buffer = await data.toBuffer();
-            if (buffer.length > 10 * 1024 * 1024)
-              return reply.code(400).send({ error: "File size exceeds 10MB limit" });
+            const dim = validateMenuItemSquareImage(buffer);
+            if (!dim.ok) {
+              return reply.code(400).send({ error: "invalid_image", message: dim.error });
+            }
             const ext = (data.filename && /\.(webp|jpe?g|png|gif)$/i.exec(data.filename)?.[1]) || "jpg";
             const fileId = randomUUID();
             const key = buildMenuItemImageKey(access.storeIdStr, itemPublicId, fileId, ext);
@@ -949,8 +1350,7 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
               data.mimetype || "image/jpeg"
             );
             uploadedKey = uploadResult.key;
-            // Store a HOST-AGNOSTIC, non-expiring path that works from any device.
-            // Frontends will prepend their own API base URL and hit /v1/attachments/proxy.
+            // Always store proxy path (private bucket); avoid persisting public CDN URLs.
             const imageUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploadedKey)}`;
             const created = await addItemImageRow(itemId, access.storeIdNum, {
               image_url: imageUrl,
@@ -1406,6 +1806,8 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_addons) return reply.code(403).send({ error: "addons_disabled" });
           const itemId = parseInt(req.params.itemId, 10);
           if (Number.isNaN(itemId)) return reply.code(400).send({ error: "invalid_item_id" });
           try {
@@ -1413,7 +1815,22 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
             if (req.auth?.role === "merchant" && req.auth?.sub) {
               await setItemPendingForReReview(itemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
             }
-            try { await logStoreActivity({ storeId: access.storeIdNum, section: "addon", action: "link", entityId: req.body.modifier_group_id, summary: `Merchant linked modifier group #${req.body.modifier_group_id} to item #${itemId}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "addon",
+                action: "link",
+                entityId: req.body.modifier_group_id,
+                summary: `Merchant linked modifier group #${req.body.modifier_group_id} to item #${itemId}`,
+                diff: {
+                  item_id: itemId,
+                  modifier_group_id: req.body.modifier_group_id,
+                  display_order: req.body.display_order ?? null,
+                },
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
             return reply.code(201).send(created);
           } catch (e: any) {
             if (e?.message === "MODIFIER_GROUP_NOT_FOUND") return reply.code(404).send({ error: "modifier_group_not_found" });
@@ -1431,6 +1848,8 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_addons) return reply.code(403).send({ error: "addons_disabled" });
           const itemId = parseInt(req.params.itemId, 10);
           const linkId = parseInt(req.params.linkId, 10);
           if (Number.isNaN(itemId) || Number.isNaN(linkId)) return reply.code(400).send({ error: "invalid_id" });
@@ -1439,7 +1858,21 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (req.auth?.role === "merchant" && req.auth?.sub) {
             await setItemPendingForReReview(itemId, access.storeIdNum, { changed_by: req.auth.sub, changed_by_role: "merchant" });
           }
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "addon", action: "unlink", entityId: linkId, summary: `Merchant unlinked modifier group link #${linkId} from item #${itemId}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "addon",
+              action: "unlink",
+              entityId: linkId,
+              summary: `Merchant unlinked modifier group link #${linkId} from item #${itemId}`,
+              diff: {
+                item_id: itemId,
+                modifier_group_link_id: linkId,
+              },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.send({ ok: true });
         }
       );
@@ -1461,6 +1894,9 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         combo_price: z.number().min(0),
         image_url: z.string().url().max(2000).optional().nullable(),
         display_order: z.number().int().min(0).optional(),
+        combo_type: z.enum(["FIXED", "CUSTOMIZABLE"]).optional().nullable(),
+        pricing_strategy: z.enum(["FIXED_PRICE", "DERIVE_FROM_COMPONENTS", "HYBRID"]).optional().nullable(),
+        combo_metadata: z.any().optional().nullable(),
       });
       const comboUpdateSchema = z.object({
         combo_name: z.string().min(1).max(300).optional(),
@@ -1469,6 +1905,9 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         image_url: z.string().url().max(2000).optional().nullable(),
         is_active: z.boolean().optional(),
         display_order: z.number().int().min(0).optional(),
+        combo_type: z.enum(["FIXED", "CUSTOMIZABLE"]).optional().nullable(),
+        pricing_strategy: z.enum(["FIXED_PRICE", "DERIVE_FROM_COMPONENTS", "HYBRID"]).optional().nullable(),
+        combo_metadata: z.any().optional().nullable(),
       });
       const comboComponentSchema = z.object({
         menu_item_id: z.number().int().positive(),
@@ -1483,8 +1922,26 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         async (req, reply) => {
           const access = await getStore(req, reply, req.params.storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_combos) return reply.code(403).send({ error: "combos_disabled" });
           const created = await createCombo(access.storeIdNum, req.body);
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "combo", action: "create", entityId: created?.id ?? null, entityName: req.body.combo_name, summary: `Merchant created combo '${req.body.combo_name}'`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "combo",
+              action: "create",
+              entityId: created?.id ?? null,
+              entityName: req.body.combo_name,
+              summary: `Merchant created combo '${req.body.combo_name}'`,
+              diff: {
+                combo_type: req.body.combo_type ?? null,
+                pricing_strategy: req.body.pricing_strategy ?? null,
+                combo_metadata: req.body.combo_metadata ?? null,
+              },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.code(201).send(created);
         }
       );
@@ -1516,11 +1973,27 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_combos) return reply.code(403).send({ error: "combos_disabled" });
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_combo_id" });
           const ok = await updateCombo(id, access.storeIdNum, req.body);
           if (!ok) return reply.code(404).send({ error: "combo_not_found" });
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "combo", action: "update", entityId: id, entityName: req.body.combo_name ?? null, summary: `Merchant updated combo #${id}${req.body.combo_name ? ` '${req.body.combo_name}'` : ""}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "combo",
+              action: "update",
+              entityId: id,
+              entityName: req.body.combo_name ?? null,
+              summary: `Merchant updated combo #${id}${req.body.combo_name ? ` '${req.body.combo_name}'` : ""}`,
+              diff: {
+                patch: req.body,
+              },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.send({ ok: true });
         }
       );
@@ -1532,6 +2005,8 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_combos) return reply.code(403).send({ error: "combos_disabled" });
           const id = parseInt(req.params.id, 10);
           if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_combo_id" });
           const ok = await deleteCombo(id, access.storeIdNum);
@@ -1553,11 +2028,27 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_combos) return reply.code(403).send({ error: "combos_disabled" });
           const comboId = parseInt(req.params.comboId, 10);
           if (Number.isNaN(comboId)) return reply.code(400).send({ error: "invalid_combo_id" });
           try {
             const created = await addComboComponent(comboId, access.storeIdNum, req.body);
-            try { await logStoreActivity({ storeId: access.storeIdNum, section: "combo_component", action: "create", entityId: created?.id ?? null, summary: `Merchant added component to combo #${comboId}`, actorType: "merchant", source: "merchant_app" }); } catch {}
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "combo_component",
+                action: "create",
+                entityId: created?.id ?? null,
+                summary: `Merchant added component to combo #${comboId}`,
+                diff: {
+                  combo_id: comboId,
+                  component: req.body,
+                },
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
             return reply.code(201).send(created);
           } catch (e: any) {
             if (e?.message === "COMBO_NOT_FOUND") return reply.code(404).send({ error: "combo_not_found" });
@@ -1573,11 +2064,26 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!storeId) return reply.code(400).send({ error: "storeId query required" });
           const access = await getStore(req, reply, storeId);
           if (!access) return;
+          const cfg = await getStoreTypeConfigForStore(access.storeIdNum);
+          if (!cfg.enable_combos) return reply.code(403).send({ error: "combos_disabled" });
           const componentId = parseInt(req.params.componentId, 10);
           if (Number.isNaN(componentId)) return reply.code(400).send({ error: "invalid_component_id" });
           const ok = await deleteComboComponent(componentId, access.storeIdNum);
           if (!ok) return reply.code(404).send({ error: "component_not_found" });
-          try { await logStoreActivity({ storeId: access.storeIdNum, section: "combo_component", action: "delete", entityId: componentId, summary: `Merchant removed component #${componentId} from combo`, actorType: "merchant", source: "merchant_app" }); } catch {}
+          try {
+            await logStoreActivity({
+              storeId: access.storeIdNum,
+              section: "combo_component",
+              action: "delete",
+              entityId: componentId,
+              summary: `Merchant removed component #${componentId} from combo`,
+              diff: {
+                combo_component_id: componentId,
+              },
+              actorType: "merchant",
+              source: "merchant_app",
+            });
+          } catch {}
           return reply.send({ ok: true });
         }
       );

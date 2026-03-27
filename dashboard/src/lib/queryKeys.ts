@@ -109,8 +109,8 @@ export const queryKeys = {
 
   // Merchant stores list (dashboard/merchants) – stats and list cached for fast revisit
   merchantStores: {
-    stats: (fromDate?: string, toDate?: string) =>
-      ["merchant-stores", "stats", fromDate ?? "", toDate ?? ""] as const,
+    stats: (fromDate?: string, toDate?: string, storeType?: string) =>
+      ["merchant-stores", "stats", fromDate ?? "", toDate ?? "", storeType ?? ""] as const,
     list: (params: { filter: string; search?: string; category?: string; fromDate?: string; toDate?: string }) =>
       ["merchant-stores", "list", stableSerialize(params)] as const,
   },
@@ -129,6 +129,13 @@ export const queryKeys = {
   merchantWalletRequests: {
     summary: (storeId: string | null) =>
       ["merchant-wallet-requests-summary", storeId ?? "global"] as const,
+  },
+
+  offers: {
+    merchant: {
+      list: (filters: Record<string, unknown>) =>
+        ["offers", "merchant", "list", stableSerialize(filters)] as const,    },
+    stores: () => ["offers", "stores"] as const,
   },
 
   // Rider Dashboard

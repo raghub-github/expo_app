@@ -1240,15 +1240,19 @@ function RegisterParentModal({
   const handleNext = () => {
     if (step === 1 && !validateStep1()) return;
     if (step === 2 && !validateStep2()) return;
-    setStep((s) => s + 1);
-  };
+    if (step === 1) setStep(2);
+    else if (step === 2) setStep(3);  };
 
   const handlePrev = () => {
     if (step === 1) {
       setStep("code");
       setError(null);
     } else if (step === 2 || step === 3) {
-      setStep((s) => (s === 2 ? 1 : 2));
+      setStep((s) => {
+        if (s === 3) return 2;
+        if (s === 2) return 1;
+        return s;
+      });
       setError(null);
     }
   };

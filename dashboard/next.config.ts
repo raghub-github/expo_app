@@ -2,8 +2,10 @@ import type { NextConfig } from "next";
 import path from "path";
 
 const nextConfig: NextConfig = {
-  // Use dashboard as the workspace root for file tracing (avoids multiple-lockfile warning in monorepo)
+  output: "standalone",
+  // Keep tracing inside dashboard so this repo is fully standalone
   outputFileTracingRoot: path.join(process.cwd()),
+  transpilePackages: ["@gatimitra/contracts"],
   // Disable dev indicator ("• Rendering..." / "Compiling...") at bottom-left to avoid delay and visual noise
   devIndicators: false,
   // Image optimization: allow quality 75 (default) and 95 for crisp logos/hero images
@@ -23,6 +25,15 @@ const nextConfig: NextConfig = {
     root: path.join(process.cwd()),
   },
   // Mapbox is loaded from CDN, no webpack config needed
+
+  webpack: (config, { dev }) => {
+    if (dev) {
+      // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
+      // "rename ... 0.pack.gz_" webpack cache errors. Memory-only avoids corrupt .next/dev.
+      config.cache = false;
+    }
+    return config;
+  },
 
   // In dev, disable browser cache for dashboard so HTML/JS updates show after code changes.
   // Default dev uses webpack (npm run dev --webpack) to avoid Turbopack ChunkLoadError; use npm run dev:turbopack for Turbopack.

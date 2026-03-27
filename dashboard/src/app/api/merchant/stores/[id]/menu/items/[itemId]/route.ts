@@ -4,6 +4,14 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import {
+  mergeBool,
+  mergeNum,
+  mergeNumNullable,
+  mergeOptionalStr,
+  mergeStringArray,
+  mergeStringArrayOrComma,
+} from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
@@ -45,8 +53,12 @@ export async function GET(
              has_customizations, has_addons, has_variants,
              is_popular, is_recommended,
              COALESCE(preparation_time_minutes, preparation_time, 15)::integer AS preparation_time_minutes,
+             packaging_charges,
              serves, serves_label, item_size_value, item_size_unit,
              allergens,
+             weight_per_serving, weight_per_serving_unit, calories_kcal,
+             protein, protein_unit, carbohydrates, carbohydrates_unit,
+             fat, fat_unit, fibre, fibre_unit, item_tags,
              approval_status::text,
              (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
              (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' ORDER BY r.created_at DESC LIMIT 1) AS pending_change_request_type
@@ -179,9 +191,13 @@ export async function PUT(
     const [existing] = await sql`
       SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
              base_price, selling_price, discount_percentage, tax_percentage,
-             preparation_time_minutes, serves, serves_label,
+             preparation_time_minutes, packaging_charges, serves, serves_label,
              short_name, display_order, item_size_value, item_size_unit, available_for_delivery,
-             in_stock, is_active, is_popular, is_recommended, allergens
+             in_stock, is_active, is_popular, is_recommended, allergens,
+             weight_per_serving, weight_per_serving_unit, calories_kcal,
+             protein, protein_unit, carbohydrates, carbohydrates_unit,
+             fat, fat_unit, fibre, fibre_unit, item_tags,
+             has_customizations, has_addons, has_variants
       FROM merchant_menu_items
       WHERE id = ${menuItemId} AND store_id = ${storeId} AND (is_deleted IS NULL OR is_deleted = false)
       LIMIT 1
@@ -191,31 +207,87 @@ export async function PUT(
     const item_name = body.item_name !== undefined ? String(body.item_name).trim() : e.item_name;
     if (!item_name) return NextResponse.json({ success: false, error: "item_name required" }, { status: 400 });
 
+    const item_description = mergeOptionalStr(body.item_description, e.item_description);
+    const category_id = mergeNum(body.category_id, e.category_id);
+    const food_type = mergeOptionalStr(body.food_type, e.food_type);
+    const spice_level = mergeOptionalStr(body.spice_level, e.spice_level);
+    const cuisine_type = mergeOptionalStr(body.cuisine_type, e.cuisine_type);
+    const base_price = mergeNum(body.base_price, e.base_price);
+    const selling_price = mergeNum(body.selling_price, e.selling_price);
+    const discount_percentage = mergeNum(body.discount_percentage, e.discount_percentage);
+    const tax_percentage = mergeNum(body.tax_percentage, e.tax_percentage);
+    const preparation_time_minutes = mergeNumNullable(body.preparation_time_minutes, e.preparation_time_minutes);
+    const packaging_charges = mergeNumNullable(body.packaging_charges, e.packaging_charges);
+    const serves = mergeNumNullable(body.serves, e.serves);
+    const serves_label = mergeOptionalStr(body.serves_label, e.serves_label);
+    const short_name = mergeOptionalStr(body.short_name, e.short_name);
+    const display_order = mergeNum(body.display_order, e.display_order);
+    const item_size_value = mergeNumNullable(body.item_size_value, e.item_size_value);
+    const item_size_unit = mergeOptionalStr(body.item_size_unit, e.item_size_unit);
+    const available_for_delivery = mergeBool(body.available_for_delivery, e.available_for_delivery);
+    const in_stock = mergeBool(body.in_stock, e.in_stock);
+    const is_active = mergeBool(body.is_active, e.is_active);
+    const is_popular = mergeBool(body.is_popular, e.is_popular);
+    const is_recommended = mergeBool(body.is_recommended, e.is_recommended);
+    const allergens = mergeStringArray(body.allergens, e.allergens);
+    const weight_per_serving = mergeNumNullable(body.weight_per_serving, e.weight_per_serving);
+    const weight_per_serving_unit = mergeOptionalStr(body.weight_per_serving_unit, e.weight_per_serving_unit);
+    const calories_kcal = mergeNumNullable(body.calories_kcal, e.calories_kcal);
+    const protein = mergeNumNullable(body.protein, e.protein);
+    const protein_unit = mergeOptionalStr(body.protein_unit, e.protein_unit);
+    const carbohydrates = mergeNumNullable(body.carbohydrates, e.carbohydrates);
+    const carbohydrates_unit = mergeOptionalStr(body.carbohydrates_unit, e.carbohydrates_unit);
+    const fat = mergeNumNullable(body.fat, e.fat);
+    const fat_unit = mergeOptionalStr(body.fat_unit, e.fat_unit);
+    const fibre = mergeNumNullable(body.fibre, e.fibre);
+    const fibre_unit = mergeOptionalStr(body.fibre_unit, e.fibre_unit);
+    const item_tags_arr = mergeStringArrayOrComma(body.item_tags, e.item_tags);
+    const item_tags = item_tags_arr.length ? item_tags_arr : null;
+    const has_customizations = mergeBool(body.has_customizations, e.has_customizations);
+    const has_addons = mergeBool(body.has_addons, e.has_addons);
+    const has_variants = mergeBool(body.has_variants, e.has_variants);
+
     await sql`
       UPDATE merchant_menu_items
       SET item_name = ${item_name},
-          item_description = ${body.item_description !== undefined ? body.item_description : e.item_description},
-          category_id = ${body.category_id !== undefined ? body.category_id : e.category_id},
-          food_type = ${body.food_type !== undefined ? body.food_type : e.food_type},
-          spice_level = ${body.spice_level !== undefined ? body.spice_level : e.spice_level},
-          cuisine_type = ${body.cuisine_type !== undefined ? body.cuisine_type : e.cuisine_type},
-          base_price = ${body.base_price !== undefined ? body.base_price : e.base_price},
-          selling_price = ${body.selling_price !== undefined ? body.selling_price : e.selling_price},
-          discount_percentage = ${body.discount_percentage !== undefined ? body.discount_percentage : e.discount_percentage},
-          tax_percentage = ${body.tax_percentage !== undefined ? body.tax_percentage : e.tax_percentage},
-          preparation_time_minutes = ${body.preparation_time_minutes !== undefined ? body.preparation_time_minutes : e.preparation_time_minutes},
-          serves = ${body.serves !== undefined ? body.serves : e.serves},
-          serves_label = ${body.serves_label !== undefined ? body.serves_label : e.serves_label},
-          short_name = ${body.short_name !== undefined ? body.short_name : e.short_name},
-          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
-          item_size_value = ${body.item_size_value !== undefined ? body.item_size_value : e.item_size_value},
-          item_size_unit = ${body.item_size_unit !== undefined ? body.item_size_unit : e.item_size_unit},
-          available_for_delivery = ${body.available_for_delivery !== undefined ? body.available_for_delivery : e.available_for_delivery},
-          in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
-          is_active = ${body.is_active !== undefined ? body.is_active : e.is_active},
-          is_popular = ${body.is_popular !== undefined ? body.is_popular : e.is_popular},
-          is_recommended = ${body.is_recommended !== undefined ? body.is_recommended : e.is_recommended},
-          allergens = ${body.allergens !== undefined ? (Array.isArray(body.allergens) ? body.allergens : []) : e.allergens},
+          item_description = ${item_description},
+          category_id = ${category_id},
+          food_type = ${food_type},
+          spice_level = ${spice_level},
+          cuisine_type = ${cuisine_type},
+          base_price = ${base_price},
+          selling_price = ${selling_price},
+          discount_percentage = ${discount_percentage},
+          tax_percentage = ${tax_percentage},
+          preparation_time_minutes = ${preparation_time_minutes},
+          packaging_charges = ${packaging_charges},
+          serves = ${serves},
+          serves_label = ${serves_label},
+          short_name = ${short_name},
+          display_order = ${display_order},
+          item_size_value = ${item_size_value},
+          item_size_unit = ${item_size_unit},
+          available_for_delivery = ${available_for_delivery},
+          in_stock = ${in_stock},
+          is_active = ${is_active},
+          is_popular = ${is_popular},
+          is_recommended = ${is_recommended},
+          allergens = ${allergens},
+          weight_per_serving = ${weight_per_serving},
+          weight_per_serving_unit = ${weight_per_serving_unit},
+          calories_kcal = ${calories_kcal},
+          protein = ${protein},
+          protein_unit = ${protein_unit},
+          carbohydrates = ${carbohydrates},
+          carbohydrates_unit = ${carbohydrates_unit},
+          fat = ${fat},
+          fat_unit = ${fat_unit},
+          fibre = ${fibre},
+          fibre_unit = ${fibre_unit},
+          item_tags = ${item_tags},
+          has_customizations = ${has_customizations},
+          has_addons = ${has_addons},
+          has_variants = ${has_variants},
           updated_at = NOW()
       WHERE id = ${menuItemId} AND store_id = ${storeId}
     `;
@@ -301,12 +373,12 @@ export async function DELETE(
     `) as { id: number; r2_key: string | null }[];
 
     await sql.begin(async (trx) => {
-      await trx`
+      const run = trx as unknown as typeof sql;
+      await run`
         DELETE FROM merchant_menu_item_images
         WHERE menu_item_id = ${menuItemId}
       `;
-      await trx`
-        DELETE FROM merchant_menu_items
+      await run`        DELETE FROM merchant_menu_items
         WHERE id = ${menuItemId} AND store_id = ${storeId}
       `;
     });

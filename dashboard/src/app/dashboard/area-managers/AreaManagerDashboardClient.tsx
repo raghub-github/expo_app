@@ -17,6 +17,12 @@ import {
   Search,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import {
+  useGetAreaManagerMetricsQuery,
+  useGetAreaManagerCountsQuery,
+  useGetAreaManagersQuery,
+  type AreaManagerListItem,
+} from "@/store/api/areaManagerApi";
 
 const CARD_MIN_HEIGHT = "min-h-[110px]";
 
@@ -46,18 +52,6 @@ interface RiderMetrics {
 }
 
 type MetricsData = MerchantMetrics | RiderMetrics;
-
-interface AreaManagerListItem {
-  id: number;
-  userId: number;
-  managerType: string;
-  areaCode: string | null;
-  localityCode: string | null;
-  city: string | null;
-  status: string;
-  fullName: string | null;
-  email: string | null;
-}
 
 function useDebouncedValue<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -135,8 +129,8 @@ function SuperAdminAreaManagerList() {
     gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     placeholderData: (prev) => prev,
+    enabled: type === "MERCHANT",
   });
-
   const { data: riderListData, isFetching: riderLoading } = useQuery<{
     success: boolean;
     data?: { items: AreaManagerListItem[] };
@@ -153,6 +147,7 @@ function SuperAdminAreaManagerList() {
     gcTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     placeholderData: (prev) => prev,
+    enabled: type === "RIDER",
   });
 
   const list: AreaManagerListItem[] = useMemo(() => {
@@ -359,8 +354,10 @@ export function AreaManagerDashboardClient() {
     placeholderData: (prev) => prev,
   });
 
-  // Preload both merchant and rider lists so tab switching feels instant.
+  // Preload manager lists only for super admin to avoid 403 calls for scoped roles.
   useEffect(() => {
+    const metrics = data?.data;
+    if (!metrics || metrics.managerType !== "MERCHANT" || !metrics.isSuperAdmin) return;
     queryClient.prefetchQuery({
       queryKey: ["area-managers", "merchant"],
       queryFn: async () => {
@@ -369,6 +366,7 @@ export function AreaManagerDashboardClient() {
         });
         return res.json();
       },
+      staleTime: 5 * 60 * 1000,
     });
     queryClient.prefetchQuery({
       queryKey: ["area-managers", "rider"],
@@ -378,11 +376,11 @@ export function AreaManagerDashboardClient() {
         });
         return res.json();
       },
+      staleTime: 5 * 60 * 1000,
     });
-  }, [queryClient]);
+  }, [queryClient, data?.data]);
 
-  if (isLoading && !data) {
-    return (
+  if (isLoading && !data) {    return (
       <div className="flex items-center justify-center py-12">
         <LoadingSpinner />
       </div>
@@ -392,8 +390,9 @@ export function AreaManagerDashboardClient() {
   if (error) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-medium text-red-800">{error}</p>
-      </div>
+        <p className="text-sm font-medium text-red-800">
+          {error instanceof Error ? error.message : String(error)}
+        </p>      </div>
     );
   }
 
@@ -501,7 +500,7 @@ export function AreaManagerDashboardClient() {
     );
   }
 
-  const riderData = data as RiderMetrics;
+  const riderData = data.data as RiderMetrics;
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">

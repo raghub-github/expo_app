@@ -121,12 +121,11 @@ export async function GET() {
         WHERE is_active = true
         ORDER BY tag_name ASC
       `;
-      tags = (tagRows || []).map((r: { id: bigint; tag_code: string; tag_name: string }) => ({
+      tags = ((tagRows || []) as unknown as { id: bigint; tag_code: string; tag_name: string }[]).map((r) => ({
         id: Number(r.id),
         tagCode: r.tag_code ?? "",
         tagName: r.tag_name ?? "",
-      }));
-    } catch {
+      }));    } catch {
       tags = [];
     }
 

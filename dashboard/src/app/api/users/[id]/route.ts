@@ -25,7 +25,7 @@ import {
 } from "@/lib/audit/audit-logger";
 import { logActionByAuth } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints, areaManagers } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, areaManagers, type DashboardType } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 
@@ -154,8 +154,14 @@ export async function PUT(
         { status: 404 }
       );
     }
-    const systemUser = { id: userPerms.systemUserId };
-    const userIsSuperAdmin = userPerms.isSuperAdmin;
+    const systemUserRow = await getSystemUserById(userPerms.systemUserId);
+    if (!systemUserRow) {
+      return NextResponse.json(
+        { success: false, error: "User not found in system" },
+        { status: 404 }
+      );
+    }
+    const systemUser = { id: systemUserRow.id, fullName: systemUserRow.fullName ?? "" };    const userIsSuperAdmin = userPerms.isSuperAdmin;
 
     // Check permission (use cached userPerms if available, otherwise call checkPermission)
     // For super admin, they have all permissions
@@ -204,6 +210,14 @@ export async function PUT(
       city,
       ...updates 
     } = body;
+
+    const normalizeRoleValue = (value: string) => value.replace(/\s+/g, " ").trim();
+    if (typeof updates.primary_role === "string") {
+      updates.primary_role = normalizeRoleValue(updates.primary_role);
+      if (!updates.primary_role) {
+        delete updates.primary_role;
+      }
+    }
     
     // Handle suspension_expires_at separately
     if (suspension_expires_at !== undefined) {
@@ -494,10 +508,10 @@ export async function PUT(
           let allowedActions: string[] = [];
           let context: Record<string, any> = {};
 
-          if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[accessPoint.dashboardType]) {
-            const def = DASHBOARD_DEFINITIONS[accessPoint.dashboardType].accessPoints.find(
-              (ap: any) => ap.group === accessPoint.accessPointGroup
-            );
+          const dashType = accessPoint.dashboardType as DashboardType;
+          if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
+            const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
+              (ap: any) => ap.group === accessPoint.accessPointGroup            );
             if (def) {
               accessPointName = def.label;
               accessPointDescription = def.description;

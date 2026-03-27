@@ -12,6 +12,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { HEADER_PADDING_TOP, HEADER_VERTICAL_PADDING } from "@/constants/layout";
 
 export const GM_HEADER_HEIGHT = 56;
+const GM_MINIMAL_HEADER_HEIGHT = 44;
 const PAD_H = 16;
 
 export type GMHeaderProps = {
@@ -51,10 +52,10 @@ export function GMHeader({
 }: GMHeaderProps) {
   if (minimal) {
     return (
-      <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
+      <View style={[styles.wrap, styles.wrapInFlow, { paddingTop: topInset + HEADER_PADDING_TOP, paddingBottom: 6 }]}>
         <View style={styles.innerMinimal}>
           <TouchableOpacity onPress={onBack} style={styles.backBtn} hitSlop={12}>
-            <Ionicons name="arrow-back" size={24} color={GatiMitraColors.textPrimaryNew} />
+            <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimaryNew} />
           </TouchableOpacity>
           <Text style={styles.locationLabel} numberOfLines={1}>
             {locationLabel}
@@ -142,15 +143,15 @@ const styles = StyleSheet.create({
   innerMinimal: {
     flexDirection: "row",
     alignItems: "center",
-    height: GM_HEADER_HEIGHT,
-    paddingHorizontal: 4,
+    height: GM_MINIMAL_HEADER_HEIGHT,
+    paddingHorizontal: 2,
   },
   locationLabel: {
     flex: 1,
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: 15,
+    fontWeight: "500",
     color: GatiMitraColors.textPrimaryNew,
-    marginLeft: 8,
+    marginLeft: 6,
   },
   backBtn: {
     padding: 6,

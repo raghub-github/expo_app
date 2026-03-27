@@ -14,7 +14,15 @@ import {
   ensureOrderEtaWhenAccepted,
   type OrderSearchType,
   type OrderStatusFilter,
+  type OrdersCoreRow,
 } from "@/lib/db/operations/orders-core";
+
+/** Row returned to the client: list shape + `storeId`, optional enrichments for single-order fetch */
+type OrderCoreApiListItem = Omit<OrdersCoreRow, "estimatedDeliveryTime"> & {
+  storeId: string | null;
+  deliveryInstructions?: string | null;
+  estimatedDeliveryTime?: Date | string | null;
+};
 import {
   getMerchantStoreSummaryByStoreId,
   getStoreIdsByInternalIds,
@@ -189,7 +197,7 @@ export async function GET(request: NextRequest) {
         .map((o) => (o as { merchantStoreId?: number | null }).merchantStoreId)
         .filter((id): id is number => id != null && Number.isFinite(id))
     );
-    let data = result.orders.map((order) => {
+    let data: OrderCoreApiListItem[] = result.orders.map((order) => {
       const o = order as { merchantStoreId?: number | null };
       const storeIdDisplay =
         o.merchantStoreId != null ? storeIds.get(o.merchantStoreId) ?? null : null;
@@ -226,13 +234,19 @@ export async function GET(request: NextRequest) {
         reconsCount = recons;
         statusHistory = history;
         if (deliveryInstructions !== undefined) {
-          data = [{ ...data[0], deliveryInstructions: deliveryInstructions ?? null }];
+          data = [{ ...(data[0] as Record<string, unknown>), deliveryInstructions: deliveryInstructions ?? null }] as unknown as typeof data;
         }
         if (etaSet != null) {
-          data = [{ ...data[0], estimatedDeliveryTime: etaSet.estimatedDeliveryTime.toISOString() }];
+          data = [{ ...(data[0] as Record<string, unknown>), estimatedDeliveryTime: etaSet.estimatedDeliveryTime.toISOString() }] as unknown as typeof data;
         }
         if (etaBreach != null) {
-          data = [{ ...data[0], etaBreachedAt: etaBreach.etaBreachedAt, etaBreachedTimelineId: etaBreach.etaBreachedTimelineId }];
+          data = [
+            {
+              ...(data[0] as Record<string, unknown>),
+              etaBreachedAt: etaBreach.etaBreachedAt,
+              etaBreachedTimelineId: etaBreach.etaBreachedTimelineId,
+            },
+          ] as unknown as typeof data;
         }
       }
     }

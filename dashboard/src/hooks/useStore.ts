@@ -19,7 +19,6 @@ export type StoreProfile = {
   country?: string | null;
   latitude?: number | null;
   longitude?: number | null;
-  logo_url?: string | null;
   banner_url?: string | null;
   gallery_images?: string[] | null;
   cuisine_types?: string[] | null;

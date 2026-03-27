@@ -5,29 +5,6 @@ import { ServicePointMarker } from "./ServicePointMarker";
 import { X } from "lucide-react";
 import { mapCache } from "@/lib/map-cache";
 
-// #region agent log
-const LOG_ENDPOINT = 'http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f';
-const ENABLE_AGENT_LOGS =
-  process.env.NODE_ENV !== "production" &&
-  process.env.NEXT_PUBLIC_ENABLE_AGENT_LOGS === "true";
-const log = (location: string, message: string, data: any, hypothesisId: string) => {
-  if (!ENABLE_AGENT_LOGS) return;
-  fetch(LOG_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-      sessionId: 'debug-session',
-      runId: 'run1',
-      hypothesisId
-    })
-  }).catch(() => {});
-};
-// #endregion
-
 interface ServicePoint {
   id: number;
   name: string;
@@ -82,13 +59,8 @@ function MapComponentInner({
   deleteStartTime = null,
 }: MapComponentProps) {
   const [deleteElapsed, setDeleteElapsed] = useState(0);
-  // #region agent log
   const componentMountTime = Date.now();
-  if (ENABLE_AGENT_LOGS) {
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:47',message:'MapComponent mounted',data:{componentMountTime,servicePointsCount:servicePoints.length,hasToken:!!mapboxToken},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  }
-  // #endregion
-  
+
   const hostContainerRef = useRef<HTMLDivElement>(null);
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
@@ -112,17 +84,6 @@ function MapComponentInner({
 
   // Callback ref to detect when container is mounted
   const containerRefCallback = (node: HTMLDivElement | null) => {
-    // #region agent log
-    log('MapComponent.tsx:70', 'Container ref callback', { 
-      hasNode: !!node,
-      nodeHeight: node?.offsetHeight || 0,
-      nodeWidth: node?.offsetWidth || 0,
-      nodeStyleWidth: node?.style.width || 'none',
-      nodeStyleHeight: node?.style.height || 'none',
-      parentHeight: node?.parentElement?.offsetHeight || 0,
-      parentWidth: node?.parentElement?.offsetWidth || 0
-    }, 'A');
-    // #endregion
     
     if (node) {
       hostContainerRef.current = node;
@@ -134,13 +95,6 @@ function MapComponentInner({
       }
       mapContainer.current = persistent;
       setContainerReady(true);
-      // #region agent log
-      log('MapComponent.tsx:83', 'Container ref set, containerReady=true', {
-        height: node.offsetHeight,
-        width: node.offsetWidth,
-        computedStyle: window.getComputedStyle(node).width + ' x ' + window.getComputedStyle(node).height
-      }, 'A');
-      // #endregion
     } else {
       hostContainerRef.current = null;
       mapContainer.current = null;
@@ -149,61 +103,25 @@ function MapComponentInner({
   };
 
   useEffect(() => {
-    // #region agent log
-    const effectStartTime = Date.now();
-    const timeSinceMount = effectStartTime - componentMountTime;
-    if (ENABLE_AGENT_LOGS) {
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:103',message:'Map init useEffect started',data:{timeSinceMount,hasContainer:!!mapContainer.current,hasToken:!!mapboxToken,initAttempted:initAttemptedRef.current,mapboxAlreadyLoaded:!!(window as any).mapboxgl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    }
-    // #endregion
 
     if (!mapboxToken) {
-      // #region agent log
-      log('MapComponent.tsx:86', 'No mapbox token', {}, 'A');
-      // #endregion
       setError('Mapbox token not provided');
       return;
     }
 
     if (initAttemptedRef.current) {
-      // #region agent log
-      if (ENABLE_AGENT_LOGS) {
-        fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:122',message:'Init already attempted, skipping',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      }
-      // #endregion
       return;
     }
 
     // Wait for container to be available
     const checkContainer = () => {
-      // #region agent log
-      log('MapComponent.tsx:101', 'Checking container', { 
-        hasContainer: !!mapContainer.current,
-        containerReady: containerReady,
-        containerHeight: mapContainer.current?.offsetHeight || 0,
-        containerWidth: mapContainer.current?.offsetWidth || 0,
-        containerParent: mapContainer.current?.parentElement?.tagName || 'none'
-      }, 'A');
-      // #endregion
 
       if (!mapContainer.current || !containerReady) {
-        // #region agent log
-        log('MapComponent.tsx:111', 'Container not ready, will retry', {
-          hasContainer: !!mapContainer.current,
-          containerReady
-        }, 'A');
-        // #endregion
         setTimeout(checkContainer, 100);
         return;
       }
 
       // Container is ready, proceed with initialization
-      // #region agent log
-      log('MapComponent.tsx:120', 'Container ready, starting loadMapbox', {
-        containerHeight: mapContainer.current.offsetHeight,
-        containerWidth: mapContainer.current.offsetWidth
-      }, 'A');
-      // #endregion
       initAttemptedRef.current = true;
       loadMapbox();
     };
@@ -211,21 +129,9 @@ function MapComponentInner({
     // Initialize map using global cache
     const loadMapbox = async () => {
       try {
-        // #region agent log
-        log('MapComponent.tsx:117', 'loadMapbox called', { 
-          scriptLoaded: scriptLoadedRef.current,
-          hasMapboxgl: !!(window as any).mapboxgl
-        }, 'A');
-        // #endregion
 
         // Check if mapbox-gl is already loaded
         if (mapCache.isScriptLoaded()) {
-          // #region agent log
-          const scriptReuseTime = Date.now();
-          if (ENABLE_AGENT_LOGS) {
-            fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:174',message:'Mapbox script reused (not reloaded)',data:{timeSinceMount:scriptReuseTime - componentMountTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-          }
-          // #endregion
           await initializeMap();
           return;
         }
@@ -234,9 +140,6 @@ function MapComponentInner({
         await mapCache.loadMapboxScript();
         await initializeMap();
       } catch (err) {
-        // #region agent log
-        log('MapComponent.tsx:191', 'loadMapbox exception', { error: String(err) }, 'A');
-        // #endregion
         scriptLoadedRef.current = false;
         setError(err instanceof Error ? err.message : 'Failed to load map');
       }
@@ -244,19 +147,8 @@ function MapComponentInner({
 
     const initializeMap = async () => {
       try {
-        // #region agent log
-        log('MapComponent.tsx:201', 'initializeMap called', { 
-          hasMapboxgl: !!(window as any).mapboxgl,
-          hasContainer: !!mapContainer.current,
-          containerHeight: mapContainer.current?.offsetHeight || 0,
-          containerWidth: mapContainer.current?.offsetWidth || 0
-        }, 'A');
-        // #endregion
 
         if (!mapContainer.current) {
-          // #region agent log
-          log('MapComponent.tsx:219', 'No container element', {}, 'A');
-          // #endregion
           setError('Map container not found');
           return;
         }
@@ -292,35 +184,10 @@ function MapComponentInner({
 
         const mapboxgl = (window as any).mapboxgl;
         if (!mapboxgl) {
-          // #region agent log
-          log('MapComponent.tsx:211', 'No mapboxgl object', {}, 'A');
-          // #endregion
           setError('Mapbox library not available');
           return;
         }
 
-        // #region agent log
-        log('MapComponent.tsx:281', 'Creating map with container dimensions', {
-          containerHeight: mapContainer.current.offsetHeight,
-          containerWidth: mapContainer.current.offsetWidth,
-          containerStyleWidth: mapContainer.current.style.width,
-          containerStyleHeight: mapContainer.current.style.height,
-          containerMaxWidth: mapContainer.current.style.maxWidth,
-          containerMaxHeight: mapContainer.current.style.maxHeight,
-          parentHeight: mapContainer.current.parentElement?.offsetHeight || 0,
-          parentWidth: mapContainer.current.parentElement?.offsetWidth || 0,
-          parentMaxWidth: window.getComputedStyle(mapContainer.current.parentElement || document.body).maxWidth,
-          computedMaxWidth: window.getComputedStyle(mapContainer.current).maxWidth
-        }, 'B');
-        // #endregion
-
-        // #region agent log
-        log('MapComponent.tsx:281', 'Setting map center and zoom', {
-          centerLng: viewState.longitude,
-          centerLat: viewState.latitude,
-          zoom: viewState.zoom
-        }, 'F');
-        // #endregion
 
         // Use map cache to get or create map instance
         const map = await mapCache.getOrCreateMap(
@@ -334,41 +201,8 @@ function MapComponentInner({
         );
 
         mapRef.current = map;
-        // #region agent log
-        log('MapComponent.tsx:295', 'Map instance created', { 
-          mapId: (map as any)._id || 'unknown',
-          container: mapContainer.current?.id || 'none',
-          mapCanvasWidth: (map as any)._canvas?.width || 0,
-          mapCanvasHeight: (map as any)._canvas?.height || 0
-        }, 'B');
-        // #endregion
 
         map.on('load', () => {
-          // #region agent log
-          const mapLoadTime = Date.now();
-          const totalInitTime = mapLoadTime - componentMountTime;
-          if (ENABLE_AGENT_LOGS) {
-            fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:331',message:'Map loaded successfully',data:{totalInitTime,timeSinceMount:totalInitTime},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          }
-          const container = mapContainer.current;
-          const parent = container?.parentElement;
-          const grandParent = parent?.parentElement;
-          log('MapComponent.tsx:297', 'Map load event fired - container fit check', {
-            containerHeight: container?.offsetHeight || 0,
-            containerWidth: container?.offsetWidth || 0,
-            containerStyleMaxHeight: container?.style.maxHeight || 'none',
-            containerStyleMaxWidth: container?.style.maxWidth || 'none',
-            mapCanvasWidth: (map as any)._canvas?.width || 0,
-            mapCanvasHeight: (map as any)._canvas?.height || 0,
-            parentHeight: parent?.offsetHeight || 0,
-            parentWidth: parent?.offsetWidth || 0,
-            parentStyleMaxHeight: parent ? window.getComputedStyle(parent).maxHeight : 'none',
-            parentStyleMaxWidth: parent ? window.getComputedStyle(parent).maxWidth : 'none',
-            grandParentHeight: grandParent?.offsetHeight || 0,
-            grandParentWidth: grandParent?.offsetWidth || 0,
-            fitsInParent: container && parent ? (container.offsetHeight <= parent.offsetHeight && container.offsetWidth <= parent.offsetWidth) : false
-          }, 'E');
-          // #endregion
           setIsLoaded(true);
           // Clear any previous errors when map loads successfully
           setError(null);
@@ -376,12 +210,6 @@ function MapComponentInner({
         });
 
         map.on('error', (e: any) => {
-          // #region agent log
-          log('MapComponent.tsx:257', 'Map error event', { 
-            error: String(e.error?.message || e),
-            errorType: e.error?.type || 'unknown'
-          }, 'A');
-          // #endregion
           
           // Filter out non-critical errors that shouldn't be shown to users
           // Tile loading errors during zoom/pan are temporary and shouldn't be displayed
@@ -432,21 +260,12 @@ function MapComponentInner({
         });
 
       } catch (err) {
-        // #region agent log
-        log('MapComponent.tsx:276', 'initializeMap exception', { 
-          error: String(err),
-          errorName: (err as Error)?.name || 'unknown'
-        }, 'A');
-        // #endregion
         setError(err instanceof Error ? err.message : 'Failed to initialize map');
       }
     };
 
     const updateMarkers = () => {
       if (!mapRef.current) {
-        // #region agent log
-        log('MapComponent.tsx:288', 'updateMarkers: no map ref', {}, 'A');
-        // #endregion
         return;
       }
 
@@ -454,22 +273,10 @@ function MapComponentInner({
       markersRef.current.forEach(marker => marker.remove());
       markersRef.current = [];
 
-      // #region agent log
-      log('MapComponent.tsx:297', 'Updating markers', { count: servicePoints.length }, 'A');
-      // #endregion
-
       const mapboxgl = (window as any).mapboxgl;
       if (!mapboxgl) return;
 
       servicePoints.forEach((point) => {
-        // #region agent log
-        log('MapComponent.tsx:355', 'Creating marker for point', { 
-          pointId: point.id, 
-          name: point.name, 
-          lat: point.latitude, 
-          lng: point.longitude 
-        }, 'A');
-        // #endregion
 
         const el = document.createElement('div');
         el.className = 'map-marker-container';
@@ -479,16 +286,6 @@ function MapComponentInner({
         el.style.display = 'flex';
         el.style.alignItems = 'center';
         el.style.justifyContent = 'center';
-        
-        // #region agent log
-        log('MapComponent.tsx:365', 'Creating marker element', {
-          elementWidth: el.style.width,
-          elementHeight: el.style.height,
-          pointId: point.id,
-          pointName: point.name,
-          expectedSize: '24px'
-        }, 'C');
-        // #endregion
         
         // Create marker with logo - 24px size, no border
         const marker = new mapboxgl.Marker({
@@ -507,41 +304,11 @@ function MapComponentInner({
         img.style.objectFit = 'contain';
         img.style.filter = 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))';
         
-        // #region agent log
-        img.onload = () => {
-          log('MapComponent.tsx:390', 'Marker image loaded', {
-            imgWidth: img.offsetWidth,
-            imgHeight: img.offsetHeight,
-            imgNaturalWidth: img.naturalWidth,
-            imgNaturalHeight: img.naturalHeight,
-            computedWidth: window.getComputedStyle(img).width,
-            computedHeight: window.getComputedStyle(img).height,
-            elementWidth: el.offsetWidth,
-            elementHeight: el.offsetHeight,
-            expectedSize: '24px'
-          }, 'C');
-        };
-        img.onerror = () => {
-          log('MapComponent.tsx:400', 'Marker image failed to load', { src: img.src }, 'C');
-        };
-        // #endregion
-        
         el.appendChild(img);
 
         el.addEventListener('click', () => onPointClick(point));
         markersRef.current.push(marker);
-        
-        // #region agent log
-        log('MapComponent.tsx:377', 'Marker created and added', { 
-          pointId: point.id,
-          markerCount: markersRef.current.length
-        }, 'A');
-        // #endregion
       });
-
-      // #region agent log
-      log('MapComponent.tsx:327', 'Markers updated', { markerCount: markersRef.current.length }, 'A');
-      // #endregion
     };
 
     // Start checking when container becomes ready
@@ -554,13 +321,6 @@ function MapComponentInner({
     }
 
     return () => {
-      // #region agent log
-      const cleanupTime = Date.now();
-      const componentLifetime = cleanupTime - componentMountTime;
-      if (ENABLE_AGENT_LOGS) {
-        fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MapComponent.tsx:498',message:'MapComponent cleanup (unmounting)',data:{componentLifetime,wasLoaded:isLoaded,initAttempted:initAttemptedRef.current},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      }
-      // #endregion
       
       if (timer) clearTimeout(timer);
 
@@ -585,47 +345,17 @@ function MapComponentInner({
 
   // Update markers when service points change
   useEffect(() => {
-    // #region agent log
-    log('MapComponent.tsx:406', 'Service points useEffect triggered', { 
-      isLoaded, 
-      hasMapRef: !!mapRef.current, 
-      servicePointsCount: servicePoints.length 
-    }, 'A');
-    // #endregion
 
     if (isLoaded && mapRef.current) {
       const mapboxgl = (window as any).mapboxgl;
       if (!mapboxgl) {
-        // #region agent log
-        log('MapComponent.tsx:414', 'Mapboxgl not available', {}, 'A');
-        // #endregion
         return;
       }
-
-      // #region agent log
-      log('MapComponent.tsx:420', 'Clearing existing markers', { 
-        currentMarkerCount: markersRef.current.length 
-      }, 'A');
-      // #endregion
 
       markersRef.current.forEach(marker => marker.remove());
       markersRef.current = [];
 
-      // #region agent log
-      log('MapComponent.tsx:428', 'Creating new markers', { 
-        servicePointsCount: servicePoints.length 
-      }, 'A');
-      // #endregion
-
       servicePoints.forEach((point) => {
-        // #region agent log
-        log('MapComponent.tsx:432', 'Creating marker in useEffect', { 
-          pointId: point.id, 
-          name: point.name, 
-          lat: point.latitude, 
-          lng: point.longitude 
-        }, 'A');
-        // #endregion
 
         const el = document.createElement('div');
         el.className = 'map-marker-container';
@@ -635,15 +365,6 @@ function MapComponentInner({
         el.style.display = 'flex';
         el.style.alignItems = 'center';
         el.style.justifyContent = 'center';
-        
-        // #region agent log
-        log('MapComponent.tsx:473', 'Creating marker in useEffect', {
-          elementWidth: el.style.width,
-          elementHeight: el.style.height,
-          pointId: point.id,
-          pointName: point.name
-        }, 'D');
-        // #endregion
         
         const marker = new mapboxgl.Marker({
           element: el,
@@ -660,27 +381,10 @@ function MapComponentInner({
         img.style.objectFit = 'contain';
         img.style.filter = 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))';
         
-        // #region agent log
-        img.onload = () => {
-          log('MapComponent.tsx:495', 'Marker image loaded in useEffect', {
-            imgWidth: img.offsetWidth,
-            imgHeight: img.offsetHeight,
-            computedWidth: window.getComputedStyle(img).width,
-            computedHeight: window.getComputedStyle(img).height
-          }, 'D');
-        };
-        // #endregion
-        
         el.appendChild(img);
         el.addEventListener('click', () => onPointClick(point));
         markersRef.current.push(marker);
       });
-
-      // #region agent log
-      log('MapComponent.tsx:456', 'Markers created in useEffect', { 
-        finalMarkerCount: markersRef.current.length 
-      }, 'A');
-      // #endregion
     }
   }, [servicePoints, isLoaded, onPointClick]);
 

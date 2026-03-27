@@ -119,7 +119,8 @@ export async function PUT(
     const sql = getSql();
 
     const updates: string[] = [];
-    const values: unknown[] = [];
+    /** Bound parameters for `sql.unsafe` (must not be `unknown[]` for postgres.js typings). */
+    const values: (string | number | boolean | null)[] = [];
     let p = 1;
 
     if (title !== undefined) {
@@ -173,7 +174,7 @@ export async function PUT(
       `UPDATE merchant_offers SET ${setClause}, updated_at = NOW()
        WHERE id = $${p} RETURNING id, offer_id, offer_title, offer_type, discount_value, discount_percentage,
          min_order_amount, valid_from, valid_till, is_active, created_at, store_id`,
-      values
+      values as never[]
     );
 
     if (!updated) {

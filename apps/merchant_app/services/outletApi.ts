@@ -29,7 +29,11 @@ let outletPromise:
 /** Resolve image URL: if relative, prepend API base; normalize localhost for Android so images load. */
 export function resolveImageUrl(url: string | null | undefined): string | null {
   if (url == null || typeof url !== "string" || !url.trim()) return null;
-  const u = url.trim();
+  let u = url.trim();
+  // Dashboard/partnersite persist `/api/attachments/proxy?key=...`; Fastify serves `/v1/attachments/proxy`.
+  if (u.startsWith("/api/attachments/proxy")) {
+    u = "/v1/attachments/proxy" + u.slice("/api/attachments/proxy".length);
+  }
   let absolute: string;
   if (u.startsWith("http://") || u.startsWith("https://")) {
     absolute = u;

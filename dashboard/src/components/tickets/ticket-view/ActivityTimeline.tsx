@@ -65,8 +65,12 @@ function activitySummary(a: TicketActivity): string {
   if (a.activityDescription) return a.activityDescription + who;
   const label = formatActionLabel(a.actionType);
   if (a.oldValue != null || a.newValue != null) {
-    const o = a.oldValue as { status?: string; priority?: string } | undefined;
-    const n = a.newValue as { status?: string; priority?: string } | undefined;
+    const o = a.oldValue as
+      | { status?: string; priority?: string; assigned_to_agent_name?: string | null }
+      | undefined;
+    const n = a.newValue as
+      | { status?: string; priority?: string; assigned_to_agent_name?: string | null }
+      | undefined;
     if (o?.status !== undefined || n?.status !== undefined) {
       return `${label}: ${o?.status ?? "—"} → ${n?.status ?? "—"}${who}`;
     }

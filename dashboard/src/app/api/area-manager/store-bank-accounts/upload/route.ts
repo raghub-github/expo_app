@@ -6,12 +6,25 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 60) || "file";
 }
 
+function extensionFromUploadFile(file: File): string {
+  const rawName = file.name || "";
+  const fromName = rawName.includes(".") ? rawName.slice(rawName.lastIndexOf(".")).toLowerCase() : "";
+  if (fromName && /^[.][a-z0-9]+$/.test(fromName)) return fromName;
+  const mime = (file.type || "").toLowerCase();
+  if (mime.includes("pdf")) return ".pdf";
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return ".jpg";
+  if (mime.includes("webp")) return ".webp";
+  return ".bin";
+}
+
 function buildProxyUrl(r2Key: string): string {
   return `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
     const storeInternalId = Number(
       req.nextUrl.searchParams.get("storeInternalId")
     );
@@ -30,6 +43,12 @@ export async function POST(req: NextRequest) {
     if (!file || !(file instanceof File)) {
       return NextResponse.json(
         { success: false, error: "No file provided" },
+        { status: 400 }
+      );
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return NextResponse.json(
+        { success: false, error: "File too large (max 10 MB)" },
         { status: 400 }
       );
     }
@@ -64,17 +83,15 @@ export async function POST(req: NextRequest) {
     }
 
     const parentCode =
-      store.parent_merchant_id ||
-      (store.parent_id != null ? String(store.parent_id) : String(store.id));
+      store.parent_id != null ? String(store.parent_id) : String(store.id);
     const storeCode = store.store_id || String(store.id);
 
     const timestamp = Date.now();
-    const safeName = sanitizeFileName(file.name);
-    const ext = file.name.split(".").pop()?.toLowerCase() || "png";
+    const ext = extensionFromUploadFile(file);
 
     const baseName = kind === "upi" ? "upi_qr" : "bank_proof";
 
-    const r2Key = `docs/merchants/${parentCode}/stores/${storeCode}/onboarding/bank/${baseName}_${timestamp}_${safeName}.${ext}`;
+    const r2Key = `docs/merchants/${parentCode}/stores/${storeCode}/onboarding/bank/${baseName}_${timestamp}${ext}`;
 
     await uploadWithKey(file, r2Key);
     const proxyUrl = buildProxyUrl(r2Key);

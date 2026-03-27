@@ -10,7 +10,7 @@ import { getUserDashboardAccess, getUserAccessPoints } from "@/lib/permissions/e
 import { getSystemUserByEmail, getSystemUserById } from "@/lib/db/operations/users";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
-import { dashboardAccess, dashboardAccessPoints } from "@/lib/db/schema";
+import { dashboardAccess, dashboardAccessPoints, systemUsers } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { logActionByAuth } from "@/lib/audit/logger";
 
@@ -71,6 +71,7 @@ export async function GET(
     return NextResponse.json({
       success: true,
       data: {
+        canTogglePortal: Boolean(user.canTogglePortal),
         dashboards: dashboards.map(d => ({
           id: d.id,
           dashboardType: d.dashboardType,
@@ -153,6 +154,7 @@ export async function PUT(
     const body = await request.json();
     const dashboardAccessData = Array.isArray(body.dashboardAccess) ? body.dashboardAccess : [];
     const accessPointsData = Array.isArray(body.accessPoints) ? body.accessPoints : [];
+    const canTogglePortal = typeof body.can_toggle_portal === "boolean" ? body.can_toggle_portal : undefined;
 
     // Get actor details (use cached getSystemUserByEmail which is already called in getUserPermissions)
     const actor = await getSystemUserByEmail(authUser.email ?? "");
@@ -164,6 +166,16 @@ export async function PUT(
     }
 
     const db = getDb();
+
+    if (typeof canTogglePortal === "boolean") {
+      await db
+        .update(systemUsers)
+        .set({
+          canTogglePortal,
+          updatedAt: new Date(),
+        })
+        .where(eq(systemUsers.id, userId));
+    }
 
     // Update dashboards: deactivate removed, upsert selected
     const existingDashboards = await db

@@ -148,7 +148,7 @@ export async function POST(
     // "cancel_without_refund" does not create a refund row; only update orders_core with cancellation (refundAmount not required)
     if (refundType === "cancel_without_refund") {
       const systemUser = await getSystemUserByEmail(user.email ?? "");
-      const cancelledBy = systemUser?.primary_role ?? "admin";
+      const cancelledBy = systemUser?.primaryRole ?? "admin";
       const cancelledById = systemUser?.id ?? null;
       const reasonCode = (refundReason ?? "admin_cancel").trim().slice(0, 200) || "admin_cancel";
       const reasonText = (refundDescription ?? refundReason ?? "").trim().slice(0, 2000) || null;
@@ -193,7 +193,7 @@ export async function POST(
 
     const systemUser = await getSystemUserByEmail(user.email ?? "");
     const refundInitiatedById = systemUser?.id ?? null;
-    const refundInitiatedBy = systemUser?.primary_role ?? "agent";
+    const refundInitiatedBy = systemUser?.primaryRole ?? "agent";
 
     const record = await createOrderRefund({
       orderId,

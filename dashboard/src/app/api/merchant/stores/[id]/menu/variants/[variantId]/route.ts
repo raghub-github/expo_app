@@ -3,6 +3,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "@/lib/db/client";
+import { mergeBool, mergeNum, mergeOptionalStr } from "@/lib/db/sql-json-body";
 import { assertStoreAccess } from "../../assert-store-access";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
@@ -52,14 +53,19 @@ export async function PUT(
       return NextResponse.json({ success: false, error: "Invalid variant_price" }, { status: 400 });
     }
 
+    const variant_type = mergeOptionalStr(body.variant_type, e.variant_type);
+    const is_default = mergeBool(body.is_default, e.is_default);
+    const display_order = mergeNum(body.display_order, e.display_order);
+    const in_stock = mergeBool(body.in_stock, e.in_stock);
+
     await sql`
       UPDATE merchant_menu_item_variants
       SET variant_name = ${variant_name},
-          variant_type = ${body.variant_type !== undefined ? body.variant_type : e.variant_type},
+          variant_type = ${variant_type},
           variant_price = ${variant_price},
-          is_default = ${body.is_default !== undefined ? body.is_default : e.is_default},
-          display_order = ${body.display_order !== undefined ? body.display_order : e.display_order},
-          in_stock = ${body.in_stock !== undefined ? body.in_stock : e.in_stock},
+          is_default = ${is_default},
+          display_order = ${display_order},
+          in_stock = ${in_stock},
           updated_at = NOW()
       WHERE id = ${vId}
     `;

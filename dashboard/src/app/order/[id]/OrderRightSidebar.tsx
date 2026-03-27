@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
-import { useUserEmail } from "@/hooks/queries/useAuthQuery";
+import { useAuthOptional } from "@/providers/AuthProvider";
 import { ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
 
@@ -109,7 +109,8 @@ export default function OrderRightSidebar({
   orderRefunds = [],
   onRefundCreated,
 }: OrderRightSidebarProps) {
-  const userEmail = useUserEmail();
+  const auth = useAuthOptional();
+  const userEmail = auth?.user?.email ?? null;
   const [remarks, setRemarks] = useState<Remark[]>([]);
   const [remarkType, setRemarkType] = useState<string>("CUSTOMER");
   const [remarkPreset, setRemarkPreset] = useState<string>("");
@@ -738,18 +739,18 @@ export default function OrderRightSidebar({
 
       setRecons((prev) => [mapped, ...prev.filter((r) => r.id !== mapped.id)]);
       // Add new rider to dropdown if not already present
+      const newAssignedRiderId = saved.riderId;
       if (
-        saved.riderId != null &&
+        newAssignedRiderId != null &&
         !assignedRiders.some(
-          (a) => a.riderId === saved.riderId || a.id === String(saved.riderId)
+          (a) => a.riderId === newAssignedRiderId || a.id === String(newAssignedRiderId)
         )
       ) {
         setAssignedRiders((prev) => [
           ...prev,
           {
-            id: String(saved.riderId),
-            riderId: saved.riderId,
-            riderName: saved.riderName ?? null,
+            id: String(newAssignedRiderId),
+            riderId: newAssignedRiderId,            riderName: saved.riderName ?? null,
             riderMobile: saved.riderMobile ?? null,
             providerName: normalizeProviderName(saved.providerName) ?? saved.providerName ?? null,
           },

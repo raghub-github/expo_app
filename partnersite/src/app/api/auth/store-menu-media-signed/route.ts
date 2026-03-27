@@ -3,6 +3,7 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { createClient } from "@supabase/supabase-js";
 import { extractR2KeyFromUrl } from "@/lib/r2";
+import { entriesWithRowMetaFromImageRows, fileNameFromMenuStoredUrl } from "@/lib/menu-reference-image-bundle";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -68,18 +69,36 @@ export async function GET(req: NextRequest) {
 
     const { data: menuMedia } = await db
       .from("merchant_store_media_files")
-      .select("id, public_url, r2_key, source_entity, verification_status, created_at, uploaded_by, original_file_name")
+      .select(
+        "id, public_url, menu_url, r2_key, source_entity, verification_status, created_at, uploaded_by, original_file_name, mime_type, menu_reference_image_urls"
+      )
       .eq("store_id", storeId)
       .eq("media_scope", "MENU_REFERENCE")
       .eq("is_active", true);
 
-    type MediaRow = { id: number; public_url?: string; r2_key?: string; source_entity?: string; verification_status?: string; created_at?: string; original_file_name?: string };
+    type MediaRow = {
+      id: number;
+      public_url?: string;
+      menu_url?: string;
+      r2_key?: string;
+      mime_type?: string | null;
+      source_entity?: string;
+      verification_status?: string;
+      created_at?: string;
+      original_file_name?: string;
+    };
 
     const emptyResponse = {
       success: true,
       files: [] as { id: number; url: string; fileName: string; type: "image" | "pdf" | "csv"; verificationStatus: string }[],
       menuSpreadsheetUrl: null as string | null,
       menuImageUrls: [] as string[],
+      menuImageItems: [] as {
+        rowId: number;
+        entryId: string;
+        url: string;
+        fileName: string;
+      }[],
       menuPdfUrls: [] as string[],
       menuSpreadsheetFileName: null as string | null,
       menuImageFileNames: [] as string[],
@@ -101,11 +120,35 @@ export async function GET(req: NextRequest) {
     const imageRows = menuMedia.filter((m: MediaRow) => m.source_entity === "ONBOARDING_MENU_IMAGE") as MediaRow[];
     const pdfRows = menuMedia.filter((m: MediaRow) => m.source_entity === "ONBOARDING_MENU_PDF") as MediaRow[];
 
-    const toUrl = (r: MediaRow) => toProxyUrl(r.r2_key || r.public_url || null);
+    const toUrl = (r: MediaRow) => toProxyUrl(r.menu_url || r.public_url || r.r2_key || null);
+
+    const imageWithMeta = entriesWithRowMetaFromImageRows(
+      imageRows as {
+        id: number;
+        menu_reference_image_urls?: unknown;
+        menu_url?: string | null;
+        public_url?: string | null;
+        r2_key?: string | null;
+        original_file_name?: string | null;
+      }[]
+    );
+    const menuImageItems = imageWithMeta.map((m, i) => {
+      const u = toProxyUrl(m.url) ?? m.url;
+      const named =
+        (m.file_name && String(m.file_name).trim()) ||
+        fileNameFromMenuStoredUrl(m.url) ||
+        `Menu image ${i + 1}`;
+      return {
+        rowId: m.rowId,
+        entryId: m.id,
+        url: u,
+        fileName: named,
+      };
+    });
 
     const files = (menuMedia as MediaRow[]).map((r) => ({
       id: r.id,
-      url: toProxyUrl(r.r2_key || r.public_url || null) ?? "",
+      url: toProxyUrl(r.menu_url || r.public_url || r.r2_key || null) ?? "",
       fileName: r.original_file_name ?? "File",
       type: (r.source_entity === "ONBOARDING_MENU_IMAGE" ? "image" : r.source_entity === "ONBOARDING_MENU_PDF" ? "pdf" : "csv") as "image" | "pdf" | "csv",
       verificationStatus: r.verification_status ?? "PENDING",
@@ -115,16 +158,19 @@ export async function GET(req: NextRequest) {
       success: true,
       files,
       menuSpreadsheetUrl: sheetRow ? toUrl(sheetRow) : null,
-      menuImageUrls: imageRows.map(toUrl).filter((u): u is string => !!u),
+      menuImageUrls: menuImageItems.map((i) => i.url).filter(Boolean),
+      menuImageItems,
       menuPdfUrls: pdfRows.map(toUrl).filter((u): u is string => !!u),
       menuSpreadsheetFileName: sheetRow?.original_file_name ?? null,
-      menuImageFileNames: imageRows.map((r) => r.original_file_name ?? "Menu image"),
+      menuImageFileNames: menuImageItems.map((i) => i.fileName),
       menuPdfFileNames: pdfRows.map((r) => r.original_file_name ?? "Menu PDF"),
       menuSpreadsheetId: sheetRow?.id ?? null,
-      menuImageIds: imageRows.map((r) => r.id),
+      menuImageIds: menuImageItems.map((i) => i.rowId),
       menuPdfIds: pdfRows.map((r) => r.id),
       menuSpreadsheetVerificationStatus: sheetRow?.verification_status ?? null,
-      menuImageVerificationStatuses: imageRows.map((r) => r.verification_status ?? "PENDING"),
+      menuImageVerificationStatuses: imageWithMeta.map((m) =>
+        String(m.verification_status ?? "PENDING").toUpperCase()
+      ),
       menuPdfVerificationStatuses: pdfRows.map((r) => r.verification_status ?? "PENDING"),
       menuSpreadsheetUploadedAt: sheetRow?.created_at ?? null,
     });

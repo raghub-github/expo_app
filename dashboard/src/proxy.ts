@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import type { ResponseCookie } from "next/dist/compiled/@edge-runtime/cookies";
 import { createServerClient } from "@supabase/ssr";
 import {
   getSessionMetadata,
@@ -8,6 +9,28 @@ import {
   expireSession,
 } from "@/lib/auth/session-manager";
 
+/** Normalize cookie options so `sameSite` matches Next.js ResponseCookie (not plain string). */
+function setSafeResponseCookie(
+  response: NextResponse,
+  name: string,
+  value: string,
+  options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }
+) {
+  const sameSite =
+    options.sameSite === "lax" ||
+    options.sameSite === "strict" ||
+    options.sameSite === "none"
+      ? options.sameSite
+      : undefined;
+  response.cookies.set(name, value, {
+    maxAge: options.maxAge,
+    path: options.path,
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite,
+  });
+}
+
 // Throttle audit tracking per route to avoid spamming /api/audit/track.
 // Keyed by pathname + method; value is last-sent timestamp (ms).
 const auditLastSent = new Map<string, number>();
@@ -15,8 +38,31 @@ const AUDIT_MIN_INTERVAL_MS = 5000;
 // Note: User validation is done in /api/auth/set-cookie, not in proxy
 // Proxy runs in Edge Runtime which doesn't support database connections
 
+function toResponseCookieOptions(options: {
+  maxAge: number;
+  path: string;
+  httpOnly?: boolean;
+  sameSite?: string;
+  secure?: boolean;
+}): Partial<ResponseCookie> {
+  const same =
+    options.sameSite === "strict" ||
+    options.sameSite === "lax" ||
+    options.sameSite === "none"
+      ? options.sameSite
+      : "lax";
+  return {
+    maxAge: options.maxAge,
+    path: options.path,
+    httpOnly: options.httpOnly,
+    secure: options.secure,
+    sameSite: same,
+  };
+}
+
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  const canTogglePortal = request.cookies.get("gm_portal_toggle_access")?.value === "1";
   // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [proxy] Path and redirect messages (off by default to reduce console noise).
   const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
   if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
@@ -40,7 +86,15 @@ export async function proxy(request: NextRequest) {
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
               request.cookies.set(name, value);
-              response.cookies.set(name, value, options);
+              if (options) {
+                setSafeResponseCookie(response, name, value, {
+                  maxAge: options.maxAge ?? 0,
+                  path: options.path ?? "/",
+                  httpOnly: options.httpOnly,
+                  sameSite: options.sameSite as string | undefined,
+                  secure: options.secure,
+                });
+              }
             });
           },
         },
@@ -70,8 +124,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options);
-          },
+            setSafeResponseCookie(response, name, value, options);          },
         };
         updateActivity(cookieManager);
       }
@@ -83,17 +136,24 @@ export async function proxy(request: NextRequest) {
 
     if (hasAuthCookie) {
       try {
-        const userResult = await Promise.race([
+        type AuthUserResult = {
+          data?: { user?: { id: string; email?: string } | null };
+          error?: { message?: string; code?: string };
+        };
+        const userResult = (await Promise.race([
           supabase.auth.getUser(),
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ]) as { data?: { user?: { id: string; email?: string } }; error?: { message?: string; code?: string } };
+        ])) as unknown as AuthUserResult;
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
 
         if (user) {
-          session = { user: { id: user.id, email: user.email }, ...user } as typeof session;
+          session = {
+            user: { id: user.id, email: user.email },
+            ...user,
+          } as unknown as typeof session;
         } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
@@ -165,8 +225,7 @@ export async function proxy(request: NextRequest) {
         const cookieManager = {
           get: (name: string) => request.cookies.get(name) ?? undefined,
           set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
-            response.cookies.set(name, value, options);
-          },
+            setSafeResponseCookie(response, name, value, options);          },
         };
         updateActivity(cookieManager);
       }
@@ -198,6 +257,28 @@ export async function proxy(request: NextRequest) {
 
     // For protected routes, check custom session management and user validation
     if (session && !isPublicRoute) {
+      const requestedPortal = request.nextUrl.searchParams.get("portal");
+      const isAdminPortalRequest =
+        pathname.startsWith("/admin") ||
+        (pathname.startsWith("/dashboard/merchants") && requestedPortal === "admin");
+      if (isAdminPortalRequest && !canTogglePortal) {
+        if (pathname.startsWith("/api/")) {
+          return NextResponse.json(
+            { success: false, error: "Access Denied" },
+            { status: 403, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        const redirectUrl = request.nextUrl.clone();
+        if (pathname.startsWith("/dashboard/merchants")) {
+          redirectUrl.pathname = pathname;
+          redirectUrl.searchParams.set("portal", "merchant");
+        } else {
+          redirectUrl.pathname = "/dashboard/merchants";
+          redirectUrl.searchParams.set("portal", "merchant");
+        }
+        return NextResponse.redirect(redirectUrl);
+      }
+
       // Get session metadata from cookies
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name),
@@ -209,8 +290,8 @@ export async function proxy(request: NextRequest) {
       if (!validity.isValid) {
         if (debugProxy) console.log("[proxy] Session expired:", validity.reason);
         const cookieSetter = {
-          set: (name: string, value: string, options: any) => {
-            response.cookies.set(name, value, options);
+          set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+            setSafeResponseCookie(response, name, value, options);
           },
         };
         expireSession(cookieSetter);
@@ -237,8 +318,8 @@ export async function proxy(request: NextRequest) {
       // Session is valid - update last activity time
       const cookieManager = {
         get: (name: string) => request.cookies.get(name),
-        set: (name: string, value: string, options: any) => {
-          response.cookies.set(name, value, options);
+        set: (name: string, value: string, options: { maxAge: number; path: string; httpOnly?: boolean; sameSite?: string; secure?: boolean }) => {
+          setSafeResponseCookie(response, name, value, options);
         },
       };
       updateActivity(cookieManager);

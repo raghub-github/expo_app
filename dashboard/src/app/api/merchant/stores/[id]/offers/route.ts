@@ -23,6 +23,13 @@ function mapRowToOffer(row: Record<string, unknown>) {
   const discountPct = row.discount_percentage != null ? Number(row.discount_percentage) : null;
   const meta = (row.offer_metadata as Record<string, unknown>) ?? {};
   const metaMenuIds = (meta.menu_item_ids as string[] | null) ?? (row.menu_item_ids as string[] | null) ?? null;
+  const rawAspectRatio = meta.offer_image_aspect_ratio;
+  const offer_image_aspect_ratio =
+    rawAspectRatio == null
+      ? null
+      : Number.isFinite(Number(rawAspectRatio))
+        ? Number(rawAspectRatio)
+        : null;
   const effectiveSubType =
     (row.offer_sub_type as string) ||
     (metaMenuIds && metaMenuIds.length ? "SPECIFIC_ITEM" : "ALL_ORDERS");
@@ -41,6 +48,7 @@ function mapRowToOffer(row: Record<string, unknown>) {
     get_quantity: row.get_quantity != null ? Number(row.get_quantity) : null,
     coupon_code: (meta.coupon_code as string) ?? (row.coupon_code as string) ?? null,
     image_url: (row.offer_image_url as string) ?? (row.image_url as string) ?? null,
+    offer_image_aspect_ratio,
     valid_from: (row.valid_from as string) || new Date().toISOString(),
     valid_till: (row.valid_till as string) || new Date().toISOString(),
     is_active: row.is_active != null ? Boolean(row.is_active) : true,
@@ -138,6 +146,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       offer_type,
       offer_sub_type,
       menu_item_ids,
+      offer_image_aspect_ratio,
       discount_value,
       min_order_amount,
       buy_quantity,
@@ -163,6 +172,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       : `OFF-${storeId}-${Date.now()}`;
     const meta: Record<string, unknown> = {};
     if (menu_item_ids != null) meta.menu_item_ids = Array.isArray(menu_item_ids) ? menu_item_ids : null;
+    if (offer_image_aspect_ratio != null && Number.isFinite(Number(offer_image_aspect_ratio))) {
+      meta.offer_image_aspect_ratio = Number(offer_image_aspect_ratio);
+    }
     if (coupon_code != null) meta.coupon_code = coupon_code;
     const [inserted] = await sql`
       INSERT INTO merchant_offers (

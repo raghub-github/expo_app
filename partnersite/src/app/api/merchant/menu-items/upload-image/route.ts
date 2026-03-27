@@ -4,6 +4,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
 import { getMerchantMenuPath } from '@/lib/r2-paths';
 import { uploadToR2 } from '@/lib/r2';
+import { validateMenuItemSquareImage } from '@/lib/menuItemImageValidation';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -18,7 +19,7 @@ function getDb() {
  * POST /api/merchant/menu-items/upload-image
  * FormData: file (required), storeId (required)
  * Uploads menu item image to R2 at: merchants/{parentId}/stores/{storeId}/menu/{uniqueFilename}
- * Returns { success, key } - save key in merchant_menu_items.item_image_url (signed URLs generated on fetch).
+ * Returns { success, key, image_url } — image_url is always `/api/attachments/proxy?key=...` (same as store documents).
  */
 export async function POST(req: NextRequest) {
   try {
@@ -59,21 +60,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Store does not belong to this merchant' }, { status: 403 });
     }
 
-    const { data: parent } = await db
-      .from('merchant_parents')
-      .select('parent_merchant_id')
-      .eq('id', store.parent_id)
-      .maybeSingle();
-    const parentMerchantCode = (parent as { parent_merchant_id?: string } | null)?.parent_merchant_id || (store.parent_id != null ? String(store.parent_id) : null);
-    const menuDir = getMerchantMenuPath(storeId.trim(), parentMerchantCode);
+    const menuDir = getMerchantMenuPath(storeId.trim(), String(store.parent_id));
     const ext = (file.name && /\.([a-zA-Z0-9]+)$/.exec(file.name)?.[1]) || 'jpg';
     const safeExt = ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase();
     const uniqueName = `menu_${Date.now()}_${Math.random().toString(36).slice(2, 10)}.${safeExt}`;
     const r2Key = `${menuDir}/${uniqueName}`;
 
+    const ab = await file.arrayBuffer();
+    const dim = validateMenuItemSquareImage(Buffer.from(ab));
+    if (!dim.ok) {
+      return NextResponse.json({ error: dim.error }, { status: 400 });
+    }
+
     await uploadToR2(file, r2Key);
 
-    return NextResponse.json({ success: true, key: r2Key });
+    const imageUrl = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+
+    return NextResponse.json({ success: true, key: r2Key, image_url: imageUrl });
   } catch (e) {
     console.error('[menu-items/upload-image]', e);
     return NextResponse.json(

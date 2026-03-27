@@ -98,7 +98,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   // Current portal (admin vs merchant) for merchant dashboard, mirroring Header logic.
   const currentPortal =
     searchParams.get("portal") ||
-    (pathname.startsWith("/dashboard/merchants/stores/") ? "merchant" : "admin");
+    "merchant";
 
   // Render merchant-specific search with dropdowns
   if (dashboardType === "MERCHANT") {

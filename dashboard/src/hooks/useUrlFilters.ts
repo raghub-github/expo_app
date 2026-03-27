@@ -91,13 +91,17 @@ export function useUrlFilters(
       for (const [key, value] of Object.entries(updates)) {
         const config = options.filters[key];
         if (!config) continue;
+        if (value === undefined) continue;
 
         if (value === null || value === config.defaultValue) {
           if (params.has(config.paramName)) {
             params.delete(config.paramName);
             hasUrlChanges = true;
           }
-        } else if (config.validValues.includes(value)) {
+        } else if (
+          typeof value === "string" &&
+          config.validValues.includes(value)
+        ) {
           if (params.get(config.paramName) !== value) {
             params.set(config.paramName, value);
             hasUrlChanges = true;

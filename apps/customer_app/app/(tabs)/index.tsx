@@ -4,7 +4,7 @@
  * Uses wallet icon for user balance (no coin).
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -13,7 +13,9 @@ import {
   StyleSheet,
   Dimensions,
   Image,
+  RefreshControl,
 } from "react-native";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -151,17 +153,62 @@ function CategoryCard({
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { address, requestPermissionAndFetch } = useLocationStore();
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  const locationHydrated = useLocationStore((s) => s.locationHydrated);
+  const locationSource = useLocationStore((s) => s.locationSource);
+  const coords = useLocationStore((s) => s.coords);
+  const { address, requestPermissionAndFetch, refetchLocation } = useLocationStore();
 
-  // On first open of the app, immediately fetch current location.
-  // If location is turned off, this will trigger the system prompt
-  // and our LocationPermissionModal to guide the user.
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["addresses"] }),
+        queryClient.invalidateQueries({ queryKey: ["active-location"] }),
+      ]);
+      if (locationSource !== "selected") {
+        await refetchLocation();
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [queryClient, locationSource, refetchLocation]);
+
+  // After persisted location hydrates: one-time GPS when user has no coords yet.
+  // Do not re-run when source is already "current" (would loop: fetch → coords update → effect → fetch).
   useEffect(() => {
+    if (!locationHydrated) return;
+    if (locationSource === "selected" && coords) return;
+    if (locationSource === "current" && coords) return;
     requestPermissionAndFetch();
-  }, [requestPermissionAndFetch]);
+  }, [locationHydrated, locationSource, coords, requestPermissionAndFetch]);
 
-  const locationPrimary = address?.primary ?? "Current location";
-  const locationSecondary = address?.secondary ?? "Turn on location for accurate address";
+  const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
+  const fullParts = (address?.fullAddress ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const secondaryParts = (address?.secondary ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const stateCandidate =
+    address?.state ??
+    [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
+  const normalizedState = stateCandidate?.toLowerCase() ?? "";
+  const areaLocalityCandidates = [...secondaryParts, ...fullParts, address?.primary ?? ""]
+    .map((p) => p.trim())
+    .filter(
+      (p) =>
+        !!p &&
+        !isPincode(p) &&
+        p.toLowerCase() !== "india" &&
+        p.toLowerCase() !== normalizedState
+    );
+  const dedupedAreaLocality = Array.from(new Set(areaLocalityCandidates));
+  const locationPrimary = dedupedAreaLocality.slice(0, 2).join(", ") || "Current location";
+  const locationSecondary = stateCandidate ?? "Turn on location for accurate address";
 
   return (
     <View style={styles.container}>
@@ -205,6 +252,9 @@ export default function HomeScreen() {
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={TEAL} colors={[TEAL]} />
+        }
       >
         {/* Hero offer card – compact */}
         <TouchableOpacity style={styles.promoCard} activeOpacity={0.92} onPress={() => {}}>

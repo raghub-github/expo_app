@@ -43,8 +43,10 @@ export interface Step3MenuUploadProps {
   imagePreviewUrls: (string | null)[];
   onRemovePendingImage: (idx: number) => void;
   onRemoveUploadedImage: (idx: number) => void;
+  onRemoveAllImages: () => void;
   onRemoveCsvFile: () => void;
   onRemovePdfFile: () => void;
+  removeActionsLoading?: boolean;
 }
 
 export default function Step3MenuUpload(props: Step3MenuUploadProps) {
@@ -78,8 +80,10 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
     imagePreviewUrls,
     onRemovePendingImage,
     onRemoveUploadedImage,
+    onRemoveAllImages,
     onRemoveCsvFile,
     onRemovePdfFile,
+    removeActionsLoading = false,
   } = props;
 
   return (
@@ -170,7 +174,7 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
               onChange={(e) => onMenuImageUpload(Array.from(e.target.files || []))}
             />
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <p className="text-xs sm:text-sm text-slate-600">JPG, PNG, WEBP · max 5 · 5 MB each</p>
+              <p className="text-xs sm:text-sm text-slate-600">JPG, PNG, WEBP · max 5 · 12 MB each</p>
               <p className="text-[11px] sm:text-xs text-slate-500 mt-1">
                 Please select 1 to 5 images in one go by drag and drop or click.
               </p>
@@ -262,7 +266,17 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
         <div className="mt-4 sm:mt-6">
           {menuUploadMode === "IMAGE" && (menuImageFiles.length > 0 || menuUploadedImageUrls.length > 0) && (
             <>
-              <h3 className="text-sm font-semibold text-slate-700 mb-2 sm:mb-3">Your images</h3>
+              <div className="mb-2 sm:mb-3 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-700">Your images</h3>
+                <button
+                  type="button"
+                  onClick={onRemoveAllImages}
+                  disabled={removeActionsLoading}
+                  className="text-xs text-rose-600 hover:text-rose-700 font-medium px-2 py-1 rounded border border-rose-200 hover:bg-rose-50 cursor-pointer"
+                >
+                  {removeActionsLoading ? "Removing..." : "Remove all"}
+                </button>
+              </div>
               <ul className="list-none p-0 m-0 flex gap-3 sm:gap-4 overflow-x-auto overflow-y-hidden pr-1">
                 {menuImageFiles.map((file, idx) => (
                   <li
@@ -283,6 +297,7 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                     <button
                       type="button"
                       onClick={() => onRemovePendingImage(idx)}
+                      disabled={removeActionsLoading}
                       className="self-end text-[11px] sm:text-xs text-rose-600 hover:text-rose-700 font-medium min-h-[28px] px-1.5 touch-manipulation cursor-pointer"
                     >
                       Remove
@@ -319,6 +334,7 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                     <button
                       type="button"
                       onClick={() => onRemoveUploadedImage(idx)}
+                      disabled={removeActionsLoading}
                       className="self-end text-[11px] sm:text-xs text-rose-600 hover:text-rose-700 font-medium min-h-[28px] px-1.5 touch-manipulation cursor-pointer"
                     >
                       Remove
@@ -357,9 +373,10 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                 <button
                   type="button"
                   onClick={onRemoveCsvFile}
+                  disabled={removeActionsLoading}
                   className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 min-h-[36px] px-2 touch-manipulation cursor-pointer"
                 >
-                  Remove
+                  {removeActionsLoading ? "Removing..." : "Remove"}
                 </button>
               </div>
             </>
@@ -393,9 +410,10 @@ export default function Step3MenuUpload(props: Step3MenuUploadProps) {
                 <button
                   type="button"
                   onClick={onRemovePdfFile}
+                  disabled={removeActionsLoading}
                   className="text-xs text-rose-600 hover:text-rose-700 font-medium shrink-0 min-h-[36px] px-2 touch-manipulation cursor-pointer"
                 >
-                  Remove
+                  {removeActionsLoading ? "Removing..." : "Remove"}
                 </button>
               </div>
             </>

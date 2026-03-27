@@ -540,6 +540,7 @@ export const systemUsers = pgTable(
     isEmailVerified: boolean("is_email_verified").default(false),
     isMobileVerified: boolean("is_mobile_verified").default(false),
     twoFactorEnabled: boolean("two_factor_enabled").default(false),
+    canTogglePortal: boolean("can_toggle_portal").notNull().default(false),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
     loginCount: integer("login_count").default(0),
@@ -853,6 +854,14 @@ export type DashboardType =
   | "ORDER_PERSON_RIDE"
   | "ORDER_PARCEL"
   | "TICKET" // Ticket dashboard (all tickets with granular access control)
+  | "TICKET_FOOD"
+  | "TICKET_PARCEL"
+  | "TICKET_PERSON_RIDE"
+  | "TICKET_GENERAL"
+  | "TICKET_CUSTOMER_FOOD"
+  | "TICKET_CUSTOMER_PARCEL"
+  | "TICKET_CUSTOMER_PERSON_RIDE"
+  | "TICKET_CUSTOMER_GENERAL"
   | "OFFER"
   | "AREA_MANAGER"
   | "PAYMENT"
@@ -872,6 +881,7 @@ export type AccessPointGroup =
   | "MERCHANT_OPERATIONS"
   | "MERCHANT_STORE_MANAGEMENT"
   | "MERCHANT_WALLET"
+  | "MERCHANT_ADMIN_MERCHANT_ACCESS"
   | "MERCHANT_WALLET_REQUESTS"
   | "MERCHANT_MENU_MANAGEMENT"
   | "MERCHANT_OFFER_MANAGEMENT"
@@ -921,6 +931,7 @@ export type ActionType =
   | "RIDER_ONBOARDING_STAGE_UPDATED"
   | "RIDER_KYC_STATUS_UPDATED"
   | "RIDER_WALLET_ADJUSTED"
+  | "RIDER_WALLET_ADD_BALANCE"
   | "RIDER_PENALTY_ADDED"
   | "RIDER_PENALTY_REVERTED"
   | "RIDER_BLACKLISTED"

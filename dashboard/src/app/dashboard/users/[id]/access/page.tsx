@@ -16,6 +16,7 @@ export default function UserAccessPage() {
   const [user, setUser] = useState<any>(null);
   const [selectedDashboards, setSelectedDashboards] = useState<string[]>([]);
   const [selectedAccessPoints, setSelectedAccessPoints] = useState<Record<string, string[]>>({});
+  const [canTogglePortal, setCanTogglePortal] = useState(false);
 
   const userId = params.id as string;
 
@@ -45,6 +46,7 @@ export default function UserAccessPage() {
       }
 
       setUser(userResult.data);
+      setCanTogglePortal(Boolean(userResult.data?.canTogglePortal));
 
       // Fetch dashboard access
       const accessResponse = await fetch(`/api/users/${userId}/access`);
@@ -66,6 +68,15 @@ export default function UserAccessPage() {
           }
           accessPoints[ap.dashboardType].push(ap.accessPointGroup);
         });
+
+        if (Boolean(userResult.data?.canTogglePortal)) {
+          if (!accessPoints.MERCHANT) {
+            accessPoints.MERCHANT = [];
+          }
+          if (!accessPoints.MERCHANT.includes("MERCHANT_ADMIN_MERCHANT_ACCESS")) {
+            accessPoints.MERCHANT.push("MERCHANT_ADMIN_MERCHANT_ACCESS");
+          }
+        }
 
         setSelectedDashboards(dashboards.map((d: any) => d.dashboardType));
         setSelectedAccessPoints(accessPoints);
@@ -92,6 +103,9 @@ export default function UserAccessPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          can_toggle_portal: (selectedAccessPoints.MERCHANT || []).includes(
+            "MERCHANT_ADMIN_MERCHANT_ACCESS"
+          ),
           dashboardAccess: selectedDashboards.map(dashboardType => ({
             dashboardType,
             accessLevel: "FULL_ACCESS",
@@ -175,6 +189,8 @@ export default function UserAccessPage() {
               [dashboardType]: accessPoints,
             });
           }}
+          canTogglePortal={canTogglePortal}
+          onCanTogglePortalChange={setCanTogglePortal}
           disabled={saving}
         />
 

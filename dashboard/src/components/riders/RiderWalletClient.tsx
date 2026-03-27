@@ -51,6 +51,13 @@ interface OnboardingPaymentRow {
 export function RiderWalletClient() {
   const searchParams = useSearchParams();
   const riderContext = useRiderDashboardOptional();
+  const riderFromContext = riderContext?.currentRiderInfo
+    ? {
+        id: riderContext.currentRiderInfo.id,
+        name: riderContext.currentRiderInfo.name,
+        mobile: riderContext.currentRiderInfo.mobile,
+      }
+    : null;
   const searchValue = (searchParams.get("search") || "").trim();
 
   const [rider, setRider] = useState<RiderInfo | null>(null);
@@ -119,6 +126,7 @@ export function RiderWalletClient() {
     isLoading: riderDetailsLoading,
     isFetching: riderDetailsFetching,
     error: riderDetailsError,
+    refetch: refetchRiderDetails,
   } = useGetRiderDetailsQuery(riderId as number, {
     skip: riderId == null,
   } as any);
@@ -127,16 +135,13 @@ export function RiderWalletClient() {
     data: ledgerData,
     isLoading: ledgerQueryLoading,
     isFetching: ledgerQueryFetching,
+    refetch: refetchLedger,
   } = useGetRiderLedgerQuery(
     riderId ? { riderId, filters: { limit: 15 } } : ({ riderId: 0 } as any),
     {
       skip: riderId == null,
     } as any
   );
-
-  const riderFromContext = riderContext?.currentRiderInfo
-    ? { id: riderContext.currentRiderInfo.id, name: riderContext.currentRiderInfo.name, mobile: riderContext.currentRiderInfo.mobile }
-    : null;
 
   useEffect(() => {
     if (searchValue) {
@@ -361,8 +366,8 @@ export function RiderWalletClient() {
             open={addPenaltyOpen}
             onClose={() => setAddPenaltyOpen(false)}
             onSuccess={() => {
-              fetchWallet(rider.id);
-              fetchRecentLedger(rider.id);
+              void refetchRiderDetails();
+              void refetchLedger();
             }}
           />
           <AddAmountModal
@@ -371,8 +376,8 @@ export function RiderWalletClient() {
             open={addAmountOpen}
             onClose={() => setAddAmountOpen(false)}
             onSuccess={() => {
-              fetchWallet(rider.id);
-              fetchRecentLedger(rider.id);
+              void refetchRiderDetails();
+              void refetchLedger();
             }}
           />
         </>

@@ -40,8 +40,7 @@ async function allowStoreAccess(storeId: number) {
   return {
     allowed: true as const,
     systemUserId: systemUser?.id ?? null,
-    systemUserName: systemUser?.name ?? user.email,
-  };
+    systemUserName: systemUser?.full_name?.trim() || user.email,  };
 }
 
 export async function POST(
@@ -67,15 +66,15 @@ export async function POST(
     const body = await request.json().catch(() => ({}));
     const step = typeof body.step === "number" ? Math.floor(body.step) : undefined;
     const fieldKey = typeof body.field_key === "string" ? body.field_key.trim() : undefined;
-    if (step == null || step < 1 || step > 9 || !fieldKey) {
+    if (step == null || step < 1 || step > 8 || !fieldKey) {
       return NextResponse.json(
-        { success: false, error: "Invalid step (1–9) or missing field_key" },
+        { success: false, error: "Invalid step (1–8) or missing field_key" },
         { status: 400 }
       );
     }
     const oldValue = body.old_value === undefined ? null : (body.old_value == null ? null : String(body.old_value));
     const newValue = body.new_value === undefined ? null : (body.new_value == null ? null : String(body.new_value));
-    const editedByName = typeof access.systemUserName === "string" ? access.systemUserName : "agent";
+    const editedByName = access.systemUserName.trim() || "agent";
     const ok = await insertStoreVerificationStepEdit({
       storeId,
       stepNumber: step,

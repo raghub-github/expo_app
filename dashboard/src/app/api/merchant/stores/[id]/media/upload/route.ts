@@ -9,21 +9,70 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getAreaManagerByUserId } from "@/lib/area-manager/auth";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import { getSql } from "@/lib/db/client";
-import { uploadWithKey } from "@/lib/services/r2";
+import { uploadWithKey, deleteDocument } from "@/lib/services/r2";
+import { randomUUID } from "crypto";
 
 export const runtime = "nodejs";
 
-const MAX_MENU_FILE_BYTES = 15 * 1024 * 1024; // 15 MB
+const MAX_MENU_FILE_BYTES = 15 * 1024 * 1024; // 15 MB for PDF/CSV/XLS/XLSX
+const MAX_MENU_IMAGE_BYTES = 12 * 1024 * 1024; // 12 MB per image
+const MAX_MENU_IMAGES = 5;
+const CSV_MIN_ROWS = 1;
+const CSV_MAX_ROWS = 500;
+const CSV_REQUIRED_HEADERS = [
+  ["item_name", "name"],
+  ["price", "base_price", "selling_price"],
+];
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "file";
 }
 
-function getBaseUrl(request: NextRequest): string {
-  const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "";
-  const proto = request.headers.get("x-forwarded-proto") || "https";
-  if (host) return `${proto === "https" ? "https" : "http"}://${host}`;
-  return process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "";
+function parseCsvRowCountAndHeaders(text: string): { rowCount: number; headers: string[]; error?: string } {
+  const lines = text
+    .trim()
+    .split(/\r?\n/)
+    .filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return { rowCount: 0, headers: [], error: "CSV is empty" };
+  const headers = lines[0]
+    .split(/[,;\t]/)
+    .map((h) => h.trim().toLowerCase().replace(/^["']|["']$/g, ""));
+  const rowCount = Math.max(0, lines.length - 1);
+  if (rowCount < CSV_MIN_ROWS) {
+    return { rowCount, headers, error: `Minimum ${CSV_MIN_ROWS} data row(s) required (excluding header).` };
+  }
+  if (rowCount > CSV_MAX_ROWS) {
+    return { rowCount, headers, error: `Maximum ${CSV_MAX_ROWS} data rows allowed. You have ${rowCount}.` };
+  }
+  const hasName = CSV_REQUIRED_HEADERS[0].some((h) => headers.includes(h));
+  const hasPrice = CSV_REQUIRED_HEADERS[1].some((h) => headers.includes(h));
+  if (!hasName) return { rowCount, headers, error: `CSV must have one of: ${CSV_REQUIRED_HEADERS[0].join(", ")}` };
+  if (!hasPrice) return { rowCount, headers, error: `CSV must have one of: ${CSV_REQUIRED_HEADERS[1].join(", ")}` };
+  return { rowCount, headers };
+}
+
+function docsMenuBasePath(parentId: number, storeCode: string): string {
+  return `docs/merchants/${parentId}/stores/${storeCode}/onboarding/menu`;
+}
+
+function canonicalSheetMime(fileName: string): string {
+  const n = fileName.toLowerCase();
+  if (n.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (n.endsWith(".xls")) return "application/vnd.ms-excel";
+  return "text/csv";
+}
+
+function extractR2KeyFromProxyUrl(url: string): string {
+  try {
+    const fakeOrigin = "https://local.invalid";
+    const u = url.startsWith("http://") || url.startsWith("https://")
+      ? new URL(url)
+      : new URL(url, fakeOrigin);
+    const key = u.searchParams.get("key");
+    return key ? decodeURIComponent(key) : "";
+  } catch {
+    return "";
+  }
 }
 
 export async function POST(
@@ -34,8 +83,9 @@ export async function POST(
     const { id } = await params;
     const storeId = parseInt(id, 10);
     if (!Number.isFinite(storeId)) {
+      console.warn("[media/upload] invalid store id:", id);
       return NextResponse.json(
-        { success: false, error: "Invalid store id" },
+        { success: false, error: "Invalid store id", code: "INVALID_STORE_ID" },
         { status: 400 }
       );
     }
@@ -105,29 +155,78 @@ export async function POST(
         ? sourceEntityRaw
         : "ONBOARDING_MENU_IMAGE";
     if (files.length === 0) {
+      console.warn("[media/upload] no files in form-data", {
+        storeId,
+        sourceEntityRaw,
+      });
       return NextResponse.json(
-        { success: false, error: "No file provided" },
+        { success: false, error: "No file provided", code: "NO_FILE" },
         { status: 400 }
       );
     }
 
-    // For images we allow up to 5 files in one go.
+    // For images allow up to 5 files in one request.
     const effectiveFiles =
       sourceEntity === "ONBOARDING_MENU_IMAGE" ? files.slice(0, 5) : files.slice(0, 1);
 
     for (const f of effectiveFiles) {
-      if (f.size > MAX_MENU_FILE_BYTES) {
+      const sizeLimit =
+        sourceEntity === "ONBOARDING_MENU_IMAGE"
+          ? MAX_MENU_IMAGE_BYTES
+          : MAX_MENU_FILE_BYTES;
+      if (f.size > sizeLimit) {
+        const maxMb = sourceEntity === "ONBOARDING_MENU_IMAGE" ? 12 : 15;
+        console.warn("[media/upload] file too large", {
+          storeId,
+          fileName: f.name,
+          fileSize: f.size,
+          sourceEntity,
+          sizeLimit,
+        });
         return NextResponse.json(
-          { success: false, error: "File too large (max 15 MB)" },
+          {
+            success: false,
+            error:
+              sourceEntity === "ONBOARDING_MENU_IMAGE"
+                ? `Image "${f.name}" is too large. Each image must be less than ${maxMb} MB.`
+                : `File "${f.name}" is too large. Maximum allowed size is ${maxMb} MB.`,
+            code: "FILE_TOO_LARGE",
+          },
           { status: 400 }
         );
       }
     }
 
-    const parentId = store.parent_id ?? store.id;
-    const storeIdStr = String(store.store_id || storeId);
-    // We intentionally store only the proxy path (no hostname) so URLs
-    // work across localhost, staging, and production without rewriting.
+    const sql = getSql();
+    const storeIdStr = String(store.store_id || storeId).trim();
+    let parentIdForPath =
+      typeof store.parent_id === "number" && Number.isFinite(store.parent_id)
+        ? store.parent_id
+        : null;
+    if (parentIdForPath == null) {
+      const parentRows = await sql`
+        SELECT parent_id
+        FROM merchant_stores
+        WHERE id = ${storeId}
+        LIMIT 1
+      `;
+      const parentRow = Array.isArray(parentRows) ? parentRows[0] : parentRows;
+      if (parentRow && (parentRow as { parent_id?: unknown }).parent_id != null) {
+        const parsed = Number((parentRow as { parent_id: unknown }).parent_id);
+        if (Number.isFinite(parsed)) parentIdForPath = parsed;
+      }
+    }
+    if (parentIdForPath == null) {
+      console.warn("[media/upload] parent id missing", {
+        storeId,
+        storePublicId: storeIdStr,
+      });
+      return NextResponse.json(
+        { success: false, error: "Parent id not found for store", code: "PARENT_ID_MISSING" },
+        { status: 400 }
+      );
+    }
+    const menuBasePath = docsMenuBasePath(parentIdForPath, storeIdStr);
 
     const createdFiles: {
       id: number;
@@ -143,79 +242,215 @@ export async function POST(
     }[] = [];
 
     try {
-      const sql = getSql();
-      // Hard-delete any existing MENU_REFERENCE media (and their R2 objects) so new upload fully replaces old.
+      // Align with partnersite behavior:
+      // - IMAGE: append (max 5 total)
+      // - PDF / SHEET: replace only same source_entity (not all menu files)
       const existing = await sql`
-        SELECT id, r2_key
+        SELECT id, r2_key, menu_reference_image_urls
         FROM merchant_store_media_files
         WHERE store_id = ${storeId}
           AND media_scope = 'MENU_REFERENCE'
+          AND source_entity = ${sourceEntity}
       `;
-      const rows = Array.isArray(existing) ? existing : existing ? [existing] : [];
-      for (const row of rows as { id: number; r2_key: string | null }[]) {
-        if (!row.r2_key) continue;
-        try {
-          await deleteDocument(row.r2_key);
-        } catch (e) {
-          console.warn(
-            "[POST /api/merchant/stores/[id]/media/upload] R2 delete failed for key:",
-            row.r2_key,
-            e
+      const rows = (Array.isArray(existing) ? existing : existing ? [existing] : []) as {
+        id: number;
+        r2_key: string | null;
+        menu_reference_image_urls?: unknown;
+      }[];
+
+      if (sourceEntity === "ONBOARDING_MENU_IMAGE") {
+        const aggregateRow = rows[0] ?? null;
+        const existingBundle = Array.isArray(aggregateRow?.menu_reference_image_urls)
+          ? (aggregateRow?.menu_reference_image_urls as Array<{
+              id?: string;
+              url?: string;
+              file_name?: string;
+              verification_status?: string;
+            }>)
+          : [];
+        const existingImageCount = existingBundle.length;
+        if (existingImageCount + effectiveFiles.length > MAX_MENU_IMAGES) {
+          console.warn("[media/upload] max images exceeded", {
+            storeId,
+            existingImageCount,
+            incoming: effectiveFiles.length,
+            max: MAX_MENU_IMAGES,
+          });
+          return NextResponse.json(
+            {
+              success: false,
+              error: `Maximum ${MAX_MENU_IMAGES} menu images allowed. You have ${existingImageCount}, uploading ${effectiveFiles.length}.`,
+              code: "MAX_IMAGES_EXCEEDED",
+            },
+            { status: 400 }
           );
         }
-      }
-      await sql`
-        DELETE FROM merchant_store_media_files
-        WHERE store_id = ${storeId}
-          AND media_scope = 'MENU_REFERENCE'
-      `;
-      for (const f of effectiveFiles) {
-        const timestamp = Date.now();
-        const safeName = sanitizeFileName(f.name);
-        const ext = f.name.split(".").pop()?.toLowerCase() || "bin";
-        const r2Key = `merchants/${parentId}/stores/${storeIdStr}/menu/${timestamp}_${safeName}`;
 
-        await uploadWithKey(f, r2Key);
+        const uploadedBundleEntries: Array<{
+          id: string;
+          url: string;
+          file_name: string;
+          verification_status: string;
+        }> = [];
 
-        const publicUrl = `/api/attachments/proxy?key=${encodeURIComponent(
-          r2Key
-        )}`;
+        for (const f of effectiveFiles) {
+          const ext = f.name.split(".").pop()?.toLowerCase() || "bin";
+          const r2Key = `${menuBasePath}/menu-ref-img_${randomUUID()}.${ext}`;
+          await uploadWithKey(f, r2Key);
+          const publicUrl = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
+          uploadedBundleEntries.push({
+            id: randomUUID(),
+            url: publicUrl,
+            file_name: f.name,
+            verification_status: "PENDING",
+          });
+        }
 
-        const inserted = await sql`
-          INSERT INTO merchant_store_media_files (
-            store_id, media_scope, source_entity, original_file_name, r2_key, public_url,
-            mime_type, file_size_bytes, version_no, is_active, verification_status
-          )
-          VALUES (
-            ${storeId},
-            'MENU_REFERENCE',
-            ${sourceEntity},
-            ${f.name},
-            ${r2Key},
-            ${publicUrl},
-            ${f.type || null},
-            ${f.size},
-            1,
-            true,
-            'PENDING'
-          )
-          RETURNING id, store_id, media_scope, source_entity, original_file_name, r2_key, public_url,
-                    mime_type, file_size_bytes, verification_status, created_at
-        `;
-        const row = Array.isArray(inserted) ? inserted[0] : inserted;
-        if (row) {
+        const mergedBundle = [...existingBundle, ...uploadedBundleEntries];
+        const primaryMenuUrl = mergedBundle[0]?.url ?? null;
+        const primaryR2Key = primaryMenuUrl
+          ? extractR2KeyFromProxyUrl(primaryMenuUrl)
+          : null;
+        const bundleJson = JSON.stringify(mergedBundle);
+        const mergedNames = mergedBundle
+          .map((entry) => String(entry.file_name ?? "").trim())
+          .filter(Boolean)
+          .join(", ");
+
+        if (aggregateRow) {
+          await sql`
+            UPDATE merchant_store_media_files
+            SET original_file_name = ${mergedNames || null},
+                r2_key = ${primaryR2Key},
+                public_url = ${primaryMenuUrl},
+                menu_url = ${primaryMenuUrl},
+                menu_reference_image_urls = CAST(${bundleJson} AS jsonb),
+                mime_type = 'image/*',
+                file_size_bytes = NULL,
+                verification_status = 'PENDING',
+                updated_at = NOW()
+            WHERE id = ${aggregateRow.id}
+          `;
+        } else {
+          await sql`
+            INSERT INTO merchant_store_media_files (
+              store_id, media_scope, source_entity, original_file_name, r2_key, public_url, menu_url, menu_reference_image_urls,
+              mime_type, file_size_bytes, version_no, is_active, verification_status
+            )
+            VALUES (
+              ${storeId},
+              'MENU_REFERENCE',
+              ${sourceEntity},
+              ${mergedNames || null},
+              ${primaryR2Key},
+              ${primaryMenuUrl},
+              ${primaryMenuUrl},
+              CAST(${bundleJson} AS jsonb),
+              'image/*',
+              NULL,
+              1,
+              true,
+              'PENDING'
+            )
+          `;
+        }
+
+        mergedBundle.forEach((entry, index) => {
           createdFiles.push({
-            id: Number(row.id),
+            id: Date.now() + index,
             store_id: storeId,
             media_scope: "MENU_REFERENCE",
-            original_file_name: String(row.original_file_name ?? f.name),
-            r2_key: String(row.r2_key ?? r2Key),
-            public_url: String(row.public_url ?? publicUrl),
-            mime_type: ((row.mime_type as string | null) ?? f.type) || null,
-            file_size_bytes: Number(row.file_size_bytes ?? f.size),
-            verification_status: String(row.verification_status ?? "PENDING"),
-            created_at: (row.created_at as string) ?? new Date().toISOString(),
+            original_file_name: String(entry.file_name ?? `menu-image-${index + 1}`),
+            r2_key: extractR2KeyFromProxyUrl(String(entry.url ?? "")),
+            public_url: String(entry.url ?? ""),
+            mime_type: "image/*",
+            file_size_bytes: 0,
+            verification_status: String(entry.verification_status ?? "PENDING"),
+            created_at: new Date().toISOString(),
           });
+        });
+      } else {
+        // Replace only same type for PDF/SHEET.
+        for (const row of rows) {
+          if (!row.r2_key) continue;
+          try {
+            await deleteDocument(row.r2_key);
+          } catch (e) {
+            console.warn("[media/upload] R2 delete failed for key:", row.r2_key, e);
+          }
+        }
+        await sql`
+          DELETE FROM merchant_store_media_files
+          WHERE store_id = ${storeId}
+            AND media_scope = 'MENU_REFERENCE'
+            AND source_entity = ${sourceEntity}
+        `;
+        for (const f of effectiveFiles) {
+          const ext = f.name.split(".").pop()?.toLowerCase() || "bin";
+          let r2Key = "";
+          let uploadMime = f.type || null;
+
+          if (sourceEntity === "ONBOARDING_MENU_PDF") {
+            r2Key = `${menuBasePath}/menu-reference.pdf`;
+            uploadMime = "application/pdf";
+          } else {
+            // Keep extension-specific canonical file for sheet.
+            const sheetExt = ext === "xlsx" || ext === "xls" ? ext : "csv";
+            if (sheetExt === "csv") {
+              const parsed = parseCsvRowCountAndHeaders(Buffer.from(await f.arrayBuffer()).toString("utf8"));
+              // AM onboarding accepts merchant-provided reference CSVs with variable schemas.
+              // Keep parse best-effort for diagnostics, but do not block upload.
+              if (parsed.error) {
+                console.warn("[media/upload] CSV validation warning (non-blocking):", parsed.error);
+              }
+            }
+            r2Key = `${menuBasePath}/menu-reference-sheet.${sheetExt}`;
+            uploadMime = canonicalSheetMime(`x.${sheetExt}`);
+          }
+
+          await uploadWithKey(f, r2Key);
+
+          const publicUrl = `/api/attachments/proxy?key=${encodeURIComponent(
+            r2Key
+          )}`;
+          const inserted = await sql`
+            INSERT INTO merchant_store_media_files (
+              store_id, media_scope, source_entity, original_file_name, r2_key, public_url, menu_url, menu_reference_image_urls,
+              mime_type, file_size_bytes, version_no, is_active, verification_status
+            )
+            VALUES (
+              ${storeId},
+              'MENU_REFERENCE',
+              ${sourceEntity},
+              ${f.name},
+              ${r2Key},
+              ${publicUrl},
+              ${publicUrl},
+              NULL,
+              ${uploadMime},
+              ${f.size},
+              1,
+              true,
+              'PENDING'
+            )
+            RETURNING id, store_id, media_scope, source_entity, original_file_name, r2_key, public_url,
+                      mime_type, file_size_bytes, verification_status, created_at
+          `;
+          const row = Array.isArray(inserted) ? inserted[0] : inserted;
+          if (row) {
+            createdFiles.push({
+              id: Number(row.id),
+              store_id: storeId,
+              media_scope: "MENU_REFERENCE",
+              original_file_name: String(row.original_file_name ?? f.name),
+              r2_key: String(row.r2_key ?? r2Key),
+              public_url: String(row.public_url ?? publicUrl),
+              mime_type: ((row.mime_type as string | null) ?? uploadMime) || null,
+              file_size_bytes: Number(row.file_size_bytes ?? f.size),
+              verification_status: String(row.verification_status ?? "PENDING"),
+              created_at: (row.created_at as string) ?? new Date().toISOString(),
+            });
+          }
         }
       }
     } catch (e) {

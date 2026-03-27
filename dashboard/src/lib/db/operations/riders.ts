@@ -173,7 +173,7 @@ export async function getRiderDocumentById(docId: number) {
 export async function updateRiderDocument(
   docId: number,
   updates: {
-    docNumber?: string;
+    docNumber?: string | null;
     fileUrl?: string;
     r2Key?: string;
     metadata?: Record<string, any>;
@@ -498,7 +498,7 @@ export async function checkAllRequiredDocumentsVerified(
   // Aadhaar is always mandatory
   // PAN is optional
   // Selfie is always required
-  const mandatoryTypes = ["aadhaar", "selfie"];
+  const mandatoryTypes = ["aadhaar", "selfie"] as const;
   
   // Determine vehicle choice if not provided
   let vehicleType = vehicleChoice;

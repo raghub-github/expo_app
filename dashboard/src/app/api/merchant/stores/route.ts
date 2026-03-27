@@ -53,9 +53,10 @@ export async function GET(request: NextRequest) {
     const cursor = searchParams.get("cursor") ?? undefined;
     const rawSearch = searchParams.get("search");
     const search = rawSearch != null ? rawSearch.trim() || undefined : undefined;
-    const category = searchParams.get("category") as "verified" | "pending" | "rejected" | "new" | null;
+    const category = searchParams.get("category") as "verified" | "pending" | "rejected" | "new" | "drafted" | null;
     const fromDate = searchParams.get("fromDate")?.trim() || undefined;
     const toDate = searchParams.get("toDate")?.trim() || undefined;
+    const storeType = searchParams.get("storeType")?.trim() || undefined;
 
     // Scope: Area managers see only their stores; Super Admin / other users see all.
     let areaManagerId: number | null = null;
@@ -98,6 +99,7 @@ export async function GET(request: NextRequest) {
             name: s.store_display_name || s.store_name,
             city: s.city,
             approval_status: s.approval_status,
+              store_type: s.store_type ?? null,
             onboarding_step: s.current_onboarding_step,
             onboarding_completed: s.onboarding_completed,
             store_email: s.store_email ?? null,
@@ -118,10 +120,12 @@ export async function GET(request: NextRequest) {
     // Map category to approval_status / newOnly for child list
     let approval_status: string | undefined;
     let newOnly = false;
+    let draftedOnly = false;
     if (category === "verified") approval_status = "APPROVED";
     else if (category === "pending") approval_status = "SUBMITTED";
     else if (category === "rejected") approval_status = "REJECTED";
     else if (category === "new") newOnly = true;
+    else if (category === "drafted") draftedOnly = true;
 
     // Child search: return only matching child store(s); limit 1 for "single child" result when search is set
     const { items, nextCursor } = await listMerchantStores({
@@ -132,6 +136,8 @@ export async function GET(request: NextRequest) {
       filter: "child",
       approval_status,
       newOnly,
+      draftedOnly,
+      storeType,
       createdFrom: fromDate,
       createdTo: toDate,
     });
@@ -148,6 +154,7 @@ export async function GET(request: NextRequest) {
         name: s.store_display_name || s.store_name,
         city: s.city,
         approval_status: s.approval_status,
+          store_type: s.store_type ?? null,
         onboarding_step: s.current_onboarding_step,
         onboarding_completed: s.onboarding_completed,
         store_email: s.store_email ?? null,

@@ -9,7 +9,6 @@ import { type CSSProperties } from "react";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { queryKeys } from "@/lib/queryKeys";
-
 // Exact color codes from reference image
 const MINT_GREEN = "#4EE5C1"; // Active buttons and elements
 const PAGE_BG = "#F4F6F9"; // Page background
@@ -141,11 +140,11 @@ function useFoodOrdersQuery(
   snapshotKey: string | null,
   initialSnapshot: Awaited<ReturnType<typeof fetchFoodOrders>> | null
 ) {
-  return useQuery({
-    queryKey: queryKeys.ordersCore.foodList(filters as Record<string, unknown>),
+  const query = useQuery({
+    queryKey: queryKeys.ordersCore.foodList(filters as unknown as Record<string, unknown>),
     queryFn: ({ signal }) => fetchFoodOrders(filters, signal),
     enabled,
-    initialData: initialSnapshot ?? undefined,
+    ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
@@ -153,11 +152,14 @@ function useFoodOrdersQuery(
     placeholderData: (prev) => prev,
     // SWR: show snapshot immediately, then refresh in background.
     refetchOnMount: true,
-    onSuccess: (data) => {
-      if (!snapshotKey) return;
-      saveClientSnapshot(snapshotKey, data);
-    },
   });
+
+  useEffect(() => {
+    if (!snapshotKey || query.data == null) return;
+    saveClientSnapshot(snapshotKey, query.data);
+  }, [snapshotKey, query.data]);
+
+  return query;
 }
 
 export default function FoodOrdersClient() {
@@ -188,8 +190,7 @@ export default function FoodOrdersClient() {
   const selectedStatus = urlStatus ?? null;
   const [page] = useState(1);
   const [limit] = useState(20);
-  const debouncedSearch = useDebouncedValue(urlSearch, 400);
-  const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
+  const debouncedSearch = useDebouncedValue(urlSearch, 400);  const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
   const userTypeRef = useRef<HTMLDivElement>(null);
@@ -246,7 +247,6 @@ export default function FoodOrdersClient() {
   const orders = ordersData?.orders ?? [];
   const total = ordersData?.total ?? 0;
   const loading = isFetching || (isLoading && !ordersData);
-
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -346,7 +346,6 @@ export default function FoodOrdersClient() {
   const refreshData = useCallback(() => {
     void refetchOrders();
   }, [refetchOrders]);
-
   const orderCount = total;
 
   const ROW_HEIGHT = 40;

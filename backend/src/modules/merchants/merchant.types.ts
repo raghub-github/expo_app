@@ -71,10 +71,8 @@ export type MerchantStoreRow = {
   store_description: string | null;
   full_address?: string | null;
   postal_code?: string | null;
-  logo_url: string | null;
   banner_url: string | null;
   gallery_images?: string[] | null;
-  ads_images?: string[] | null;
   cuisine_types: string[] | null;
   city: string | null;
   latitude: number | null;

@@ -122,7 +122,7 @@ export async function GET(request: NextRequest) {
       conditions.length > 0 ? params : [limit, offset]
     );
 
-    const tickets = (rows || []).map((row: Record<string, unknown>) => ({
+    const tickets = ((rows || []) as Record<string, unknown>[]).map((row) => ({
       id: Number(row.id),
       ticketId: String(row.ticket_id ?? ""),
       ticketType: String(row.ticket_type ?? ""),
@@ -161,7 +161,6 @@ export async function GET(request: NextRequest) {
       updatedAt: String(row.updated_at ?? ""),
       closedAt: row.closed_at != null ? String(row.closed_at) : null,
     }));
-
     return NextResponse.json({
       success: true,
       data: {

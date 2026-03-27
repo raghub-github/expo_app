@@ -26,7 +26,13 @@ import {
   useUpdateCategory,
   useDeleteCategory,
 } from "@/hooks/useMenuQueries";
-import { fetchCategoryAvailabilitySummary, type MenuCategory } from "@/services/menuApi";
+import {
+  fetchCategoryAvailabilitySummary,
+  fetchCategoryNameSuggestions,
+  fetchSubcategoryNameSuggestions,
+  type MenuCategory,
+} from "@/services/menuApi";
+import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 
 export default function CategoriesScreen() {
   const router = useRouter();
@@ -48,6 +54,9 @@ export default function CategoriesScreen() {
   const [parentPickerOpen, setParentPickerOpen] = useState(false);
   const [availabilityCounts, setAvailabilityCounts] = useState<Record<string, number>>({});
   const [expandedParentIds, setExpandedParentIds] = useState<Set<number>>(new Set());
+  const [peerSuggestions, setPeerSuggestions] = useState<string[]>([]);
+  const [peerSuggestionsLoading, setPeerSuggestionsLoading] = useState(false);
+  const debouncedName = useDebouncedValue(name, 280);
   const saving = createCat.isPending || updateCat.isPending;
 
   const params = useLocalSearchParams<{ addSubcategory?: string }>();
@@ -84,6 +93,21 @@ export default function CategoriesScreen() {
     }
   }, [params.addSubcategory, parentCategories.length]);
   const categoryById = new Map(categories.map((c) => [c.id, c]));
+
+  /** Same scope as DB unique (store + parent + lower(name)). */
+  const categoryNameConflictSet = useMemo(() => {
+    const set = new Set<string>();
+    const scopeParent = parentCategoryId ?? null;
+    for (const c of categories) {
+      if (editingCategory && c.id === editingCategory.id) continue;
+      const rowParent = c.parent_category_id ?? null;
+      if (rowParent !== scopeParent) continue;
+      const n = c.category_name.toLowerCase().trim();
+      if (n) set.add(n);
+    }
+    return set;
+  }, [categories, editingCategory, parentCategoryId]);
+
   const displayCategoryName = (c: MenuCategory) => {
     if (c.parent_category_id) {
       const parent = categoryById.get(c.parent_category_id);
@@ -109,6 +133,41 @@ export default function CategoriesScreen() {
     if (!storeId || !token) return;
     fetchCategoryAvailabilitySummary(storeId, token).then((counts) => setAvailabilityCounts(counts)).catch(() => setAvailabilityCounts({}));
   }, [storeId, token, categories.length]);
+
+  useEffect(() => {
+    if (!modalOpen || !storeId || !token) {
+      setPeerSuggestions([]);
+      setPeerSuggestionsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setPeerSuggestionsLoading(true);
+      try {
+        const list =
+          parentCategoryId != null
+            ? await fetchSubcategoryNameSuggestions(storeId, token, {
+                q: debouncedName,
+                limit: 12,
+                parentCategoryId: parentCategoryId,
+                editingCategoryId: editingCategory?.id ?? null,
+              })
+            : await fetchCategoryNameSuggestions(storeId, token, {
+                q: debouncedName,
+                limit: 12,
+                editingCategoryId: editingCategory?.id ?? null,
+              });
+        if (!cancelled) setPeerSuggestions(list);
+      } catch {
+        if (!cancelled) setPeerSuggestions([]);
+      } finally {
+        if (!cancelled) setPeerSuggestionsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, storeId, token, debouncedName, editingCategory, parentCategoryId]);
 
   const parentIdsKey = useMemo(() => parentCategories.map((p) => p.id).join(","), [parentCategories]);
   useEffect(() => {
@@ -377,34 +436,97 @@ export default function CategoriesScreen() {
             <Text style={styles.modalTitle}>
               {editingCategory ? "Edit category" : parentCategoryId != null ? "Add subcategory" : "Add category"}
             </Text>
-            <Text style={styles.inputLabel}>Parent category (optional — leave empty for main category)</Text>
-            <View style={styles.pickerWrap}>
-              <TouchableOpacity
-                style={styles.pickerBtn}
-                onPress={() => setParentCategoryId(null)}
-              >
-                <Text style={[styles.pickerBtnText, parentCategoryId === null && styles.pickerBtnTextActive]}>None (main category)</Text>
-              </TouchableOpacity>
-              {parentCategories
-                .filter((p) => editingCategory?.id !== p.id)
-                .map((p) => (
+            {parentCategoryId != null && !editingCategory && (
+              <View style={styles.subcategoryBanner}>
+                <Text style={styles.subcategoryBannerText}>
+                  Subcategory under{" "}
+                  <Text style={styles.subcategoryBannerStrong}>
+                    {parentCategories.find((p) => p.id === parentCategoryId)?.category_name ?? "—"}
+                  </Text>
+                </Text>
+              </View>
+            )}
+            {editingCategory && (
+              <>
+                <Text style={styles.inputLabel}>Parent category (optional)</Text>
+                <View style={styles.pickerWrap}>
                   <TouchableOpacity
-                    key={p.id}
-                    style={[styles.pickerBtn, parentCategoryId === p.id && styles.pickerBtnActive]}
-                    onPress={() => setParentCategoryId(p.id)}
+                    style={styles.pickerBtn}
+                    onPress={() => setParentCategoryId(null)}
                   >
-                    <Text style={[styles.pickerBtnText, parentCategoryId === p.id && styles.pickerBtnTextActive]}>{p.category_name}</Text>
+                    <Text style={[styles.pickerBtnText, parentCategoryId === null && styles.pickerBtnTextActive]}>
+                      None (main category)
+                    </Text>
                   </TouchableOpacity>
-                ))}
-            </View>
-            <Text style={styles.inputLabel}>Category name *</Text>
+                  {parentCategories
+                    .filter((p) => editingCategory?.id !== p.id)
+                    .map((p) => (
+                      <TouchableOpacity
+                        key={p.id}
+                        style={[styles.pickerBtn, parentCategoryId === p.id && styles.pickerBtnActive]}
+                        onPress={() => setParentCategoryId(p.id)}
+                      >
+                        <Text
+                          style={[styles.pickerBtnText, parentCategoryId === p.id && styles.pickerBtnTextActive]}
+                        >
+                          {p.category_name}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                </View>
+              </>
+            )}
+            <Text style={styles.inputLabel}>
+              {parentCategoryId != null ? "Subcategory name *" : "Category name *"}
+            </Text>
             <TextInput
               style={styles.input}
-              placeholder="e.g. Biriyani, Desserts"
+              placeholder={
+                parentCategoryId != null
+                  ? "Start typing — subcategory names from other stores"
+                  : "Start typing — category names from other stores"
+              }
               placeholderTextColor={GatiMitraMerchant.textTertiary}
               value={name}
               onChangeText={setName}
+              maxLength={30}
             />
+            {peerSuggestionsLoading ? (
+              <ActivityIndicator style={{ marginVertical: 10 }} color={GatiMitraMerchant.primary} />
+            ) : (
+              <ScrollView style={styles.suggestionScroll} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+                {peerSuggestions
+                  .filter((s) => !categoryNameConflictSet.has(String(s).toLowerCase().trim()))
+                  .map((s) => (
+                    <TouchableOpacity
+                      key={s}
+                      onPress={() => setName(s.slice(0, 30))}
+                      style={styles.suggestionRow}
+                    >
+                      <Text style={styles.suggestionRowText}>{s}</Text>
+                    </TouchableOpacity>
+                  ))}
+                {!peerSuggestionsLoading &&
+                  peerSuggestions.filter((s) => !categoryNameConflictSet.has(String(s).toLowerCase().trim()))
+                    .length === 0 && (
+                    <Text style={styles.suggestionHint}>
+                      {name.trim()
+                        ? "No matches from other stores — use your own name."
+                        : parentCategoryId != null
+                          ? "Popular subcategory names from other stores."
+                          : "Popular category names from other stores."}
+                    </Text>
+                  )}
+              </ScrollView>
+            )}
+            {name.trim().length > 0 &&
+              categoryNameConflictSet.has(name.trim().toLowerCase()) && (
+                <Text style={styles.duplicateWarning}>
+                  {parentCategoryId != null
+                    ? "This name is already used under this category."
+                    : "This store already uses this category name."}
+                </Text>
+              )}
             <Text style={styles.inputLabel}>Description (optional)</Text>
             <TextInput
               style={[styles.input, styles.textArea]}
@@ -582,4 +704,24 @@ const styles = StyleSheet.create({
   },
   modalBtnDisabled: { opacity: 0.5 },
   modalBtnSaveText: { fontSize: 15, fontWeight: "600", color: "#fff" },
+  subcategoryBanner: {
+    backgroundColor: GatiMitraMerchant.primaryLight,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+  },
+  subcategoryBannerText: { fontSize: 13, color: GatiMitraMerchant.textSecondary },
+  subcategoryBannerStrong: { fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  suggestionScroll: { maxHeight: 140, marginBottom: 8 },
+  suggestionRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: GatiMitraMerchant.border,
+  },
+  suggestionRowText: { fontSize: 14, color: GatiMitraMerchant.textPrimary },
+  suggestionHint: { fontSize: 12, color: GatiMitraMerchant.textTertiary, paddingVertical: 8, paddingHorizontal: 4 },
+  duplicateWarning: { fontSize: 12, color: GatiMitraMerchant.error, marginBottom: 8 },
 });

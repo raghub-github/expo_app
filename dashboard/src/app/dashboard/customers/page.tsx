@@ -133,14 +133,7 @@ function CustomersPageContent() {
     isLoading: statsLoading,
   } = useCustomerDashboardStats(shouldFetchStats ? dashboardFilters : {}, {
     enabled: shouldFetchStats,
-    // Keep previous data for smoothness when filters change.
-    placeholderData: (prev) => prev,
   });
-
-  const handleApplyFilters = () => {
-    setFiltersApplied(true);
-  };
-
   // Handle redirect to detail page if search returns single customer (ID/mobile search)
   useEffect(() => {
     if (

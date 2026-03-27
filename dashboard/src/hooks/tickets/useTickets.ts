@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAuthOptional } from "@/providers/AuthProvider";
@@ -156,17 +156,16 @@ export function useTickets(filters: TicketFilters = {}) {
     if (!isAllowed || !isOnTicketsRoute) return null;
     return `dashboard_snapshot:tickets:${pathname}:${JSON.stringify(filters)}`;
   }, [isAllowed, isOnTicketsRoute, pathname, filters]);
-
   const initialSnapshot = useMemo(() => {
     if (!snapshotKey) return null;
     return loadClientSnapshot<TicketsResponse>(snapshotKey, SNAPSHOT_TTL_MS);
   }, [snapshotKey]);
 
-  return useQuery<TicketsResponse>({
-    queryKey: queryKeys.tickets.list(filters),
+  const query = useQuery<TicketsResponse>({
+    queryKey: queryKeys.tickets.list(filters as unknown as Record<string, unknown>),
     queryFn: ({ signal }) => fetchTickets(filters, signal),
     enabled: isAllowed && isOnTicketsRoute,
-    initialData: initialSnapshot ?? undefined,
+    ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     // Cached list with stale-while-revalidate for smooth pagination/filtering.
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
@@ -174,9 +173,12 @@ export function useTickets(filters: TicketFilters = {}) {
     refetchOnMount: true,
     // Keep previous page's data while fetching the next one to avoid flicker.
     placeholderData: (prev) => prev,
-    onSuccess: (data) => {
-      if (!snapshotKey) return;
-      saveClientSnapshot(snapshotKey, data);
-    },
   });
+
+  useEffect(() => {
+    if (!snapshotKey || query.data == null) return;
+    saveClientSnapshot(snapshotKey, query.data);
+  }, [snapshotKey, query.data]);
+
+  return query;
 }

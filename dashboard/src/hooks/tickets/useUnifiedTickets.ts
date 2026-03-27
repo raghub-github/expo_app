@@ -64,8 +64,7 @@ const UNIFIED_TICKETS_FETCH_TIMEOUT_MS = 60_000;
 
 export function useUnifiedTickets(filters: UnifiedTicketFilters = {}) {
   return useQuery<UnifiedTicketsResponse>({
-    queryKey: queryKeys.unifiedTickets.list(filters),
-    queryFn: async () => {
+    queryKey: queryKeys.unifiedTickets.list(filters as unknown as Record<string, unknown>),    queryFn: async () => {
       const params = new URLSearchParams();
       if (filters.statuses?.length) params.set("statuses", filters.statuses.join(","));
       if (filters.priorities?.length) params.set("priorities", filters.priorities.join(","));

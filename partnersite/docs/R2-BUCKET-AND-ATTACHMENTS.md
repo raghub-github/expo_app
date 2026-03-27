@@ -6,8 +6,8 @@ Single source of truth for R2 folder structure, DB URL format, and which attachm
 
 All paths live under **one bucket** with prefix `docs/merchants/`.
 
-- **Parent first:** `docs/merchants/{parent_code}/` (e.g. `GMMP1005`).
-- **Child store:** `docs/merchants/{parent_code}/stores/{store_code}/` (e.g. `GMMC1017`).
+- **Parent first:** `docs/merchants/{merchant_parents.id}/` — numeric **primary key**, not `parent_merchant_id` (GMMP…).
+- **Child store:** `docs/merchants/{merchant_parents.id}/stores/{store_id}/` where `store_id` is the public store code (e.g. `GMMC1017`, FK from `merchant_stores.store_id`).
 
 Use the helpers in `src/lib/r2-paths.ts` for every upload, read, and delete. Do not hardcode paths.
 
@@ -16,40 +16,19 @@ Use the helpers in `src/lib/r2-paths.ts` for every upload, read, and delete. Do 
 ```
 docs/
   merchants/
-    {parent_code}/                    e.g. GMMP1005
+    {parent_pk}/                      e.g. 42 (merchant_parents.id)
       logo/                           parent logo (registration)
         {timestamp}_{name}.{ext}
       assets/                         optional parent assets
       draft/                          onboarding before store exists
         onboarding/
-          documents/
-            pan/
-            aadhaar/
-            fssai/
-            gst/
-            bank/
-            agreements/
-            pharma/
-            other/
-          menu/
-            images/
-            csv/
-            pdf/
-          store-media/                 logo, banner
-          store-media/gallery/
-          bank/
-          agreements/
+          documents/                  all KYC, bank proof, contract PDFs — flat files only
+          menu-pdf | menu-csv | menu-images | store-media | store-media-gallery/
       stores/
         {store_code}/                 e.g. GMMC1017
           onboarding/
-            documents/
-              pan/ | aadhaar/ | fssai/ | gst/ | bank/ | agreements/ | pharma/ | other/
-            menu/
-              images/ | csv/ | pdf/
-            store-media/  (logo, banner)
-            store-media/gallery/
-            bank/
-            agreements/
+            documents/                flat files only
+            (same non-document types as draft)
           menu/                       post-onboarding (editable)
             items/                    optional per-item folder
               {item_id}/
@@ -81,12 +60,11 @@ docs/
 
 ## Fetching from the correct R2 folder
 
-- **Parent logo:** Under `docs/merchants/{parent_code}/logo/`. Stored in `merchant_parents.store_logo`.
+- **Parent logo:** Under `docs/merchants/{merchant_parents.id}/logo/`. Stored in `merchant_parents.store_logo`.
 - **Store logo / banner / gallery:** Onboarding under `.../stores/{store_code}/onboarding/store-media/` and `.../store-media/gallery/`. Post-onboarding under `.../stores/{store_code}/store-media/logo`, `banner`, `gallery`. Stored in `merchant_stores.logo_url`, `banner_url`, `gallery_images`.
-- **KYC/documents (PAN, Aadhaar, FSSAI, GST, bank, etc.):** Under `.../onboarding/documents/{pan|aadhaar|fssai|gst|bank|pharma|other}/`. Stored in `merchant_store_documents` (e.g. `pan_document_url`, `aadhaar_document_url`).
-- **Contract/agreement PDF:** Under `.../onboarding/agreements/` or `.../stores/{store_code}/onboarding/agreements/`. Stored in agreement acceptance / contract URL fields.
+- **KYC / bank proof / signed contract PDF:** All under **`.../onboarding/documents/`** with unique file names (no subfolders). Stored in `merchant_store_documents`, agreement acceptance, and bank proof URL fields.
 - **Menu item images:** Post-onboarding under `.../stores/{store_code}/menu/` or `.../menu/items/{item_id}/`. Stored in `merchant_menu_item_images.image_url` and optionally `merchant_menu_items.item_image_url`.
-- **Menu CSV/PDF:** **Onboarding (Step 3 uploads) under** `.../onboarding/menu/csv` and `.../onboarding/menu/pdf` (via `getMenuUploadR2Key` → `getOnboardingR2Path`). **Post-onboarding** under `.../stores/{store_code}/menu/csv` and `.../stores/{store_code}/menu/pdf`.
+- **Menu CSV/PDF (onboarding step):** Prefixes `.../onboarding/menu-csv` and `.../onboarding/menu-pdf` via `getOnboardingR2Path`. **Menu reference files on disk** still use `getMerchantMenuPath` → `.../stores/{store_code}/menu/`. **Post-onboarding** CSV/PDF under `.../stores/{store_code}/menu/csv` and `.../menu/pdf`.
 
 ## Editable vs read-only after onboarding
 

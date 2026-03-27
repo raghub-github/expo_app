@@ -69,6 +69,7 @@ export interface Permission {
 
 export interface UserPermissions {
   systemUserId: number;
+  canTogglePortal: boolean;
   roles: Array<{
     id: number;
     roleId: string;
@@ -289,6 +290,7 @@ export async function getUserPermissions(
     
     const result: UserPermissions = {
       systemUserId,
+      canTogglePortal: Boolean((systemUser as { can_toggle_portal?: boolean }).can_toggle_portal),
       roles,
       permissions,
       domainAccess,
@@ -436,7 +438,7 @@ export async function getUserDomainAccess(
  */
 export async function isSuperAdmin(
   supabaseAuthId: string,
-  email: string
+  email?: string | null
 ): Promise<boolean> {
   try {
     const userPerms = await getUserPermissions(supabaseAuthId, email);
@@ -453,7 +455,7 @@ export async function isSuperAdmin(
  */
 export async function requireSuperAdmin(
   supabaseAuthId: string,
-  email: string
+  email?: string | null
 ): Promise<void> {
   const isAdmin = await isSuperAdmin(supabaseAuthId, email);
   if (!isAdmin) {
@@ -478,13 +480,12 @@ export async function getUserDashboardAccess(systemUserId: number): Promise<Dash
         )
       );
     
-    return result.map(row => ({
+    return result.map((row) => ({
       id: row.id,
       systemUserId: row.systemUserId,
       dashboardType: row.dashboardType,
       accessLevel: row.accessLevel,
-      isActive: row.isActive,
-      grantedBy: row.grantedBy,
+      isActive: row.isActive === true,      grantedBy: row.grantedBy,
       grantedByName: row.grantedByName || undefined,
       grantedAt: row.grantedAt,
     }));
@@ -543,7 +544,7 @@ export async function getUserAccessPoints(
         )
       );
     
-    return result.map(row => ({
+    return result.map((row) => ({
       id: row.id,
       systemUserId: row.systemUserId,
       dashboardType: row.dashboardType,
@@ -552,8 +553,7 @@ export async function getUserAccessPoints(
       accessPointDescription: row.accessPointDescription || undefined,
       allowedActions: (row.allowedActions as string[]) || [],
       context: (row.context as Record<string, any>) || undefined,
-      isActive: row.isActive,
-    }));
+      isActive: row.isActive === true,    }));
   } catch (error) {
     console.error("Error fetching access points:", error);
     return [];

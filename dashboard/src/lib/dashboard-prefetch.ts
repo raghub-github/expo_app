@@ -40,7 +40,9 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
 
   if (path === "/dashboard/tickets" || path.startsWith("/dashboard/tickets")) {
     queryClient.prefetchQuery({
-      queryKey: queryKeys.tickets.list(defaultTicketFilters),
+      queryKey: queryKeys.tickets.list(
+        defaultTicketFilters as unknown as Record<string, unknown>
+      ),
       queryFn: () => fetchTickets(defaultTicketFilters),
     });
     return;
@@ -48,7 +50,9 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
 
   if (path === "/dashboard/orders" || path.startsWith("/dashboard/orders")) {
     queryClient.prefetchQuery({
-      queryKey: queryKeys.ordersCore.foodList(defaultFoodOrdersFilters as Record<string, unknown>),
+      queryKey: queryKeys.ordersCore.foodList(
+        defaultFoodOrdersFilters as unknown as Record<string, unknown>
+      ),
       queryFn: () => fetchFoodOrders(defaultFoodOrdersFilters),
     });
     return;
