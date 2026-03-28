@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useTicketUrlPanel, useTicketPanelNavigation } from "@/hooks/tickets/useTicketUrlPanel";
 import { useTicketDetail, type TicketDetail, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -107,27 +108,13 @@ function setStoredLastViewed(ticketId: number, updatedAt: string, messageCount: 
 export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const urlPanel = useTicketUrlPanel();
+  const setTicketPanel = useTicketPanelNavigation(pathname, router);
   const rightSidebar = useRightSidebar();
-  const { data: ticket, isLoading, isFetching, isError, error } = useTicketDetail(ticketId);
+  const { data: ticket, isLoading, isError, error } = useTicketDetail(ticketId);
 
-  const panelParam = searchParams.get("panel");
-  const showActivities = panelParam === "activities";
-  const showCsatPanel = panelParam === "csat";
-
-  const setTicketPanel = useCallback(
-    (next: "conversation" | "activities" | "csat") => {
-      const params = new URLSearchParams(searchParams.toString());
-      if (next === "conversation") {
-        params.delete("panel");
-      } else {
-        params.set("panel", next);
-      }
-      const qs = params.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [pathname, router, searchParams]
-  );
+  const showActivities = urlPanel === "activities";
+  const showCsatPanel = urlPanel === "csat";
   const [showReplySection, setShowReplySection] = useState(false);
   const [quickComposeAction, setQuickComposeAction] = useState<{ type: "reply" | "forward" | "note_private" | "note_public"; nonce: number } | null>(null);
   const [newUpdatesCount, setNewUpdatesCount] = useState(0);
@@ -232,8 +219,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     setNewUpdatesCount(0);
   }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
 
-  /** No ticket yet and query hasn't failed — show skeleton. Stops immediately on 404 (no retry spam). */
-  const stillLoading = !ticket && !isError && (isLoading || isFetching);
+  /** No ticket yet and query hasn't failed — show skeleton. Do not tie to `isFetching` or background refetch flashes the full-page loader. */
+  const stillLoading = !ticket && !isError && isLoading;
   useEffect(() => {
     if (!rightSidebar?.setOpen) return;
     if (stillLoading) {

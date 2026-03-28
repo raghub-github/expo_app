@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getDb } from "@/lib/db/client";
 import { riders, orders, ordersCore, withdrawalRequests, tickets, blacklistHistory, dutyLogs, riderVehicles, riderPenalties, riderWallet, riderWalletFreezeHistory, riderNegativeWalletBlocks, riderDocuments, systemUsers, onboardingPayments } from "@/lib/db/schema";
-import { eq, and, or, desc, gte, lte, isNull } from "drizzle-orm";
+import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
@@ -495,7 +495,12 @@ export async function GET(
       }
       if (params_obj.penaltiesServiceType && params_obj.penaltiesServiceType !== "all") {
         if (params_obj.penaltiesServiceType === "unspecified" || params_obj.penaltiesServiceType === "null") {
-          penaltiesConditions.push(isNull(riderPenalties.serviceType));
+          penaltiesConditions.push(
+            or(
+              isNull(riderPenalties.serviceType),
+              sql`coalesce((${riderPenalties.metadata}->>'serviceUnspecified')::boolean, false) = true`
+            ) as any
+          );
         } else {
           penaltiesConditions.push(
             eq(

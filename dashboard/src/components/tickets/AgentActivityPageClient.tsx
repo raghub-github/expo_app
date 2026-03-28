@@ -207,7 +207,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
             </h1>
             <p className="mt-1 text-sm text-gray-500">
               {section === "automation"
-                ? "Reply composer defaults and notification rules for your account."
+                ? "Global reply composer defaults (super admins) and per-account notification rules."
                 : "Performance metrics, CSAT, and time tracking for the selected period."}
             </p>
           </div>

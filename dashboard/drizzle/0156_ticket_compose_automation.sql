@@ -1,4 +1,4 @@
--- Per-agent default To / Cc / Bcc for the ticket reply composer (dashboard).
+-- Legacy: per-user row (system_user_id PK). For global single-row schema and migration off this shape, run 0159_ticket_compose_automation_global.sql.
 
 CREATE TABLE IF NOT EXISTS public.ticket_compose_automation (
   system_user_id INTEGER PRIMARY KEY REFERENCES public.system_users(id) ON DELETE CASCADE,

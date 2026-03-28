@@ -1,6 +1,6 @@
 /**
- * Per-browser defaults for ticket reply / forward composer (To, Cc, Bcc).
- * Managed from Agent Activity → Automation. Server may still add support CC if missing.
+ * Optional per-browser overrides / legacy localStorage helpers for ticket reply composer.
+ * Primary source of truth is GET /api/tickets/compose-automation (global defaults for all ticket users).
  */
 
 export const TICKET_COMPOSE_SUPPORT_CC_FALLBACK = "support@gatimitra.com";

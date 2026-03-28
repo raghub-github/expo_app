@@ -99,10 +99,15 @@ export function TicketActionBar({
   }, []);
 
   const scrollToReplyComposer = () => {
-    if (typeof window !== "undefined") {
-      window.location.hash = "reply";
-      setTimeout(() => document.getElementById("reply")?.scrollIntoView({ behavior: "smooth" }), 100);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.hash !== "#reply") {
+      url.hash = "reply";
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     }
+    requestAnimationFrame(() => {
+      document.getElementById("reply")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
   };
 
   const handleReply = () => {

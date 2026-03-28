@@ -9,6 +9,11 @@ export type TicketComposeAutomationDto = {
   defaultCc: string;
   defaultBcc: string;
   updatedAt?: string | null;
+  updatedBySystemUserId?: number | null;
+  updatedByEmail?: string | null;
+  updatedByFullName?: string | null;
+  /** Super admins may save; others see global values read-only */
+  canManage?: boolean;
 };
 
 const QUERY_KEY = ["ticketComposeAutomation"] as const;
@@ -36,6 +41,10 @@ export function useTicketComposeAutomationQuery() {
         defaultCc: typeof d?.defaultCc === "string" ? d.defaultCc : "",
         defaultBcc: typeof d?.defaultBcc === "string" ? d.defaultBcc : "",
         updatedAt: d?.updatedAt ?? null,
+        updatedBySystemUserId: typeof d?.updatedBySystemUserId === "number" ? d.updatedBySystemUserId : null,
+        updatedByEmail: typeof d?.updatedByEmail === "string" ? d.updatedByEmail : null,
+        updatedByFullName: typeof d?.updatedByFullName === "string" ? d.updatedByFullName : null,
+        canManage: d?.canManage === true,
       };
     },
     staleTime: 5 * 60_000,
@@ -45,7 +54,9 @@ export function useTicketComposeAutomationQuery() {
   });
 
   useEffect(() => {
-    if (query.data) saveClientSnapshot(SNAPSHOT_KEY, query.data);
+    if (!query.data) return;
+    const { canManage: _omit, ...persist } = query.data;
+    saveClientSnapshot(SNAPSHOT_KEY, persist);
   }, [query.data]);
 
   return query;
@@ -69,6 +80,10 @@ export function useTicketComposeAutomationSave() {
         defaultCc: String(d?.defaultCc ?? ""),
         defaultBcc: String(d?.defaultBcc ?? ""),
         updatedAt: d?.updatedAt ?? null,
+        updatedBySystemUserId: typeof d?.updatedBySystemUserId === "number" ? d.updatedBySystemUserId : null,
+        updatedByEmail: typeof d?.updatedByEmail === "string" ? d.updatedByEmail : null,
+        updatedByFullName: typeof d?.updatedByFullName === "string" ? d.updatedByFullName : null,
+        canManage: d?.canManage === true,
       } satisfies TicketComposeAutomationDto;
     },
     onSuccess: (data) => {

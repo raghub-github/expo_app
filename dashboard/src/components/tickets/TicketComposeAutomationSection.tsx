@@ -8,9 +8,27 @@ import {
 } from "@/hooks/tickets/useTicketComposeAutomationQuery";
 import { TICKET_COMPOSE_SUPPORT_CC_FALLBACK } from "@/lib/tickets/ticket-compose-automation";
 import { useToast } from "@/context/ToastContext";
+import { usePermission } from "@/hooks/usePermission";
+
+function formatLastUpdatedBy(data: {
+  updatedByFullName?: string | null;
+  updatedByEmail?: string | null;
+  updatedBySystemUserId?: number | null;
+}): string | null {
+  const name = (data.updatedByFullName ?? "").trim();
+  const email = (data.updatedByEmail ?? "").trim();
+  if (name && email) return `${name} (${email})`;
+  if (name) return name;
+  if (email) return email;
+  if (data.updatedBySystemUserId != null && Number.isFinite(data.updatedBySystemUserId)) {
+    return `User #${data.updatedBySystemUserId}`;
+  }
+  return null;
+}
 
 export function TicketComposeAutomationSection({ variant = "page" }: { variant?: "page" | "sidebar" | "plain" }) {
   const { toast } = useToast();
+  const { isSuperAdmin } = usePermission();
   const { data, isError, error } = useTicketComposeAutomationQuery();
   const saveMutation = useTicketComposeAutomationSave();
 
@@ -25,9 +43,11 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
     });
   }, [data]);
 
+  const canManage = isSuperAdmin || data?.canManage === true;
+
   const save = () => {
     saveMutation.mutate(draft, {
-      onSuccess: () => toast("Automation saved to your account"),
+      onSuccess: () => toast("Global automation saved for all ticket users"),
       onError: (e: Error) => toast(e.message || "Save failed", "error"),
     });
   };
@@ -36,7 +56,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
     const next = { defaultTo: "", defaultCc: "", defaultBcc: "" };
     setDraft(next);
     saveMutation.mutate(next, {
-      onSuccess: () => toast("Automation reset (saved)"),
+      onSuccess: () => toast("Global automation cleared (saved)"),
       onError: (e: Error) => toast(e.message || "Save failed", "error"),
     });
   };
@@ -75,8 +95,8 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Automation</h2>
             <p className="mt-0.5 text-sm text-gray-600">
-              Default recipients when you open a ticket reply (saved for your account). Whatever you leave in To/Cc/Bcc is sent as-is;
-              add <span className="font-medium">{TICKET_COMPOSE_SUPPORT_CC_FALLBACK}</span> under Cc if you want the desk copied.
+              Default recipients when anyone with ticket access opens a reply (one global setting). Super admins can edit; cleared fields stay empty when sending — add{" "}
+              <span className="font-medium">{TICKET_COMPOSE_SUPPORT_CC_FALLBACK}</span> under Cc if you want the desk copied.
             </p>
           </div>
         </div>
@@ -88,8 +108,8 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
           <div>
             <h2 className="text-base font-semibold text-gray-900">Automation</h2>
             <p className="mt-0.5 text-xs text-gray-600">
-              Saved for your account. Cleared fields stay empty when sending — include {TICKET_COMPOSE_SUPPORT_CC_FALLBACK} in Cc if you
-              want it.
+              Global defaults for everyone with ticket access. Cleared fields stay empty when sending — include{" "}
+              {TICKET_COMPOSE_SUPPORT_CC_FALLBACK} in Cc if you want the desk copied.
             </p>
           </div>
         </div>
@@ -117,8 +137,9 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
             type="text"
             value={draft.defaultTo}
             onChange={(e) => setDraft((d) => ({ ...d, defaultTo: e.target.value }))}
+            readOnly={!canManage}
             placeholder="Optional — comma-separated emails"
-            className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"}`}
+            className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"} ${!canManage ? "cursor-not-allowed bg-gray-50" : "bg-white"}`}
           />
           {!isSidebar && !isPlain && (
             <span className="text-[11px] text-gray-500">Prefills To when you open a reply. Leave empty to match “no default”.</span>
@@ -132,8 +153,9 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
             type="text"
             value={draft.defaultCc}
             onChange={(e) => setDraft((d) => ({ ...d, defaultCc: e.target.value }))}
+            readOnly={!canManage}
             placeholder={`Optional — e.g. ${TICKET_COMPOSE_SUPPORT_CC_FALLBACK}`}
-            className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"}`}
+            className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"} ${!canManage ? "cursor-not-allowed bg-gray-50" : "bg-white"}`}
           />
           {!isSidebar && !isPlain && (
             <span className="text-[11px] text-gray-500">Clear this field to open replies with no Cc prefilled.</span>
@@ -147,8 +169,9 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
             type="text"
             value={draft.defaultBcc}
             onChange={(e) => setDraft((d) => ({ ...d, defaultBcc: e.target.value }))}
+            readOnly={!canManage}
             placeholder="Optional — comma-separated"
-            className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"}`}
+            className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"} ${!canManage ? "cursor-not-allowed bg-gray-50" : "bg-white"}`}
           />
           {!isSidebar && !isPlain && (
             <span className="text-[11px] text-gray-500">Hidden recipients; expands Bcc when non-empty.</span>
@@ -158,7 +181,18 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
 
       {isSidebar && (
         <p className="mt-2 text-[10px] leading-snug text-gray-500">
-          Saved for your account. Outbound mail uses only what you enter in the reply composer.
+          Global defaults for all ticket users. Outbound mail uses what you type in the composer.
+        </p>
+      )}
+
+      {data?.updatedAt && (
+        <p className={`text-[11px] text-gray-500 ${isSidebar ? "mt-2" : isPlain ? "mt-3" : "mt-3"}`}>
+          Last updated
+          {(() => {
+            const by = formatLastUpdatedBy(data);
+            return by ? ` by ${by}` : "";
+          })()}
+          {` · ${new Date(data.updatedAt).toLocaleString()}`}
         </p>
       )}
 
@@ -166,7 +200,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
         <button
           type="button"
           onClick={save}
-          disabled={saveMutation.isPending}
+          disabled={saveMutation.isPending || !canManage}
           className={`cursor-pointer rounded-lg bg-violet-600 font-medium text-white hover:bg-violet-700 transition-colors disabled:opacity-60 ${isSidebar ? "min-w-0 flex-1 px-2 py-1.5 text-xs" : isPlain ? "px-3 py-2 text-xs sm:text-sm" : "px-4 py-2 text-sm"}`}
         >
           {saveMutation.isPending ? "Saving…" : "Save automation"}
@@ -174,7 +208,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
         <button
           type="button"
           onClick={reset}
-          disabled={saveMutation.isPending}
+          disabled={saveMutation.isPending || !canManage}
           className={`cursor-pointer rounded-lg border font-medium transition-colors disabled:opacity-60 ${
             isSidebar
               ? "min-w-0 flex-1 border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"

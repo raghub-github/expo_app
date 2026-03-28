@@ -1,6 +1,7 @@
 /**
  * GET / PUT /api/tickets/compose-automation
- * Per-user defaults for ticket reply To / Cc / Bcc (replaces localStorage-only storage).
+ * Global defaults for ticket reply To / Cc / Bcc (single row for all ticket-dashboard users).
+ * GET: any user with ticket dashboard access. PUT: super admins only.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -14,6 +15,47 @@ import type { TicketAuditSqlClient } from "@/lib/db/operations/ticket-activity-a
 export const runtime = "nodejs";
 
 const MAX_LEN = 8000;
+
+function pickComposeRow(row: Record<string, unknown> | undefined): {
+  default_to: string;
+  default_cc: string;
+  default_bcc: string;
+  updated_at: string | null;
+  updated_by_system_user_id: number | null;
+  updated_by_email: string | null;
+  updated_by_full_name: string | null;
+} {
+  if (!row || typeof row !== "object") {
+    return {
+      default_to: "",
+      default_cc: "",
+      default_bcc: "",
+      updated_at: null,
+      updated_by_system_user_id: null,
+      updated_by_email: null,
+      updated_by_full_name: null,
+    };
+  }
+  const s = (k: string, alt?: string) => {
+    const v = row[k] ?? (alt ? row[alt] : undefined);
+    return typeof v === "string" ? v : v != null ? String(v) : "";
+  };
+  const n = (k: string, alt?: string) => {
+    const v = row[k] ?? (alt ? row[alt] : undefined);
+    if (v == null) return null;
+    const num = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(num) ? num : null;
+  };
+  return {
+    default_to: s("default_to"),
+    default_cc: s("default_cc"),
+    default_bcc: s("default_bcc"),
+    updated_at: s("updated_at") || null,
+    updated_by_system_user_id: n("updated_by_system_user_id"),
+    updated_by_email: s("updated_by_email") || null,
+    updated_by_full_name: s("updated_by_full_name") || null,
+  };
+}
 
 async function requireTicketUser() {
   const supabase = await createServerSupabaseClient();
@@ -42,32 +84,41 @@ async function requireTicketUser() {
   if (!userIsSuperAdmin && !hasTicketAccess) {
     return { error: NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 }) };
   }
-  return { systemUser };
+  return { systemUser, userIsSuperAdmin };
 }
 
 export async function GET() {
   const auth = await requireTicketUser();
   if ("error" in auth && auth.error) return auth.error;
-  const { systemUser } = auth;
+  const { userIsSuperAdmin } = auth;
 
   try {
     const sql = getSql();
     const rows = await sql`
-      SELECT default_to, default_cc, default_bcc, updated_at
-      FROM public.ticket_compose_automation
-      WHERE system_user_id = ${systemUser.id}
+      SELECT c.default_to,
+             c.default_cc,
+             c.default_bcc,
+             c.updated_at,
+             c.updated_by_system_user_id,
+             u.email AS updated_by_email,
+             u.full_name AS updated_by_full_name
+      FROM public.ticket_compose_automation c
+      LEFT JOIN public.system_users u ON u.id = c.updated_by_system_user_id
+      WHERE c.singleton = 1
       LIMIT 1
     `;
-    const row = rows?.[0] as
-      | { default_to?: string; default_cc?: string; default_bcc?: string; updated_at?: string }
-      | undefined;
+    const row = pickComposeRow(rows?.[0] as Record<string, unknown> | undefined);
     return NextResponse.json({
       success: true,
       data: {
-        defaultTo: typeof row?.default_to === "string" ? row.default_to : "",
-        defaultCc: typeof row?.default_cc === "string" ? row.default_cc : "",
-        defaultBcc: typeof row?.default_bcc === "string" ? row.default_bcc : "",
-        updatedAt: row?.updated_at ?? null,
+        defaultTo: row.default_to,
+        defaultCc: row.default_cc,
+        defaultBcc: row.default_bcc,
+        updatedAt: row.updated_at,
+        updatedBySystemUserId: row.updated_by_system_user_id,
+        updatedByEmail: row.updated_by_email,
+        updatedByFullName: row.updated_by_full_name,
+        canManage: userIsSuperAdmin,
       },
     });
   } catch (e) {
@@ -75,7 +126,8 @@ export async function GET() {
     return NextResponse.json(
       {
         success: false,
-        error: "Compose automation table missing — run migration 0156_ticket_compose_automation.sql",
+        error:
+          "Compose automation unavailable — run dashboard/drizzle/0159_ticket_compose_automation_global.sql (or ensure ticket_compose_automation has singleton = 1 row).",
       },
       { status: 503 }
     );
@@ -85,7 +137,14 @@ export async function GET() {
 export async function PUT(request: NextRequest) {
   const auth = await requireTicketUser();
   if ("error" in auth && auth.error) return auth.error;
-  const { systemUser } = auth;
+  const { systemUser, userIsSuperAdmin } = auth;
+
+  if (!userIsSuperAdmin) {
+    return NextResponse.json(
+      { success: false, error: "Only super admins can update global compose automation." },
+      { status: 403 }
+    );
+  }
 
   let body: unknown;
   try {
@@ -104,35 +163,42 @@ export async function PUT(request: NextRequest) {
 
   try {
     await sqlUnsafe.unsafe(
-      `INSERT INTO public.ticket_compose_automation (system_user_id, default_to, default_cc, default_bcc, updated_at)
-       VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (system_user_id) DO UPDATE SET
+      `INSERT INTO public.ticket_compose_automation (singleton, default_to, default_cc, default_bcc, updated_by_system_user_id, updated_at)
+       VALUES (1, $1, $2, $3, $4, NOW())
+       ON CONFLICT (singleton) DO UPDATE SET
          default_to = EXCLUDED.default_to,
          default_cc = EXCLUDED.default_cc,
          default_bcc = EXCLUDED.default_bcc,
+         updated_by_system_user_id = EXCLUDED.updated_by_system_user_id,
          updated_at = NOW()`,
-      [systemUser.id, defaultTo, defaultCc, defaultBcc]
+      [defaultTo, defaultCc, defaultBcc, systemUser.id]
     );
 
     const rows = await sqlTagged`
-      SELECT default_to, default_cc, default_bcc, updated_at
-      FROM public.ticket_compose_automation
-      WHERE system_user_id = ${systemUser.id}
+      SELECT c.default_to,
+             c.default_cc,
+             c.default_bcc,
+             c.updated_at,
+             c.updated_by_system_user_id,
+             u.email AS updated_by_email,
+             u.full_name AS updated_by_full_name
+      FROM public.ticket_compose_automation c
+      LEFT JOIN public.system_users u ON u.id = c.updated_by_system_user_id
+      WHERE c.singleton = 1
       LIMIT 1
     `;
-    const row = (rows?.[0] ?? {}) as {
-      default_to?: string;
-      default_cc?: string;
-      default_bcc?: string;
-      updated_at?: string;
-    };
+    const row = pickComposeRow(rows?.[0] as Record<string, unknown> | undefined);
     return NextResponse.json({
       success: true,
       data: {
-        defaultTo: String(row.default_to ?? ""),
-        defaultCc: String(row.default_cc ?? ""),
-        defaultBcc: String(row.default_bcc ?? ""),
-        updatedAt: row.updated_at ?? null,
+        defaultTo: row.default_to,
+        defaultCc: row.default_cc,
+        defaultBcc: row.default_bcc,
+        updatedAt: row.updated_at,
+        updatedBySystemUserId: row.updated_by_system_user_id,
+        updatedByEmail: row.updated_by_email,
+        updatedByFullName: row.updated_by_full_name,
+        canManage: true,
       },
     });
   } catch (e) {
