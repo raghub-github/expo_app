@@ -290,7 +290,7 @@ export const ticketDashboardRoutes: DashboardSubRoute[] = [
     name: "Dashboard",
     href: "/dashboard/tickets/dashboard",
     icon: LayoutDashboard,
-    description: "Helpdesk metrics, queues, and email delivery",
+    description: "GatiMitra Queue metrics, queues, and email delivery",
   },
   {
     name: "All Tickets",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useLayoutEffect } from "react";
 import { Zap } from "lucide-react";
 import {
   useTicketComposeAutomationQuery,
@@ -11,17 +11,12 @@ import { useToast } from "@/context/ToastContext";
 
 export function TicketComposeAutomationSection({ variant = "page" }: { variant?: "page" | "sidebar" | "plain" }) {
   const { toast } = useToast();
-  const { data, isLoading, isError, error } = useTicketComposeAutomationQuery();
+  const { data, isError, error } = useTicketComposeAutomationQuery();
   const saveMutation = useTicketComposeAutomationSave();
 
   const [draft, setDraft] = useState({ defaultTo: "", defaultCc: "", defaultBcc: "" });
-  const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!data) return;
     setDraft({
       defaultTo: data.defaultTo,
@@ -45,20 +40,6 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
       onError: (e: Error) => toast(e.message || "Save failed", "error"),
     });
   };
-
-  if (!mounted || isLoading) {
-    return (
-      <div
-        className={
-          variant === "plain"
-            ? "py-2"
-            : `rounded-xl border border-gray-200 bg-white shadow-sm ${variant === "sidebar" ? "p-3" : "p-5"}`
-        }
-      >
-        <div className={`animate-pulse rounded-lg bg-gray-200/60 ${variant === "sidebar" ? "h-28" : variant === "plain" ? "h-32" : "h-40"}`} />
-      </div>
-    );
-  }
 
   if (isError) {
     return (

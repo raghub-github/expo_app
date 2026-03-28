@@ -134,10 +134,12 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const [copiedPhone, setCopiedPhone] = useState(false);
   const sidebarStateBeforeLoadingRef = useRef<boolean | null>(null);
   const queryClient = useQueryClient();
+  /** Same string id as useTicketDetail / list caches — avoids setQueryData missing the active query. */
+  const ticketCacheId = String(ticketId).trim();
   const onMessageSent = useCallback(
     (payload?: TicketMessageSentPayload) => {
       if (payload?.message) {
-        queryClient.setQueryData<TicketDetail>(queryKeys.tickets.detail(ticketId), (old) => {
+        queryClient.setQueryData<TicketDetail>(queryKeys.tickets.detail(ticketCacheId), (old) => {
           if (!old) return old;
           if (old.messages.some((m) => m.id === payload.message!.id)) return old;
           let next: TicketDetail = {
@@ -154,25 +156,25 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
           return next;
         });
       } else {
-        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketCacheId) });
       }
-      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketCacheId) });
     },
-    [queryClient, ticketId]
+    [queryClient, ticketCacheId]
   );
 
   // Warm activities cache as soon as the route is open so "Show activities" renders immediately.
   useEffect(() => {
-    if (ticketId == null || ticketId === "") return;
-    const idNum = Number(ticketId);
+    if (ticketCacheId === "") return;
+    const idNum = Number(ticketCacheId);
     if (!Number.isFinite(idNum)) return;
     void queryClient.prefetchQuery({
-      queryKey: queryKeys.tickets.activities(ticketId),
+      queryKey: queryKeys.tickets.activities(ticketCacheId),
       queryFn: () => fetchTicketActivities(idNum),
       staleTime: TICKET_ACTIVITIES_STALE_MS,
       retry: false,
     });
-  }, [ticketId, queryClient]);
+  }, [ticketCacheId, queryClient]);
 
   // Reply box stays hidden until user clicks Reply; do not auto-open on refresh or hash
 

@@ -716,6 +716,7 @@ export function ConversationPanel({
   const replyBodyRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const hasComposerDraft = replyText.trim().length > 0 || attachedFiles.length > 0;
   const [templatePicker, setTemplatePicker] = useState<null | "quick" | "kb">(null);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [showNoteTypeMenu, setShowNoteTypeMenu] = useState(false);
@@ -968,7 +969,47 @@ export function ConversationPanel({
           return;
         }
 
-        const newMessage = ticketMessageFromPostApi(data.data?.message as Record<string, unknown> | undefined, ticketId);
+        let newMessage = ticketMessageFromPostApi(data.data?.message as Record<string, unknown> | undefined, ticketId);
+        if (!newMessage) {
+          const tidParsed = typeof ticketId === "number" ? ticketId : Number(String(ticketId).trim());
+          const nowIso = new Date().toISOString();
+          const msgType = composeAsInternalNote ? "INTERNAL_NOTE" : noteVisibility === "public" ? "PUBLIC_NOTE" : "TEXT";
+          const toCsv =
+            toRecipientsInput
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .join(", ") || null;
+          const ccCsv =
+            ccRecipientsInput
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .join(", ") || null;
+          const bccCsv =
+            bccRecipientsInput
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .join(", ") || null;
+          newMessage = {
+            id: -Math.abs(Date.now()),
+            ticketId: Number.isFinite(tidParsed) ? tidParsed : 0,
+            senderType: "AGENT",
+            senderId: null,
+            senderName,
+            senderEmail: senderEmail || null,
+            messageType: msgType,
+            isInternalNote: composeAsInternalNote,
+            message: sanitizedHtml || text || "",
+            attachments: attachmentsToSend,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            emailRecipientTo: composeAsInternalNote || msgType !== "TEXT" ? null : toCsv,
+            emailRecipientCc: composeAsInternalNote || msgType !== "TEXT" ? null : ccCsv,
+            emailRecipientBcc: composeAsInternalNote || msgType !== "TEXT" ? null : bccCsv,
+          };
+        }
         const isFirstResponse = Boolean(data.data?.isFirstResponse);
         const emailDispatch = data.data?.emailDispatch as { ok?: boolean; code?: string } | undefined;
         const isCustomerEmailReply = !composeAsInternalNote && noteVisibility === "private";
@@ -1051,6 +1092,8 @@ export function ConversationPanel({
       composeAsInternalNote,
       noteVisibility,
       composeAuto,
+      senderName,
+      senderEmail,
     ]
   );
 
@@ -1497,7 +1540,13 @@ export function ConversationPanel({
               )}
             </div>
             <div className="flex shrink-0 items-center gap-2" ref={sendOptionsRef}>
-              <span className="text-xs text-gray-400">{sending ? "Sending…" : "Saved"}</span>
+              {sending ? (
+                <span className="text-xs font-medium text-blue-600" aria-live="polite">
+                  Sending…
+                </span>
+              ) : hasComposerDraft ? (
+                <span className="text-xs text-gray-400">Draft</span>
+              ) : null}
               <button type="button" onClick={() => setShowDiscardConfirm(true)} className="p-2 rounded text-red-600 hover:bg-red-50 hover:text-red-700" aria-label="Delete draft"><Trash2 className="h-4 w-4" /></button>
               {composeAsInternalNote || noteVisibility === "public" ? (
                 <button
@@ -1662,7 +1711,7 @@ export function ConversationPanel({
           <div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h2 id="delete-message-title" className="text-base font-semibold text-gray-900">Delete message?</h2>
             <p className="mt-1 text-sm text-gray-500">
-              Deleting this will remove the participant from the chat and cannot be undone.
+              Deleting this will remove the chat from the participant and cannot be undone.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button

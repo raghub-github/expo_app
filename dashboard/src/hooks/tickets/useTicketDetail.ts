@@ -136,26 +136,39 @@ export interface TicketMessageSentPayload {
 
 export function ticketMessageFromPostApi(
   raw: Record<string, unknown> | null | undefined,
-  fallbackTicketId: number
+  fallbackTicketId: number | string
 ): TicketMessage | undefined {
   if (!raw || typeof raw !== "object" || raw.id == null) return undefined;
-  const id = Number(raw.id);
+  const id =
+    typeof raw.id === "bigint"
+      ? Number(raw.id)
+      : typeof raw.id === "string"
+        ? Number(raw.id.trim())
+        : Number(raw.id);
   if (!Number.isFinite(id)) return undefined;
   const trimOrNull = (v: unknown): string | null => {
     if (v == null) return null;
     const s = String(v).trim();
     return s.length ? s : null;
   };
+  const fb =
+    typeof fallbackTicketId === "string" ? Number(fallbackTicketId.trim()) : Number(fallbackTicketId);
+  const ticketIdNum = Number.isFinite(Number(raw.ticket_id)) ? Number(raw.ticket_id) : Number.isFinite(fb) ? fb : 0;
+
+  const bodyRaw = raw.message ?? raw.message_text;
+  const bodyStr =
+    bodyRaw == null ? "" : typeof bodyRaw === "string" ? bodyRaw : String(bodyRaw);
+
   return {
     id,
-    ticketId: Number(raw.ticket_id ?? fallbackTicketId),
+    ticketId: ticketIdNum,
     senderType: String(raw.sender_type ?? "AGENT"),
     senderId: raw.sender_id != null ? Number(raw.sender_id) : null,
     senderName: raw.sender_name != null ? String(raw.sender_name) : null,
     senderEmail: raw.sender_email != null ? String(raw.sender_email) : null,
     messageType: String(raw.message_type ?? "TEXT"),
     isInternalNote: Boolean(raw.is_internal_note),
-    message: String(raw.message ?? ""),
+    message: bodyStr,
     attachments: Array.isArray(raw.attachments) ? raw.attachments : [],
     createdAt: String(raw.created_at ?? ""),
     updatedAt: String(raw.updated_at ?? ""),

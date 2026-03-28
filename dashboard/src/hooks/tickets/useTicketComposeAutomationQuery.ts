@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 export type TicketComposeAutomationDto = {
   defaultTo: string;
@@ -11,8 +13,16 @@ export type TicketComposeAutomationDto = {
 
 const QUERY_KEY = ["ticketComposeAutomation"] as const;
 
+const SNAPSHOT_KEY = "dashboard_snapshot:ticketComposeAutomation";
+const SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function useTicketComposeAutomationQuery() {
-  return useQuery({
+  const initialSnapshot = useMemo(
+    () => loadClientSnapshot<TicketComposeAutomationDto>(SNAPSHOT_KEY, SNAPSHOT_TTL_MS),
+    []
+  );
+
+  const query = useQuery({
     queryKey: QUERY_KEY,
     queryFn: async (): Promise<TicketComposeAutomationDto> => {
       const res = await fetch("/api/tickets/compose-automation", { credentials: "include" });
@@ -28,8 +38,17 @@ export function useTicketComposeAutomationQuery() {
         updatedAt: d?.updatedAt ?? null,
       };
     },
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
+    gcTime: 24 * 60 * 60_000,
+    initialData: initialSnapshot ?? undefined,
+    initialDataUpdatedAt: initialSnapshot != null ? 0 : undefined,
   });
+
+  useEffect(() => {
+    if (query.data) saveClientSnapshot(SNAPSHOT_KEY, query.data);
+  }, [query.data]);
+
+  return query;
 }
 
 export function useTicketComposeAutomationSave() {

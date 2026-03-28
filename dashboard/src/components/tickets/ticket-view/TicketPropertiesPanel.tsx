@@ -390,7 +390,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         </div>
 
         <div>
-          <label className={labelCls}>Helpdesk Dashboard</label>
+          <label className={labelCls}>GatiMitra Queue</label>
           <div className="flex h-10 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
             <span
               className={`min-w-0 flex-1 truncate text-xs font-medium ${
@@ -605,7 +605,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         {/* Custom Fields / Private Info — from DB + metadata */}
         <div>
           <label className={labelCls}>Private Info / Custom Fields</label>
-          <div className="rounded-md border border-gray-300 bg-gray-50 px-2.5 py-2 text-xs text-gray-700 space-y-1.5 max-h-48 overflow-y-auto">
+          <div className="rounded-md border border-gray-300 bg-gray-50 px-2.5 py-2 text-xs text-gray-700 space-y-1.5">
             {(() => {
               const md = (ticket.metadata || {}) as Record<string, unknown>;
               const frtMarkedRaw = md.frt_marked;

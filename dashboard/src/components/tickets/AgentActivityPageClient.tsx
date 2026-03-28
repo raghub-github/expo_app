@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { Calendar } from "lucide-react";
 import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
 import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 type Period = "today" | "week" | "month" | "custom";
 
@@ -22,6 +23,34 @@ interface ActivitySummary {
   dsatCount: number;
   avgRating: number | null;
 }
+
+interface AgentActivityRow {
+  userId: number;
+  name: string;
+  email: string;
+  onlineTimeMinutes: number;
+  breakTimeMinutes: number;
+  ticketsResolved: number;
+  ticketsClosed: number;
+  ticketsAssigned: number;
+  ticketsUpdated: number;
+  ticketsReopened: number;
+}
+
+type AgentActivityApiResponse = {
+  success: boolean;
+  data: {
+    period: string;
+    startDate: string;
+    endDate: string;
+    summary: ActivitySummary;
+    profile: unknown;
+    dailyBreakdown: unknown[];
+    allAgents?: AgentActivityRow[];
+  };
+};
+
+const AGENT_ACTIVITY_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type AgentActivityEmbed = "ticketSettingsActivity";
 
@@ -95,24 +124,6 @@ function MetricTableRow({ label, value, valueClassName }: { label: string; value
   );
 }
 
-function ActivityDashboardSkeleton({ compact = false }: { compact?: boolean }) {
-  return (
-    <div className="space-y-4 animate-pulse">
-      <div className={`rounded-lg border border-gray-200 bg-white shadow-sm ${compact ? "h-14" : "h-16"}`} />
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="h-28 rounded-lg border border-gray-200 bg-white shadow-sm" />
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="h-64 rounded-lg border border-gray-200 bg-white shadow-sm" />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed }) {
   const searchParams = useSearchParams();
   const sectionFromUrl = searchParams.get("section") === "automation" ? "automation" : "activity";
@@ -122,31 +133,18 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
 
-  interface AgentActivityRow {
-    userId: number;
-    name: string;
-    email: string;
-    onlineTimeMinutes: number;
-    breakTimeMinutes: number;
-    ticketsResolved: number;
-    ticketsClosed: number;
-    ticketsAssigned: number;
-    ticketsUpdated: number;
-    ticketsReopened: number;
-  }
+  const activitySnapshotKey = useMemo(() => {
+    const suffix = period === "custom" ? `${startDate}|${endDate}` : period;
+    return `dashboard_snapshot:agentActivity:v1:${suffix}`;
+  }, [period, startDate, endDate]);
 
-  const { data, isLoading, error } = useQuery<{
-    success: boolean;
-    data: {
-      period: string;
-      startDate: string;
-      endDate: string;
-      summary: ActivitySummary;
-      profile: unknown;
-      dailyBreakdown: unknown[];
-      allAgents?: AgentActivityRow[];
-    };
-  }>({
+  const initialActivitySnapshot = useMemo(() => {
+    const raw = loadClientSnapshot<AgentActivityApiResponse>(activitySnapshotKey, AGENT_ACTIVITY_SNAPSHOT_TTL_MS);
+    if (!raw?.success || !raw.data?.summary) return undefined;
+    return raw;
+  }, [activitySnapshotKey]);
+
+  const { data, error, isFetching, refetch } = useQuery<AgentActivityApiResponse>({
     queryKey: ["agentActivity", period, startDate, endDate],
     enabled: section === "activity",
     queryFn: async () => {
@@ -160,7 +158,16 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
       if (!res.ok) throw new Error("Failed to fetch activity");
       return res.json();
     },
+    staleTime: 60_000,
+    gcTime: 24 * 60 * 60_000,
+    initialData: initialActivitySnapshot,
+    initialDataUpdatedAt: initialActivitySnapshot != null ? 0 : undefined,
   });
+
+  useEffect(() => {
+    if (!data?.success || !data.data) return;
+    saveClientSnapshot(activitySnapshotKey, data);
+  }, [data, activitySnapshotKey]);
 
   const formatMinutes = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
@@ -184,16 +191,6 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
     dsatCount: 0,
     avgRating: null,
   };
-
-  if (section === "activity" && error) {
-    return (
-      <div className={embed === "ticketSettingsActivity" ? "py-2" : ""}>
-        <div className="rounded-lg border border-red-200 bg-white p-4 shadow-sm">
-          <p className="text-sm text-red-800">Failed to load activity data. Please try again.</p>
-        </div>
-      </div>
-    );
-  }
 
   const isEmbeddedActivity = embed === "ticketSettingsActivity";
   const compact = isEmbeddedActivity;
@@ -280,11 +277,27 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
             )}
           </div>
 
-          {isLoading ? (
-            <ActivityDashboardSkeleton compact={compact} />
-          ) : (
-            <>
-              {/* Row 1 — four KPI cards */}
+          {section === "activity" && error && !data ? (
+            <div
+              className={`rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 ${
+                compact ? "" : ""
+              }`}
+            >
+              Failed to load activity data.{" "}
+              <button
+                type="button"
+                className="font-semibold text-red-900 underline"
+                onClick={() => void refetch()}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+          {section === "activity" && isFetching ? (
+            <p className={`text-xs text-gray-400 ${compact ? "px-0.5" : ""}`}>Updating metrics…</p>
+          ) : null}
+
+          {/* Row 1 — four KPI cards */}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <StatMetricCard
                   compact={compact}
@@ -483,8 +496,6 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                   </div>
                 </section>
               )}
-            </>
-          )}
         </>
       )}
     </div>
