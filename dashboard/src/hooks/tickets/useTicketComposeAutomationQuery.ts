@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 export type TicketComposeAutomationDto = {
   defaultTo: string;
@@ -19,14 +19,8 @@ export type TicketComposeAutomationDto = {
 const QUERY_KEY = ["ticketComposeAutomation"] as const;
 
 const SNAPSHOT_KEY = "dashboard_snapshot:ticketComposeAutomation";
-const SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function useTicketComposeAutomationQuery() {
-  const initialSnapshot = useMemo(
-    () => loadClientSnapshot<TicketComposeAutomationDto>(SNAPSHOT_KEY, SNAPSHOT_TTL_MS),
-    []
-  );
-
   const query = useQuery({
     queryKey: QUERY_KEY,
     queryFn: async (): Promise<TicketComposeAutomationDto> => {
@@ -48,9 +42,11 @@ export function useTicketComposeAutomationQuery() {
       };
     },
     staleTime: 5 * 60_000,
-    gcTime: 24 * 60 * 60_000,
-    initialData: initialSnapshot ?? undefined,
-    initialDataUpdatedAt: initialSnapshot != null ? 0 : undefined,
+    gcTime: 24 * 60 * 60 * 1000,
+    /**
+     * Do not use localStorage as initialData: server render has no snapshot, so the client would
+     * hydrate with different DOM (fields + “Last updated”) and trip Next.js hydration errors.
+     */
   });
 
   useEffect(() => {

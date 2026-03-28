@@ -33,6 +33,11 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
   const saveMutation = useTicketComposeAutomationSave();
 
   const [draft, setDraft] = useState({ defaultTo: "", defaultCc: "", defaultBcc: "" });
+  /** Avoid SSR/client hydration mismatches on readOnly + “Last updated” (locale / permission timing). */
+  const [hydrated, setHydrated] = useState(false);
+  useLayoutEffect(() => {
+    setHydrated(true);
+  }, []);
 
   useLayoutEffect(() => {
     if (!data) return;
@@ -43,7 +48,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
     });
   }, [data]);
 
-  const canManage = isSuperAdmin || data?.canManage === true;
+  const canManage = hydrated && (isSuperAdmin || data?.canManage === true);
 
   const save = () => {
     saveMutation.mutate(draft, {
@@ -137,7 +142,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
             type="text"
             value={draft.defaultTo}
             onChange={(e) => setDraft((d) => ({ ...d, defaultTo: e.target.value }))}
-            readOnly={!canManage}
+            {...(!canManage ? { readOnly: true } : {})}
             placeholder="Optional — comma-separated emails"
             className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"} ${!canManage ? "cursor-not-allowed bg-gray-50" : "bg-white"}`}
           />
@@ -153,7 +158,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
             type="text"
             value={draft.defaultCc}
             onChange={(e) => setDraft((d) => ({ ...d, defaultCc: e.target.value }))}
-            readOnly={!canManage}
+            {...(!canManage ? { readOnly: true } : {})}
             placeholder={`Optional — e.g. ${TICKET_COMPOSE_SUPPORT_CC_FALLBACK}`}
             className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"} ${!canManage ? "cursor-not-allowed bg-gray-50" : "bg-white"}`}
           />
@@ -169,7 +174,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
             type="text"
             value={draft.defaultBcc}
             onChange={(e) => setDraft((d) => ({ ...d, defaultBcc: e.target.value }))}
-            readOnly={!canManage}
+            {...(!canManage ? { readOnly: true } : {})}
             placeholder="Optional — comma-separated"
             className={`w-full rounded-lg border border-gray-200 text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 ${isSidebar ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm"} ${!canManage ? "cursor-not-allowed bg-gray-50" : "bg-white"}`}
           />
@@ -185,14 +190,21 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
         </p>
       )}
 
-      {data?.updatedAt && (
+      {hydrated && data?.updatedAt && (
         <p className={`text-[11px] text-gray-500 ${isSidebar ? "mt-2" : isPlain ? "mt-3" : "mt-3"}`}>
           Last updated
           {(() => {
             const by = formatLastUpdatedBy(data);
             return by ? ` by ${by}` : "";
           })()}
-          {` · ${new Date(data.updatedAt).toLocaleString()}`}
+          {` · ${new Date(data.updatedAt).toLocaleString(undefined, {
+            month: "numeric",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            second: "2-digit",
+          })}`}
         </p>
       )}
 
