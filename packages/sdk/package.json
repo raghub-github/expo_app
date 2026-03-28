@@ -20,7 +20,7 @@
     "lint": "echo \"(sdk) no lint configured\""
   },
   "dependencies": {
-    "@gatimitra/contracts": "0.0.1",
+    "@gatimitra/contracts": "file:../contracts",
     "zod": "^4.1.5"
   },
   "devDependencies": {

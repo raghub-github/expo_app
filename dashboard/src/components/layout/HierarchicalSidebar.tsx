@@ -216,7 +216,16 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <>
-              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2.5 flex-1 min-w-0"
+                onClick={() => {
+                  onNavigationStart?.("/dashboard");
+                  setPendingNavHref("/dashboard");
+                  currentRouteCtx?.setCurrentRoute("/dashboard");
+                  setMobileMenuOpen(false);
+                }}
+              >
                 <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
                 <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
               </Link>
@@ -225,7 +234,16 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
               </button>
             </>
           ) : (
-            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+            <Link
+              href="/dashboard"
+              className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1"
+              onClick={() => {
+                onNavigationStart?.("/dashboard");
+                setPendingNavHref("/dashboard");
+                currentRouteCtx?.setCurrentRoute("/dashboard");
+                setMobileMenuOpen(false);
+              }}
+            >
               <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
               <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
             </Link>
@@ -250,14 +268,14 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 <Link
                   key={item.name}
                   href={item.href}
-                  onMouseDown={() => {
+                  onClick={() => {
                     onNavigationStart?.(item.href);
                     setPendingNavHref(item.href);
                     currentRouteCtx?.setCurrentRoute(item.href);
+                    setMobileMenuOpen(false);
                   }}
                   onMouseEnter={() => handleNavPrefetch(item.href)}
                   onFocus={() => handleNavPrefetch(item.href)}
-                  onClick={() => setMobileMenuOpen(false)}
                   className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
                     isOpen
                       ? `gap-3 px-3 py-2.5 text-sm font-medium ${

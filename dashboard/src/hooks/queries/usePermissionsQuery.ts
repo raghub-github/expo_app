@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { permissionsCacheConfig } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
@@ -9,7 +9,6 @@ export interface PermissionsData {
   exists: boolean;
   systemUserId: number | null;
   isSuperAdmin: boolean;
-  canTogglePortal?: boolean;
   roles?: string[] | Array<{ id?: number; roleId?: string; roleName?: string; roleType?: string; isPrimary?: boolean }>;
   permissions?: string[] | Array<{ module: string; action: string; resourceType?: string }>;
   /** Normalized "MODULE:ACTION" keys for fast client-side checks. Prefer over parsing permissions. */
@@ -25,12 +24,9 @@ interface PermissionsResponse {
 
 const PERMISSIONS_FETCH_TIMEOUT_MS = 30000; // 30s – avoid infinite loading; UI shows Retry and uses cache when available
 const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
-let permissionsInFlight: Promise<PermissionsData> | null = null;
 
 /** Exported for prefetch in dashboard layout */
 export async function fetchPermissions(): Promise<PermissionsData> {
-  if (permissionsInFlight) return permissionsInFlight;
-  permissionsInFlight = (async () => {
   const controller = new AbortController();
   const timeoutId = setTimeout(
     () => controller.abort(new DOMException("Request timed out. Tap Retry to try again.", "AbortError")),
@@ -81,12 +77,6 @@ export async function fetchPermissions(): Promise<PermissionsData> {
   } finally {
     clearTimeout(timeoutId);
   }
-  })();
-  try {
-    return await permissionsInFlight;
-  } finally {
-    permissionsInFlight = null;
-  }
 }
 
 /**
@@ -94,13 +84,9 @@ export async function fetchPermissions(): Promise<PermissionsData> {
  * Uses React Query for automatic caching and refetching
  */
 export function usePermissionsQuery() {
-  const queryClient = useQueryClient();
   return useQuery({
     queryKey: queryKeys.permissions(),
     queryFn: fetchPermissions,
-    initialData: () => {
-      return queryClient.getQueryData<PermissionsData>(queryKeys.permissions());
-    },
     ...permissionsCacheConfig,
     placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
@@ -126,7 +112,6 @@ export function usePermissions() {
 
   return {
     isSuperAdmin: data?.isSuperAdmin ?? false,
-    canTogglePortal: data?.canTogglePortal ?? false,
     systemUserId: data?.systemUserId ?? null,
     loading: isLoading,
     error: error ? (error instanceof Error ? error.message : "Unknown error") : null,

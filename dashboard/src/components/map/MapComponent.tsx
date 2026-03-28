@@ -168,6 +168,14 @@ function MapComponentInner({
           // If map is already loaded, update markers immediately
           if (cachedMap.loaded()) {
             setIsLoaded(true);
+            // Re-attached cached map can render at stale size; force layout sync.
+            requestAnimationFrame(() => {
+              try {
+                cachedMap.resize();
+              } catch {
+                // ignore resize failures
+              }
+            });
             updateMarkers();
           } else {
             // Wait for map to load

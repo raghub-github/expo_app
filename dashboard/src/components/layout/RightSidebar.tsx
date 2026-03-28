@@ -3,8 +3,7 @@
 import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Zap, LineChart, LayoutDashboard } from "lucide-react";
-import { ChevronRight, Users, ClipboardList } from "lucide-react";
+import { ChevronRight, Users } from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
@@ -16,14 +15,6 @@ import {
 } from "@/lib/navigation/dashboard-routes";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { TicketPropertiesPanel } from "@/components/tickets/ticket-view/TicketPropertiesPanel";
-import { TicketRightSidebarSettingsPanel } from "@/components/tickets/TicketRightSidebarSettingsPanel";
-import { useRightSidebar } from "@/context/RightSidebarContext";
-import {
-  AGENT_ACTIVITY_PATH,
-  TICKETS_HELPDESK_DASHBOARD_PATH,
-  isTicketsAppDetailPath,
-  ticketsPathTicketId,
-} from "@/lib/tickets/ticket-path-utils";
 import { usePermission } from "@/hooks/usePermission";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
@@ -41,7 +32,6 @@ interface RightSidebarProps {
 export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin } = usePermission();
   
   // Remove query parameters for comparison
@@ -54,7 +44,7 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
   );
 
   const isStorePath = /^\/dashboard\/merchants\/stores\/\d+/.test(cleanPathname);
-  const portal = searchParams.get("portal") || "merchant";
+  const portal = searchParams.get("portal") || (isStorePath ? "merchant" : "admin");
 
   // Sub-routes for current dashboard. When on merchants: admin portal = only All Merchants + Verifications; merchant portal = Dashboard, Orders, Menu, etc. When on a store page, show store-scoped links.
   const rawSubRoutes = useMemo(() => {
@@ -76,7 +66,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
     cleanPathname.startsWith("/dashboard/orders");
   const [areaManagerType, setAreaManagerType] =
     useState<AreaManagerTypeFilter | null>(null);
-  const [pendingMenuRequestsCount, setPendingMenuRequestsCount] = useState<number>(0);
 
   useEffect(() => {
     if (!isAreaManagerDashboard) return;
@@ -93,31 +82,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
       cancelled = true;
     };
   }, [isAreaManagerDashboard]);
-
-  useEffect(() => {
-    const isAdminMerchantsHome =
-      cleanPathname === "/dashboard/merchants" && portal === "admin";
-    if (!isAdminMerchantsHome) {
-      setPendingMenuRequestsCount(0);
-      return;
-    }
-
-    let cancelled = false;
-    fetch("/api/merchant-menu/change-requests?status=PENDING&limit=1&offset=0")
-      .then((res) => res.json())
-      .then((body) => {
-        if (cancelled) return;
-        const total = Number(body?.total ?? 0);
-        setPendingMenuRequestsCount(Number.isFinite(total) ? total : 0);
-      })
-      .catch(() => {
-        if (!cancelled) setPendingMenuRequestsCount(0);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [cleanPathname, portal]);
 
   const currentSubRoutes = useMemo((): DashboardSubRoute[] => {
     let filtered = rawSubRoutes;
@@ -149,8 +113,11 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
   // Check if we're in a specific dashboard (not on home)
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");
 
-  // Ticket identifier from path (supports numeric id and ticket number like TKT-2026-910001)
-  const ticketIdFromPath = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
+  // Ticket ID from path (must be before any conditional return to satisfy Rules of Hooks)
+  const ticketIdFromPath = useMemo(() => {
+    const match = cleanPathname.match(/^\/dashboard\/tickets\/(\d+)$/);
+    return match ? parseInt(match[1], 10) : null;
+  }, [cleanPathname]);
 
   // Store ID when on a merchant store page (for Store Information Card in sidebar)
   const storeIdFromPath = useMemo(() => {
@@ -192,11 +159,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
   }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal]);
 
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
-  const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
-  const onAgentActivityPage = cleanPathname === AGENT_ACTIVITY_PATH;
-  const onTicketsHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
-  const onTicketsHubSectionsPage = onAgentActivityPage || onTicketsHelpdeskDashboard;
-  const agentActivitySection = searchParams.get("section") === "automation" ? "automation" : "activity";
 
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
@@ -242,99 +204,48 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
         />
       )}
       <aside
-        className={`fixed z-40 flex flex-col ${isTicketDetailPage ? "shadow-none" : "shadow-xl"} transition-[transform,width] duration-300 ease-out ${
-          isTicketDetailPage ? "bottom-0 top-14" : "inset-y-0"
-        }
-          ${isOpen ? (isTicketDetailPage ? "w-64" : "w-56") : "w-14"}
+        className={`fixed inset-y-0 z-40 flex flex-col shadow-xl transition-[transform,width] duration-300 ease-out
+          ${isOpen ? "w-56" : "w-14"}
           max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}`}
         style={{
           right: filterSidebarOpen ? "14rem" : 0,
-          backgroundColor: isTicketDetailPage ? "#F5F7F9" : "#E8F0F2",
+          backgroundColor: "#E8F0F2",
           scrollbarWidth: "thin",
-          scrollbarColor: isTicketDetailPage ? "#9CA3AF #F5F7F9" : "#9CA3AF #E8F0F2",
+          scrollbarColor: "#9CA3AF #E8F0F2",
         }}
       >
-        {!isTicketDetailPage && (
-          <div
-            className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3 ${
-              isOpen ? "gap-2" : "justify-center"
-            }`}
-          >
-            {isOpen ? (
-              <>
-                {currentDashboard?.icon && (
-                  <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
-                    <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
-                  </div>
-                )}
-                <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-gray-800">
-                  {currentDashboard?.name}
-                </h2>
-              </>
-            ) : (
-              currentDashboard?.icon && (
-                <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+        {/* Header: match main Header (h-14 + items-center) so title row aligns with navbar across the top band. */}
+        <div
+          className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3 ${
+            isOpen ? "gap-2" : "justify-center"
+          }`}
+        >
+          {isOpen ? (
+            <>
+              {currentDashboard?.icon && (
+                <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
                   <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                 </div>
-              )
-            )}
-          </div>
-        )}
+              )}
+              <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-gray-800">
+                {currentDashboard?.name}
+              </h2>
+            </>
+          ) : (
+            currentDashboard?.icon && (
+              <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+                <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
+              </div>
+            )
+          )}
+        </div>
 
         {/* Body: flex-1 scroll */}
-        <div className={`relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden ${isTicketDetailPage ? "border-l border-gray-200 bg-[#F5F7F9]" : ""}`}>
-          <div
-            className={`min-h-0 flex-1 overflow-x-hidden overscroll-y-contain ${
-              isTicketDetailPage ? "overflow-y-hidden" : "overflow-y-auto"
-            }`}
-          >
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
             {isTicketsDashboard && ticketIdFromPath != null && isOpen ? (
-              <div className="h-full min-h-0">
-                {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
-                  <TicketRightSidebarSettingsPanel />
-                ) : (
-                  <TicketPropertiesPanel ticketId={ticketIdFromPath} />
-                )}
-              </div>
-            ) : isTicketsDashboard && onTicketsHubSectionsPage && isOpen ? (
-              <div className="flex h-full min-h-0 flex-col">
-                <nav className="flex flex-col gap-1 p-2 pt-3" aria-label="Tickets hub sections">
-                  <Link
-                    href={TICKETS_HELPDESK_DASHBOARD_PATH}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
-                      onTicketsHelpdeskDashboard
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-gray-800 hover:bg-gray-200/80"
-                    }`}
-                  >
-                    <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden />
-                    Dashboard
-                  </Link>
-                  <Link
-                    href={`${AGENT_ACTIVITY_PATH}?section=automation`}
-                    scroll={false}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
-                      onAgentActivityPage && agentActivitySection === "automation"
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-gray-800 hover:bg-gray-200/80"
-                    }`}
-                  >
-                    <Zap className="h-4 w-4 shrink-0" aria-hidden />
-                    Automation
-                  </Link>
-                  <Link
-                    href={`${AGENT_ACTIVITY_PATH}?section=activity`}
-                    scroll={false}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
-                      onAgentActivityPage && agentActivitySection === "activity"
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-gray-800 hover:bg-gray-200/80"
-                    }`}
-                  >
-                    <LineChart className="h-4 w-4 shrink-0" aria-hidden />
-                    Activity track
-                  </Link>
-                </nav>
+              <div className="min-h-0">
+                <TicketPropertiesPanel ticketId={ticketIdFromPath} />
               </div>
             ) : isTicketsDashboard && isOpen ? (
               <div className="min-h-0">
@@ -423,7 +334,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                     ? String(merchantSearchResultStore.storeId)
                     : null);
                 const showWalletRequests = isMerchantsDashboard && !effectiveStoreId;
-                const isMenuRequestsActive = cleanPathname === "/dashboard/merchants/menu-requests";
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
@@ -466,54 +376,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                       <div className={isOpen ? "mt-2 min-w-0" : "mt-1"}>
                         <WalletRequestsSummarySidebar collapsed={!isOpen} />
                       </div>
-                    )}
-                    {/* Menu change requests CTA in right sidebar (admin portal) - placed below Assign AM + Wallet Requests */}
-                    {isMerchantsDashboard && portal === "admin" && (
-                      isOpen ? (
-                        <Link
-                          href="/dashboard/merchants/menu-requests"
-                          className={`mt-2 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border px-2 py-2 text-xs font-semibold transition-all duration-200 ${
-                            isMenuRequestsActive
-                              ? "border-purple-700 bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-500/20"
-                              : "border-purple-200 bg-purple-50 text-purple-900 hover:border-purple-300 hover:bg-purple-100 hover:-translate-x-1"
-                          }`}
-                        >
-                          <span className="flex size-5 items-center justify-center justify-self-start text-current">
-                            <ClipboardList className="h-4 w-4 shrink-0" aria-hidden />
-                          </span>
-                          <span className="min-w-0 truncate text-left">Menu change requests</span>
-                          {pendingMenuRequestsCount > 0 && (
-                            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                              isMenuRequestsActive ? "bg-white/20 text-white" : "bg-amber-100 text-amber-800"
-                            }`}>
-                              {pendingMenuRequestsCount} Pending
-                            </span>
-                          )}
-                        </Link>
-                      ) : (
-                        <Link
-                          href="/dashboard/merchants/menu-requests"
-                          title={pendingMenuRequestsCount > 0 ? `Menu change requests (${pendingMenuRequestsCount} pending)` : "Menu change requests"}
-                          className={`group relative mt-2 flex cursor-pointer items-center justify-center rounded-lg border px-2 py-2.5 transition-all duration-200 ${
-                            isMenuRequestsActive
-                              ? "border-purple-700 bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg"
-                              : "border-purple-200 bg-purple-50 text-purple-900 hover:border-purple-300 hover:bg-purple-100"
-                          }`}
-                        >
-                          <ClipboardList className="h-5 w-5 flex-shrink-0" />
-                          {pendingMenuRequestsCount > 0 && (
-                            <span className="absolute -top-1 -right-1 rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                              {pendingMenuRequestsCount}
-                            </span>
-                          )}
-                          <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
-                            {pendingMenuRequestsCount > 0
-                              ? `Menu change requests (${pendingMenuRequestsCount} pending)`
-                              : "Menu change requests"}
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1 border-4 border-transparent border-l-gray-900" />
-                          </div>
-                        </Link>
-                      )
                     )}
                     {/* Store Information Card: merchant portal — from URL store, or from search result on list page; skeleton when search loading */}
                     {isOpen && portal === "merchant" && (

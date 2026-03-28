@@ -1,7 +1,6 @@
 "use client";
 
 import { memo, useState, useEffect, useMemo, useRef, useCallback } from "react";
-import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight, User } from "lucide-react";
@@ -12,41 +11,14 @@ import { getUserAvatarUrl, getUserInitials } from "@/lib/user-avatar";
 import { getCurrentPageName, getCurrentDashboard, getCurrentDashboardSubRoutes } from "@/lib/navigation/dashboard-routes";
 import { DashboardSearch } from "./DashboardSearch";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
-const AgentStatusToggle = dynamic(
-  () => import("@/components/tickets/AgentStatusToggle").then((m) => m.AgentStatusToggle),
-  {
-    ssr: false,
-    loading: () => <div className="h-7 w-[104px] shrink-0" aria-hidden />,
-  }
-);
+import { AgentStatusToggle } from "@/components/tickets/AgentStatusToggle";
 import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
 import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
-import { usePermissions } from "@/hooks/usePermissions";
-import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
-
-const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
-const MERCHANTS_PORTAL_STORAGE_KEY = "dashboard_merchants_portal_v1";
-
-function readStoredMerchantsPortal(): "admin" | "merchant" | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const s = sessionStorage.getItem(MERCHANTS_PORTAL_STORAGE_KEY);
-    return s === "admin" || s === "merchant" ? s : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredMerchantsPortal(value: "admin" | "merchant") {
-  try {
-    sessionStorage.setItem(MERCHANTS_PORTAL_STORAGE_KEY, value);
-  } catch {
-    /* ignore */
-  }
-}
+import { usePermission } from "@/hooks/usePermission";
+import type { ActionType } from "@/lib/db/schema";
 // Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
   const pathname = usePathname();
@@ -208,57 +180,8 @@ function HeaderComponent() {
     return getCurrentPageName(clean);
   }, [effectivePathname]);
   const isMerchantsArea = effectivePathname.startsWith("/dashboard/merchants");
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [showNewDropdown, setShowNewDropdown] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const [showProfileCard, setShowProfileCard] = useState(false);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [avatarError, setAvatarError] = useState(false);
-  /** Avoid duplicate Image() preloads (they double-hit Google CDN → 429 in dev/HMR). */
-  const gravatarUrlRef = useRef<string | null>(null);
-  const primaryOauthUrlRef = useRef<string | null>(null);
-  const userMenuRef = useRef<HTMLDivElement>(null);
-  const newMenuRef = useRef<HTMLDivElement>(null);
-  const { user: authUser, authReady, systemUser } = useAuth();
-  const [cachedIdentity, setCachedIdentity] = useState<{ fullName: string | null; email: string | null; avatarUrl: string | null }>({
-    fullName: null,
-    email: null,
-    avatarUrl: null,
-  });
-  const isLoading = !authReady && !authUser && !systemUser && !cachedIdentity.email;
-  const logoutMutation = useLogout();
-  const leftSidebarMobile = useLeftSidebarMobile();
-  const rightSidebar = useRightSidebar();
-  const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
-  const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
-  const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
-  const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
-  const { canTogglePortal = false } = usePermissions();
-
-  const portalParam = searchParams.get("portal");
-  const portalFromUrl = portalParam === "admin" || portalParam === "merchant" ? portalParam : null;
-  const storedPortalFallback =
-    typeof window !== "undefined" && canTogglePortal ? readStoredMerchantsPortal() : null;
-  const portal = portalFromUrl ?? storedPortalFallback ?? "merchant";
-
-  // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
-  useEffect(() => {
-    if (!isMerchantsArea || !canTogglePortal) return;
-    if (portalFromUrl) {
-      writeStoredMerchantsPortal(portalFromUrl);
-      return;
-    }
-    const stored = readStoredMerchantsPortal();
-    if (!stored) return;
-    const next = new URLSearchParams(searchParams.toString());
-    if (next.get("portal") === stored) return;
-    next.set("portal", stored);
-    const qs = next.toString();
-    router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${stored}`);
-  }, [isMerchantsArea, canTogglePortal, portalFromUrl, pathname, router, searchParams]);
-
+  const portal = searchParams.get("portal") || (effectivePathname.startsWith("/dashboard/merchants/stores/") ? "merchant" : "admin");
   const setPortal = (value: "admin" | "merchant") => {
-    writeStoredMerchantsPortal(value);
     if (effectivePathname.startsWith("/dashboard/merchants/stores/")) {
       if (value === "admin") router.push("/dashboard/merchants?portal=admin");
       else {
@@ -278,14 +201,43 @@ function HeaderComponent() {
       }
     }
   };
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [showNewDropdown, setShowNewDropdown] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showProfileCard, setShowProfileCard] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarError, setAvatarError] = useState(false);
+  /** Avoid duplicate Image() preloads (they double-hit Google CDN → 429 in dev/HMR). */
+  const gravatarUrlRef = useRef<string | null>(null);
+  const primaryOauthUrlRef = useRef<string | null>(null);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+  const { user: authUser, authReady } = useAuth();
+  const isLoading = !authReady && !authUser;
+  const logoutMutation = useLogout();
+  const leftSidebarMobile = useLeftSidebarMobile();
+  const rightSidebar = useRightSidebar();
+  const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
+  const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
+  const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
+  const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
+  const { canPerformAction } = usePermission();
 
-  // Force merchant portal unless explicit portal toggle access is granted.
+  // Determine if the user has any edit-level access on the MERCHANT dashboard
+  const hasMerchantEditAccess = useMemo(() => {
+    if (!isMerchantsArea) return false;
+    const editActions: ActionType[] = ["CREATE", "UPDATE", "APPROVE", "REJECT", "ASSIGN", "CANCEL", "REFUND", "BLOCK", "UNBLOCK"];
+    return editActions.some((action) => canPerformAction("MERCHANT", action));
+  }, [isMerchantsArea, canPerformAction]);
+
+  // If user is restricted to view-only, force merchant portal as default and hide the Admin/Merchant toggle
   useEffect(() => {
     if (!isMerchantsArea) return;
-    if (canTogglePortal) return;
+    if (hasMerchantEditAccess) return;
     if (portal === "merchant") return;
+    // Redirect view-only users to merchant portal
     setPortal("merchant");
-  }, [isMerchantsArea, canTogglePortal, portal]);
+  }, [isMerchantsArea, hasMerchantEditAccess, portal]);
   const handleOpenRightPanel = () => {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
@@ -316,114 +268,61 @@ function HeaderComponent() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showNewDropdown]);
 
-  useEffect(() => {
-    const storageSnapshot = loadBootstrapFromStorage<{
-      systemUser?: { fullName?: string; email?: string } | null;
-      session?: { user?: { email?: string } | null } | null;
-    }>(24 * 60 * 60 * 1000);
-
-    let headerIdentitySnapshot: { fullName?: string | null; email?: string | null; avatarUrl?: string | null } | null = null;
-    try {
-      const raw = window.localStorage.getItem(HEADER_IDENTITY_CACHE_KEY);
-      headerIdentitySnapshot = raw ? (JSON.parse(raw) as { fullName?: string | null; email?: string | null; avatarUrl?: string | null }) : null;
-    } catch {
-      headerIdentitySnapshot = null;
-    }
-
-    setCachedIdentity((prev) => ({
-      fullName:
-        headerIdentitySnapshot?.fullName ??
-        storageSnapshot?.data?.systemUser?.fullName ??
-        prev.fullName,
-      email:
-        headerIdentitySnapshot?.email ??
-        storageSnapshot?.data?.systemUser?.email ??
-        storageSnapshot?.data?.session?.user?.email ??
-        prev.email,
-      avatarUrl: headerIdentitySnapshot?.avatarUrl ?? prev.avatarUrl,
-    }));
-  }, []);
-
-  useEffect(() => {
-    if (!systemUser?.email && !systemUser?.fullName) return;
-    setCachedIdentity((prev) => ({
-      fullName: systemUser?.fullName ?? prev.fullName,
-      email: systemUser?.email ?? prev.email,
-      avatarUrl: prev.avatarUrl,
-    }));
-  }, [systemUser?.email, systemUser?.fullName]);
-
-  // Extract user info from system user first, then auth session/cache fallback
-  const userEmail = systemUser?.email ?? authUser?.email ?? cachedIdentity.email ?? null;
-  const userMetadata = useMemo(
-    () => ((authUser as any)?.user_metadata as Record<string, unknown> | undefined) ?? null,
-    [authUser]
-  );
-  const avatarCandidateUrl = useMemo(() => {
-    if (!userEmail) return null;
-    const sessionUser = authUser as any;
-    const possibleAvatarSources = [
-      userMetadata?.avatar_url,
-      userMetadata?.picture,
-      userMetadata?.avatar,
-      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar_url,
-      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.picture,
-      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar,
-      sessionUser?.app_metadata?.avatar_url,
-      sessionUser?.app_metadata?.picture,
-      sessionUser?.avatar_url,
-      sessionUser?.picture,
-    ].filter(Boolean);
-    const primaryOauth =
-      possibleAvatarSources.length > 0 ? (possibleAvatarSources[0] as string) : null;
-    const gravatarUrl = getUserAvatarUrl(userEmail, userMetadata ?? {}, 40);
-    gravatarUrlRef.current = gravatarUrl;
-    primaryOauthUrlRef.current = primaryOauth;
-    return primaryOauth ?? gravatarUrl;
-  }, [authUser, userEmail, userMetadata]);
-  const userName = systemUser?.fullName ||
-                   cachedIdentity.fullName ||
-                   userMetadata?.full_name || 
+  // Extract user info from session
+  const userEmail = authUser?.email ?? null;
+  const userMetadata = (authUser as any)?.user_metadata || {};
+  const userName = userMetadata?.full_name || 
                    userMetadata?.name || 
                    (userEmail ? userEmail.split("@")[0] : null) ||
                    null;
 
-  // Avatar: only update local avatar state when source identity actually changes.
-  // This keeps the header image stable across unrelated re-renders.
+  // Avatar: use a single <img> load. Preloading with `new Image()` duplicated requests to Google
+  // (plus Strict Mode / Fast Refresh) and caused 429 Too Many Requests on lh3.googleusercontent.com.
   useEffect(() => {
-    if (!userEmail || !avatarCandidateUrl) return;
+    if (!userEmail) {
+      return;
+    }
+
+    const sessionUser = authUser;
+
     if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
       console.log("[Header] User metadata:", userMetadata);
-      console.log("[Header] Session user:", authUser);
-      console.log("[Header] App metadata:", (authUser as any)?.app_metadata);
-      console.log("[Header] Resolved avatar:", avatarCandidateUrl);
+      console.log("[Header] Session user:", sessionUser);
+      console.log("[Header] App metadata:", (sessionUser as any)?.app_metadata);
     }
-    setAvatarUrl((current) => {
-      if (current === avatarCandidateUrl) return current;
-      return avatarCandidateUrl;
-    });
+
+    const possibleAvatarSources = [
+      userMetadata?.avatar_url,
+      userMetadata?.picture,
+      userMetadata?.avatar,
+      userMetadata?.avatar_url,
+      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar_url,
+      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.picture,
+      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar,
+      (sessionUser as any)?.app_metadata?.avatar_url,
+      (sessionUser as any)?.app_metadata?.picture,
+      (sessionUser as any)?.avatar_url,
+      (sessionUser as any)?.picture,
+    ].filter(Boolean);
+
+    const gravatarUrl = getUserAvatarUrl(userEmail, userMetadata, 40);
+    gravatarUrlRef.current = gravatarUrl;
+
+    const primaryOauth =
+      possibleAvatarSources.length > 0 ? (possibleAvatarSources[0] as string) : null;
+    primaryOauthUrlRef.current = primaryOauth;
+
+    if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
+      if (primaryOauth) {
+        console.log("[Header] Found avatar in metadata:", primaryOauth);
+      } else {
+        console.log("[Header] Using Gravatar:", gravatarUrl);
+      }
+    }
+
+    setAvatarUrl(primaryOauth ?? gravatarUrl);
     setAvatarError(false);
-  }, [authUser, avatarCandidateUrl, userEmail, userMetadata]);
-
-  useEffect(() => {
-    if (!userName && !userEmail && !avatarUrl) return;
-    try {
-      window.localStorage.setItem(
-        HEADER_IDENTITY_CACHE_KEY,
-        JSON.stringify({
-          fullName: userName ?? null,
-          email: userEmail ?? null,
-          avatarUrl: avatarUrl ?? cachedIdentity.avatarUrl ?? null,
-        })
-      );
-    } catch {
-      // ignore
-    }
-  }, [userName, userEmail, avatarUrl, cachedIdentity.avatarUrl]);
-
-  const displayName = userName ?? "User";
-  const displayEmail = userEmail ?? "";
-  const effectiveAvatarUrl = avatarUrl ?? cachedIdentity.avatarUrl;
+  }, [userEmail, userMetadata, authUser]);
 
   const handleAvatarImgError = useCallback(() => {
     setAvatarUrl((current) => {
@@ -496,8 +395,8 @@ function HeaderComponent() {
       ) : null}
 
       <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0 min-w-0">
-        {/* Admin | Merchant portal toggle: shown only for explicit portal-toggle access */}
-        {isMerchantsArea && canTogglePortal && (
+        {/* Admin | Merchant portal toggle: only show when user has edit access on merchants dashboard */}
+        {isMerchantsArea && hasMerchantEditAccess && (
           <div className="flex rounded-md border border-gray-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Admin or Merchant portal">
             <button
               type="button"
@@ -613,18 +512,24 @@ function HeaderComponent() {
             className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 min-w-0"
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
-              <span suppressHydrationWarning className="text-sm font-medium text-gray-900 truncate w-full">
-                {displayName}
-              </span>
-              <span suppressHydrationWarning className="text-xs text-gray-500 truncate w-full">
-                {displayEmail}
-              </span>
+              {userName ? (
+                <>
+                  <span className="text-sm font-medium text-gray-900 truncate w-full">{userName}</span>
+                  {userEmail && (
+                    <span className="text-xs text-gray-500 truncate w-full">{userEmail}</span>
+                  )}
+                </>
+              ) : userEmail ? (
+                <span className="text-sm font-medium text-gray-900 truncate w-full">{userEmail}</span>
+              ) : (
+                <span className="text-sm font-medium">User</span>
+              )}
             </div>
             {/* Avatar or Fallback - show placeholder when loading so header doesn't pop in late */}
-            {!isLoading && effectiveAvatarUrl && !avatarError ? (
+            {!isLoading && avatarUrl && !avatarError ? (
               <img
-                src={effectiveAvatarUrl}
-                alt={displayName || displayEmail || "User"}
+                src={avatarUrl}
+                alt={userName || userEmail || "User"}
                 className="h-8 w-8 flex-shrink-0 rounded-full object-cover border border-gray-200"
                 onError={handleAvatarImgError}
               />

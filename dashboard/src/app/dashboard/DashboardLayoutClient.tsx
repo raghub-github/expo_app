@@ -7,12 +7,7 @@ import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/providers/AuthProvider";
-import {
-  RightSidebarProvider,
-  useRightSidebar,
-  type TicketRightSidebarPanel,
-  type TicketSettingsSection,
-} from "@/context/RightSidebarContext";
+import { RightSidebarProvider, useRightSidebar } from "@/context/RightSidebarContext";
 import { MerchantsSearchProvider } from "@/context/MerchantsSearchContext";
 import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
@@ -24,7 +19,6 @@ import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 import { CurrentRouteProvider } from "@/context/CurrentRouteContext";
-import { isTicketsAppDetailPath, ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 /** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
 function DashboardBootstrapSkeleton() {
   return (
@@ -56,8 +50,6 @@ function DashboardBootstrapSkeleton() {
     </div>
   );
 }
-
-let bootstrapInFlight: Promise<void> | null = null;
 
 /**
  * Bootstrap gate
@@ -109,15 +101,7 @@ function useBootstrapGate(queryClient: ReturnType<typeof useQueryClient>) {
         queryClient.setQueryData(queryKeys.dashboardAccess(), dashboardAccess as unknown);
         // SWR-style: in the background, revalidate with a fresh bootstrap call
         // but do not block the initial render.
-        if (!bootstrapInFlight) {
-          bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-            .catch(() => false)
-            .then(() => undefined)
-            .finally(() => {
-              bootstrapInFlight = null;
-            });
-        }
-        void bootstrapInFlight.finally(() => {
+        void fetchBootstrapAndSeedCache(queryClient).finally(() => {
           setAuthReady(true);
         });
         return;
@@ -126,15 +110,7 @@ function useBootstrapGate(queryClient: ReturnType<typeof useQueryClient>) {
       // 2) Slow path: no cached payload, call bootstrap once in the background.
       // Views that depend on this data will show their own lightweight loaders,
       // but the global layout (sidebar/header) never blocks on this.
-      if (!bootstrapInFlight) {
-        bootstrapInFlight = fetchBootstrapAndSeedCache(queryClient)
-          .catch(() => false)
-          .then(() => undefined)
-          .finally(() => {
-            bootstrapInFlight = null;
-          });
-      }
-      void bootstrapInFlight.finally(() => {
+      void fetchBootstrapAndSeedCache(queryClient).finally(() => {
         setAuthReady(true);
       });
     };
@@ -405,52 +381,17 @@ function DashboardLayoutContent({
   const searchParams = useSearchParams();
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
-  const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
-  const isTicketsHubGreyPage =
-    cleanPathname === "/dashboard/tickets/agent-activity" ||
-    cleanPathname === "/dashboard/tickets/dashboard";
+  const isTicketDetailPage = useMemo(
+    () => /^\/dashboard\/tickets\/\d+$/.test(cleanPathname),
+    [cleanPathname]
+  );
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
-
-  const [ticketRightSidebarPanel, setTicketRightSidebarPanel] = useState<TicketRightSidebarPanel>("properties");
-  const [ticketSettingsSection, setTicketSettingsSection] = useState<TicketSettingsSection>("automation");
-
-  const ticketDetailSlug = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
-
-  const prevTicketSlugRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (ticketDetailSlug == null) {
-      prevTicketSlugRef.current = null;
-      setTicketRightSidebarPanel("properties");
-      setTicketSettingsSection("automation");
-      return;
-    }
-    if (prevTicketSlugRef.current !== null && prevTicketSlugRef.current !== ticketDetailSlug) {
-      setTicketRightSidebarPanel("properties");
-      setTicketSettingsSection("automation");
-    }
-    prevTicketSlugRef.current = ticketDetailSlug;
-  }, [ticketDetailSlug]);
 
   // Track when a sidebar navigation has started so we can immediately
   // clear the previous page content and show a lightweight branded
   // loader over main + right rail. Left sidebar and header stay visible
   // (Spinner covers main below the header; right rail is full-height fixed, separate from header column.)
   const [pendingNavHref, setPendingNavHref] = useState<string | null>(null);
-  const [showNavigationSpinner, setShowNavigationSpinner] = useState(false);
-
-  // Prevent spinner flashes for fast/cached navigations.
-  useEffect(() => {
-    if (!pendingNavHref) {
-      setShowNavigationSpinner(false);
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setShowNavigationSpinner(true);
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [pendingNavHref]);
 
   // As soon as the URL matches the target href (navigation completed),
   // stop showing the global navigation spinner. Individual pages then
@@ -466,8 +407,17 @@ function DashboardLayoutContent({
     }
   }, [cleanPathname, pendingNavHref]);
 
-  // During slower sidebar navigation, overlay the outgoing page with an opaque layer so
+  // Safety valve: if a navigation click is interrupted (especially on mobile/touch),
+  // never leave the full-page spinner stuck forever.
+  useEffect(() => {
+    if (!pendingNavHref) return;
+    const timer = window.setTimeout(() => setPendingNavHref(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [pendingNavHref]);
+
+  // During sidebar navigation, overlay the outgoing page with an opaque layer so
   // heavy content (e.g. Mapbox on Home) does not show through the spinner.
+  const showNavigationSpinner = pendingNavHref !== null;
   // When we're in the global navigation loading state, we should treat the
   // layout as if there is no right sidebar so that we don't show a sidebar
   // or reserved margin before the new main content is ready.
@@ -480,7 +430,7 @@ function DashboardLayoutContent({
     isRiderDashboardLayout && Boolean((searchParams.get("search") || "").trim());
 
   const effectiveHasRightSidebar =
-    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && !isTicketDetailPage;
+    hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent);
 
   return (
     <LeftSidebarMobileProvider>
@@ -503,10 +453,6 @@ function DashboardLayoutContent({
             isOpen: isRightSidebarOpen,
             onToggle: handleRightSidebarToggle,
             setOpen: setRightSidebarOpen,
-            ticketRightSidebarPanel,
-            setTicketRightSidebarPanel,
-            ticketSettingsSection,
-            setTicketSettingsSection,
           }}
         >
           <MerchantsSearchProvider>
@@ -535,9 +481,8 @@ function DashboardLayoutContent({
                 <Header />
                 <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
-                    className={`flex-1 overflow-y-auto transition-all duration-300 w-full flex flex-col min-h-0 relative ${
-                      isTicketsHubGreyPage ? "bg-[#f4f5f7] p-4 sm:p-6" : "bg-white p-3 sm:p-4"
-                    }`}
+                    className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full flex flex-col min-h-0 relative"
+                    style={{ backgroundColor: "#FFFFFF" }}
                   >
                     <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
                       {children}

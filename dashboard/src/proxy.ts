@@ -62,7 +62,7 @@ function toResponseCookieOptions(options: {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
-  const canTogglePortal = request.cookies.get("gm_portal_toggle_access")?.value === "1";
+  const normalizedRedirectPath = pathname === "/" ? "/dashboard" : pathname;
   // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [proxy] Path and redirect messages (off by default to reduce console noise).
   const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
   if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
@@ -70,14 +70,21 @@ export async function proxy(request: NextRequest) {
   }
 
   const response = NextResponse.next();
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   try {
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("[proxy] Missing Supabase environment variables");
+      return response;
+    }
+
     // Create Supabase client for proxy
     // Note: Disable autoRefreshToken in proxy to avoid Edge Runtime fetch failures
     // Token refresh should happen in Server Components/API routes, not proxy
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      supabaseUrl,
+      supabaseAnonKey,
       {
         cookies: {
           getAll() {
@@ -245,7 +252,7 @@ export async function proxy(request: NextRequest) {
       }
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/login";
-      redirectUrl.searchParams.set("redirect", pathname);
+      redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
       return NextResponse.redirect(redirectUrl);
     }
 
@@ -255,30 +262,14 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
 
+    // Avoid hitting app root ("/") runtime manifest path in production.
+    // Route "/" is just a redirect to "/dashboard" anyway.
+    if (session && pathname === "/") {
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+
     // For protected routes, check custom session management and user validation
     if (session && !isPublicRoute) {
-      const requestedPortal = request.nextUrl.searchParams.get("portal");
-      const isAdminPortalRequest =
-        pathname.startsWith("/admin") ||
-        (pathname.startsWith("/dashboard/merchants") && requestedPortal === "admin");
-      if (isAdminPortalRequest && !canTogglePortal) {
-        if (pathname.startsWith("/api/")) {
-          return NextResponse.json(
-            { success: false, error: "Access Denied" },
-            { status: 403, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        const redirectUrl = request.nextUrl.clone();
-        if (pathname.startsWith("/dashboard/merchants")) {
-          redirectUrl.pathname = pathname;
-          redirectUrl.searchParams.set("portal", "merchant");
-        } else {
-          redirectUrl.pathname = "/dashboard/merchants";
-          redirectUrl.searchParams.set("portal", "merchant");
-        }
-        return NextResponse.redirect(redirectUrl);
-      }
-
       // Get session metadata from cookies
       const cookieWrapper = {
         get: (name: string) => request.cookies.get(name),

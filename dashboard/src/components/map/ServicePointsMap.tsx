@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo, memo } from "react";
+import { useState, useCallback, useMemo, memo } from "react";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import Link from "next/link";
 import {
@@ -13,18 +13,6 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { ChunkLoadErrorBoundary } from "@/components/ChunkLoadErrorBoundary";
 import { MapComponent } from "./MapComponent";
 
-// Placeholder shown until client has mounted (avoids SSR and ChunkLoadError from dynamic import)
-const MapPlaceholder = () => (
-  <div className="relative rounded-lg border border-gray-200 bg-white overflow-hidden shadow-sm h-full w-full">
-    <div className="absolute inset-0 flex items-center justify-center bg-gray-100">
-      <div className="text-center">
-        <p className="text-gray-500">Loading map...</p>
-        <p className="text-gray-400 text-xs mt-2">Initializing Mapbox</p>
-      </div>
-    </div>
-  </div>
-);
-
 interface ServicePointsMapProps {
   className?: string;
 }
@@ -34,21 +22,19 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   const [deletingPointId, setDeletingPointId] = useState<number | null>(null);
   const [deleteStartTime, setDeleteStartTime] = useState<number | null>(null);
   const [mapChunkKey, setMapChunkKey] = useState(0);
-  const [mounted, setMounted] = useState(false);
   const { isSuperAdmin } = usePermissions();
 
-  // Render map only after client mount to avoid SSR and ChunkLoadError from dynamic import
-  useEffect(() => {
-    setMounted(true);
-  }, []);
   const {
     data: servicePoints = [],
     isLoading,
     error,
     refetch,
     isFetching,
-    fulfilledTimeStamp,
-  } = useGetServicePointsQuery();  const [deleteServicePoint, { isLoading: deleteLoading }] = useDeleteServicePointMutation();
+  } = useGetServicePointsQuery(undefined, {
+    // Preserve cache when component remounts after route switch.
+    refetchOnMountOrArgChange: false,
+  });
+  const [deleteServicePoint] = useDeleteServicePointMutation();
   const [retrying, setRetrying] = useState(false);
   const handleRetry = useCallback(async () => {
     setRetrying(true);
@@ -154,23 +140,19 @@ function ServicePointsMapInner({ className = "" }: ServicePointsMapProps) {
   return (
     <div className={`${className} min-h-[200px]`}>
       <ChunkLoadErrorBoundary onRetry={() => setMapChunkKey((k) => k + 1)}>
-        {mounted ? (
-          <MapComponent
-            key={mapChunkKey}
-            servicePoints={memoizedServicePoints}
-            onPointClick={handlePointClick}
-            selectedPoint={selectedPoint}
-            onClosePopup={handleClosePopup}
-            mapboxToken={mapboxToken}
-            className="h-full w-full"
-            isSuperAdmin={isSuperAdmin}
-            onDeletePoint={isSuperAdmin ? handleDeletePoint : undefined}
-            deletingPointId={deletingPointId}
-            deleteStartTime={deleteStartTime}
-          />
-        ) : (
-          <MapPlaceholder />
-        )}
+        <MapComponent
+          key={mapChunkKey}
+          servicePoints={memoizedServicePoints}
+          onPointClick={handlePointClick}
+          selectedPoint={selectedPoint}
+          onClosePopup={handleClosePopup}
+          mapboxToken={mapboxToken}
+          className="h-full w-full"
+          isSuperAdmin={isSuperAdmin}
+          onDeletePoint={isSuperAdmin ? handleDeletePoint : undefined}
+          deletingPointId={deletingPointId}
+          deleteStartTime={deleteStartTime}
+        />
       </ChunkLoadErrorBoundary>
     </div>
   );

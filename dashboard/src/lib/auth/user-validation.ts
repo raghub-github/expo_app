@@ -31,7 +31,8 @@ export async function validateUserForLogin(
     // 1. Check if user exists in system_users
     let systemUser: Awaited<ReturnType<typeof getSystemUserByEmail>>;
     try {
-      systemUser = await getSystemUserByEmail(email);
+      // Strict: do not treat SQL/schema errors as "user not found" (common prod misconfig hides as 403).
+      systemUser = await getSystemUserByEmail(email, { treatQueryFailureAsNotFound: false });
     } catch (dbError: unknown) {
       if (dbError instanceof Error && dbError.message.includes("Database connection error")) {
         console.error("[validateUserForLogin] ===== DATABASE ERROR ===== Database connection failed:", dbError.message);
@@ -41,12 +42,24 @@ export async function validateUserForLogin(
           email,
         };
       }
-      // Re-throw if it's not a connection error
+      if (dbError instanceof Error && dbError.message.includes("User lookup failed")) {
+        console.error("[validateUserForLogin] ===== LOOKUP ERROR =====", dbError.message);
+        return {
+          isValid: false,
+          error:
+            "Unable to verify your account (database error). Check server logs and DATABASE_URL. If the problem persists, contact support.",
+          email,
+        };
+      }
       throw dbError;
     }
 
     if (!systemUser) {
-      console.log("[validateUserForLogin] ===== FAIL ===== User not found in system_users");
+      console.log(
+        "[validateUserForLogin] ===== FAIL ===== User not found in system_users for email:",
+        email,
+        "— Production often uses a different DATABASE_URL than localhost; confirm this user row exists in the DB the server connects to."
+      );
       return {
         isValid: false,
         error: "Your account is not registered in the system. Please contact an administrator to create your account.",

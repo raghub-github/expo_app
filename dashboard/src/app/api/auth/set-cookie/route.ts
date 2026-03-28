@@ -8,7 +8,6 @@ import { cookies } from "next/headers";
 import { initializeSession } from "@/lib/auth/session-manager";
 import { validateUserForLogin } from "@/lib/auth/user-validation";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
-import { getSystemUserById } from "@/lib/db/operations/users";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
 
@@ -138,16 +137,6 @@ export async function POST(request: NextRequest) {
       if (data.session.user?.email && systemUserId) {
         const provider =
           data.session.user.app_metadata?.provider || "unknown";
-
-        const systemUser = await getSystemUserById(systemUserId);
-        const canTogglePortal = Boolean(systemUser?.canTogglePortal);
-        response.cookies.set("gm_portal_toggle_access", canTogglePortal ? "1" : "0", {
-          path: "/",
-          httpOnly: true,
-          sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
-          maxAge: 60 * 60 * 24 * 7,
-        });
 
         await recordLogin(
           systemUserId,
