@@ -75,6 +75,9 @@ export function TicketList() {
   const [bulkUpdateOpen, setBulkUpdateOpen] = useState(false);
   const [linkToParentOpen, setLinkToParentOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
+  const [mergeReason, setMergeReason] = useState("");
+  const [mergeSubmitting, setMergeSubmitting] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
@@ -120,6 +123,12 @@ export function TicketList() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!mergeOpen) return;
+    const ids = Array.from(selectedIds);
+    setMergeTargetId((prev) => (prev != null && ids.includes(prev) ? prev : ids[0] ?? null));
+  }, [mergeOpen, selectedIds]);
 
   const limit = pageSize;
   const offset = (page - 1) * limit;
@@ -418,7 +427,92 @@ export function TicketList() {
     [selectedIds, queryClient, toast, updateTicket, refetch]
   );
   const handleBulkClose = useCallback(() => handleBulkStatus("closed"), [handleBulkStatus]);
-  const handleBulkSpam = useCallback(() => handleBulkStatus("rejected"), [handleBulkStatus]);
+  const handleBulkSpam = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const selectedSet = new Set(ids);
+
+    queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
+      if (!old || !Array.isArray(old.tickets)) return old;
+      return {
+        ...old,
+        tickets: old.tickets.map((t: any) =>
+          selectedSet.has(t.id) ? { ...t, status: "rejected", isSpam: true } : t
+        ),
+      };
+    });
+
+    ids.forEach((id) => {
+      queryClient.setQueryData(queryKeys.tickets.detail(id), (old: any) =>
+        old ? { ...old, status: "rejected", isSpam: true } : old
+      );
+    });
+
+    setSelectedIds(new Set());
+    toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} marked as spam`);
+
+    const results = await Promise.allSettled(
+      ids.map((id) => updateTicket.mutateAsync({ ticketId: id, isSpam: true, status: "rejected" }))
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      toast(`${failed} ticket${failed === 1 ? "" : "s"} failed to mark as spam. Refreshing list.`, "error");
+      await refetch();
+    }
+  }, [selectedIds, queryClient, toast, updateTicket, refetch]);
+  const handleBulkMerge = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length < 2) {
+      toast("Select at least 2 tickets to merge", "error");
+      return;
+    }
+    const targetTicketId = mergeTargetId ?? ids[0] ?? null;
+    if (!targetTicketId) {
+      toast("Select a primary ticket", "error");
+      return;
+    }
+    const sourceTicketIds = ids.filter((id) => id !== targetTicketId);
+    if (sourceTicketIds.length < 1) {
+      toast("Select at least one duplicate ticket", "error");
+      return;
+    }
+
+    setMergeSubmitting(true);
+    try {
+      const res = await fetch("/api/tickets/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          targetTicketId,
+          sourceTicketIds,
+          reason: mergeReason.trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        toast(data?.error ?? "Failed to merge tickets", "error");
+        return;
+      }
+
+      const mergedCount = Number(data?.data?.mergedCount ?? sourceTicketIds.length);
+      const targetNumber = ticketNumberById.get(targetTicketId) ?? String(targetTicketId);
+      toast(`${mergedCount} duplicate ticket${mergedCount === 1 ? "" : "s"} merged into #${targetNumber}`);
+      setMergeOpen(false);
+      setMergeReason("");
+      setMergeTargetId(null);
+      setSelectedIds(new Set([targetTicketId]));
+      await queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(targetTicketId) });
+      await refetch();
+    } catch {
+      toast("Failed to merge tickets", "error");
+    } finally {
+      setMergeSubmitting(false);
+    }
+  }, [selectedIds, mergeTargetId, mergeReason, toast, ticketNumberById, queryClient, refetch]);
   const handleBulkUpdateApply = useCallback(
     (updates: {
       priority?: string;
@@ -855,7 +949,8 @@ export function TicketList() {
           <button
             type="button"
             onClick={() => setMergeOpen(true)}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            disabled={selectedIds.size < 2}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Merge className="h-3.5 w-3.5" />
             Merge
@@ -919,13 +1014,64 @@ export function TicketList() {
         </div>
       )}
 
-      {/* Merge - placeholder */}
+      {/* Merge */}
       {mergeOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/50" onClick={() => setMergeOpen(false)}>
-          <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900">Merge tickets</h3>
-            <p className="mt-2 text-sm text-gray-600">Merge selected tickets into one. This feature will be available when merge is supported in the API.</p>
-            <button type="button" onClick={() => setMergeOpen(false)} className="mt-4 w-full rounded-xl bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200">Close</button>
+            <p className="mt-2 text-sm text-gray-600">
+              Select one primary ticket. Other selected duplicate tickets will be merged into it and marked as closed.
+            </p>
+
+            <div className="mt-4 max-h-56 overflow-y-auto rounded-xl border border-gray-200">
+              {Array.from(selectedIds).map((id) => {
+                const number = ticketNumberById.get(id) ?? String(id);
+                const row = tickets.find((t) => t.id === id);
+                return (
+                  <label key={id} className="flex cursor-pointer items-start gap-2 border-b border-gray-100 px-3 py-2 last:border-b-0 hover:bg-gray-50">
+                    <input
+                      type="radio"
+                      name="merge-target-ticket"
+                      checked={(mergeTargetId ?? Array.from(selectedIds)[0]) === id}
+                      onChange={() => setMergeTargetId(id)}
+                      className="mt-0.5 h-4 w-4 border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="min-w-0 text-sm text-gray-800">
+                      <span className="font-medium">#{number}</span>
+                      {row?.subject ? <span className="ml-1 text-gray-600">- {row.subject}</span> : null}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="mt-3">
+              <label className="mb-1 block text-xs font-medium text-gray-600">Merge reason (optional)</label>
+              <textarea
+                value={mergeReason}
+                onChange={(e) => setMergeReason(e.target.value)}
+                placeholder="Duplicate ticket for same issue..."
+                className="min-h-[84px] w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setMergeOpen(false)}
+                className="flex-1 rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleBulkMerge()}
+                disabled={mergeSubmitting || selectedIds.size < 2}
+                className="flex-1 rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {mergeSubmitting ? "Merging..." : "Merge tickets"}
+              </button>
+            </div>
           </div>
         </div>
       )}

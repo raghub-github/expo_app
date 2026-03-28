@@ -1,6 +1,7 @@
 /**
- * Transactional email: prefers Zoho/SMTP (same env as partnersite) when configured;
- * otherwise Resend. Set SMTP_* / EMAIL_* in dashboard/.env.local (not only partnersite).
+ * Transactional email (tickets, forwards, verification, etc.):
+ * When `EMAIL_ID` + `EMAIL_APP_PASSWORD` are set in `dashboard/.env.local`, Zoho SMTP is used
+ * (`smtp-config.ts`: host smtp.zoho.in by default). Otherwise falls back to Resend if `RESEND_API_KEY` is set.
  */
 import { createSmtpTransporter, getSmtpConfig } from "./smtp-config";
 
@@ -11,13 +12,29 @@ export type SendEmailOutcome =
       code: "NOT_CONFIGURED" | "SMTP_AUTH_FAILED" | "SMTP_ERROR" | "RESEND_ERROR";
     };
 
+function normalizeAddressList(input: string | string[] | undefined): string[] {
+  if (input == null) return [];
+  const parts = Array.isArray(input) ? input : String(input).split(",");
+  return parts.map((s) => String(s).trim()).filter(Boolean);
+}
+
 export async function sendEmail(params: {
-  to: string;
+  to: string | string[];
+  cc?: string | string[];
+  bcc?: string | string[];
   subject: string;
   text: string;
   html?: string;
   from?: string;
 }): Promise<SendEmailOutcome> {
+  const toList = normalizeAddressList(params.to);
+  if (toList.length === 0) {
+    console.warn("[email] sendEmail called with no to-addresses");
+    return { ok: false, code: "SMTP_ERROR" };
+  }
+  const ccList = normalizeAddressList(params.cc);
+  const bccList = normalizeAddressList(params.bcc);
+
   const cfg = getSmtpConfig();
   if (cfg.ok) {
     try {
@@ -26,7 +43,9 @@ export async function sendEmail(params: {
       const fromHeader = params.from ?? `${cfg.fromName} <${cfg.fromEmail}>`;
       await transporter.sendMail({
         from: fromHeader,
-        to: params.to,
+        to: toList.length === 1 ? toList[0] : toList,
+        ...(ccList.length > 0 ? { cc: ccList.length === 1 ? ccList[0] : ccList } : {}),
+        ...(bccList.length > 0 ? { bcc: bccList.length === 1 ? bccList[0] : bccList } : {}),
         replyTo: cfg.fromEmail,
         subject: params.subject,
         text: params.text,
@@ -56,7 +75,7 @@ export async function sendEmail(params: {
   if (!apiKey) {
     console.warn(
       "[email] No SMTP (EMAIL_ID + EMAIL_APP_PASSWORD) or RESEND_API_KEY in dashboard env; skipping send.",
-      { to: params.to, subject: params.subject }
+      { to: toList, subject: params.subject }
     );
     return { ok: false, code: "NOT_CONFIGURED" };
   }
@@ -64,12 +83,18 @@ export async function sendEmail(params: {
   try {
     const body: Record<string, unknown> = {
       from,
-      to: [params.to],
+      to: toList.length === 1 ? toList[0] : toList,
       subject: params.subject,
       text: params.text,
     };
     if (params.html) {
       body.html = params.html;
+    }
+    if (ccList.length > 0) {
+      body.cc = ccList;
+    }
+    if (bccList.length > 0) {
+      body.bcc = bccList;
     }
 
     const res = await fetch("https://api.resend.com/emails", {

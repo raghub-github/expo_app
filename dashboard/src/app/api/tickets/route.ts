@@ -154,7 +154,7 @@ export async function GET(request: NextRequest) {
         : `ut.${sortBy} ${sortOrder}, ut.updated_at DESC, ut.id DESC`;
 
     const sqlClient = getSql();
-    /** OR-composed filter expressions; each entry represents one applied filter bucket. */
+    /** Filter facets; combined with AND (see filtersClause). */
     const whereConditions: unknown[] = [];
     /** Always-AND constraints (used for realtime cursors like createdAfter/updatedAfter). */
     const whereConstraints: unknown[] = [];
@@ -181,6 +181,10 @@ export async function GET(request: NextRequest) {
       "REOPENED",
       "PENDING",
       "WAITING_FOR_USER",
+      "WAITING_FOR_MERCHANT",
+      "WAITING_FOR_RIDER",
+      "ESCALATED",
+      "CANCELLED",
       "PROVISIONALLY_RESOLVED",
     ]);
     const statuses = rawStatuses
@@ -218,7 +222,11 @@ export async function GET(request: NextRequest) {
       const numericIds = assignedToIds.filter((id) => id !== "me" && id !== "unassigned").map((id) => parseInt(id, 10)).filter((id) => !isNaN(id));
       const orParts: unknown[] = [];
       if (meIndex !== -1) orParts.push(sqlClient`ut.assigned_to_agent_id = ${systemUser.id}`);
-      if (unassignedIndex !== -1) orParts.push(sqlClient`ut.assigned_to_agent_id IS NULL`);
+      if (unassignedIndex !== -1) {
+        orParts.push(
+          sqlClient`NOT EXISTS (SELECT 1 FROM public.system_users su WHERE su.id = ut.assigned_to_agent_id)`
+        );
+      }
       if (numericIds.length > 0) orParts.push(sqlClient`ut.assigned_to_agent_id = ANY(${numericIds})`);
       if (orParts.length > 0) {
         const orCombined = orParts.reduce((acc, cond, idx) =>
@@ -396,10 +404,11 @@ export async function GET(request: NextRequest) {
       whereConditions.push(sqlClient`COALESCE(ut.is_high_value_order, false) = true`);
     }
 
-    const orClause =
+    /** Faceted filters (status, group, assignee, …) must combine with AND so multi-select URLs match the sidebar. */
+    const filtersClause =
       whereConditions.length > 0
         ? whereConditions.reduce((acc, cond, idx) =>
-            idx === 0 ? cond : sqlClient`${acc as never} OR ${cond as never}`
+            idx === 0 ? cond : sqlClient`${acc as never} AND ${cond as never}`
           )
         : null;
     const andClause =
@@ -409,15 +418,15 @@ export async function GET(request: NextRequest) {
           )
         : null;
     const whereClause =
-      orClause && andClause
-        ? sqlClient`(${orClause as never}) AND (${andClause as never})`
-        : orClause ?? andClause ?? null;
+      filtersClause && andClause
+        ? sqlClient`(${filtersClause as never}) AND (${andClause as never})`
+        : filtersClause ?? andClause ?? null;
 
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
 
     const redis = getRedisClient();
-    const cacheKey = systemUser ? `tickets:v19:${systemUser.id}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey = systemUser ? `tickets:v21:${systemUser.id}:${request.nextUrl.searchParams.toString()}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -461,7 +470,7 @@ export async function GET(request: NextRequest) {
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-              ut.subject, ut.description, ut.priority, ut.status,
+              ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at,
@@ -502,7 +511,7 @@ export async function GET(request: NextRequest) {
               SELECT
                 ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                 ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                ut.subject, ut.description, ut.priority, ut.status,
+                ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                 ut.group_id, ut.metadata, ut.sla_due_at,
@@ -539,7 +548,7 @@ export async function GET(request: NextRequest) {
                 SELECT
                   ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status,
+                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id, ut.metadata, ut.sla_due_at,
@@ -564,7 +573,7 @@ export async function GET(request: NextRequest) {
                 SELECT
                   ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status,
+                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id,
@@ -588,7 +597,7 @@ export async function GET(request: NextRequest) {
             SELECT
               ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-              ut.subject, ut.description, ut.priority, ut.status,
+              ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at,
@@ -628,7 +637,7 @@ export async function GET(request: NextRequest) {
               SELECT
                 ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                 ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                ut.subject, ut.description, ut.priority, ut.status,
+                ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                 ut.group_id, ut.metadata, ut.sla_due_at,
@@ -664,7 +673,7 @@ export async function GET(request: NextRequest) {
                 SELECT
                   ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status,
+                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id, ut.metadata, ut.sla_due_at,
@@ -688,7 +697,7 @@ export async function GET(request: NextRequest) {
                 SELECT
                   ut.id, ut.ticket_id, ut.ticket_type, ut.ticket_source, ut.service_type, ut.ticket_title, ut.ticket_category,
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
-                  ut.subject, ut.description, ut.priority, ut.status,
+                  ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id,
@@ -753,6 +762,7 @@ export async function GET(request: NextRequest) {
         subject: rowStr(t, "subject", "subject"),
         description: rowStr(t, "description", "description"),
         status: rawStatus ? rawStatus.toLowerCase() : "",
+        isSpam: t.is_spam === true || t.is_spam === "t" || String(t.is_spam).toLowerCase() === "true",
         priority: rawPriority ? rawPriority.toLowerCase() : "",
         orderId: rowNum(t, "order_id", "orderId"),
         customerId: rowNum(t, "customer_id", "customerId"),
@@ -883,13 +893,23 @@ export async function POST(request: NextRequest) {
 
     // Generate ticket number
     const year = new Date().getFullYear();
-    const countResult = (await sqlClient`
-      SELECT COUNT(*)::int as count
+    const prefix = `TKT-${year}-`;
+    const maxResult = (await sqlClient`
+      SELECT COALESCE(
+        MAX(
+          CASE
+            WHEN ticket_number ~ ${`^${prefix}[0-9]+$`}
+            THEN CAST(SUBSTRING(ticket_number FROM ${`^${prefix}([0-9]+)$`}) AS INTEGER)
+            ELSE NULL
+          END
+        ),
+        0
+      )::int AS max_suffix
       FROM tickets
-      WHERE EXTRACT(YEAR FROM created_at) = ${year}
-    `) as unknown as { count: number }[];
-    const ticketCount = countResult[0]?.count || 0;
-    const ticketNumber = `TKT-${year}-${String(ticketCount + 1).padStart(6, "0")}`;
+      WHERE ticket_number LIKE ${`${prefix}%`}
+    `) as unknown as { max_suffix: number }[];
+    const nextSuffix = (maxResult[0]?.max_suffix ?? 0) + 1;
+    const ticketNumber = `TKT-${year}-${nextSuffix}`;
 
     // Resolve group from ticket_groups by service_type, ticket_section, source_role (and ticket_category if present)
     let groupId: number | null = null;

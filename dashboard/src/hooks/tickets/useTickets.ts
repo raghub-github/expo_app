@@ -55,6 +55,8 @@ export interface Ticket {
   subject: string;
   description: string;
   status: string;
+  /** Marked as spam (independent of current status). */
+  isSpam?: boolean;
   priority: string;
   orderId: number | null;
   orderServiceType: string | null;

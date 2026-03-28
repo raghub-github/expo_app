@@ -1,25 +1,29 @@
 "use client";
 
-import { RefreshCw } from "lucide-react";
+import { Lora } from "next/font/google";
+import { Ban, Globe, RefreshCw } from "lucide-react";
 import type { TicketDetail } from "@/hooks/tickets/useTicketDetail";
 
-/** Icon letter by ticket source: Merchant → M, Rider → R, User/Customer → C. */
-function sourceIconLetter(sourceRole: string): string {
-  const s = (sourceRole || "").toLowerCase().trim();
-  if (s.includes("merchant")) return "M";
-  if (s.includes("rider")) return "R";
-  return "C"; // customer, user, portal, system, etc.
-}
+const lora = Lora({
+  subsets: ["latin"],
+  weight: ["600", "700"],
+});
 
 export interface TicketHeaderProps {
   ticket: TicketDetail;
-  /** When > 0, show chip badge "N update(s)" to the right of subject (new ticket/updates received). */
+  /** When > 0, show chip "N update(s)" centered under the title row (subject variant only). */
   newUpdatesCount?: number;
   onDismissUpdates?: () => void;
+  variant?: "full" | "subjectOnly" | "metaOnly";
 }
 
 /** Reference layout: compact ticket title with source icon (M/R/C), "Created by X", tags and store info — data from Supabase only. */
-export function TicketHeader({ ticket, newUpdatesCount = 0, onDismissUpdates }: TicketHeaderProps) {
+export function TicketHeader({
+  ticket,
+  newUpdatesCount = 0,
+  onDismissUpdates,
+  variant = "full",
+}: TicketHeaderProps) {
   const createdBy =
     ticket.raisedByName && String(ticket.raisedByName).trim()
       ? ticket.raisedByName
@@ -27,83 +31,65 @@ export function TicketHeader({ ticket, newUpdatesCount = 0, onDismissUpdates }: 
         ? String(ticket.sourceRole).replace(/_/g, " ").toUpperCase()
         : "System";
   const showChip = newUpdatesCount > 0;
-  const iconLetter = sourceIconLetter(ticket.sourceRole);
-  const displayTags = (ticket.tags ?? []).slice(0, 3);
-  const isOverdue = Boolean(ticket.slaDueAt && new Date(ticket.slaDueAt) < new Date());
-  const isMerchant = (ticket.sourceRole ?? "").toLowerCase().includes("merchant");
-  const storeParentParts = [
-    ticket.storeId != null && ticket.storeId !== "" && `Store ID ${ticket.storeId}`,
-    ticket.storeNumber != null && ticket.storeNumber !== "" && `Store #${ticket.storeNumber}`,
-    ticket.storeParentId != null && `Parent ID ${ticket.storeParentId}`,
-    ticket.parentMerchantId != null && ticket.parentMerchantId !== "" && `Parent ${ticket.parentMerchantId}`,
-    ticket.storePhone != null && ticket.storePhone !== "" && ticket.storePhone,
-    ticket.parentPhone != null && ticket.parentPhone !== "" && ticket.parentPhone,
-    ticket.storeEmail != null && ticket.storeEmail !== "" && ticket.storeEmail,
-  ].filter(Boolean) as string[];
-  const hasStoreInfo = isMerchant && storeParentParts.length > 0;
+  const subjectRaw = ticket.subject && ticket.subject.trim() !== "" ? ticket.subject : "No subject";
+  const normalizedSubject =
+    subjectRaw.length > 0 ? `${subjectRaw.charAt(0).toUpperCase()}${subjectRaw.slice(1)}` : subjectRaw;
+  const showSubject = variant !== "metaOnly";
+  const showMeta = variant !== "subjectOnly";
 
   return (
-    <div className="bg-white">
-      <div className="flex items-start gap-2">
-        <div className="shrink-0 w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center text-xs font-semibold text-gray-600">
-          {iconLetter}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <h1 className="text-base font-bold text-gray-900 leading-tight">
-              {ticket.subject || ticket.title?.titleText || "No subject"}
-            </h1>
-            <span className="text-xs font-mono text-gray-500">
-              #{ticket.ticketNumber || ticket.id}
-            </span>
+    <div className={`bg-white ${showSubject ? "pt-1" : ""}`}>
+      {showSubject && (
+        <div className="flex items-start gap-2.5">
+          <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-gray-500">
+            <Globe className="h-4 w-4" />
           </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-            <p className="text-xs text-gray-500">
-              Created by {createdBy}
-            </p>
-            {isOverdue && (
-              <>
-                <span className="text-gray-300">·</span>
-                <span className="inline-flex rounded-md bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
-                  Overdue
-                </span>
-              </>
-            )}
-            {displayTags.length > 0 && (
-              <>
-                <span className="text-gray-300">·</span>
-                {displayTags.map((tag) => (
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start justify-between gap-2">
+              <h1 className="text-[20px] font-semibold leading-[1.25] tracking-tight text-[#1f2937]">
+                <span className={lora.className}>{normalizedSubject}</span>
+              </h1>
+              <span className="mr-3 flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-[12px] font-medium text-slate-600 sm:mr-4">
+                {ticket.isSpam ? (
                   <span
-                    key={tag}
-                    className="inline-flex rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600"
+                    className="inline-flex items-center gap-1 rounded-full border border-rose-300/90 bg-gradient-to-b from-rose-50 to-rose-100/95 px-2 py-0.5 text-[11px] font-semibold tracking-tight text-rose-900 shadow-sm ring-1 ring-rose-200/60"
+                    role="status"
+                    aria-label="Ticket marked as spam"
                   >
-                    {tag}
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-rose-200/70 text-rose-900">
+                      <Ban className="h-2.5 w-2.5 shrink-0" strokeWidth={2.25} aria-hidden />
+                    </span>
+                    Spammed.
                   </span>
-                ))}
-              </>
-            )}
-            {hasStoreInfo && (
-              <>
-                <span className="text-gray-300">·</span>
-                <span className="text-[10px] text-gray-500">
-                  {storeParentParts.join(" · ")}
-                </span>
-              </>
-            )}
+                ) : null}
+                <span>TKT ID: {ticket.ticketNumber || ticket.id}</span>
+              </span>
+            </div>
+            {showChip ? (
+              <div className="mt-1.5 flex w-full justify-center pr-3 sm:pr-4">
+                <button
+                  type="button"
+                  onClick={onDismissUpdates}
+                  className="inline-flex items-center gap-1 rounded-full border border-blue-700 bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-blue-800 transition-colors hover:bg-gray-200"
+                  aria-label={`${newUpdatesCount} update${newUpdatesCount !== 1 ? "s" : ""}`}
+                >
+                  <RefreshCw className="h-2.5 w-2.5" />
+                  {newUpdatesCount} update{newUpdatesCount !== 1 ? "s" : ""}
+                </button>
+              </div>
+            ) : null}
           </div>
-          {showChip && (
-            <button
-              type="button"
-              onClick={onDismissUpdates}
-              className="mt-1 inline-flex items-center gap-1 rounded-full border border-blue-700 bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-blue-800 hover:bg-gray-200 transition-colors"
-              aria-label={`${newUpdatesCount} update${newUpdatesCount !== 1 ? "s" : ""}`}
-            >
-              <RefreshCw className="h-2.5 w-2.5" />
-              {newUpdatesCount} update{newUpdatesCount !== 1 ? "s" : ""}
-            </button>
-          )}
         </div>
-      </div>
+      )}
+      {showMeta && (
+        <div className={showSubject ? "pl-[30px]" : "pl-[30px]"}>
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="text-xs text-gray-600">
+              Created by <span className="font-semibold text-gray-700">{createdBy}</span>
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

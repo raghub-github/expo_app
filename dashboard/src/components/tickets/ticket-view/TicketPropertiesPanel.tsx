@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
-import { ChevronDown, User, FolderGit2, Filter, X, Calendar } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { ChevronDown, User, FolderGit2, X, Calendar } from "lucide-react";
 import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
-import { useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
+import { useToast } from "@/context/ToastContext";
 
 const PRIORITY_DOT: Record<string, string> = {
   low: "bg-gray-400",
@@ -28,20 +28,61 @@ function formatStatusTime(dateStr: string | null): string {
   });
 }
 
+function formatMarkedTime(dateStr: string | null): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0m";
+  const totalMinutes = Math.floor(ms / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes}m`;
+  return `${hours}h ${minutes}m`;
+}
+
+function getReadableTextColor(bg: string): string {
+  const clean = bg.replace("#", "").trim();
+  const hex = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return "#334155";
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+  return yiq >= 140 ? "#1f2937" : "#ffffff";
+}
+
 export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
-  const filterSidebar = useTicketFilterSidebar();
+  const { toast } = useToast();
 
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
 
   const agents = agentsData?.agents ?? [];
-  const currentUser = agentsData?.currentUser
-    ? { id: agentsData.currentUser.id, name: agentsData.currentUser.name || "Me" }
-    : null;
+  const agentEmailById = useMemo(
+    () => new Map(agents.map((a) => [String(a.id), a.email || ""])),
+    [agents]
+  );
+  const currentUser = useMemo(
+    () =>
+      agentsData?.currentUser
+        ? { id: agentsData.currentUser.id, name: agentsData.currentUser.name || "Me" }
+        : null,
+    [agentsData?.currentUser?.id, agentsData?.currentUser?.name]
+  );
   const refData = refDataRaw
-    ? { groups: refDataRaw.groups, statuses: refDataRaw.statuses, priorities: refDataRaw.priorities }
+    ? { groups: refDataRaw.groups, tags: refDataRaw.tags, statuses: refDataRaw.statuses, priorities: refDataRaw.priorities }
     : null;
 
   const statusOptions = useMemo(
@@ -76,6 +117,17 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     ],
     [agents, currentUser]
   );
+  const tagOptions = useMemo(
+    () =>
+      (refData?.tags || []).map((t) => ({
+        value: t.tagCode,
+        label: t.tagName || t.tagCode,
+        color: (t as { tagColor?: string | null; tag_color?: string | null }).tagColor
+          ?? (t as { tagColor?: string | null; tag_color?: string | null }).tag_color
+          ?? null,
+      })),
+    [refData?.tags]
+  );
 
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
@@ -83,7 +135,14 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
   const [agentId, setAgentId] = useState("");
   const [dueBy, setDueBy] = useState("");
   const [tags, setTags] = useState<string[]>([]);
-  const [tagsInput, setTagsInput] = useState("");
+  const [buyerNpName, setBuyerNpName] = useState("");
+  const [sellerNpName, setSellerNpName] = useState("");
+  const [logisticsNpName, setLogisticsNpName] = useState("");
+  const [igmActionTriggered, setIgmActionTriggered] = useState("");
+  const [igmShortResolution, setIgmShortResolution] = useState("");
+  const [igmLongResolution, setIgmLongResolution] = useState("");
+  const [igmRefundAmount, setIgmRefundAmount] = useState("0.00");
+  const [groDetails, setGroDetails] = useState("");
 
   useEffect(() => {
     if (!ticket) return;
@@ -96,6 +155,17 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         : String(ticket.assignee.id)
       : "";
     const nextTags = Array.isArray(ticket.tags) ? [...ticket.tags] : [];
+    const nextBuyerNpName = ticket.buyerNpName ?? "";
+    const nextSellerNpName = ticket.sellerNpName ?? "";
+    const nextLogisticsNpName = ticket.logisticsNpName ?? "";
+    const nextIgmActionTriggered = ticket.igmActionTriggered ?? "";
+    const nextIgmShortResolution = ticket.igmShortResolution ?? "";
+    const nextIgmLongResolution = ticket.igmLongResolution ?? "";
+    const nextIgmRefundAmount =
+      ticket.igmRefundAmount != null && String(ticket.igmRefundAmount).trim() !== ""
+        ? String(ticket.igmRefundAmount)
+        : "0.00";
+    const nextGroDetails = ticket.groDetails ?? "";
     let nextDueBy = "";
     if (ticket.slaDueAt) {
       try {
@@ -113,17 +183,15 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
       prev.length === nextTags.length && prev.every((t, i) => t === nextTags[i]) ? prev : nextTags
     );
     setDueBy((prev) => (prev === nextDueBy ? prev : nextDueBy));
-    setTagsInput((prev) => (prev === "" ? prev : ""));
+    setBuyerNpName((prev) => (prev === nextBuyerNpName ? prev : nextBuyerNpName));
+    setSellerNpName((prev) => (prev === nextSellerNpName ? prev : nextSellerNpName));
+    setLogisticsNpName((prev) => (prev === nextLogisticsNpName ? prev : nextLogisticsNpName));
+    setIgmActionTriggered((prev) => (prev === nextIgmActionTriggered ? prev : nextIgmActionTriggered));
+    setIgmShortResolution((prev) => (prev === nextIgmShortResolution ? prev : nextIgmShortResolution));
+    setIgmLongResolution((prev) => (prev === nextIgmLongResolution ? prev : nextIgmLongResolution));
+    setIgmRefundAmount((prev) => (prev === nextIgmRefundAmount ? prev : nextIgmRefundAmount));
+    setGroDetails((prev) => (prev === nextGroDetails ? prev : nextGroDetails));
   }, [ticket, currentUser]);
-
-  const addTag = () => {
-    const t = tagsInput.trim();
-    if (!t || tags.includes(t)) return;
-    setTags((prev) => [...prev, t]);
-    setTagsInput("");
-  };
-
-  const removeTag = (tag: string) => setTags((prev) => prev.filter((x) => x !== tag));
 
   const handleUpdate = () => {
     const resolvedTicketId = ticket?.id;
@@ -136,6 +204,14 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
       groupId?: number | null;
       slaDueAt?: string | null;
       tags?: string[];
+      buyerNpName?: string | null;
+      sellerNpName?: string | null;
+      logisticsNpName?: string | null;
+      igmActionTriggered?: string | null;
+      igmShortResolution?: string | null;
+      igmLongResolution?: string | null;
+      igmRefundAmount?: string | null;
+      groDetails?: string | null;
     } = { ticketId: resolvedTicketId };
     if (status) payload.status = status;
     if (priority) payload.priority = priority;
@@ -150,7 +226,41 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
       }
     } else payload.slaDueAt = null;
     payload.tags = tags;
-    updateTicket.mutate(payload);
+    payload.buyerNpName = buyerNpName.trim() || null;
+    payload.sellerNpName = sellerNpName.trim() || null;
+    payload.logisticsNpName = logisticsNpName.trim() || null;
+    payload.igmActionTriggered = igmActionTriggered.trim() || null;
+    payload.igmShortResolution = igmShortResolution.trim() || null;
+    payload.igmLongResolution = igmLongResolution.trim() || null;
+    payload.igmRefundAmount = igmRefundAmount.trim() || null;
+    payload.groDetails = groDetails.trim() || null;
+
+    const changedFields: string[] = [];
+    if ((ticket.status || "open") !== status) changedFields.push("Status");
+    if ((ticket.priority || "medium") !== priority) changedFields.push("Priority");
+    if ((ticket.group?.id != null ? String(ticket.group.id) : "") !== groupId) changedFields.push("Group");
+    const currentAssigneeStr = ticket.assignee?.id != null ? String(ticket.assignee.id) : "";
+    const nextAssigneeStr =
+      agentId === "me" && currentUser ? String(currentUser.id) : agentId ? String(agentId) : "";
+    if (currentAssigneeStr !== nextAssigneeStr) changedFields.push("Assigned Agent");
+    const currentDueBy = ticket.slaDueAt ? new Date(ticket.slaDueAt).toISOString().slice(0, 16) : "";
+    if (currentDueBy !== dueBy) changedFields.push("Due By");
+    const normalize = (arr: string[]) => [...arr].map((x) => x.trim()).filter(Boolean).sort();
+    if (JSON.stringify(normalize(ticket.tags ?? [])) !== JSON.stringify(normalize(tags))) changedFields.push("Tags");
+    if ((ticket.buyerNpName ?? "") !== buyerNpName.trim()) changedFields.push("Buyer NP Name");
+    if ((ticket.sellerNpName ?? "") !== sellerNpName.trim()) changedFields.push("Seller NP Name");
+    if ((ticket.logisticsNpName ?? "") !== logisticsNpName.trim()) changedFields.push("Logistics NP Name");
+    if ((ticket.igmActionTriggered ?? "") !== igmActionTriggered.trim()) changedFields.push("IGM Action Triggered");
+    if ((ticket.igmShortResolution ?? "") !== igmShortResolution.trim()) changedFields.push("IGM Short Resolution");
+    if ((ticket.igmLongResolution ?? "") !== igmLongResolution.trim()) changedFields.push("IGM Long Resolution");
+    if ((ticket.igmRefundAmount ?? "") !== igmRefundAmount.trim()) changedFields.push("IGM Refund Amount");
+    if ((ticket.groDetails ?? "") !== groDetails.trim()) changedFields.push("GRO Details");
+
+    updateTicket.mutate(payload, {
+      onSuccess: () =>
+        toast(changedFields.length > 0 ? `${changedFields.join(", ")} updated` : "Ticket updated"),
+      onError: (err) => toast(err instanceof Error ? err.message : "Failed to update ticket"),
+    });
   };
 
   if (isLoading || error || !ticket) {
@@ -159,39 +269,88 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
   }
 
   const statusTime = ticket.closedAt || ticket.resolvedAt || ticket.updatedAt;
-  const inputCls = "w-full rounded-md border border-gray-300 bg-white px-2.5 py-2 text-xs text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none appearance-none cursor-pointer";
-  const labelCls = "block text-xs font-semibold text-gray-600 mb-1";
+  const firstAgentReplyAt =
+    ticket.messages
+      ?.find((m) => {
+        const sender = String(m.senderType || "").toLowerCase();
+        return sender.includes("agent") || sender.includes("system_user") || sender.includes("admin");
+      })
+      ?.createdAt ?? null;
+  const frtMarked = Boolean(
+    ticket.firstResponseAt ||
+    ((ticket?.metadata as Record<string, unknown> | undefined)?.frt_marked === true)
+  );
+  const frtMarkedAtRaw = ((ticket?.metadata as Record<string, unknown> | undefined)?.frt_marked_at ?? null) as string | null;
+  const frtMarkedAtText = formatMarkedTime(frtMarkedAtRaw);
+  const frtMs =
+    ticket.firstResponseTimeMinutes != null
+      ? ticket.firstResponseTimeMinutes * 60000
+      : firstAgentReplyAt != null
+      ? new Date(firstAgentReplyAt).getTime() - new Date(ticket.createdAt).getTime()
+      : Date.now() - new Date(ticket.createdAt).getTime();
+  const frtText = formatDuration(frtMs);
+  const orderRef =
+    ticket.orderFormattedId && ticket.orderFormattedId.trim() !== ""
+      ? ticket.orderFormattedId.trim()
+      : null;
+  const helpdeskOrderUrl = orderRef ? `https://control.gatimitra.com/order/${encodeURIComponent(orderRef)}` : null;
+  const isHelpdeskOpenEnabled = Boolean(ticket.orderId != null && helpdeskOrderUrl);
+  const customerDashboardUrl = "https://control.gatimitra.com/dashboard/customers";
 
-  const isFilterSidebarOpen = filterSidebar?.isFilterSidebarOpen ?? false;
-  const toggleFilterSidebar = filterSidebar?.toggleFilterSidebar ?? (() => {});
+  const handleMarkFrt = () => {
+    if (frtMarked || updateTicket.isPending) return;
+    updateTicket.mutate({
+      ticketId: ticket.id,
+      markFrt: true,
+    }, {
+      onSuccess: () => toast("FRT marked"),
+      onError: (err) => toast(err instanceof Error ? err.message : "Failed to mark FRT"),
+    });
+  };
+  const statusLabel = (ticket.status || "open")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const inputCls =
+    "w-full rounded-lg border border-gray-300 bg-white px-2.5 py-2 text-xs text-gray-900 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none appearance-none cursor-pointer";
+  const labelCls = "mb-1 block text-xs font-medium text-gray-600";
+  const igmActionOptions = ["REFUND", "NO-ACTION", "REPLACEMENT", "CANCEL"];
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
-      {/* Filters button – top of Properties section */}
-      <div className="px-3 pt-3 pb-2 border-b border-gray-200">
-        <button
-          type="button"
-          onClick={toggleFilterSidebar}
-          className={`w-full inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
-            isFilterSidebarOpen
-              ? "bg-gray-200 text-gray-800"
-              : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-          }`}
-          aria-label={isFilterSidebarOpen ? "Close filter sidebar" : "Open filter sidebar"}
-        >
-          <Filter className="h-3.5 w-3.5 shrink-0" />
-          {isFilterSidebarOpen ? "Hide filters" : "Filters"}
-        </button>
+    <div className="flex h-full flex-col overflow-hidden bg-[#f3f5f7]">
+      <div className="border-b border-gray-200 bg-gradient-to-b from-white to-[#f3f5f7] px-4 pb-3 pt-3">
+        <p className="text-[20px] font-semibold leading-tight tracking-tight text-[#1f3553]">{statusLabel}</p>
+        <p className="mt-1 text-xs font-medium text-[#4b647f]">on {formatStatusTime(statusTime)}</p>
       </div>
 
-      {/* Filter options — separate section */}
-      <div className="px-3 py-2 border-b border-gray-200">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Filter options
-        </h2>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      <div className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Properties</h2>
+        <div className="rounded-lg border border-gray-200 bg-white px-2.5 py-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Mark FRT</p>
+            <button
+              type="button"
+              onClick={handleMarkFrt}
+              disabled={frtMarked || updateTicket.isPending}
+              className={`rounded-md border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                frtMarked
+                  ? "cursor-not-allowed border-emerald-300 bg-emerald-50 text-emerald-700"
+                  : "cursor-pointer border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+              }`}
+            >
+              {frtMarked ? "Marked" : updateTicket.isPending ? "Marking..." : "Mark now"}
+            </button>
+          </div>
+          {!frtMarked && (
+            <p className="mt-1 text-xs text-gray-700">
+              First response time: <span className="font-semibold text-[#1f3553]">{frtText}</span>
+            </p>
+          )}
+          {frtMarked && frtMarkedAtText && (
+            <p className="mt-1 text-[11px] text-emerald-700">
+              Marked at: <span className="font-semibold">{frtMarkedAtText}</span>
+            </p>
+          )}
+        </div>
         {/* Status */}
         <div>
           <label className={labelCls}>Status</label>
@@ -230,22 +389,81 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
           </div>
         </div>
 
+        <div>
+          <label className={labelCls}>Helpdesk Dashboard</label>
+          <div className="flex h-10 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
+            <span
+              className={`min-w-0 flex-1 truncate text-xs font-medium ${
+                isHelpdeskOpenEnabled ? "text-blue-700" : "text-gray-400"
+              }`}
+              title={helpdeskOrderUrl ?? "Order ID not available"}
+            >
+              {helpdeskOrderUrl ?? "Order ID not available"}
+            </span>
+            {isHelpdeskOpenEnabled ? (
+              <a
+                href={helpdeskOrderUrl ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-7 cursor-pointer items-center rounded-md border border-gray-300 bg-gray-50 px-2.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-100"
+              >
+                Open
+              </a>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="inline-flex h-7 cursor-not-allowed items-center rounded-md border border-gray-200 bg-gray-100 px-2.5 text-[11px] font-semibold text-gray-400"
+              >
+                Open
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <label className={labelCls}>Customer Dashboard</label>
+          <div className="flex h-10 items-center gap-2 rounded-lg border border-gray-300 bg-white px-2.5">
+            <a
+              href={customerDashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="min-w-0 flex-1 truncate text-xs font-medium text-blue-700 hover:text-blue-800 hover:underline"
+              title={customerDashboardUrl}
+            >
+              {customerDashboardUrl}
+            </a>
+            <a
+              href={customerDashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-7 cursor-pointer items-center rounded-md border border-gray-300 bg-gray-50 px-2.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-100"
+            >
+              Open
+            </a>
+          </div>
+        </div>
+
+        {/* Tags */}
+        <div>
+          <label className={labelCls}>Tags</label>
+          <TagMultiSelect
+            placeholder="Select tags"
+            options={tagOptions}
+            selectedValues={tags}
+            onChange={setTags}
+          />
+        </div>
+
         {/* Group */}
         <div>
           <label className={labelCls}>Group</label>
-          <div className="relative">
-            <select
-              value={groupId}
-              onChange={(e) => setGroupId(e.target.value)}
-              className={`${inputCls} pr-8`}
-            >
-              <option value="">—</option>
-              {groupOptions.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-            <FolderGit2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
-          </div>
+          <GroupSingleSelect
+            placeholder="Unassigned"
+            value={groupId}
+            options={groupOptions}
+            onChange={setGroupId}
+          />
         </div>
 
         {/* Assigned Agent */}
@@ -289,54 +507,141 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
           </div>
         </div>
 
-        {/* Tags */}
         <div>
-          <label className={labelCls}>Tags</label>
-          <div className="flex flex-wrap gap-1.5 min-h-[34px] rounded-md border border-gray-300 bg-white px-2 py-1.5">
-            {tags.map((tag) => (
-              <span
-                key={tag}
-                className="inline-flex items-center gap-0.5 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-700"
-              >
-                {tag}
-                <button type="button" onClick={() => removeTag(tag)} className="p-0.5 rounded hover:bg-gray-200" aria-label={`Remove ${tag}`}>
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-            <input
-              type="text"
-              value={tagsInput}
-              onChange={(e) => setTagsInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTag(); } }}
-              placeholder="Add a tag..."
-              className="flex-1 min-w-[80px] text-xs border-0 focus:ring-0 focus:outline-none py-0.5"
-            />
+          <label className={labelCls}>Ticket Source</label>
+          <div className="rounded-md border border-gray-300 bg-gray-50 px-2.5 py-2 text-xs text-gray-700">
+            {ticket.ticketSource || "—"}
           </div>
+        </div>
+        <div>
+          <label className={labelCls}>Buyer NP Name</label>
+          <input
+            type="text"
+            value={buyerNpName}
+            onChange={(e) => setBuyerNpName(e.target.value)}
+            className={inputCls}
+            placeholder="Buyer NP Name"
+          />
+        </div>
+        <div>
+          <label className={labelCls}>Seller NP Name</label>
+          <input
+            type="text"
+            value={sellerNpName}
+            onChange={(e) => setSellerNpName(e.target.value)}
+            className={inputCls}
+            placeholder="Seller NP Name"
+          />
+        </div>
+        <div>
+          <label className={labelCls}>Logistics NP Name</label>
+          <input
+            type="text"
+            value={logisticsNpName}
+            onChange={(e) => setLogisticsNpName(e.target.value)}
+            className={inputCls}
+            placeholder="Logistics NP Name"
+          />
+        </div>
+        <div>
+          <label className={labelCls}>IGM Action Triggered</label>
+          <div className="relative">
+            <select
+              value={igmActionTriggered}
+              onChange={(e) => setIgmActionTriggered(e.target.value)}
+              className={`${inputCls} pr-8`}
+            >
+              <option value="">Select Action</option>
+              {igmActionOptions.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+          </div>
+        </div>
+        <div>
+          <label className={labelCls}>IGM Short Resolution</label>
+          <input
+            type="text"
+            value={igmShortResolution}
+            onChange={(e) => setIgmShortResolution(e.target.value)}
+            className={inputCls}
+            placeholder="Brief description of resolution"
+          />
+        </div>
+        <div>
+          <label className={labelCls}>IGM Long Resolution</label>
+          <textarea
+            value={igmLongResolution}
+            onChange={(e) => setIgmLongResolution(e.target.value)}
+            className={`${inputCls} min-h-[88px] resize-y`}
+            placeholder="Detailed description of resolution"
+          />
+        </div>
+        <div>
+          <label className={labelCls}>IGM Refund Amount</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={igmRefundAmount}
+            onChange={(e) => setIgmRefundAmount(e.target.value)}
+            className={inputCls}
+            placeholder="0.00"
+          />
+        </div>
+        <div>
+          <label className={labelCls}>GRO Details</label>
+          <textarea
+            value={groDetails}
+            onChange={(e) => setGroDetails(e.target.value)}
+            className={`${inputCls} min-h-[88px] resize-y`}
+            placeholder="GRO Details"
+          />
         </div>
 
         {/* Custom Fields / Private Info — from DB + metadata */}
         <div>
           <label className={labelCls}>Private Info / Custom Fields</label>
           <div className="rounded-md border border-gray-300 bg-gray-50 px-2.5 py-2 text-xs text-gray-700 space-y-1.5 max-h-48 overflow-y-auto">
-            {[
-              { label: "Agent Name", value: ticket.assignee?.name ?? "" },
-              { label: "Agent Id", value: ticket.assignee?.id != null ? String(ticket.assignee.id) : "" },
-              { label: "Status", value: ticket.status ?? "" },
-              { label: "Category", value: ticket.ticketCategory ?? "" },
-              { label: "Transaction ID", value: ticket.orderId != null ? String(ticket.orderId) : "" },
-              ...Object.entries(ticket.metadata || {}).map(([k, v]) => ({
-                label: k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-                value: v != null ? String(v) : "",
-              })),
-            ]
-              .filter((row) => row.value !== "" && row.value != null)
-              .map((row, i) => (
-                <p key={i} className="flex justify-between gap-2">
-                  <span className="text-gray-500 shrink-0">{row.label}:</span>
-                  <span className="text-gray-900 truncate text-right">{row.value}</span>
-                </p>
-              ))}
+            {(() => {
+              const md = (ticket.metadata || {}) as Record<string, unknown>;
+              const frtMarkedRaw = md.frt_marked;
+              const frtMarkedValue =
+                typeof frtMarkedRaw === "boolean" ? (frtMarkedRaw ? "TRUE" : "FALSE") : "";
+              const frtMarkedAtValue = md.frt_marked_at != null ? formatMarkedTime(String(md.frt_marked_at)) : "";
+              const frtMarkedByRaw = md.frt_marked_by != null ? String(md.frt_marked_by) : "";
+              const frtMarkedByValue =
+                frtMarkedByRaw.includes("@")
+                  ? frtMarkedByRaw
+                  : agentEmailById.get(frtMarkedByRaw) || frtMarkedByRaw;
+              const metadataRows = Object.entries(md)
+                .filter(([k]) => !["frt_marked", "frt_marked_at", "frt_marked_by"].includes(k))
+                .map(([k, v]) => ({
+                  label: k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+                  value: v != null ? String(v) : "",
+                }));
+              return [
+                { label: "Agent Name", value: ticket.assignee?.name ?? "" },
+                { label: "Agent Email", value: ticket.assignee?.email ?? "" },
+                { label: "Status", value: ticket.status ?? "" },
+                { label: "Category", value: ticket.ticketCategory ?? "" },
+                { label: "Transaction ID", value: ticket.orderId != null ? String(ticket.orderId) : "" },
+                { label: "Frt Marked", value: frtMarkedValue },
+                { label: "Frt Marked At", value: frtMarkedAtValue },
+                { label: "Frt Marked By", value: frtMarkedByValue },
+                ...metadataRows,
+              ]
+                .filter((row) => row.value !== "" && row.value != null)
+                .map((row, i) => (
+                  <p key={i} className="flex justify-between gap-2">
+                    <span className="text-gray-500 shrink-0">{row.label}:</span>
+                    <span className="text-gray-900 truncate text-right">{row.value}</span>
+                  </p>
+                ));
+            })()}
             {(!ticket.metadata || Object.keys(ticket.metadata).length === 0) &&
               ticket.assignee?.name == null &&
               ticket.orderId == null && (
@@ -346,16 +651,269 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         </div>
       </div>
 
-      <div className="p-3 border-t border-gray-200 shrink-0">
+      <div className="sticky bottom-0 left-0 right-0 z-10 shrink-0 border-t border-gray-200/90 bg-white px-2.5 py-2.5">
         <button
           type="button"
           onClick={handleUpdate}
           disabled={updateTicket.isPending}
-          className="w-full rounded-lg bg-blue-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex w-full cursor-pointer items-center justify-center gap-2 rounded border border-blue-600 bg-blue-600 px-3 py-2 text-[12px] font-semibold text-white shadow-none transition-colors disabled:cursor-not-allowed disabled:opacity-80 enabled:hover:bg-blue-700"
         >
           {updateTicket.isPending ? "Updating…" : "Update"}
         </button>
       </div>
+    </div>
+  );
+}
+
+function TagMultiSelect({
+  placeholder,
+  options,
+  selectedValues,
+  onChange,
+}: {
+  placeholder: string;
+  options: Array<{ value: string; label: string; color?: string | null }>;
+  selectedValues: string[];
+  onChange: (values: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const selectedSet = useMemo(() => new Set(selectedValues), [selectedValues]);
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  }, [options, search]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch("");
+      }
+    };
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, [open]);
+
+  const selectedOptions = useMemo(
+    () => options.filter((o) => selectedSet.has(o.value)),
+    [options, selectedSet]
+  );
+  const hideSearchInLayout = selectedValues.length > 0 && !open && search.length === 0;
+
+  const toggle = (value: string) => {
+    if (selectedSet.has(value)) onChange(selectedValues.filter((v) => v !== value));
+    else onChange([...selectedValues, value]);
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <div
+        onClick={() => setOpen(true)}
+        className="flex min-h-[40px] cursor-pointer items-start gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5"
+      >
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          {selectedOptions.map((opt) => (
+            <span
+              key={opt.value}
+              className="inline-flex items-center gap-1 rounded-[2px] px-2 py-1 text-[11px] font-semibold"
+              style={
+                opt.color
+                  ? {
+                      backgroundColor: opt.color,
+                      color: getReadableTextColor(opt.color),
+                    }
+                  : { backgroundColor: "#E9ECEF", color: "#334155" }
+              }
+              onClick={(e) => e.stopPropagation()}
+            >
+              {opt.label}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggle(opt.value);
+                }}
+                className="text-[#334155] hover:opacity-70"
+                aria-label={`Remove ${opt.label}`}
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </span>
+          ))}
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              if (!open) setOpen(true);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            placeholder={selectedOptions.length ? "" : placeholder}
+            className={
+              hideSearchInLayout
+                ? "pointer-events-none absolute left-0 top-0 h-px w-px overflow-hidden border-0 p-0 opacity-0"
+                : "h-5 min-w-[5rem] flex-1 border-0 bg-transparent text-xs text-gray-700 outline-none placeholder:text-gray-400"
+            }
+          />
+        </div>
+        <ChevronDown className={`mt-1 h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </div>
+      {open && (
+        <div className="absolute z-50 mt-0.5 max-h-64 w-full overflow-y-auto rounded border border-gray-300 bg-white shadow-sm">
+          {filtered.length === 0 ? (
+            <div className="px-2.5 py-2.5 text-xs text-gray-500">No tags found</div>
+          ) : (
+            filtered.map((opt) => (
+              <label
+                key={opt.value}
+                className={`flex cursor-pointer items-center gap-2 px-2.5 py-2 text-xs ${
+                  selectedSet.has(opt.value) ? "bg-slate-50 text-gray-900" : "text-gray-700 hover:bg-gray-50"
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedSet.has(opt.value)}
+                  onChange={() => toggle(opt.value)}
+                  className="h-3.5 w-3.5 rounded border-gray-400 text-blue-600"
+                />
+                <span className="flex-1">{opt.label}</span>
+                {opt.color ? (
+                  <span
+                    className="h-2.5 w-2.5 rounded-full border border-gray-300/70"
+                    style={{ backgroundColor: opt.color }}
+                    aria-hidden
+                  />
+                ) : null}
+              </label>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GroupSingleSelect({
+  placeholder,
+  value,
+  options,
+  onChange,
+}: {
+  placeholder: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = useMemo(() => options.find((o) => o.value === value) ?? null, [options, value]);
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  }, [options, search]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch("");
+      }
+    };
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <div
+        onClick={() => setOpen((v) => !v)}
+        className="flex min-h-[40px] cursor-pointer items-start gap-1 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5"
+      >
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          {selected ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-[2px] bg-[#E9ECEF] px-2 py-1 text-[11px] font-semibold text-[#334155]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {selected.label}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange("");
+                }}
+                className="text-[#334155] hover:opacity-70"
+                aria-label={`Remove ${selected.label}`}
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </span>
+          ) : (
+            <span className="text-xs text-gray-500">{placeholder}</span>
+          )}
+        </div>
+        <ChevronDown className={`mt-1 h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </div>
+      {open && (
+        <div className="absolute z-50 mt-0.5 w-full rounded border border-gray-300 bg-white shadow-sm">
+          <div className="border-b border-gray-200 p-1.5">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search group..."
+              className="h-7 w-full rounded border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-gray-400"
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            <label
+              className={`flex cursor-pointer items-center gap-2 px-2.5 py-2 text-xs ${
+                value === "" ? "bg-slate-50 text-gray-900" : "text-gray-700 hover:bg-gray-50"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={value === ""}
+                onChange={() => {
+                  onChange("");
+                  setOpen(false);
+                  setSearch("");
+                }}
+                className="h-3.5 w-3.5 rounded border-gray-400 text-blue-600"
+              />
+              <span className="flex-1">Unassigned</span>
+            </label>
+            {filtered.map((o) => (
+              <label
+                key={o.value}
+                className={`flex cursor-pointer items-center gap-2 px-2.5 py-2 text-xs ${
+                  value === o.value ? "bg-slate-50 text-gray-900" : "text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={value === o.value}
+                  onChange={() => {
+                    onChange(o.value);
+                    setOpen(false);
+                    setSearch("");
+                  }}
+                  className="h-3.5 w-3.5 rounded border-gray-400 text-blue-600"
+                />
+                <span className="flex-1">{o.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

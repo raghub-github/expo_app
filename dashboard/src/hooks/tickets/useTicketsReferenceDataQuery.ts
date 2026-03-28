@@ -11,6 +11,7 @@ export interface TicketReferenceGroup {
 
 export interface TicketReferenceData {
   groups: TicketReferenceGroup[];
+  tags: Array<{ id: number; tagCode: string; tagName: string; tagColor: string | null }>;
   statuses: Array<{ value: string; label: string }>;
   services: Array<{ value: string; label: string }>;
   priorities: Array<{ value: string; label: string }>;
@@ -19,6 +20,7 @@ export interface TicketReferenceData {
 
 const emptyRefData: TicketReferenceData = {
   groups: [],
+  tags: [],
   statuses: [],
   services: [],
   priorities: [],
@@ -31,6 +33,7 @@ async function fetchTicketsReferenceData(): Promise<TicketReferenceData> {
   if (!d.success || !d.data) return emptyRefData;
   return {
     groups: d.data.groups ?? [],
+    tags: d.data.tags ?? [],
     statuses: d.data.statuses ?? [],
     services: d.data.services ?? [],
     priorities: d.data.priorities ?? [],

@@ -95,7 +95,7 @@ export async function GET() {
 
     const sql = getSql();
     let groups: Array<{ id: number; groupCode: string; groupName: string }> = [];
-    let tags: Array<{ id: number; tagCode: string; tagName: string }> = [];
+    let tags: Array<{ id: number; tagCode: string; tagName: string; tagColor: string | null }> = [];
 
     try {
       let groupRows: Record<string, unknown>[] = [];
@@ -130,15 +130,16 @@ export async function GET() {
 
     try {
       const tagRows = await sql`
-        SELECT id, tag_code, tag_name
+        SELECT id, tag_code, tag_name, tag_color
         FROM ticket_tags
         WHERE is_active = true
         ORDER BY tag_name ASC
       `;
-      tags = ((tagRows || []) as unknown as { id: bigint; tag_code: string; tag_name: string }[]).map((r) => ({
+      tags = ((tagRows || []) as unknown as { id: bigint; tag_code: string; tag_name: string; tag_color?: string | null }[]).map((r) => ({
         id: Number(r.id),
         tagCode: r.tag_code ?? "",
         tagName: r.tag_name ?? "",
+        tagColor: typeof r.tag_color === "string" && r.tag_color.trim() !== "" ? r.tag_color.trim() : null,
       }));    } catch {
       tags = [];
     }

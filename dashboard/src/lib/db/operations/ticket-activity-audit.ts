@@ -44,6 +44,14 @@ export async function insertTicketActivityAudit(
   sqlClient: TicketAuditSqlClient,
   payload: AuditPayload
 ): Promise<void> {
+  const normalizeValue = (value: unknown): unknown => {
+    if (value == null) return value;
+    if (typeof value === "object") {
+      // `unsafe(query, values)` expects scalar values; encode structured payloads safely.
+      return JSON.stringify(value);
+    }
+    return value;
+  };
   const cols = [
     "ticket_id",
     "activity_type",
@@ -81,7 +89,7 @@ export async function insertTicketActivityAudit(
     const v = payload[key as keyof AuditPayload];
     if (v !== undefined) {
       placeholders.push(`$${++idx}`);
-      values.push(v);
+      values.push(normalizeValue(v));
     }
   }
   if (placeholders.length === 0) return;

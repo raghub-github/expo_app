@@ -4,7 +4,14 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Power, Settings, AlertTriangle } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
+import {
+  AGENT_ACTIVITY_PATH,
+  isTicketsAppDetailPath,
+  TICKETS_HELPDESK_DASHBOARD_PATH,
+} from "@/lib/tickets/ticket-path-utils";
+
+const TICKETS_MAIN_LIST_PATH = "/dashboard/tickets";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 interface AgentStatus {
@@ -26,6 +33,7 @@ export function AgentStatusToggle() {
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
   const router = useRouter();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
 
   /** Client-only (see Header dynamic ssr:false) — safe to read snapshot on first paint so refresh does not flash loading. */
@@ -107,10 +115,22 @@ export function AgentStatusToggle() {
     updateStatusMutation.mutate("offline");
   };
 
+  const cleanPathname = pathname.split("?")[0].split("#")[0] ?? "";
+
   const handleSettingsClick = () => {
-    router.push("/dashboard/tickets/agent-activity");
     setIsMenuOpen(false);
+    const onHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
+    const onAgentActivity = cleanPathname === AGENT_ACTIVITY_PATH;
+    if (onHelpdeskDashboard || onAgentActivity) {
+      router.push(TICKETS_MAIN_LIST_PATH);
+      return;
+    }
+    router.push(TICKETS_HELPDESK_DASHBOARD_PATH);
   };
+
+  const hideSettingsGearOnTicketDetail = isTicketsAppDetailPath(cleanPathname);
+  const onTicketsHubPage =
+    cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH || cleanPathname === AGENT_ACTIVITY_PATH;
 
   const menuContent = (
     <>
@@ -215,15 +235,22 @@ export function AgentStatusToggle() {
         {isMenuOpen && typeof document !== "undefined" && createPortal(menuContent, document.body)}
       </div>
 
-      {/* Settings gear - always visible */}
-      <button
-        onClick={handleSettingsClick}
-        className="p-1.5 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-300/70 transition-colors flex-shrink-0"
-        title="Agent Activity & Settings"
-        aria-label="Agent Activity & Settings"
-      >
-        <Settings className="h-4 w-4" />
-      </button>
+      {!hideSettingsGearOnTicketDetail && (
+        <button
+          type="button"
+          onClick={handleSettingsClick}
+          aria-pressed={onTicketsHubPage}
+          className={`inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md border-2 border-transparent transition-[background-color,color] duration-200 ease-out motion-reduce:transition-none ${
+            onTicketsHubPage
+              ? "bg-blue-600 text-white hover:bg-blue-700"
+              : "bg-transparent text-gray-600 hover:bg-gray-200/90 hover:text-gray-900"
+          }`}
+          title={onTicketsHubPage ? "Back to ticket list" : "Open helpdesk dashboard"}
+          aria-label={onTicketsHubPage ? "Back to ticket list" : "Open helpdesk dashboard"}
+        >
+          <Settings className="h-4 w-4 shrink-0" aria-hidden />
+        </button>
+      )}
 
       {/* Centered warning modal when going offline */}
       {showOfflineWarning && (
