@@ -32,7 +32,17 @@ import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
-async function allowStoreAccess(storeId: number) {
+type StoreAccessDenied = { allowed: false; status: number; error: string };
+type StoreAccessGranted = {
+  allowed: true;
+  user: { id: string; email: string };
+  systemUserId: number | null;
+  systemUserName: string;
+  store: NonNullable<Awaited<ReturnType<typeof getMerchantStoreById>>>;
+  areaManagerId: number | null;
+};
+
+async function allowStoreAccess(storeId: number): Promise<StoreAccessDenied | StoreAccessGranted> {
   const supabase = await createServerSupabaseClient();
   const {
     data: { user },
@@ -64,7 +74,8 @@ async function allowStoreAccess(storeId: number) {
     allowed: true as const,
     user: { id: user.id, email: user.email },
     systemUserId: systemUser?.id ?? null,
-    systemUserName: systemUser?.full_name?.trim() || user.email,    store,
+    systemUserName: systemUser?.full_name?.trim() || user.email,
+    store,
     areaManagerId,
   };
 }
@@ -152,7 +163,8 @@ export async function POST(
       7: "Commission plan",
       8: "Sign & submit",
     };
-    const verifiedByName = access.systemUserName || access.user.email || "agent";    const ok = await upsertStoreVerificationStep({
+    const verifiedByName = access.systemUserName || access.user.email || "agent";
+    const ok = await upsertStoreVerificationStep({
       storeId,
       stepNumber: step,
       verifiedBy: access.systemUserId ?? null,

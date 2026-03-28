@@ -62,8 +62,11 @@ export async function GET(
     `;
     type CategoryLineageRow = { id: number; parent_category_id: number | null; is_deleted: boolean };
     const lineageById = new Map<number, CategoryLineageRow>();
-    for (const row of categoryLineageRows as CategoryLineageRow[]) lineageById.set(Number(row.id), row);
-    const liveCategoryIds = new Set<number>((categories as Array<{ id: number }>).map((c) => Number(c.id)));
+    for (const row of categoryLineageRows as unknown as CategoryLineageRow[])
+      lineageById.set(Number(row.id), row);
+    const liveCategoryIds = new Set<number>(
+      (categories as unknown as Array<{ id: number }>).map((c) => Number(c.id))
+    );
     const resolveLiveParent = (categoryId: number, directParentId: number | null): number | null => {
       let cursor = directParentId;
       const visited = new Set<number>([categoryId]);
@@ -76,7 +79,7 @@ export async function GET(
       }
       return null;
     };
-    const normalizedCategories = (categories as Array<Record<string, unknown>>).map((c) => ({
+    const normalizedCategories = (categories as unknown as Array<Record<string, unknown>>).map((c) => ({
       ...c,
       parent_category_id: resolveLiveParent(
         Number(c.id),

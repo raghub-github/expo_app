@@ -1787,6 +1787,7 @@ function StepDetailContent({
   onboardingPayments,
   agreementAcceptance,
   bankAccounts,
+  bankAccountsStoreId,
 }: {
   stepNum: number;
   store: VerificationDataStore;
@@ -1799,6 +1800,7 @@ function StepDetailContent({
   onboardingPayments?: Record<string, unknown>[];
   agreementAcceptance?: Record<string, unknown> | null;
   bankAccounts?: Record<string, unknown>[] | null;
+  bankAccountsStoreId?: number;
 }) {
   const row = (label: string, value: React.ReactNode) => (
     <div key={label} className="flex gap-2 py-0.5 text-xs">
@@ -2011,7 +2013,7 @@ function StepDetailContent({
     return (
       <div className="mt-2 border-t border-gray-200 pt-2">
         <p className="mb-1.5 text-[10px] font-semibold uppercase text-gray-500">Bank account — payout details</p>
-        <BankAccountsVerificationPanel accounts={bankAccounts} compact storeId={storeIdForUpload} />
+        <BankAccountsVerificationPanel accounts={bankAccounts} compact storeId={bankAccountsStoreId} />
       </div>
     );
   }
@@ -5127,12 +5129,12 @@ export function StoreVerificationInner({
                                   <CheckCircle className="h-3.5 w-3.5" />
                                   {agentVerified
                                     ? "View"
-                                    : stepRejection
-                                      ? "Edit & Approve"
-                                      : stepRejection?.merchant_resubmitted_at ||
-                                          (stepNum === 4 &&
-                                            step4AnyResubmittedAfterReject(verificationData?.documents))
-                                        ? "Verify again"
+                                    : stepRejection?.merchant_resubmitted_at ||
+                                        (stepNum === 4 &&
+                                          step4AnyResubmittedAfterReject(verificationData?.documents))
+                                      ? "Verify again"
+                                      : stepRejection
+                                        ? "Edit & Approve"
                                         : "View & verify"}
                                 </button>
                               </div>
@@ -5236,6 +5238,7 @@ export function StoreVerificationInner({
                               onboardingPayments={verificationData.onboardingPayments}
                               agreementAcceptance={verificationData.agreementAcceptance ?? null}
                               bankAccounts={verificationData.bankAccounts}
+                              bankAccountsStoreId={store?.id}
                             />
                           )}
                         </div>
@@ -5355,10 +5358,7 @@ export function StoreVerificationInner({
                       : "flex items-center justify-end gap-2"
                   }
                 >
-                    {verifyModalStep === 8 &&
-                      (verifyModalStep !== 3 || !menuStepAllItemsAccepted(menuMediaFiles)) &&
-                      (verifyModalStep !== 4 ||
-                        !allStep4DocumentsVerified(stepEditForm?.documents ?? verificationData?.documents)) && (
+                    {verifyModalStep === 8 && (
                         <button
                           type="button"
                           title="Reject step — email reason to store"
