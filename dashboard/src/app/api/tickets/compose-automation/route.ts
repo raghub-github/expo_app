@@ -36,24 +36,45 @@ function pickComposeRow(row: Record<string, unknown> | undefined): {
       updated_by_full_name: null,
     };
   }
-  const s = (k: string, alt?: string) => {
-    const v = row[k] ?? (alt ? row[alt] : undefined);
+  const s = (k: string, ...alts: string[]) => {
+    let v: unknown = row[k];
+    for (const a of alts) {
+      if (v !== undefined && v != null && v !== "") break;
+      v = row[a];
+    }
     return typeof v === "string" ? v : v != null ? String(v) : "";
   };
-  const n = (k: string, alt?: string) => {
-    const v = row[k] ?? (alt ? row[alt] : undefined);
-    if (v == null) return null;
-    const num = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(num) ? num : null;
+  const n = (k: string, ...alts: string[]) => {
+    for (const key of [k, ...alts]) {
+      const v = row[key];
+      if (v == null || v === "") continue;
+      const num = typeof v === "number" ? v : Number(v);
+      if (Number.isFinite(num)) return num;
+    }
+    return null;
+  };
+  const ts = (k: string, ...alts: string[]): string | null => {
+    let v: unknown = row[k];
+    for (const a of alts) {
+      if (v != null && v !== "") break;
+      v = row[a];
+    }
+    if (v == null || v === "") return null;
+    if (v instanceof Date) return v.toISOString();
+    if (typeof v === "number" && Number.isFinite(v)) return new Date(v).toISOString();
+    const str = typeof v === "string" ? v.trim() : String(v);
+    if (!str) return null;
+    const d = new Date(str);
+    return Number.isNaN(d.getTime()) ? str : d.toISOString();
   };
   return {
-    default_to: s("default_to"),
-    default_cc: s("default_cc"),
-    default_bcc: s("default_bcc"),
-    updated_at: s("updated_at") || null,
-    updated_by_system_user_id: n("updated_by_system_user_id"),
-    updated_by_email: s("updated_by_email") || null,
-    updated_by_full_name: s("updated_by_full_name") || null,
+    default_to: s("default_to", "defaultTo"),
+    default_cc: s("default_cc", "defaultCc"),
+    default_bcc: s("default_bcc", "defaultBcc"),
+    updated_at: ts("updated_at", "updatedAt"),
+    updated_by_system_user_id: n("updated_by_system_user_id", "updatedBySystemUserId"),
+    updated_by_email: s("updated_by_email", "updatedByEmail") || null,
+    updated_by_full_name: s("updated_by_full_name", "updatedByFullName") || null,
   };
 }
 
@@ -94,7 +115,7 @@ export async function GET() {
 
   try {
     const sql = getSql();
-    const rows = await sql`
+    let rows = await sql`
       SELECT c.default_to,
              c.default_cc,
              c.default_bcc,
@@ -107,6 +128,26 @@ export async function GET() {
       WHERE c.singleton = 1
       LIMIT 1
     `;
+    if (!rows?.length) {
+      await sql`
+        INSERT INTO public.ticket_compose_automation (singleton)
+        VALUES (1)
+        ON CONFLICT (singleton) DO NOTHING
+      `;
+      rows = await sql`
+        SELECT c.default_to,
+               c.default_cc,
+               c.default_bcc,
+               c.updated_at,
+               c.updated_by_system_user_id,
+               u.email AS updated_by_email,
+               u.full_name AS updated_by_full_name
+        FROM public.ticket_compose_automation c
+        LEFT JOIN public.system_users u ON u.id = c.updated_by_system_user_id
+        WHERE c.singleton = 1
+        LIMIT 1
+      `;
+    }
     const row = pickComposeRow(rows?.[0] as Record<string, unknown> | undefined);
     return NextResponse.json({
       success: true,
