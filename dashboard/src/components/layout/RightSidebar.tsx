@@ -3,6 +3,7 @@
 import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { Zap, LineChart, LayoutDashboard } from "lucide-react";
 import { ChevronRight, Users, ClipboardList } from "lucide-react";
 import {
   getCurrentDashboard,
@@ -15,6 +16,14 @@ import {
 } from "@/lib/navigation/dashboard-routes";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { TicketPropertiesPanel } from "@/components/tickets/ticket-view/TicketPropertiesPanel";
+import { TicketRightSidebarSettingsPanel } from "@/components/tickets/TicketRightSidebarSettingsPanel";
+import { useRightSidebar } from "@/context/RightSidebarContext";
+import {
+  AGENT_ACTIVITY_PATH,
+  TICKETS_HELPDESK_DASHBOARD_PATH,
+  isTicketsAppDetailPath,
+  ticketsPathTicketId,
+} from "@/lib/tickets/ticket-path-utils";
 import { usePermission } from "@/hooks/usePermission";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
@@ -32,6 +41,7 @@ interface RightSidebarProps {
 export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin } = usePermission();
   
   // Remove query parameters for comparison
@@ -140,10 +150,7 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
   const isInSpecificDashboard = Boolean(currentDashboard && cleanPathname !== "/dashboard");
 
   // Ticket identifier from path (supports numeric id and ticket number like TKT-2026-910001)
-  const ticketIdFromPath = useMemo(() => {
-    const match = cleanPathname.match(/^\/dashboard\/tickets\/([^/]+)$/);
-    return match ? decodeURIComponent(match[1]) : null;
-  }, [cleanPathname]);
+  const ticketIdFromPath = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
 
   // Store ID when on a merchant store page (for Store Information Card in sidebar)
   const storeIdFromPath = useMemo(() => {
@@ -185,6 +192,11 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
   }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal]);
 
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
+  const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
+  const onAgentActivityPage = cleanPathname === AGENT_ACTIVITY_PATH;
+  const onTicketsHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
+  const onTicketsHubSectionsPage = onAgentActivityPage || onTicketsHelpdeskDashboard;
+  const agentActivitySection = searchParams.get("section") === "automation" ? "automation" : "activity";
 
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
@@ -230,48 +242,99 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
         />
       )}
       <aside
-        className={`fixed inset-y-0 z-40 flex flex-col shadow-xl transition-[transform,width] duration-300 ease-out
-          ${isOpen ? "w-56" : "w-14"}
+        className={`fixed z-40 flex flex-col ${isTicketDetailPage ? "shadow-none" : "shadow-xl"} transition-[transform,width] duration-300 ease-out ${
+          isTicketDetailPage ? "bottom-0 top-14" : "inset-y-0"
+        }
+          ${isOpen ? (isTicketDetailPage ? "w-64" : "w-56") : "w-14"}
           max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}`}
         style={{
           right: filterSidebarOpen ? "14rem" : 0,
-          backgroundColor: "#E8F0F2",
+          backgroundColor: isTicketDetailPage ? "#F5F7F9" : "#E8F0F2",
           scrollbarWidth: "thin",
-          scrollbarColor: "#9CA3AF #E8F0F2",
+          scrollbarColor: isTicketDetailPage ? "#9CA3AF #F5F7F9" : "#9CA3AF #E8F0F2",
         }}
       >
-        {/* Header: match main Header (h-14 + items-center) so title row aligns with navbar across the top band. */}
-        <div
-          className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3 ${
-            isOpen ? "gap-2" : "justify-center"
-          }`}
-        >
-          {isOpen ? (
-            <>
-              {currentDashboard?.icon && (
-                <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+        {!isTicketDetailPage && (
+          <div
+            className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3 ${
+              isOpen ? "gap-2" : "justify-center"
+            }`}
+          >
+            {isOpen ? (
+              <>
+                {currentDashboard?.icon && (
+                  <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+                    <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
+                  </div>
+                )}
+                <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-gray-800">
+                  {currentDashboard?.name}
+                </h2>
+              </>
+            ) : (
+              currentDashboard?.icon && (
+                <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
                   <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                 </div>
-              )}
-              <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-gray-800">
-                {currentDashboard?.name}
-              </h2>
-            </>
-          ) : (
-            currentDashboard?.icon && (
-              <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
-                <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
-              </div>
-            )
-          )}
-        </div>
+              )
+            )}
+          </div>
+        )}
 
         {/* Body: flex-1 scroll */}
-        <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+        <div className={`relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden ${isTicketDetailPage ? "border-l border-gray-200 bg-[#F5F7F9]" : ""}`}>
+          <div
+            className={`min-h-0 flex-1 overflow-x-hidden overscroll-y-contain ${
+              isTicketDetailPage ? "overflow-y-hidden" : "overflow-y-auto"
+            }`}
+          >
             {isTicketsDashboard && ticketIdFromPath != null && isOpen ? (
-              <div className="min-h-0">
-                <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+              <div className="h-full min-h-0">
+                {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
+                  <TicketRightSidebarSettingsPanel />
+                ) : (
+                  <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+                )}
+              </div>
+            ) : isTicketsDashboard && onTicketsHubSectionsPage && isOpen ? (
+              <div className="flex h-full min-h-0 flex-col">
+                <nav className="flex flex-col gap-1 p-2 pt-3" aria-label="Tickets hub sections">
+                  <Link
+                    href={TICKETS_HELPDESK_DASHBOARD_PATH}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+                      onTicketsHelpdeskDashboard
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-800 hover:bg-gray-200/80"
+                    }`}
+                  >
+                    <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden />
+                    Dashboard
+                  </Link>
+                  <Link
+                    href={`${AGENT_ACTIVITY_PATH}?section=automation`}
+                    scroll={false}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+                      onAgentActivityPage && agentActivitySection === "automation"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-800 hover:bg-gray-200/80"
+                    }`}
+                  >
+                    <Zap className="h-4 w-4 shrink-0" aria-hidden />
+                    Automation
+                  </Link>
+                  <Link
+                    href={`${AGENT_ACTIVITY_PATH}?section=activity`}
+                    scroll={false}
+                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
+                      onAgentActivityPage && agentActivitySection === "activity"
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-gray-800 hover:bg-gray-200/80"
+                    }`}
+                  >
+                    <LineChart className="h-4 w-4 shrink-0" aria-hidden />
+                    Activity track
+                  </Link>
+                </nav>
               </div>
             ) : isTicketsDashboard && isOpen ? (
               <div className="min-h-0">

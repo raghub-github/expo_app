@@ -7,7 +7,12 @@ import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
 import { RightSidebar } from "@/components/layout/RightSidebar";
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/providers/AuthProvider";
-import { RightSidebarProvider, useRightSidebar } from "@/context/RightSidebarContext";
+import {
+  RightSidebarProvider,
+  useRightSidebar,
+  type TicketRightSidebarPanel,
+  type TicketSettingsSection,
+} from "@/context/RightSidebarContext";
 import { MerchantsSearchProvider } from "@/context/MerchantsSearchContext";
 import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
@@ -19,6 +24,7 @@ import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 import { CurrentRouteProvider } from "@/context/CurrentRouteContext";
+import { isTicketsAppDetailPath, ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 /** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
 function DashboardBootstrapSkeleton() {
   return (
@@ -399,11 +405,31 @@ function DashboardLayoutContent({
   const searchParams = useSearchParams();
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
-  const isTicketDetailPage = useMemo(
-    () => /^\/dashboard\/tickets\/[^/]+$/.test(cleanPathname),
-    [cleanPathname]
-  );
+  const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
+  const isTicketsHubGreyPage =
+    cleanPathname === "/dashboard/tickets/agent-activity" ||
+    cleanPathname === "/dashboard/tickets/dashboard";
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
+
+  const [ticketRightSidebarPanel, setTicketRightSidebarPanel] = useState<TicketRightSidebarPanel>("properties");
+  const [ticketSettingsSection, setTicketSettingsSection] = useState<TicketSettingsSection>("automation");
+
+  const ticketDetailSlug = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
+
+  const prevTicketSlugRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (ticketDetailSlug == null) {
+      prevTicketSlugRef.current = null;
+      setTicketRightSidebarPanel("properties");
+      setTicketSettingsSection("automation");
+      return;
+    }
+    if (prevTicketSlugRef.current !== null && prevTicketSlugRef.current !== ticketDetailSlug) {
+      setTicketRightSidebarPanel("properties");
+      setTicketSettingsSection("automation");
+    }
+    prevTicketSlugRef.current = ticketDetailSlug;
+  }, [ticketDetailSlug]);
 
   // Track when a sidebar navigation has started so we can immediately
   // clear the previous page content and show a lightweight branded
@@ -477,6 +503,10 @@ function DashboardLayoutContent({
             isOpen: isRightSidebarOpen,
             onToggle: handleRightSidebarToggle,
             setOpen: setRightSidebarOpen,
+            ticketRightSidebarPanel,
+            setTicketRightSidebarPanel,
+            ticketSettingsSection,
+            setTicketSettingsSection,
           }}
         >
           <MerchantsSearchProvider>
@@ -505,8 +535,9 @@ function DashboardLayoutContent({
                 <Header />
                 <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
-                    className="flex-1 overflow-y-auto p-3 sm:p-4 transition-all duration-300 w-full flex flex-col min-h-0 relative"
-                    style={{ backgroundColor: "#FFFFFF" }}
+                    className={`flex-1 overflow-y-auto transition-all duration-300 w-full flex flex-col min-h-0 relative ${
+                      isTicketsHubGreyPage ? "bg-[#f4f5f7] p-4 sm:p-6" : "bg-white p-3 sm:p-4"
+                    }`}
                   >
                     <div className="w-full max-w-full min-w-0 flex-1 flex flex-col min-h-0 relative">
                       {children}

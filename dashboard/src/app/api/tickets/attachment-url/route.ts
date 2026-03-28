@@ -9,11 +9,16 @@ import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
+import { getSignedUrlFromKey } from "@/lib/services/r2";
 
 export const runtime = "nodejs";
 
 const BUCKET = "ticket-attachments";
 const EXPIRES_IN = 3600; // 1 hour
+
+function isR2TicketKey(key: string): boolean {
+  return key.startsWith("tickets/images/") || key.startsWith("docs/tickets/");
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -42,7 +47,25 @@ export async function GET(request: NextRequest) {
     }
 
     const storageKey = request.nextUrl.searchParams.get("storageKey");
-    if (!storageKey || !storageKey.startsWith("tickets/")) {
+    if (!storageKey || typeof storageKey !== "string") {
+      return NextResponse.json({ success: false, error: "Invalid storageKey" }, { status: 400 });
+    }
+
+    if (isR2TicketKey(storageKey)) {
+      try {
+        const url = await getSignedUrlFromKey(storageKey, EXPIRES_IN);
+        const expiresAt = new Date(Date.now() + EXPIRES_IN * 1000).toISOString();
+        return NextResponse.json({ success: true, data: { url, expiresAt } });
+      } catch (e) {
+        console.error("[GET /api/tickets/attachment-url] R2:", e);
+        return NextResponse.json(
+          { success: false, error: e instanceof Error ? e.message : "R2 signing failed" },
+          { status: 503 }
+        );
+      }
+    }
+
+    if (!storageKey.startsWith("tickets/")) {
       return NextResponse.json({ success: false, error: "Invalid storageKey" }, { status: 400 });
     }
 

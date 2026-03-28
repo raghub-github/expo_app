@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
@@ -114,11 +115,55 @@ export const TicketListRow = React.memo(function TicketListRow({
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
   const [searchAgent, setSearchAgent] = useState("");
+  const [groupAgentMenuPlacement, setGroupAgentMenuPlacement] = useState<{ top: number; left: number } | null>(null);
   const groupAgentRef = useRef<HTMLDivElement>(null);
+  const groupAgentMenuPortalRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!groupAgentOpen) {
+      setGroupAgentMenuPlacement(null);
+      return;
+    }
+    const panelWidth = 240;
+    const updatePlacement = () => {
+      const el = groupAgentRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      let left = r.right - panelWidth;
+      if (left < 8) left = 8;
+      if (left + panelWidth > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - panelWidth - 8);
+      }
+      const panelMaxHeight = Math.min(420, window.innerHeight - 16);
+      const spaceBelow = window.innerHeight - r.bottom - 8;
+      const spaceAbove = r.top - 8;
+      const preferBelow = spaceBelow >= 180 || spaceBelow >= spaceAbove;
+      let top: number;
+      if (preferBelow) {
+        top = r.bottom + 4;
+        const maxBottom = window.innerHeight - 8;
+        if (top + panelMaxHeight > maxBottom) {
+          top = Math.max(8, maxBottom - panelMaxHeight);
+        }
+      } else {
+        top = Math.max(8, r.top - panelMaxHeight - 4);
+      }
+      setGroupAgentMenuPlacement({ top, left });
+    };
+    updatePlacement();
+    window.addEventListener("scroll", updatePlacement, true);
+    window.addEventListener("resize", updatePlacement);
+    return () => {
+      window.removeEventListener("scroll", updatePlacement, true);
+      window.removeEventListener("resize", updatePlacement);
+    };
+  }, [groupAgentOpen]);
 
   useEffect(() => {
     const onOutside = (e: MouseEvent) => {
-      if (groupAgentRef.current && !groupAgentRef.current.contains(e.target as Node)) setGroupAgentOpen(false);
+      const t = e.target as Node;
+      if (groupAgentRef.current?.contains(t) || groupAgentMenuPortalRef.current?.contains(t)) return;
+      setGroupAgentOpen(false);
     };
     if (groupAgentOpen) document.addEventListener("mousedown", onOutside);
     return () => document.removeEventListener("mousedown", onOutside);
@@ -191,7 +236,156 @@ export const TicketListRow = React.memo(function TicketListRow({
     ? agentOptions.filter((o) => o.label.toLowerCase().includes(searchAgent.toLowerCase()))
     : agentOptions;
 
+  const groupAgentMenuPanel =
+    groupAgentOpen && groupAgentMenuPlacement != null && typeof document !== "undefined" ? (
+      createPortal(
+        <div
+          ref={groupAgentMenuPortalRef}
+          role="dialog"
+          aria-label="Group and agent"
+          className="fixed z-[200] flex w-60 max-h-[min(70vh,calc(100vh-16px))] flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
+          style={{ top: groupAgentMenuPlacement.top, left: groupAgentMenuPlacement.left }}
+        >
+          {/* Tabs: GROUP | AGENT */}
+          <div className="flex shrink-0 border-b border-gray-200">
+            <button
+              type="button"
+              onClick={() => setGroupAgentTab("group")}
+              className={`flex-1 cursor-pointer px-2.5 py-1.5 text-[11px] font-semibold ${
+                groupAgentTab === "group"
+                  ? "border-b-2 border-blue-600 bg-blue-50/50 text-blue-600"
+                  : "text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              GROUP
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroupAgentTab("agent")}
+              className={`flex-1 cursor-pointer px-2.5 py-1.5 text-[11px] font-semibold ${
+                groupAgentTab === "agent"
+                  ? "border-b-2 border-blue-600 bg-blue-50/50 text-blue-600"
+                  : "text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              AGENT
+            </button>
+          </div>
+          {/* GROUP tab: current group + remove, search, change */}
+          {groupAgentTab === "group" && (
+            <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+              {hasAssignedGroup ? (
+                <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
+                  <span className="truncate font-medium text-gray-800">{groupLabel}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateGroup(ticket.id, null, "Unassigned");
+                      setSearchGroup("");
+                    }}
+                    className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
+                    aria-label="Remove group"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <span className="inline-flex items-center rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-500">
+                  Unassigned
+                </span>
+              )}
+              <p className="mt-1 text-[10px] text-gray-500">Change group</p>
+              <div className="relative mt-1">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchGroup}
+                  onChange={(e) => setSearchGroup(e.target.value)}
+                  placeholder="Search groups..."
+                  className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
+                {filteredGroupOptions.map((opt) => (
+                  <li key={opt.value}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onUpdateGroup(ticket.id, parseInt(opt.value, 10), opt.label);
+                        setGroupAgentOpen(false);
+                      }}
+                      className="w-full cursor-pointer px-2 py-1.5 text-left text-[12px] text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
+                    >
+                      {opt.label}
+                    </button>
+                  </li>
+                ))}
+                {filteredGroupOptions.length === 0 && (
+                  <li className="px-2 py-2 text-xs text-gray-500">No groups found</li>
+                )}
+              </ul>
+            </div>
+          )}
+          {/* AGENT tab: current agent + unassign, search, reassign */}
+          {groupAgentTab === "agent" && (
+            <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+              <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
+                <span className="truncate font-medium text-gray-800">{agentLabel}</span>
+                {ticket.assignee && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onUpdateAssignee(ticket.id, null, "Unassigned");
+                      setSearchAgent("");
+                    }}
+                    className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
+                    aria-label="Unassign agent"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-gray-500">Reassign or unassign</p>
+              <div className="relative mt-1">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchAgent}
+                  onChange={(e) => setSearchAgent(e.target.value)}
+                  placeholder="Search agents..."
+                  className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
+                {filteredAgentOptions.map((opt) => (
+                  <li key={opt.value}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id =
+                          opt.value === "me" && currentUserId != null ? currentUserId : opt.value ? parseInt(opt.value, 10) : null;
+                        onUpdateAssignee(ticket.id, Number.isNaN(id as number) ? null : id, opt.label);
+                        setGroupAgentOpen(false);
+                      }}
+                      className="w-full cursor-pointer px-2 py-1.5 text-left text-[12px] text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
+                    >
+                      {opt.label}
+                    </button>
+                  </li>
+                ))}
+                {filteredAgentOptions.length === 0 && (
+                  <li className="px-2 py-2 text-xs text-gray-500">No agents found</li>
+                )}
+              </ul>
+            </div>
+          )}
+        </div>,
+        document.body
+      )
+    ) : null;
+
   return (
+    <>
     <div
       className="flex items-center gap-2.5 border-b border-gray-100 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
       style={{ overflow: "visible" }}
@@ -385,146 +579,6 @@ export const TicketListRow = React.memo(function TicketListRow({
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
             </button>
           </div>
-          {groupAgentOpen && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-60 rounded-lg border border-gray-200 bg-white shadow-lg overflow-hidden">
-              {/* Tabs: GROUP | AGENT */}
-              <div className="flex border-b border-gray-200">
-                <button
-                  type="button"
-                  onClick={() => setGroupAgentTab("group")}
-                  className={`flex-1 cursor-pointer px-2.5 py-1.5 text-[11px] font-semibold ${
-                    groupAgentTab === "group"
-                      ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50"
-                      : "text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  GROUP
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setGroupAgentTab("agent")}
-                  className={`flex-1 cursor-pointer px-2.5 py-1.5 text-[11px] font-semibold ${
-                    groupAgentTab === "agent"
-                      ? "text-blue-600 border-b-2 border-blue-600 bg-blue-50/50"
-                      : "text-gray-600 hover:bg-gray-50"
-                  }`}
-                >
-                  AGENT
-                </button>
-              </div>
-              {/* GROUP tab: current group + remove, search, change */}
-              {groupAgentTab === "group" && (
-                <div className="p-1.5">
-                  {hasAssignedGroup ? (
-                    <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
-                      <span className="truncate font-medium text-gray-800">{groupLabel}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onUpdateGroup(ticket.id, null, "Unassigned");
-                          setSearchGroup("");
-                        }}
-                        className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
-                        aria-label="Remove group"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <span className="inline-flex items-center rounded-md border border-dashed border-gray-200 bg-gray-50 px-2 py-1 text-[11px] font-medium text-gray-500">
-                      Unassigned
-                    </span>
-                  )}
-                  <p className="mt-1 text-[10px] text-gray-500">Change group</p>
-                  <div className="relative mt-1">
-                    <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
-                    <input
-                      type="text"
-                      value={searchGroup}
-                      onChange={(e) => setSearchGroup(e.target.value)}
-                      placeholder="Search groups..."
-                      className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                    />
-                  </div>
-                  <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
-                    {filteredGroupOptions.map((opt) => (
-                      <li key={opt.value}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onUpdateGroup(ticket.id, parseInt(opt.value, 10), opt.label);
-                            setGroupAgentOpen(false);
-                          }}
-                          className="w-full cursor-pointer px-2 py-1.5 text-left text-[12px] text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
-                        >
-                          {opt.label}
-                        </button>
-                      </li>
-                    ))}
-                    {filteredGroupOptions.length === 0 && (
-                      <li className="px-2 py-2 text-xs text-gray-500">No groups found</li>
-                    )}
-                  </ul>
-                </div>
-              )}
-              {/* AGENT tab: current agent + unassign, search, reassign */}
-              {groupAgentTab === "agent" && (
-                <div className="p-1.5">
-                  <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px]">
-                    <span className="truncate font-medium text-gray-800">{agentLabel}</span>
-                    {ticket.assignee && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onUpdateAssignee(ticket.id, null, "Unassigned");
-                          setSearchAgent("");
-                        }}
-                        className="shrink-0 rounded p-0.5 text-red-600 hover:bg-red-100"
-                        aria-label="Unassign agent"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                  <p className="mt-1 text-[10px] text-gray-500">Reassign or unassign</p>
-                  <div className="relative mt-1">
-                    <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-gray-400" />
-                    <input
-                      type="text"
-                      value={searchAgent}
-                      onChange={(e) => setSearchAgent(e.target.value)}
-                      placeholder="Search agents..."
-                      className="w-full rounded border border-gray-300 py-1 pl-6.5 pr-2 text-[11px] focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                    />
-                  </div>
-                  <ul className="mt-1 max-h-36 overflow-y-auto rounded border border-gray-200 bg-white">
-                    {filteredAgentOptions.map((opt) => (
-                      <li key={opt.value}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const id = opt.value === "me" && currentUserId != null ? currentUserId : opt.value ? parseInt(opt.value, 10) : null;
-                            onUpdateAssignee(
-                              ticket.id,
-                              Number.isNaN(id as number) ? null : id,
-                              opt.label
-                            );
-                            setGroupAgentOpen(false);
-                          }}
-                          className="w-full cursor-pointer px-2 py-1.5 text-left text-[12px] text-gray-900 hover:bg-blue-50 hover:text-gray-900 focus:bg-blue-50 focus:outline-none"
-                        >
-                          {opt.label}
-                        </button>
-                      </li>
-                    ))}
-                    {filteredAgentOptions.length === 0 && (
-                      <li className="px-2 py-2 text-xs text-gray-500">No agents found</li>
-                    )}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
         </div>
         {/* Status */}
         <div className="w-full flex items-center">
@@ -548,5 +602,7 @@ export const TicketListRow = React.memo(function TicketListRow({
         </div>
       </div>
     </div>
+    {groupAgentMenuPanel}
+    </>
   );
 });

@@ -1,30 +1,88 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useTicketDetail, type TicketDetail, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { AttachmentModal, isImageUrl } from "./AttachmentModal";
+import { isImageUrl } from "./AttachmentModal";
 import { TicketActionBar } from "./TicketActionBar";
 import { TicketHeader } from "./TicketHeader";
 import { ConversationPanel } from "./ConversationPanel";
-import { ActivityTimeline } from "./ActivityTimeline";
+import { ActivityTimeline, fetchTicketActivities, TICKET_ACTIVITIES_STALE_MS } from "./ActivityTimeline";
+import { TicketCsatPanel } from "./TicketCsatPanel";
+import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
+import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
+import { AgentActivityPageClient } from "@/components/tickets/AgentActivityPageClient";
 import { addToRecentViewed } from "@/components/search/GlobalSearch";
-import { Paperclip } from "lucide-react";
+import { Check, Copy, Download, Globe, Paperclip } from "lucide-react";
+import { useRightSidebar } from "@/context/RightSidebarContext";
 
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
 
+const IMAGE_FILENAME = /\.(jpe?g|png|gif|webp|bmp|svg)(\?|#|$)/i;
+
+/** DB / proxy URLs often lack a file extension on the pathname; still treat as image when possible. */
+function isHeaderAttachmentImage(url: string, fileName: string, mimeType?: string | null): boolean {
+  const mime = (mimeType ?? "").toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  if (fileName && IMAGE_FILENAME.test(fileName.toLowerCase())) return true;
+  if (isImageUrl(url)) return true;
+  if (!url || url === "#") return false;
+  try {
+    const base = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const u = new URL(url, base);
+    const key = u.searchParams.get("key");
+    if (key && IMAGE_FILENAME.test(decodeURIComponent(key))) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function attachmentRowMeta(att: string | { url?: string; name?: string; mimeType?: string; mime_type?: string }): {
+  url: string;
+  name: string;
+  mimeType?: string;
+} {
+  if (typeof att === "string") {
+    return { url: att, name: "" };
+  }
+  const url = typeof att.url === "string" ? att.url : "#";
+  const name = typeof att.name === "string" ? att.name : "";
+  const mimeType =
+    typeof att.mimeType === "string" ? att.mimeType : typeof att.mime_type === "string" ? att.mime_type : undefined;
+  return { url, name, mimeType };
+}
+
 function formatCreatedLong(dateStr: string): string {
   const date = new Date(dateStr);
-  return date.toLocaleString("en-IN", {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  const relative =
+    diffMins < 1
+      ? "just now"
+      : diffMins < 60
+        ? `${diffMins}m ago`
+        : diffHours < 24
+          ? `${diffHours}h ago`
+          : diffDays < 7
+            ? `${diffDays}d ago`
+            : `${diffDays}d ago`;
+  const absolute = date.toLocaleString("en-IN", {
     weekday: "short",
     day: "numeric",
     month: "short",
     year: "numeric",
-    hour: "2-digit",
+    hour: "numeric",
     minute: "2-digit",
+    hour12: true,
   });
+  return `${relative} (${absolute})`;
 }
 
 function getStoredLastViewed(ticketId: number): { updatedAt: string; messageCount: number } | null {
@@ -45,22 +103,75 @@ function setStoredLastViewed(ticketId: number, updatedAt: string, messageCount: 
   } catch {}
 }
 
+/** Persist ticket inner view across refresh: ?panel=activities | ?panel=csat */
 export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
-  const { data: ticket, isLoading, isFetching, error } = useTicketDetail(ticketId);
-  const [allowErrorRender, setAllowErrorRender] = useState(false);
-  const [showActivities, setShowActivities] = useState(false);
-  const [showReplySection, setShowReplySection] = useState(false);
-  const [attachmentPreview, setAttachmentPreview] = useState<{ url: string; name: string } | null>(null);
-  const [newUpdatesCount, setNewUpdatesCount] = useState(0);
-  const queryClient = useQueryClient();
-  const onMessageSent = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketId) });
-  }, [queryClient, ticketId]);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const rightSidebar = useRightSidebar();
+  const { data: ticket, isLoading, isFetching, isError, error } = useTicketDetail(ticketId);
 
-  // Always refetch ticket when this view mounts so latest data and UI are shown.
+  const panelParam = searchParams.get("panel");
+  const showActivities = panelParam === "activities";
+  const showCsatPanel = panelParam === "csat";
+
+  const setTicketPanel = useCallback(
+    (next: "conversation" | "activities" | "csat") => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === "conversation") {
+        params.delete("panel");
+      } else {
+        params.set("panel", next);
+      }
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams]
+  );
+  const [showReplySection, setShowReplySection] = useState(false);
+  const [quickComposeAction, setQuickComposeAction] = useState<{ type: "reply" | "forward" | "note_private" | "note_public"; nonce: number } | null>(null);
+  const [newUpdatesCount, setNewUpdatesCount] = useState(0);
+  const [copiedPhone, setCopiedPhone] = useState(false);
+  const sidebarStateBeforeLoadingRef = useRef<boolean | null>(null);
+  const queryClient = useQueryClient();
+  const onMessageSent = useCallback(
+    (payload?: TicketMessageSentPayload) => {
+      if (payload?.message) {
+        queryClient.setQueryData<TicketDetail>(queryKeys.tickets.detail(ticketId), (old) => {
+          if (!old) return old;
+          if (old.messages.some((m) => m.id === payload.message!.id)) return old;
+          let next: TicketDetail = {
+            ...old,
+            messages: [...old.messages, payload.message!],
+            updatedAt: payload.message!.createdAt || old.updatedAt,
+          };
+          if (payload.ticketStatus) {
+            next = { ...next, status: payload.ticketStatus.toLowerCase() };
+          }
+          if (payload.isFirstResponse && payload.message?.createdAt) {
+            next = { ...next, firstResponseAt: payload.message.createdAt };
+          }
+          return next;
+        });
+      } else {
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketId) });
+    },
+    [queryClient, ticketId]
+  );
+
+  // Warm activities cache as soon as the route is open so "Show activities" renders immediately.
   useEffect(() => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+    if (ticketId == null || ticketId === "") return;
+    const idNum = Number(ticketId);
+    if (!Number.isFinite(idNum)) return;
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.tickets.activities(ticketId),
+      queryFn: () => fetchTicketActivities(idNum),
+      staleTime: TICKET_ACTIVITIES_STALE_MS,
+      retry: false,
+    });
   }, [ticketId, queryClient]);
 
   // Reply box stays hidden until user clicks Reply; do not auto-open on refresh or hash
@@ -119,152 +230,418 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     setNewUpdatesCount(0);
   }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
 
-  // Show skeleton first while loading or fetching without data; only show error after load attempt finishes.
+  /** No ticket yet and query hasn't failed — show skeleton. Stops immediately on 404 (no retry spam). */
+  const stillLoading = !ticket && !isError && (isLoading || isFetching);
   useEffect(() => {
-    if (ticket || isLoading || isFetching || !error) {
-      setAllowErrorRender(false);
+    if (!rightSidebar?.setOpen) return;
+    if (stillLoading) {
+      if (sidebarStateBeforeLoadingRef.current == null) {
+        sidebarStateBeforeLoadingRef.current = Boolean(rightSidebar.isOpen);
+      }
+      rightSidebar.setOpen(false);
       return;
     }
-    const id = window.setTimeout(() => setAllowErrorRender(true), 2200);
-    return () => clearTimeout(id);
-  }, [ticket, isLoading, isFetching, error]);
+    if (sidebarStateBeforeLoadingRef.current != null) {
+      rightSidebar.setOpen(sidebarStateBeforeLoadingRef.current);
+      sidebarStateBeforeLoadingRef.current = null;
+    }
+  }, [stillLoading, rightSidebar]);
 
-  const stillLoading = isLoading || (isFetching && !ticket);
   if (stillLoading) {
     return (
-      <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
-        <LoadingSpinner />
-        <p className="text-sm text-gray-500 max-w-md">Getting everything ready...</p>
+      <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-[#f5f7f9] px-4">
+        <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border border-gray-200 bg-white/85 px-6 py-6 text-center shadow-sm">
+          <LoadingSpinner />
+          <p className="text-sm font-medium text-gray-700">Getting everything ready...</p>
+          <p className="text-xs text-gray-500">Loading ticket details and properties</p>
+        </div>
       </div>
     );
   }
 
-  if ((error || !ticket) && allowErrorRender) {
+  if (isError || (error && !ticket)) {
     return (
       <div className="flex h-full min-h-[70vh] items-center justify-center px-6 text-center">
         <div className="max-w-md text-gray-800">
-          <p className="text-lg font-semibold tracking-tight">😒 Ohh Nooo......</p>
+          <p className="text-lg font-semibold tracking-tight">😒 Oho Nooo......</p>
           <p className="mt-3 text-base font-normal text-gray-600">You took a wrong turn!</p>
         </div>
       </div>
     );
   }
 
-  // Safety guard: while ticket is unresolved and error UI is intentionally delayed,
-  // keep showing skeleton so we never access ticket.id on undefined.
   if (!ticket) {
     return (
-      <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
-        <LoadingSpinner />
-        <p className="text-sm text-gray-500 max-w-md">Getting everything ready...</p>
+      <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-[#f5f7f9] px-4">
+        <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border border-gray-200 bg-white/85 px-6 py-6 text-center shadow-sm">
+          <LoadingSpinner />
+          <p className="text-sm font-medium text-gray-700">Getting everything ready...</p>
+          <p className="text-xs text-gray-500">Loading ticket details and properties</p>
+        </div>
+      </div>
+    );
+  }
+
+  const raisedType = String(ticket.sourceRole || ticket.ticketSource || "").toUpperCase();
+  const contactLabel = raisedType === "RIDER" ? "Rider" : raisedType === "CUSTOMER" ? "Customer" : raisedType === "MERCHANT" ? "Merchant" : null;
+  const showContactName = contactLabel != null && ticket.raisedByName && ticket.raisedByName.trim() !== "";
+  const showContactPhone = contactLabel != null && ticket.raisedByMobile && ticket.raisedByMobile.trim() !== "";
+  const getPhoneLastTenDigits = (phone: string | null): string => {
+    if (!phone) return "";
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length <= 10) return digits;
+    return digits.slice(-10);
+  };
+  const handleCopyPhone = async () => {
+    const value = getPhoneLastTenDigits(ticket.raisedByMobile);
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedPhone(true);
+      window.setTimeout(() => setCopiedPhone(false), 1500);
+    } catch {
+      setCopiedPhone(false);
+    }
+  };
+  const handleDownloadAttachment = async (url: string, fileName?: string) => {
+    if (!url || url === "#") return;
+    try {
+      const extFromName =
+        fileName && fileName.includes(".") ? `.${fileName.split(".").pop()}` : "";
+      const extFromUrl = !extFromName
+        ? (() => {
+            try {
+              const clean = url.split("?")[0].split("#")[0];
+              const p = clean.split(".").pop();
+              return p ? `.${p}` : "";
+            } catch {
+              return "";
+            }
+          })()
+        : "";
+      const finalName = `GMitra - # ${ticket.ticketNumber || ticket.id}${extFromName || extFromUrl}`;
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = finalName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  const isTicketSettingsMain = rightSidebar?.ticketRightSidebarPanel === "settings";
+  const settingsSection = rightSidebar?.ticketSettingsSection ?? "automation";
+
+  if (isTicketSettingsMain) {
+    return (
+      <div
+        className={`relative flex h-full min-h-0 flex-col bg-[#f5f7f9] transition-[padding] duration-200 ${
+          rightSidebar?.isOpen ? "lg:pr-64" : "lg:pr-14"
+        }`}
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="mx-auto min-w-0 max-w-5xl px-4 py-5 sm:px-6">
+            {settingsSection === "activity" && (
+              <header className="border-b border-gray-200 pb-4">
+                <h1 className="text-lg font-semibold text-gray-900">Activity & reports</h1>
+                <p className="mt-1 text-sm text-gray-600">
+                  Performance metrics, CSAT/DSAT, and time tracking for the selected period.
+                </p>
+              </header>
+            )}
+            <div className={settingsSection === "activity" ? "pt-6" : "pt-2"}>
+              {settingsSection === "automation" ? (
+                <>
+                  <TicketComposeAutomationSection variant="plain" />
+                  <div className="mt-10 border-t border-gray-200 pt-8">
+                    <TicketNotificationAutomationSection variant="plain" />
+                  </div>
+                </>
+              ) : (
+                <AgentActivityPageClient embed="ticketSettingsActivity" />
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 relative">
-      {/* Sticky: action bar + ticket heading (compact; no breadcrumb above buttons) */}
-      <div className="sticky top-0 z-10 bg-white border-b border-gray-200 -mx-3 px-3 pb-2 sm:-mx-4 sm:px-4 shrink-0">
-        <TicketActionBar
-          ticketId={ticket.id}
-          ticketNumber={ticket.ticketNumber || String(ticket.id)}
-          showActivities={showActivities}
-          onToggleActivities={() => setShowActivities((v) => !v)}
-          onReplyClick={() => setShowReplySection(true)}
-        />
-        {!showActivities && (
-          <div className="mt-2">
+    <div
+      className={`relative flex h-full min-h-0 flex-col bg-[#f5f7f9] transition-[padding] duration-200 ${
+        rightSidebar?.isOpen ? "lg:pr-64" : "lg:pr-14"
+      }`}
+    >
+      <div className="ml-0 mr-0 mt-0 flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-lg rounded-bl-lg border border-gray-200 bg-white">
+        {/* Sticky: action bar + ticket heading inside one unified surface */}
+        <div className="sticky top-0 z-10 shrink-0 bg-white px-2.5 pt-1 pb-1.5 sm:px-3">
+          <TicketActionBar
+            ticketId={ticket.id}
+            ticketNumber={ticket.ticketNumber || String(ticket.id)}
+            mergedTickets={ticket.mergedTickets ?? []}
+            mergedIntoTicketId={ticket.mergedIntoTicketId ?? null}
+            mergedIntoTicketNumber={ticket.mergedIntoTicketNumber ?? null}
+            showActivities={showActivities}
+            onToggleActivities={() => {
+              if (showActivities) setTicketPanel("conversation");
+              else setTicketPanel("activities");
+            }}
+            showCsat={showCsatPanel}
+            onToggleCsat={() => {
+              if (showCsatPanel) setTicketPanel("conversation");
+              else setTicketPanel("csat");
+            }}
+            onReplyClick={() => {
+              setQuickComposeAction({ type: "reply", nonce: Date.now() });
+              setShowReplySection(true);
+            }}
+            onForwardClick={() => {
+              setQuickComposeAction({ type: "forward", nonce: Date.now() });
+              setShowReplySection(true);
+            }}
+            onAddNoteClick={(visibility) => {
+              setQuickComposeAction({
+                type: visibility === "public" ? "note_public" : "note_private",
+                nonce: Date.now(),
+              });
+              setShowReplySection(true);
+            }}
+            onMergeSuccess={onMessageSent}
+            ticketIsSpam={ticket.isSpam === true}
+          />
+          <div className="mt-0 border-t border-gray-200 px-0.5 pb-1.5 pt-1">
             <TicketHeader
               ticket={ticket}
               newUpdatesCount={newUpdatesCount}
               onDismissUpdates={handleDismissUpdates}
+              variant="subjectOnly"
             />
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Scrollable: description+attachments, conversation. Reply composer is in document flow (no fixed/sticky) so it scrolls with page and never overlaps. */}
-      <div className={`flex-1 min-h-0 overflow-y-auto ${showReplySection ? "pb-8" : "pb-4"}`}>
-        {showActivities ? (
-          <div className="mt-2 px-0">
-            <ActivityTimeline ticketId={ticket.id} noScroll />
-          </div>
-        ) : (
-          <>
-            {/* Description + attachments: reference style — avatar, "X reported via the portal", timestamp, then body and attachments */}
-            {(ticket.description || (ticket.attachments && ticket.attachments.length > 0)) && (
-              <div className="mt-3 rounded-xl border border-gray-100 bg-gray-50/80 p-4">
-                {ticket.description && (
-                  <>
-                    <div className="flex gap-3">
-                      <div className="shrink-0 w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center text-sm font-semibold text-gray-600">
-                        {(ticket.raisedByName || ticket.sourceRole || "R").charAt(0).toUpperCase()}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm">
-                          <span className="font-medium text-blue-600">{ticket.raisedByName || ticket.sourceRole || "Customer"}</span>
-                          <span className="text-gray-700"> reported via the portal</span>
-                        </div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {formatCreatedLong(ticket.createdAt)}
-                        </div>
-                        <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap break-words">{ticket.description}</p>
-                      </div>
-                    </div>
-                  </>
-                )}
-                {ticket.attachments && ticket.attachments.length > 0 && (
-                  <div className={ticket.description ? "mt-2 pt-2 border-t border-gray-200" : ""}>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide mr-0.5">Attachments</span>
-                      {ticket.attachments.map((att, i) => {
-                        const url = typeof att === "string" ? att : (att as { url?: string })?.url ?? "#";
-                        const name = typeof att === "string" ? "" : (att as { name?: string })?.name ?? "";
-                        const isImage = isImageUrl(url);
-                        return (
-                          <button
-                            key={i}
-                            type="button"
-                            onClick={() => setAttachmentPreview({ url, name: name || (isImage ? "Image" : "File") })}
-                            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-1.5 py-1 hover:bg-gray-50 text-left focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[140px]"
-                            title={name || (isImage ? "View image" : "View file")}
-                          >
-                            {isImage ? (
-                              <img src={url} alt="" className="w-6 h-6 rounded object-cover shrink-0" />
-                            ) : (
-                              <Paperclip className="h-3.5 w-3.5 text-gray-500 shrink-0" />
-                            )}
-                            <span className="text-[10px] text-gray-600 truncate min-w-0">{name || "File"}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            {attachmentPreview && (
-              <AttachmentModal
-                url={attachmentPreview.url}
-                name={attachmentPreview.name}
-                onClose={() => setAttachmentPreview(null)}
-              />
-            )}
-
-            {/* Conversation: flows with page, no separate scrollbar */}
-            <div className="mt-2">
-              <ConversationPanel
+        {/* Scrollable: description+attachments, conversation. */}
+        <div className={`flex-1 min-h-0 overflow-y-auto bg-white px-2.5 ${showReplySection ? "pb-8" : "pb-4"} sm:px-3`}>
+          {showActivities ? (
+            <div className="mt-0 px-0">
+              <ActivityTimeline ticketId={ticket.id} noScroll />
+            </div>
+          ) : showCsatPanel ? (
+            <div className="mt-0 px-0">
+              <TicketCsatPanel
                 ticketId={ticket.id}
-                messages={ticket.messages || []}
-                recipientEmail={ticket.raisedByEmail ?? undefined}
-                onMessageSent={onMessageSent}
-                replyVisible={showReplySection}
-                onCloseReply={() => setShowReplySection(false)}
-                noScroll
+                ticketNumber={ticket.ticketNumber || String(ticket.id)}
+                satisfactionRating={ticket.satisfactionRating}
+                satisfactionFeedback={ticket.satisfactionFeedback}
+                satisfactionCollectedAt={ticket.satisfactionCollectedAt}
+                ticketRatings={ticket.ticketRatings}
               />
             </div>
-          </>
-        )}
+          ) : (
+            <>
+              <div className="px-0.5 pt-1">
+                <TicketHeader
+                  ticket={ticket}
+                  newUpdatesCount={newUpdatesCount}
+                  onDismissUpdates={handleDismissUpdates}
+                  variant="metaOnly"
+                />
+              </div>
+              {/* Description area now integrated into same surface (no extra detached card). */}
+              {(ticket.description || (ticket.attachments && ticket.attachments.length > 0)) && (
+                <div className="mt-2 border-b border-gray-200 pb-3.5">
+                  {ticket.description && (
+                    <>
+                      <div className="flex gap-2.5">
+                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-300 bg-gray-200 text-xs font-semibold text-gray-700">
+                          {(ticket.raisedByName || ticket.sourceRole || "R").charAt(0).toUpperCase()}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] leading-5">
+                            <span className="font-medium text-[#2563eb]">{ticket.raisedByName || ticket.sourceRole || "Customer"}</span>
+                            <span className="text-[#374151]"> reported via the portal</span>
+                          </div>
+                          <div className="mt-0.5 text-[11px] italic text-gray-500">
+                            {formatCreatedLong(ticket.createdAt)}
+                          </div>
+                          <div className="mt-2.5 grid grid-cols-[14px_minmax(0,1fr)] items-start gap-x-2 gap-y-2">
+                            <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-500" />
+                            <span className="block max-w-[920px] break-words text-[13px] leading-snug text-[#374151]">
+                              {ticket.description}
+                            </span>
+                            {showContactName && (
+                              <>
+                                <span aria-hidden className="h-3.5 w-3.5" />
+                                <p className="mt-2 text-sm font-semibold text-[#1f2937]">
+                                  {contactLabel} Name: {ticket.raisedByName}
+                                </p>
+                              </>
+                            )}
+                            {showContactPhone && (
+                              <>
+                                <span aria-hidden className="h-3.5 w-3.5" />
+                                <div className="flex items-center gap-2">
+                                  <p className="text-sm font-semibold text-[#1f2937]">
+                                    {contactLabel} Phone: {ticket.raisedByMobile}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCopyPhone()}
+                                    className="inline-flex cursor-pointer items-center gap-0.5 px-0.5 text-[10px] font-medium text-gray-700 hover:text-gray-900"
+                                    aria-label="Copy last 10 digits"
+                                    title="Copy 10-digit number"
+                                  >
+                                    {copiedPhone ? <Check className="h-2.5 w-2.5 text-green-600" /> : <Copy className="h-2.5 w-2.5" />}
+                                    {copiedPhone ? "Copied" : ""}
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                            {ticket.attachments && ticket.attachments.length > 0 && (
+                              <>
+                                <span aria-hidden className="h-3.5 w-3.5" />
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  {ticket.attachments.map((att, i) => {
+                                    const { url, name, mimeType } = attachmentRowMeta(
+                                      att as string | { url?: string; name?: string; mimeType?: string; mime_type?: string }
+                                    );
+                                    const isImage = isHeaderAttachmentImage(url, name, mimeType);
+                                    return (
+                                      <div
+                                        key={i}
+                                        className="relative inline-flex min-w-[150px] max-w-[170px] items-center gap-2 rounded-lg border border-gray-300 bg-white p-2 pr-8 text-left shadow-sm"
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            if (url && url !== "#") {
+                                              window.open(url, "_blank", "noopener,noreferrer");
+                                            }
+                                          }}
+                                          className="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                                          title={name || (isImage ? "Open image in new tab" : "View file")}
+                                        >
+                                          {isImage ? (
+                                            <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-gray-100">
+                                              <img src={url} alt="" className="h-full w-full object-cover" />
+                                            </span>
+                                          ) : (
+                                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gray-100">
+                                              <Paperclip className="h-3.5 w-3.5 text-gray-500" />
+                                            </span>
+                                          )}
+                                          <span className="min-w-0">
+                                            <span className="block truncate text-xs font-semibold text-gray-700">{name || "File"}</span>
+                                            <span className="block text-[10px] text-gray-500">{isImage ? "Image attachment" : "File attachment"}</span>
+                                          </span>
+                                        </button>
+                                        {url && url !== "#" && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              void handleDownloadAttachment(url, name || undefined);
+                                            }}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex cursor-pointer items-center justify-center text-gray-500 hover:text-gray-700"
+                                            aria-label="Download attachment"
+                                            title="Download"
+                                          >
+                                            <Download className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {ticket.attachments && ticket.attachments.length > 0 && !ticket.description && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {ticket.attachments.map((att, i) => {
+                          const { url, name, mimeType } = attachmentRowMeta(
+                            att as string | { url?: string; name?: string; mimeType?: string; mime_type?: string }
+                          );
+                          const isImage = isHeaderAttachmentImage(url, name, mimeType);
+                          return (
+                            <div
+                              key={i}
+                              className="relative inline-flex min-w-[150px] max-w-[170px] items-center gap-2 rounded-lg border border-gray-300 bg-white p-2 pr-8 text-left shadow-sm"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (url && url !== "#") {
+                                    window.open(url, "_blank", "noopener,noreferrer");
+                                  }
+                                }}
+                                className="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                                title={name || (isImage ? "Open image in new tab" : "View file")}
+                              >
+                                {isImage ? (
+                                  <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-gray-100">
+                                    <img src={url} alt="" className="h-full w-full object-cover" />
+                                  </span>
+                                ) : (
+                                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gray-100">
+                                    <Paperclip className="h-3.5 w-3.5 text-gray-500" />
+                                  </span>
+                                )}
+                                <span className="min-w-0">
+                                  <span className="block truncate text-xs font-semibold text-gray-700">{name || "File"}</span>
+                                  <span className="block text-[10px] text-gray-500">{isImage ? "Image attachment" : "File attachment"}</span>
+                                </span>
+                              </button>
+                              {url && url !== "#" && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleDownloadAttachment(url, name || undefined);
+                                  }}
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex cursor-pointer items-center justify-center text-gray-500 hover:text-gray-700"
+                                  aria-label="Download attachment"
+                                  title="Download"
+                                >
+                                  <Download className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="mt-0">
+                <ConversationPanel
+                  ticketId={ticket.id}
+                  ticketNumber={ticket.ticketNumber}
+                  ticketSubject={ticket.subject}
+                  messages={ticket.messages || []}
+                  recipientEmail={ticket.raisedByEmail ?? undefined}
+                  onMessageSent={onMessageSent}
+                  replyVisible={showReplySection}
+                  quickComposeAction={quickComposeAction}
+                  onOpenReply={() => setShowReplySection(true)}
+                  onCloseReply={() => setShowReplySection(false)}
+                  noScroll
+                  embedded
+                />
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

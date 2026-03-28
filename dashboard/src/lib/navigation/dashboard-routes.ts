@@ -34,6 +34,7 @@ import {
   History,
   Layers,
   ClipboardList,
+  Star,
 } from "lucide-react";
 
 /** For Area Manager sidebar: show only routes allowed for this manager type. */
@@ -286,6 +287,12 @@ export function getMerchantSubRoutesForPath(pathname: string): DashboardSubRoute
  */
 export const ticketDashboardRoutes: DashboardSubRoute[] = [
   {
+    name: "Dashboard",
+    href: "/dashboard/tickets/dashboard",
+    icon: LayoutDashboard,
+    description: "Helpdesk metrics, queues, and email delivery",
+  },
+  {
     name: "All Tickets",
     href: "/dashboard/tickets/all",
     icon: Ticket,
@@ -338,6 +345,12 @@ export const ticketDashboardRoutes: DashboardSubRoute[] = [
     href: "/dashboard/tickets/unified",
     icon: Layers,
     description: "Tickets from unified_tickets table",
+  },
+  {
+    name: "C&D-SAT",
+    href: "/dashboard/tickets/csat",
+    icon: Star,
+    description: "CSAT and DSAT summary for tickets you resolved or closed",
   },
 ];
 
@@ -563,6 +576,10 @@ export function getCurrentPageName(pathname: string): string {
   if (cleanPath === currentDashboard.href) {
     return currentDashboard.name;
   }
+
+  if (cleanPath === "/dashboard/tickets/csat/details") {
+    return "C&D-SAT — Daily breakdown";
+  }
   
   // Check if we're on a sub-route (most specific first: match longer hrefs so wallet-history → Wallet & Earnings)
   if (currentDashboard.subRoutes) {
@@ -598,6 +615,7 @@ export function getCurrentPageName(pathname: string): string {
 
   // Check for special pages
   const pageNameMap: Record<string, string> = {
+    "/dashboard/tickets/dashboard": "Dashboard",
     "/dashboard/users": "User Management",
     "/dashboard/users/new": "Add User",
     "/dashboard/users/roles": "System roles",

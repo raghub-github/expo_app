@@ -1,8 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { Calendar, Clock, Ticket, TrendingUp, Star, AlertCircle, BarChart3 } from "lucide-react";
+import { Calendar } from "lucide-react";
+import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
+import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 
 type Period = "today" | "week" | "month" | "custom";
 
@@ -20,7 +23,101 @@ interface ActivitySummary {
   avgRating: number | null;
 }
 
-export function AgentActivityPageClient() {
+export type AgentActivityEmbed = "ticketSettingsActivity";
+
+function StatMetricCard({
+  label,
+  value,
+  sub,
+  compact,
+}: {
+  label: string;
+  value: string | number;
+  sub?: string;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+        compact ? "p-4" : "p-5"
+      }`}
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
+      <p className={`mt-2 font-bold tabular-nums text-gray-900 ${compact ? "text-2xl" : "text-3xl"}`}>{value}</p>
+      {sub ? <p className="mt-1 text-xs text-gray-500">{sub}</p> : null}
+    </div>
+  );
+}
+
+function WidgetShell({
+  title,
+  subtitle,
+  action,
+  children,
+  compact,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+  children: ReactNode;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`flex min-h-[200px] flex-col rounded-lg border border-gray-200 bg-white shadow-sm ${
+        compact ? "" : "min-h-[240px]"
+      }`}
+    >
+      <div
+        className={`flex flex-wrap items-start justify-between gap-2 border-b border-gray-100 ${
+          compact ? "px-4 py-3" : "px-5 py-4"
+        }`}
+      >
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          {subtitle ? <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p> : null}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      <div className={`min-h-0 flex-1 ${compact ? "px-4 py-3" : "px-5 py-4"}`}>{children}</div>
+    </div>
+  );
+}
+
+function MetricTableRow({ label, value, valueClassName }: { label: string; value: ReactNode; valueClassName?: string }) {
+  return (
+    <tr className="border-b border-gray-100 last:border-b-0">
+      <td className="py-2.5 pr-3 text-sm text-gray-600">{label}</td>
+      <td className={`py-2.5 text-right text-sm font-semibold tabular-nums ${valueClassName ?? "text-gray-900"}`}>
+        {value}
+      </td>
+    </tr>
+  );
+}
+
+function ActivityDashboardSkeleton({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="space-y-4 animate-pulse">
+      <div className={`rounded-lg border border-gray-200 bg-white shadow-sm ${compact ? "h-14" : "h-16"}`} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-28 rounded-lg border border-gray-200 bg-white shadow-sm" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-64 rounded-lg border border-gray-200 bg-white shadow-sm" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed }) {
+  const searchParams = useSearchParams();
+  const sectionFromUrl = searchParams.get("section") === "automation" ? "automation" : "activity";
+  const section = embed === "ticketSettingsActivity" ? "activity" : sectionFromUrl;
+
   const [period, setPeriod] = useState<Period>("today");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -45,12 +142,13 @@ export function AgentActivityPageClient() {
       startDate: string;
       endDate: string;
       summary: ActivitySummary;
-      profile: any;
-      dailyBreakdown: any[];
+      profile: unknown;
+      dailyBreakdown: unknown[];
       allAgents?: AgentActivityRow[];
     };
   }>({
     queryKey: ["agentActivity", period, startDate, endDate],
+    enabled: section === "activity",
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set("period", period);
@@ -87,284 +185,305 @@ export function AgentActivityPageClient() {
     avgRating: null,
   };
 
-  if (error) {
+  if (section === "activity" && error) {
     return (
-      <div className="p-6">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800">Failed to load activity data. Please try again.</p>
+      <div className={embed === "ticketSettingsActivity" ? "py-2" : ""}>
+        <div className="rounded-lg border border-red-200 bg-white p-4 shadow-sm">
+          <p className="text-sm text-red-800">Failed to load activity data. Please try again.</p>
         </div>
       </div>
     );
   }
 
+  const isEmbeddedActivity = embed === "ticketSettingsActivity";
+  const compact = isEmbeddedActivity;
+
+  const rootClass = isEmbeddedActivity ? "min-w-0 space-y-4 py-2" : "min-w-0 space-y-5";
+
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Agent Activity & Performance</h1>
-          <p className="text-sm text-gray-600 mt-1">Track your tickets, CSAT/DSAT, and online time</p>
-        </div>
-      </div>
-
-      {/* Period Selector */}
-      <div className="flex items-center gap-4 bg-white p-4 rounded-lg border border-gray-200">
-        <div className="flex items-center gap-2">
-          <Calendar className="h-4 w-4 text-gray-500" />
-          <span className="text-sm font-medium text-gray-700">Period:</span>
-        </div>
-        <div className="flex gap-2">
-          {(["today", "week", "month", "custom"] as Period[]).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                period === p
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              {p.charAt(0).toUpperCase() + p.slice(1)}
-            </button>
-          ))}
-        </div>
-        {period === "custom" && (
-          <div className="flex items-center gap-2 ml-4">
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="px-2 py-1 text-xs border border-gray-300 rounded-md"
-            />
-            <span className="text-gray-500">to</span>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="px-2 py-1 text-xs border border-gray-300 rounded-md"
-            />
+    <div className={rootClass}>
+      {!isEmbeddedActivity && (
+        <header className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold tracking-tight text-gray-900">
+              {section === "automation" ? "Automation & settings" : "Agent Activity"}
+            </h1>
+            <p className="mt-1 text-sm text-gray-500">
+              {section === "automation"
+                ? "Reply composer defaults and notification rules for your account."
+                : "Performance metrics, CSAT, and time tracking for the selected period."}
+            </p>
           </div>
-        )}
-      </div>
+          {section === "activity" && (
+            <span className="text-xs font-medium text-blue-600">Summary</span>
+          )}
+        </header>
+      )}
 
-      {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      {section === "automation" ? (
+        <div className={isEmbeddedActivity ? "space-y-4" : "space-y-5"}>
+          <div
+            className={`rounded-lg border border-gray-200 bg-white shadow-sm ${isEmbeddedActivity ? "p-4" : "p-6"}`}
+          >
+            <TicketComposeAutomationSection variant="plain" />
+          </div>
+          <div
+            className={`rounded-lg border border-gray-200 bg-white shadow-sm ${isEmbeddedActivity ? "p-4" : "p-6"}`}
+          >
+            <TicketNotificationAutomationSection variant="plain" />
+          </div>
         </div>
       ) : (
         <>
-          {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Online Time */}
-            <div className="bg-white p-4 rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">Online Time</p>
-                  <p className="text-xl font-bold text-gray-900 mt-1">
-                    {formatMinutes(summary.onlineTimeMinutes)}
-                  </p>
-                </div>
-                <div className="p-2 bg-blue-100 rounded-lg">
-                  <Clock className="h-5 w-5 text-blue-600" />
-                </div>
-              </div>
+          {/* Period toolbar — Freshdesk-style white bar */}
+          <div
+            className={`flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white shadow-sm ${
+              compact ? "px-3 py-2.5" : "px-4 py-3"
+            }`}
+          >
+            <div className="flex items-center gap-2 text-gray-600">
+              <Calendar className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+              <span className="text-xs font-semibold text-gray-700">Period</span>
             </div>
-
-            {/* Tickets Resolved */}
-            <div className="bg-white p-4 rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">Tickets Resolved</p>
-                  <p className="text-xl font-bold text-gray-900 mt-1">
-                    {summary.ticketsResolved}
-                  </p>
-                </div>
-                <div className="p-2 bg-green-100 rounded-lg">
-                  <Ticket className="h-5 w-5 text-green-600" />
-                </div>
-              </div>
+            <div className="flex flex-wrap gap-1.5">
+              {(["today", "week", "month", "custom"] as Period[]).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPeriod(p)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    period === p
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  }`}
+                >
+                  {p.charAt(0).toUpperCase() + p.slice(1)}
+                </button>
+              ))}
             </div>
-
-            {/* CSAT Score */}
-            <div className="bg-white p-4 rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">CSAT Score</p>
-                  <p className="text-xl font-bold text-gray-900 mt-1">
-                    {summary.avgRating ? summary.avgRating.toFixed(1) : "N/A"}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {summary.csatCount} ratings
-                  </p>
-                </div>
-                <div className="p-2 bg-yellow-100 rounded-lg">
-                  <Star className="h-5 w-5 text-yellow-600" />
-                </div>
+            {period === "custom" && (
+              <div className="flex flex-wrap items-center gap-2 border-l border-gray-200 pl-3">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
+                />
+                <span className="text-xs text-gray-400">to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
+                />
               </div>
-            </div>
-
-            {/* DSAT Count */}
-            <div className="bg-white p-4 rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-gray-600">DSAT Count</p>
-                  <p className="text-xl font-bold text-gray-900 mt-1">
-                    {summary.dsatCount}
-                  </p>
-                </div>
-                <div className="p-2 bg-red-100 rounded-lg">
-                  <AlertCircle className="h-5 w-5 text-red-600" />
-                </div>
-              </div>
-            </div>
+            )}
           </div>
 
-          {/* Detailed Stats */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Ticket Metrics */}
-            <div className="bg-white p-6 rounded-lg border border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <BarChart3 className="h-5 w-5" />
-                Ticket Metrics
-              </h2>
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Assigned</span>
-                  <span className="text-sm font-semibold text-gray-900">{summary.ticketsAssigned}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Resolved</span>
-                  <span className="text-sm font-semibold text-green-600">{summary.ticketsResolved}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Closed</span>
-                  <span className="text-sm font-semibold text-gray-900">{summary.ticketsClosed}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Updated</span>
-                  <span className="text-sm font-semibold text-gray-900">{summary.ticketsUpdated}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Reopened</span>
-                  <span className="text-sm font-semibold text-orange-600">{summary.ticketsReopened}</span>
-                </div>
+          {isLoading ? (
+            <ActivityDashboardSkeleton compact={compact} />
+          ) : (
+            <>
+              {/* Row 1 — four KPI cards */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <StatMetricCard
+                  compact={compact}
+                  label="Online time"
+                  value={formatMinutes(summary.onlineTimeMinutes)}
+                />
+                <StatMetricCard compact={compact} label="Tickets resolved" value={summary.ticketsResolved} />
+                <StatMetricCard
+                  compact={compact}
+                  label="CSAT score"
+                  value={summary.avgRating != null ? summary.avgRating.toFixed(1) : "—"}
+                  sub={summary.csatCount > 0 ? `${summary.csatCount} rating${summary.csatCount === 1 ? "" : "s"}` : "No ratings yet"}
+                />
+                <StatMetricCard compact={compact} label="DSAT count" value={summary.dsatCount} />
               </div>
-            </div>
 
-            {/* Time Metrics */}
-            <div className="bg-white p-6 rounded-lg border border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                <Clock className="h-5 w-5" />
-                Time Metrics
-              </h2>
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Online Time</span>
-                  <span className="text-sm font-semibold text-blue-600">
-                    {formatMinutes(summary.onlineTimeMinutes)}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Break Time</span>
-                  <span className="text-sm font-semibold text-yellow-600">
-                    {formatMinutes(summary.breakTimeMinutes)}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Active Time</span>
-                  <span className="text-sm font-semibold text-green-600">
-                    {formatMinutes(summary.activeTimeMinutes)}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center pt-2 border-t border-gray-200">
-                  <span className="text-sm font-medium text-gray-700">Total Work Time</span>
-                  <span className="text-sm font-semibold text-gray-900">
-                    {formatMinutes(summary.onlineTimeMinutes - summary.breakTimeMinutes)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* All agents activity table */}
-          {data?.data?.allAgents && data.data.allAgents.length > 0 && (
-            <div className="bg-white p-6 rounded-lg border border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">All Agents Activity</h2>
-              <p className="text-sm text-gray-600 mb-4">Activity for the selected period across all agents.</p>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left py-2 px-3 text-gray-600 font-medium">Agent</th>
-                      <th className="text-left py-2 px-3 text-gray-600 font-medium">Email</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Online</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Break</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Assigned</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Resolved</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Closed</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Updated</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Reopened</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.data.allAgents.map((agent) => (
-                      <tr key={agent.userId} className="border-b border-gray-100 hover:bg-gray-50/50">
-                        <td className="py-2 px-3 text-gray-900 font-medium">{agent.name}</td>
-                        <td className="py-2 px-3 text-gray-600">{agent.email}</td>
-                        <td className="py-2 px-3 text-right text-gray-700">{formatMinutes(agent.onlineTimeMinutes)}</td>
-                        <td className="py-2 px-3 text-right text-gray-700">{formatMinutes(agent.breakTimeMinutes)}</td>
-                        <td className="py-2 px-3 text-right text-gray-700">{agent.ticketsAssigned}</td>
-                        <td className="py-2 px-3 text-right text-green-600 font-medium">{agent.ticketsResolved}</td>
-                        <td className="py-2 px-3 text-right text-gray-700">{agent.ticketsClosed}</td>
-                        <td className="py-2 px-3 text-right text-gray-700">{agent.ticketsUpdated}</td>
-                        <td className="py-2 px-3 text-right text-orange-600">{agent.ticketsReopened}</td>
+              {/* Row 2 — three widgets */}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
+                <WidgetShell
+                  compact={compact}
+                  title="Ticket metrics"
+                  subtitle="Across the selected period"
+                  action={
+                    <a
+                      href="#agent-activity-daily"
+                      className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                    >
+                      View details
+                    </a>
+                  }
+                >
+                  <table className="w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200">
+                        <th className="pb-2 text-left text-xs font-medium text-gray-500">Metric</th>
+                        <th className="pb-2 text-right text-xs font-medium text-gray-500">Count</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+                    </thead>
+                    <tbody>
+                      <MetricTableRow label="Assigned" value={summary.ticketsAssigned} />
+                      <MetricTableRow label="Resolved" value={summary.ticketsResolved} valueClassName="text-green-700" />
+                      <MetricTableRow label="Closed" value={summary.ticketsClosed} />
+                      <MetricTableRow label="Updated" value={summary.ticketsUpdated} />
+                      <MetricTableRow label="Reopened" value={summary.ticketsReopened} valueClassName="text-orange-700" />
+                    </tbody>
+                  </table>
+                </WidgetShell>
 
-          {/* Daily Breakdown Table */}
-          {data?.data?.dailyBreakdown && data.data.dailyBreakdown.length > 0 && (
-            <div className="bg-white p-6 rounded-lg border border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Daily Breakdown</h2>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200">
-                      <th className="text-left py-2 px-3 text-gray-600 font-medium">Date</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Online</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Break</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">Resolved</th>
-                      <th className="text-right py-2 px-3 text-gray-600 font-medium">CSAT</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.data.dailyBreakdown.map((day: any, idx: number) => (
-                      <tr key={idx} className="border-b border-gray-100">
-                        <td className="py-2 px-3 text-gray-900">
-                          {new Date(day.activity_date).toLocaleDateString()}
-                        </td>
-                        <td className="py-2 px-3 text-right text-gray-700">
-                          {formatMinutes(day.online_time_minutes || 0)}
-                        </td>
-                        <td className="py-2 px-3 text-right text-gray-700">
-                          {formatMinutes(day.break_time_minutes || 0)}
-                        </td>
-                        <td className="py-2 px-3 text-right text-gray-700">
-                          {day.tickets_resolved || 0}
-                        </td>
-                        <td className="py-2 px-3 text-right text-gray-700">
-                          {day.csat_score ? day.csat_score.toFixed(1) : "N/A"}
-                        </td>
+                <WidgetShell compact={compact} title="Time metrics" subtitle="Availability & breaks">
+                  <table className="w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-200">
+                        <th className="pb-2 text-left text-xs font-medium text-gray-500">Metric</th>
+                        <th className="pb-2 text-right text-xs font-medium text-gray-500">Duration</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      <MetricTableRow
+                        label="Online"
+                        value={formatMinutes(summary.onlineTimeMinutes)}
+                        valueClassName="text-blue-700"
+                      />
+                      <MetricTableRow
+                        label="Break"
+                        value={formatMinutes(summary.breakTimeMinutes)}
+                        valueClassName="text-amber-700"
+                      />
+                      <MetricTableRow
+                        label="Active"
+                        value={formatMinutes(summary.activeTimeMinutes)}
+                        valueClassName="text-green-700"
+                      />
+                      <MetricTableRow
+                        label="Net work time"
+                        value={formatMinutes(Math.max(0, summary.onlineTimeMinutes - summary.breakTimeMinutes))}
+                      />
+                    </tbody>
+                  </table>
+                </WidgetShell>
+
+                <WidgetShell compact={compact} title="CSAT & feedback" subtitle="Quality signals">
+                  <div className="flex flex-col items-center justify-center py-4 text-center">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Average rating</p>
+                    <p className="mt-2 text-4xl font-bold tabular-nums text-gray-900">
+                      {summary.avgRating != null ? summary.avgRating.toFixed(1) : "—"}
+                    </p>
+                    <p className="mt-3 text-xs text-gray-500">
+                      {summary.csatCount > 0
+                        ? `Based on ${summary.csatCount} response${summary.csatCount === 1 ? "" : "s"}`
+                        : "No CSAT responses in this period."}
+                    </p>
+                    {summary.dsatCount > 0 ? (
+                      <p className="mt-2 text-xs font-medium text-red-700">{summary.dsatCount} DSAT</p>
+                    ) : null}
+                  </div>
+                </WidgetShell>
               </div>
-            </div>
+
+              {data?.data?.allAgents && data.data.allAgents.length > 0 && (
+                <section
+                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                    compact ? "p-4" : "p-5"
+                  }`}
+                >
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-gray-100 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-gray-900">All agents</h2>
+                      <p className="mt-0.5 text-xs text-gray-500">Activity for everyone in the selected period.</p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[640px] text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Agent</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Email</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Assigned</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Closed</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Updated</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Reopened</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.data.allAgents.map((agent) => (
+                          <tr key={agent.userId} className="border-b border-gray-100 hover:bg-gray-50/80">
+                            <td className="px-2 py-2.5 font-medium text-gray-900">{agent.name}</td>
+                            <td className="px-2 py-2.5 text-gray-600">{agent.email}</td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(agent.onlineTimeMinutes)}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(agent.breakTimeMinutes)}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsAssigned}</td>
+                            <td className="px-2 py-2.5 text-right font-medium text-green-700">{agent.ticketsResolved}</td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsClosed}</td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsUpdated}</td>
+                            <td className="px-2 py-2.5 text-right text-orange-700">{agent.ticketsReopened}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+
+              {data?.data?.dailyBreakdown && data.data.dailyBreakdown.length > 0 && (
+                <section
+                  id="agent-activity-daily"
+                  className={`scroll-mt-4 rounded-lg border border-gray-200 bg-white shadow-sm ${
+                    compact ? "p-4" : "p-5"
+                  }`}
+                >
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-gray-100 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-gray-900">Daily breakdown</h2>
+                      <p className="mt-0.5 text-xs text-gray-500">Day-by-day totals in this range.</p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Date</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">CSAT</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.data.dailyBreakdown.map((day: Record<string, unknown>, idx: number) => (
+                          <tr key={idx} className="border-b border-gray-100">
+                            <td className="px-2 py-2.5 text-gray-900">
+                              {new Date(String(day.activity_date)).toLocaleDateString()}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(Number(day.online_time_minutes) || 0)}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(Number(day.break_time_minutes) || 0)}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">{Number(day.tickets_resolved) || 0}</td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {day.csat_score != null && typeof day.csat_score === "number"
+                                ? day.csat_score.toFixed(1)
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+            </>
           )}
         </>
       )}

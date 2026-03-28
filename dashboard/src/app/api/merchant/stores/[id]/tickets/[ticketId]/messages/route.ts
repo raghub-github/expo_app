@@ -64,6 +64,8 @@ export async function GET(
                attachments, is_internal_note, created_at, updated_at
         FROM public.unified_ticket_messages
         WHERE ticket_id = ${ticketId}
+          AND COALESCE(is_internal_note, false) = false
+          AND UPPER(COALESCE(message_type, 'TEXT')) <> 'INTERNAL_NOTE'
         ORDER BY created_at ASC
       `;
     } catch {
@@ -73,6 +75,8 @@ export async function GET(
                  attachments, is_internal_note, created_at, updated_at
           FROM public.unified_ticket_messages
           WHERE ticket_id = ${ticketId}
+            AND COALESCE(is_internal_note, false) = false
+            AND UPPER(COALESCE(message_type, 'TEXT')) <> 'INTERNAL_NOTE'
           ORDER BY created_at ASC
         `;
       } catch {
