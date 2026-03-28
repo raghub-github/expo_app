@@ -387,7 +387,7 @@ export const TicketListRow = React.memo(function TicketListRow({
   return (
     <>
     <div
-      className="flex items-center gap-2.5 border-b border-gray-100 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
+      className="flex items-center gap-2.5 border-b border-gray-200 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
       style={{ overflow: "visible" }}
     >
       {/* Checkbox — fixed width column so text column aligns row-to-row */}

@@ -558,7 +558,8 @@ export function TicketList() {
   }, [tickets, selectedIds]);
 
   /** Match list row content height; too small causes overlap between virtual rows; too large adds empty gap between tickets. */
-  const ROW_HEIGHT = 92;
+
+  const ROW_HEIGHT = 93;
 
   const VirtualRow = useCallback(
     ({ index, style }: ListChildComponentProps) => {

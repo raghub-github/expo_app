@@ -245,8 +245,8 @@ export function AgentStatusToggle() {
               ? "bg-blue-600 text-white hover:bg-blue-700"
               : "bg-transparent text-gray-600 hover:bg-gray-200/90 hover:text-gray-900"
           }`}
-          title={onTicketsHubPage ? "Back to ticket list" : "Open helpdesk dashboard"}
-          aria-label={onTicketsHubPage ? "Back to ticket list" : "Open helpdesk dashboard"}
+          title={onTicketsHubPage ? "Back to ticket list" : "Open GatiMitra Queue dashboard"}
+          aria-label={onTicketsHubPage ? "Back to ticket list" : "Open GatiMitra Queue dashboard"}
         >
           <Settings className="h-4 w-4 shrink-0" aria-hidden />
         </button>

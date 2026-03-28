@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useTicketUrlPanel, useTicketPanelNavigation } from "@/hooks/tickets/useTicketUrlPanel";
 import { useTicketDetail, type TicketDetail, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -107,37 +108,25 @@ function setStoredLastViewed(ticketId: number, updatedAt: string, messageCount: 
 export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const urlPanel = useTicketUrlPanel();
+  const setTicketPanel = useTicketPanelNavigation(pathname, router);
   const rightSidebar = useRightSidebar();
-  const { data: ticket, isLoading, isFetching, isError, error } = useTicketDetail(ticketId);
+  const { data: ticket, isLoading, isError, error } = useTicketDetail(ticketId);
 
-  const panelParam = searchParams.get("panel");
-  const showActivities = panelParam === "activities";
-  const showCsatPanel = panelParam === "csat";
-
-  const setTicketPanel = useCallback(
-    (next: "conversation" | "activities" | "csat") => {
-      const params = new URLSearchParams(searchParams.toString());
-      if (next === "conversation") {
-        params.delete("panel");
-      } else {
-        params.set("panel", next);
-      }
-      const qs = params.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [pathname, router, searchParams]
-  );
+  const showActivities = urlPanel === "activities";
+  const showCsatPanel = urlPanel === "csat";
   const [showReplySection, setShowReplySection] = useState(false);
   const [quickComposeAction, setQuickComposeAction] = useState<{ type: "reply" | "forward" | "note_private" | "note_public"; nonce: number } | null>(null);
   const [newUpdatesCount, setNewUpdatesCount] = useState(0);
   const [copiedPhone, setCopiedPhone] = useState(false);
   const sidebarStateBeforeLoadingRef = useRef<boolean | null>(null);
   const queryClient = useQueryClient();
+  /** Same string id as useTicketDetail / list caches — avoids setQueryData missing the active query. */
+  const ticketCacheId = String(ticketId).trim();
   const onMessageSent = useCallback(
     (payload?: TicketMessageSentPayload) => {
       if (payload?.message) {
-        queryClient.setQueryData<TicketDetail>(queryKeys.tickets.detail(ticketId), (old) => {
+        queryClient.setQueryData<TicketDetail>(queryKeys.tickets.detail(ticketCacheId), (old) => {
           if (!old) return old;
           if (old.messages.some((m) => m.id === payload.message!.id)) return old;
           let next: TicketDetail = {
@@ -154,25 +143,25 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
           return next;
         });
       } else {
-        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketCacheId) });
       }
-      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketCacheId) });
     },
-    [queryClient, ticketId]
+    [queryClient, ticketCacheId]
   );
 
   // Warm activities cache as soon as the route is open so "Show activities" renders immediately.
   useEffect(() => {
-    if (ticketId == null || ticketId === "") return;
-    const idNum = Number(ticketId);
+    if (ticketCacheId === "") return;
+    const idNum = Number(ticketCacheId);
     if (!Number.isFinite(idNum)) return;
     void queryClient.prefetchQuery({
-      queryKey: queryKeys.tickets.activities(ticketId),
+      queryKey: queryKeys.tickets.activities(ticketCacheId),
       queryFn: () => fetchTicketActivities(idNum),
       staleTime: TICKET_ACTIVITIES_STALE_MS,
       retry: false,
     });
-  }, [ticketId, queryClient]);
+  }, [ticketCacheId, queryClient]);
 
   // Reply box stays hidden until user clicks Reply; do not auto-open on refresh or hash
 
@@ -230,8 +219,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     setNewUpdatesCount(0);
   }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
 
-  /** No ticket yet and query hasn't failed — show skeleton. Stops immediately on 404 (no retry spam). */
-  const stillLoading = !ticket && !isError && (isLoading || isFetching);
+  /** No ticket yet and query hasn't failed — show skeleton. Do not tie to `isFetching` or background refetch flashes the full-page loader. */
+  const stillLoading = !ticket && !isError && isLoading;
   useEffect(() => {
     if (!rightSidebar?.setOpen) return;
     if (stillLoading) {

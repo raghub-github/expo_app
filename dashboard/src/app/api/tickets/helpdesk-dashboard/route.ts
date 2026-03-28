@@ -1,6 +1,6 @@
 /**
  * GET /api/tickets/helpdesk-dashboard
- * Aggregated ticket + failed outbound email metrics for the Tickets helpdesk dashboard.
+ * Aggregated ticket + failed outbound email metrics for the Tickets GatiMitra Queue dashboard.
  */
 
 import { NextRequest, NextResponse } from "next/server";

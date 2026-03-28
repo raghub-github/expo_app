@@ -46,9 +46,12 @@ export async function POST(
     const reason = String(body.reason || "").trim();
     const rawServiceType = body.serviceType != null && body.serviceType !== "" ? String(body.serviceType).toLowerCase().trim() : "";
     const validServiceTypes = ["food", "parcel", "person_ride"] as const;
-    const serviceTypeForDb = validServiceTypes.includes(rawServiceType as any) ? (rawServiceType as "food" | "parcel" | "person_ride") : null;
-    // For wallet/ledger allocation we need a concrete service; use parcel when unspecified
-    const serviceTypeForWallet = serviceTypeForDb ?? "parcel";
+    const serviceTypeExplicit = validServiceTypes.includes(rawServiceType as any)
+      ? (rawServiceType as "food" | "parcel" | "person_ride")
+      : null;
+    // Wallet/ledger need a concrete service; use parcel when UI says "not specified".
+    // DB column service_type may still be NOT NULL if migration 0088 was not applied — always persist the same value we use for wallet.
+    const serviceTypeForWallet = serviceTypeExplicit ?? "parcel";
 
     const penaltyType = (body.penaltyType || "other") as string;
     const orderId = body.orderId != null ? Number(body.orderId) : null;
@@ -103,7 +106,7 @@ export async function POST(
       .insert(riderPenalties)
       .values({
         riderId,
-        serviceType: serviceTypeForDb,
+        serviceType: serviceTypeForWallet,
         penaltyType,
         amount: amount.toFixed(2),
         reason,
@@ -111,7 +114,11 @@ export async function POST(
         orderId: orderId ?? null,
         imposedBy: systemUser?.id ?? null,
         source: "agent",
-        metadata: { added_manually: true, source: "dashboard" },
+        metadata: {
+          added_manually: true,
+          source: "dashboard",
+          ...(serviceTypeExplicit ? {} : { serviceUnspecified: true }),
+        },
       })
       .returning();
 
@@ -166,7 +173,7 @@ export async function POST(
           riderId,
           penaltyId: penalty.id,
           amount,
-          serviceType: serviceTypeForDb ?? "unspecified",
+          serviceType: serviceTypeExplicit ?? "unspecified",
           penaltyType,
           orderId,
           reason,
@@ -174,7 +181,13 @@ export async function POST(
           imposedByName: agentName,
           source: "agent",
         },
-        newValues: { penaltyId: penalty.id, orderId, amount, serviceType: serviceTypeForDb ?? "unspecified", reason },
+        newValues: {
+          penaltyId: penalty.id,
+          orderId,
+          amount,
+          serviceType: serviceTypeExplicit ?? "unspecified",
+          reason,
+        },
         requestPath: request.nextUrl?.pathname,
         requestMethod: "POST",
         ipAddress: getIpAddress(request),
@@ -259,7 +272,12 @@ export async function GET(
 
     if (serviceType && serviceType !== "all") {
       if (serviceType === "unspecified" || serviceType === "null") {
-        conditions.push(isNull(riderPenalties.serviceType));
+        conditions.push(
+          or(
+            isNull(riderPenalties.serviceType),
+            sql`coalesce((${riderPenalties.metadata}->>'serviceUnspecified')::boolean, false) = true`
+          ) as any
+        );
       } else {
         conditions.push(eq(riderPenalties.serviceType, serviceType as any));
       }

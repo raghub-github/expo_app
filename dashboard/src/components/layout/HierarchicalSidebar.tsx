@@ -278,9 +278,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                   )}
                   <Icon className="h-5 w-5 shrink-0" />
                   {(isOpen && <span className="truncate">{item.name}</span>) || <span className="truncate lg:hidden">{item.name}</span>}
-                  {isActive && (
+                  {isActive && isOpen ? (
                     <span className="absolute right-2.5 h-1.5 w-1.5 rounded-full bg-white/90 animate-pulse" aria-hidden />
-                  )}
+                  ) : null}
                   {!isOpen && (
                     <div
                       className="absolute left-full ml-2 px-2.5 py-1.5 text-xs font-medium text-white rounded-lg opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 whitespace-nowrap z-50 shadow-xl border border-white/10 max-lg:hidden"

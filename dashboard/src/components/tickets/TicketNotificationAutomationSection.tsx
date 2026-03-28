@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bell } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 type TemplateRow = {
   event_code: string;
@@ -19,44 +20,79 @@ type TemplateRow = {
 const PLACEHOLDER_HELP =
   "{{agent_name}} {{agent_email}} {{ticket_ref}} {{subject}} {{ticket_url}} {{raised_by_name}} {{raised_by_mobile}} {{raised_by_email}} {{status}}";
 
-function emptyRow(code: string): TemplateRow {
+const NOTIFICATION_SNAPSHOT_KEY = "dashboard_snapshot:ticketNotificationAutomation";
+const NOTIFICATION_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Matches server seed (0155) so the form is usable before the network responds. */
+function baseTemplateRow(code: "ticket_assigned" | "ticket_reopened"): TemplateRow {
+  if (code === "ticket_assigned") {
+    return {
+      event_code: code,
+      enabled: false,
+      email_to: "{{agent_email}}",
+      email_cc: "",
+      email_bcc: "",
+      subject_template: "Ticket assigned to you - {{subject}}",
+      body_template:
+        "Hi {{agent_name}},\n\nA ticket has been assigned to you.\n\nSubject: {{subject}}\nTicket: {{ticket_ref}}\nStatus: {{status}}\n\nOpen in dashboard:\n{{ticket_url}}\n",
+    };
+  }
   return {
     event_code: code,
     enabled: false,
     email_to: "{{agent_email}}",
     email_cc: "",
     email_bcc: "",
-    subject_template: "",
-    body_template: "",
+    subject_template: "Ticket reopened - {{subject}}",
+    body_template:
+      "Hi {{agent_name}},\n\nA ticket assigned to you has been reopened.\n\nSubject: {{subject}}\nTicket: {{ticket_ref}}\nStatus: {{status}}\n\nOpen in dashboard:\n{{ticket_url}}\n",
   };
 }
+
+type NotificationAutomationResponse = { success: boolean; data: { templates: TemplateRow[] } };
 
 export function TicketNotificationAutomationSection({ variant = "page" }: { variant?: "page" | "plain" }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isPlain = variant === "plain";
 
-  const { data, isLoading, isError, error } = useQuery({
+  const initialNotification = useMemo(() => {
+    const raw = loadClientSnapshot<NotificationAutomationResponse>(NOTIFICATION_SNAPSHOT_KEY, NOTIFICATION_SNAPSHOT_TTL_MS);
+    if (!raw?.success || !Array.isArray(raw.data?.templates)) return undefined;
+    return raw;
+  }, []);
+
+  const { data, isError, error } = useQuery({
     queryKey: ["ticketNotificationAutomation"],
-    queryFn: async () => {
+    queryFn: async (): Promise<NotificationAutomationResponse> => {
       const res = await fetch("/api/tickets/notification-automation", { credentials: "include" });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(json?.error || `HTTP ${res.status}`);
       }
-      return json as { success: boolean; data: { templates: TemplateRow[] } };
+      return json as NotificationAutomationResponse;
     },
+    staleTime: 5 * 60_000,
+    gcTime: 24 * 60 * 60_000,
+    initialData: initialNotification,
+    initialDataUpdatedAt: initialNotification != null ? 0 : undefined,
   });
 
-  const [assigned, setAssigned] = useState<TemplateRow>(() => emptyRow("ticket_assigned"));
-  const [reopened, setReopened] = useState<TemplateRow>(() => emptyRow("ticket_reopened"));
+  const [assigned, setAssigned] = useState<TemplateRow>(() => baseTemplateRow("ticket_assigned"));
+  const [reopened, setReopened] = useState<TemplateRow>(() => baseTemplateRow("ticket_reopened"));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const list = data?.data?.templates;
     if (!list?.length) return;
     for (const t of list) {
-      if (t.event_code === "ticket_assigned") setAssigned({ ...emptyRow("ticket_assigned"), ...t });
-      if (t.event_code === "ticket_reopened") setReopened({ ...emptyRow("ticket_reopened"), ...t });
+      if (t.event_code === "ticket_assigned") setAssigned({ ...baseTemplateRow("ticket_assigned"), ...t });
+      if (t.event_code === "ticket_reopened") setReopened({ ...baseTemplateRow("ticket_reopened"), ...t });
+    }
+  }, [data]);
+
+  useEffect(() => {
+    if (data?.success && Array.isArray(data.data?.templates)) {
+      saveClientSnapshot(NOTIFICATION_SNAPSHOT_KEY, data);
     }
   }, [data]);
 
@@ -169,14 +205,6 @@ export function TicketNotificationAutomationSection({ variant = "page" }: { vari
       </label>
     </div>
   );
-
-  if (isLoading) {
-    return (
-      <div className={isPlain ? "py-4" : "py-6"}>
-        <div className="h-40 animate-pulse rounded-lg bg-gray-200/60" />
-      </div>
-    );
-  }
 
   if (isError) {
     return (

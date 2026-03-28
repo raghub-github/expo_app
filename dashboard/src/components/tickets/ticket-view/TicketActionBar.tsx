@@ -99,10 +99,15 @@ export function TicketActionBar({
   }, []);
 
   const scrollToReplyComposer = () => {
-    if (typeof window !== "undefined") {
-      window.location.hash = "reply";
-      setTimeout(() => document.getElementById("reply")?.scrollIntoView({ behavior: "smooth" }), 100);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.hash !== "#reply") {
+      url.hash = "reply";
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     }
+    requestAnimationFrame(() => {
+      document.getElementById("reply")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
   };
 
   const handleReply = () => {
@@ -392,60 +397,119 @@ export function TicketActionBar({
         Forward
       </button>
       <div className="relative inline-flex" ref={mergeRef}>
-        <button
-          type="button"
-          onClick={() => {
-            if (composeLocked) return;
-            setMergeOpen(true);
-          }}
-          className={`inline-flex h-7.5 items-center gap-1 border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 ${
-            composeLocked ? "cursor-not-allowed opacity-60" : "hover:bg-gray-50"
-          } ${mergedTickets.length > 0 ? "rounded-l-md border-r-0" : "rounded-md"}`}
-          aria-disabled={composeLocked}
-        >
-          <GitMerge className="h-3.5 w-3.5" />
-          Merge
-          {mergedTickets.length > 0 ? (
-            <span className="ml-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
-              {mergedTickets.length}
-            </span>
-          ) : null}
-        </button>
-        {mergedTickets.length > 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              if (composeLocked) return;
-              setMergeLinkedOpen((v) => !v);
-            }}
-            className={`inline-flex h-7.5 w-7.5 items-center justify-center rounded-r-md border border-gray-300 bg-white text-gray-600 ${
-              composeLocked ? "cursor-not-allowed opacity-60" : "hover:bg-gray-50"
-            }`}
-            aria-label="Show merged linked tickets"
-            aria-expanded={mergeLinkedOpen}
-            title="Merged linked tickets"
-            aria-disabled={composeLocked}
-          >
-            <ChevronDown className="h-3.5 w-3.5" />
-          </button>
-        )}
-        {mergeLinkedOpen && mergedTickets.length > 0 && (
-          <div className="absolute left-0 top-full z-20 mt-1 min-w-[240px] rounded-md border border-gray-200 bg-white py-1 shadow-lg">
-            <p className="px-3 py-1 text-[11px] font-medium text-gray-500">Merged linked tickets</p>
-            {mergedTickets.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => router.push(`/dashboard/tickets/${t.id}`)}
-                className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-blue-50"
-              >
-                <span className="text-xs font-medium text-gray-700">#{t.ticketNumber}</span>
-                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
-                  {(t.status ?? "OPEN").toUpperCase()}
+        {mergedIntoTicketId != null ? (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                router.push(`/dashboard/tickets/${mergedIntoTicketId}`);
+                setMergeLinkedOpen(false);
+              }}
+              className="inline-flex h-7.5 items-center gap-1 rounded-l-md border border-r-0 border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+              title="Open primary ticket"
+            >
+              <GitMerge className="h-3.5 w-3.5" />
+              Merged
+              <span className="ml-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">1</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (composeLocked) return;
+                setMergeLinkedOpen((v) => !v);
+              }}
+              className={`inline-flex h-7.5 w-7.5 items-center justify-center rounded-r-md border border-gray-300 bg-white text-gray-600 ${
+                composeLocked ? "cursor-not-allowed opacity-60" : "hover:bg-gray-50"
+              }`}
+              aria-label="Show primary ticket this ticket merged into"
+              aria-expanded={mergeLinkedOpen}
+              title="Merged linked tickets"
+              aria-disabled={composeLocked}
+            >
+              <ChevronDown className="h-3.5 w-3.5" />
+            </button>
+            {mergeLinkedOpen && (
+              <div className="absolute left-0 top-full z-20 mt-1 min-w-[260px] rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+                <p className="px-3 py-1 text-[11px] font-medium text-gray-500">Merged linked tickets</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMergeLinkedOpen(false);
+                    router.push(`/dashboard/tickets/${mergedIntoTicketId}`);
+                  }}
+                  className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-blue-50"
+                >
+                  <span className="text-xs font-medium text-gray-700">
+                    #{mergedIntoTicketNumber || mergedIntoTicketId}
+                  </span>
+                  <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                    PRIMARY
+                  </span>
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                if (composeLocked) return;
+                setMergeOpen(true);
+              }}
+              className={`inline-flex h-7.5 items-center gap-1 border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 ${
+                composeLocked ? "cursor-not-allowed opacity-60" : "hover:bg-gray-50"
+              } ${mergedTickets.length > 0 ? "rounded-l-md border-r-0" : "rounded-md"}`}
+              aria-disabled={composeLocked}
+            >
+              <GitMerge className="h-3.5 w-3.5" />
+              Merge
+              {mergedTickets.length > 0 ? (
+                <span className="ml-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                  {mergedTickets.length}
                 </span>
+              ) : null}
+            </button>
+            {mergedTickets.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (composeLocked) return;
+                  setMergeLinkedOpen((v) => !v);
+                }}
+                className={`inline-flex h-7.5 w-7.5 items-center justify-center rounded-r-md border border-gray-300 bg-white text-gray-600 ${
+                  composeLocked ? "cursor-not-allowed opacity-60" : "hover:bg-gray-50"
+                }`}
+                aria-label="Show merged linked tickets"
+                aria-expanded={mergeLinkedOpen}
+                title="Merged linked tickets"
+                aria-disabled={composeLocked}
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
               </button>
-            ))}
-          </div>
+            )}
+            {mergeLinkedOpen && mergedTickets.length > 0 && (
+              <div className="absolute left-0 top-full z-20 mt-1 min-w-[240px] rounded-md border border-gray-200 bg-white py-1 shadow-lg">
+                <p className="px-3 py-1 text-[11px] font-medium text-gray-500">Merged linked tickets</p>
+                {mergedTickets.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => {
+                      setMergeLinkedOpen(false);
+                      router.push(`/dashboard/tickets/${t.id}`);
+                    }}
+                    className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-blue-50"
+                  >
+                    <span className="text-xs font-medium text-gray-700">#{t.ticketNumber}</span>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                      {(t.status ?? "OPEN").toUpperCase()}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
       <button
@@ -463,18 +527,6 @@ export function TicketActionBar({
         <Ban className="h-3.5 w-3.5" />
         {markSpamMutation.isPending ? "Marking…" : spamMarked ? "Spammed." : "Mark as spam"}
       </button>
-      {mergedIntoTicketId != null && (
-        <button
-          type="button"
-          onClick={() => router.push(`/dashboard/tickets/${mergedIntoTicketId}`)}
-          className="inline-flex h-7.5 cursor-pointer items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2.5 text-[12px] font-medium text-amber-800 hover:bg-amber-100"
-          title="Open primary merged ticket"
-        >
-          <GitMerge className="h-3.5 w-3.5" />
-          Merged into #{mergedIntoTicketNumber || mergedIntoTicketId}
-        </button>
-      )}
-
       <div className="flex-1" />
 
       <button
