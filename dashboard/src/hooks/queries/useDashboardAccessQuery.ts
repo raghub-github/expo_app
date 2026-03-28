@@ -1,12 +1,13 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { getCacheConfig, CacheTier } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
 import type { DashboardType, AccessPointGroup } from "@/lib/db/schema";
 
 const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
+let dashboardAccessInFlight: Promise<DashboardAccessData> | null = null;
 
 interface DashboardAccess {
   dashboardType: string;
@@ -35,6 +36,8 @@ interface DashboardAccessResponse {
 
 /** Exported for prefetch in dashboard layout */
 export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
+  if (dashboardAccessInFlight) return dashboardAccessInFlight;
+  dashboardAccessInFlight = (async () => {
   const response = await fetch("/api/auth/dashboard-access", {
     credentials: "include",
     cache: "no-store",
@@ -70,6 +73,12 @@ export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
   }
 
   return result.data;
+  })();
+  try {
+    return await dashboardAccessInFlight;
+  } finally {
+    dashboardAccessInFlight = null;
+  }
 }
 
 /**
@@ -77,11 +86,15 @@ export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
  * Uses React Query for automatic caching and refetching
  */
 export function useDashboardAccessQuery() {
+  const queryClient = useQueryClient();
   const staticConfig = getCacheConfig(CacheTier.STATIC);
 
   return useQuery({
     queryKey: queryKeys.dashboardAccess(),
     queryFn: fetchDashboardAccess,
+    initialData: () => {
+      return queryClient.getQueryData<DashboardAccessData>(queryKeys.dashboardAccess());
+    },
     ...staticConfig,
     placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {

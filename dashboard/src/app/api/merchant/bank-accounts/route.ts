@@ -5,9 +5,8 @@ import { getSql } from "@/lib/db/client";
 // Minimal reimplementation of partnersite bank-accounts API for the dashboard app.
 
 function getSupabaseAdmin() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !supabaseServiceKey) return null;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
@@ -43,14 +42,6 @@ async function resolveStoreInternalId(
 
 export async function GET(req: NextRequest) {
   try {
-    const db = getSupabaseAdmin();
-    if (!db) {
-      return NextResponse.json(
-        { error: "Missing Supabase env" },
-        { status: 500 }
-      );
-    }
-
     const storeId =
       req.nextUrl.searchParams.get("storeId") ??
       req.nextUrl.searchParams.get("store_id");
@@ -66,6 +57,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Store not found" }, { status: 404 });
     }
 
+    const db = getSupabaseAdmin();
     const { data: rows, error } = await db
       .from("merchant_store_bank_accounts")
       .select(
@@ -104,14 +96,6 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const db = getSupabaseAdmin();
-    if (!db) {
-      return NextResponse.json(
-        { error: "Missing Supabase env" },
-        { status: 500 }
-      );
-    }
-
     const body = await req.json();
     const storeId = (body.storeId ?? body.store_id)?.trim();
     if (!storeId) {
@@ -178,6 +162,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Store not found" }, { status: 404 });
     }
 
+    const db = getSupabaseAdmin();
     const { count } = await db
       .from("merchant_store_bank_accounts")
       .select("id", { count: "exact", head: true })
