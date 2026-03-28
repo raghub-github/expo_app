@@ -1,15 +1,7 @@
 /**
  * POST /api/auth/set-cookie
- *
- * Single source of dashboard session cookies:
- * - Supabase auth cookies (set via setSession) for identity.
- * - Custom session metadata: session_start_time, last_activity_time, session_id.
- *   These drive 24h inactivity and 7-day max lifetime (see session-manager).
- *
- * Call after any successful auth (OTP verify, OAuth callback). Middleware only
- * reads these cookies and updates last_activity_time on each request; it never
- * sets session_start_time or initial cookies. Logout and expireSession clear them.
  */
+
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
@@ -17,82 +9,110 @@ import { initializeSession } from "@/lib/auth/session-manager";
 import { validateUserForLogin } from "@/lib/auth/user-validation";
 import { recordFailedLogin, recordLogin } from "@/lib/auth/user-management";
 import { getIpAddress, getUserAgent } from "@/lib/audit/logger";
+import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
+
+export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
-    let body: { access_token?: string; refresh_token?: string };
+    // ✅ SAFE BODY PARSING (fixes 502 issue)
+    let body: any = null;
+
     try {
-      body = await request.json();
-    } catch {
+      const text = await request.text();
+      body = text ? JSON.parse(text) : null;
+    } catch (err) {
+      console.error("[set-cookie] JSON parse error:", err);
       return NextResponse.json(
         { success: false, error: "Invalid request body", code: "INVALID_BODY" },
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400 }
       );
     }
-    const { access_token, refresh_token } = body ?? {};
 
+    const access_token = body?.access_token;
+    const refresh_token = body?.refresh_token;
+
+    // ✅ STRICT VALIDATION
     if (!access_token || !refresh_token) {
+      console.error("[set-cookie] Missing tokens:", body);
       return NextResponse.json(
         { success: false, error: "Missing tokens", code: "MISSING_TOKENS" },
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { status: 400 }
+      );
+    }
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Missing Supabase environment variables",
+          code: "MISSING_SUPABASE_ENV",
+        },
+        { status: 500 }
       );
     }
 
     const cookieStore = await cookies();
     const response = NextResponse.json({ success: true });
 
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll(cookiesToSet) {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, options);
-              response.cookies.set(name, value, options);
-            });
-          },
+    const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        fetch: fetchWithTimeout,
+      },
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
         },
-      }
-    );
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options);
+            response.cookies.set(name, value, options);
+          });
+        },
+      },
+    });
 
+    // ✅ SET SESSION
     const { data, error } = await supabase.auth.setSession({
       access_token,
       refresh_token,
     });
 
-    // #region agent log - DISABLED: Agent log service not available
-    // Agent log calls disabled to prevent JSON parsing errors
-    // #endregion
-
     if (error) {
-      return NextResponse.json({ success: false, error: error.message }, { status: 400 });
+      console.error("[set-cookie] Supabase error:", error);
+      return NextResponse.json(
+        { success: false, error: error.message },
+        { status: 400 }
+      );
     }
 
     let systemUserId: number | null = null;
 
-    // Validate user exists in system_users and has roles before setting session
+    // ✅ USER VALIDATION
     if (data.session?.user?.email) {
       const email = data.session.user.email;
+
       const validation = await validateUserForLogin(email);
-      
+
       if (!validation.isValid) {
         await recordFailedLogin(
           email,
-          validation.error || "User not authorized for dashboard access",
+          validation.error || "Unauthorized",
           getIpAddress(request),
           getUserAgent(request)
         );
-        // Sign out the user from Supabase since they're not valid
+
         await supabase.auth.signOut();
-        
+
         return NextResponse.json(
-          { 
-            success: false, 
-            error: validation.error || "Your account is not authorized to access this portal. Please contact an administrator." 
+          {
+            success: false,
+            error:
+              validation.error ||
+              "Your account is not authorized to access this portal.",
           },
           { status: 403 }
         );
@@ -101,7 +121,7 @@ export async function POST(request: NextRequest) {
       systemUserId = validation.systemUserId ?? null;
     }
 
-    // Initialize custom session management (24h activity-based, 7 day max)
+    // ✅ SESSION INIT
     if (data.session) {
       const cookieManager = {
         set: (name: string, value: string, options: any) => {
@@ -109,11 +129,15 @@ export async function POST(request: NextRequest) {
           response.cookies.set(name, value, options);
         },
       };
+
       initializeSession(cookieManager);
-      console.log("[set-cookie] Session initialized with 24h activity-based renewal");
+
+      console.log("[set-cookie] Session initialized");
 
       if (data.session.user?.email && systemUserId) {
-        const provider = data.session.user.app_metadata?.provider || "unknown";
+        const provider =
+          data.session.user.app_metadata?.provider || "unknown";
+
         await recordLogin(
           systemUserId,
           provider,
@@ -124,11 +148,16 @@ export async function POST(request: NextRequest) {
     }
 
     return response;
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "set-cookie error";
+  } catch (e: any) {
+    console.error("[set-cookie] FATAL ERROR:", e);
+
     return NextResponse.json(
-      { success: false, error: message, code: "SET_COOKIE_ERROR" },
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      {
+        success: false,
+        error: e?.message || "SET_COOKIE_ERROR",
+        code: "SET_COOKIE_ERROR",
+      },
+      { status: 500 }
     );
   }
 }

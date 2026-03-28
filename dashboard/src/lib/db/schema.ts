@@ -557,6 +557,7 @@ export const systemUsers = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    canTogglePortal: boolean("can_toggle_portal").notNull().default(false),
   },
   (table) => ({
     systemUserIdIdx: uniqueIndex("system_users_system_user_id_idx").on(

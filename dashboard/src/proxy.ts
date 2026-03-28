@@ -62,6 +62,7 @@ function toResponseCookieOptions(options: {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  const normalizedRedirectPath = pathname === "/" ? "/dashboard" : pathname;
   // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [proxy] Path and redirect messages (off by default to reduce console noise).
   const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
   if (debugProxy && !pathname.startsWith("/_next") && !pathname.startsWith("/api/audit")) {
@@ -69,14 +70,21 @@ export async function proxy(request: NextRequest) {
   }
 
   const response = NextResponse.next();
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   try {
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("[proxy] Missing Supabase environment variables");
+      return response;
+    }
+
     // Create Supabase client for proxy
     // Note: Disable autoRefreshToken in proxy to avoid Edge Runtime fetch failures
     // Token refresh should happen in Server Components/API routes, not proxy
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      supabaseUrl,
+      supabaseAnonKey,
       {
         cookies: {
           getAll() {
@@ -135,14 +143,16 @@ export async function proxy(request: NextRequest) {
 
     if (hasAuthCookie) {
       try {
+        type AuthUserResult = {
+          data?: { user?: { id: string; email?: string } | null };
+          error?: { message?: string; code?: string };
+        };
         const userResult = (await Promise.race([
           supabase.auth.getUser(),
           new Promise<{ data: { user: null }; error: { message: string; code: string } }>((resolve) =>
             setTimeout(() => resolve({ data: { user: null }, error: { message: "Session check timeout", code: "TIMEOUT" } }), 3000)
           ),
-        ]) as unknown as {          data?: { user?: { id: string; email?: string } | null };
-          error?: { message?: string; code?: string };
-        };
+        ])) as unknown as AuthUserResult;
         const user = userResult.data?.user ?? null;
         sessionError = userResult.error ?? null;
 
@@ -150,7 +160,8 @@ export async function proxy(request: NextRequest) {
           session = {
             user: { id: user.id, email: user.email },
             ...user,
-          } as unknown as typeof session;        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
+          } as unknown as typeof session;
+        } else if (sessionError && (sessionError.code === "TIMEOUT" || sessionError.message?.includes("timeout"))) {
           session = null;
           sessionError = null;
         }
@@ -241,13 +252,19 @@ export async function proxy(request: NextRequest) {
       }
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/login";
-      redirectUrl.searchParams.set("redirect", pathname);
+      redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
       return NextResponse.redirect(redirectUrl);
     }
 
     // If Supabase session exists and trying to access login, redirect to dashboard
     if (session && pathname === "/login") {
       if (debugProxy) console.log("[proxy] Session exists, redirecting from login to dashboard");
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+
+    // Avoid hitting app root ("/") runtime manifest path in production.
+    // Route "/" is just a redirect to "/dashboard" anyway.
+    if (session && pathname === "/") {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
 

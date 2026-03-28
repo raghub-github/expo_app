@@ -48,8 +48,17 @@ export async function getSystemUserByAuthId(
 const requestCache = new Map<string, { data: SystemUser | null; timestamp: number }>();
 const CACHE_TTL = 1000; // 1 second cache per request
 
+export type GetSystemUserByEmailOptions = {
+  /**
+   * When false, query/schema errors throw instead of returning null (avoids "not registered" on DB failures).
+   * @default true
+   */
+  treatQueryFailureAsNotFound?: boolean;
+};
+
 export async function getSystemUserByEmail(
-  email: string | null | undefined
+  email: string | null | undefined,
+  options?: GetSystemUserByEmailOptions
 ): Promise<SystemUser | null> {
   try {
     if (!email || typeof email !== 'string' || email.trim() === '') {
@@ -57,8 +66,9 @@ export async function getSystemUserByEmail(
     }
 
     const normalizedEmail = email.toLowerCase().trim();
+    const treatQueryFailureAsNotFound = options?.treatQueryFailureAsNotFound !== false;
 
-    const cacheKey = `email:${normalizedEmail}`;
+    const cacheKey = `email:${normalizedEmail}:${treatQueryFailureAsNotFound ? "1" : "0"}`;
     const cached = requestCache.get(cacheKey);
     const now = Date.now();
     if (cached && (now - cached.timestamp) < CACHE_TTL) {
@@ -157,8 +167,6 @@ export async function getSystemUserByEmail(
   } catch (error) {
     if (error instanceof Error) {
       // Only rethrow for actual connection failures (unreachable host, etc.).
-      // Do NOT rethrow for "Failed query" — that can be timeout/transient; return null so
-      // callers (e.g. permissions) get null and can return exists: false without stack trace.
       const isConnectionError =
         error.message.includes('CONNECT_TIMEOUT') ||
         error.message.includes('ECONNREFUSED') ||
@@ -167,6 +175,12 @@ export async function getSystemUserByEmail(
       if (isConnectionError) {
         throw new Error(`Database connection error: ${error.message}`);
       }
+      const treatQueryFailureAsNotFound = options?.treatQueryFailureAsNotFound !== false;
+      console.error("[getSystemUserByEmail] Query error:", error.message);
+      if (!treatQueryFailureAsNotFound) {
+        throw new Error(`User lookup failed: ${error.message}`);
+      }
+      // Non-login paths: transient/query issues → null (e.g. permissions can degrade gracefully)
     }
     return null;
   }

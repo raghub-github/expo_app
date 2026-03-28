@@ -84,19 +84,11 @@ export async function fetchPermissions(): Promise<PermissionsData> {
  * Uses React Query for automatic caching and refetching
  */
 export function usePermissionsQuery() {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'usePermissionsQuery.ts:86',message:'usePermissionsQuery hook called',data:{cacheConfig:permissionsCacheConfig},timestamp:Date.now(),runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-  // #endregion
   return useQuery({
     queryKey: queryKeys.permissions(),
     queryFn: fetchPermissions,
     ...permissionsCacheConfig,
-    placeholderData: (previousData) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'usePermissionsQuery.ts:91',message:'placeholderData check',data:{hasPreviousData:!!previousData},timestamp:Date.now(),runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
-      return previousData;
-    },
+    placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
       if (failureCount >= 3) return false;
       if (error instanceof Error) {

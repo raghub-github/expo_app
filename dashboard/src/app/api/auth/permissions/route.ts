@@ -14,10 +14,6 @@ const retryDelaysMs = [800, 1600]; // after attempt 1 and 2
  * Uses getUser() with retry so transient/Supabase errors return 503 (client retries) instead of 401.
  */
 export async function GET(request: NextRequest) {
-  const startTime = Date.now();
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissions/route.ts:16',message:'Permissions API start',data:{timestamp:startTime},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
   try {
     const supabase = await createServerSupabaseClient();
 
@@ -68,12 +64,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get user permissions
-    const permsStartTime = Date.now();
     const userPerms = await getUserPermissions(user.id, email);
-    const permsDuration = Date.now() - permsStartTime;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissions/route.ts:67',message:'getUserPermissions completed',data:{durationMs:permsDuration,hasUserPerms:!!userPerms},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
 
     if (!userPerms) {
       return NextResponse.json({
@@ -86,10 +77,6 @@ export async function GET(request: NextRequest) {
     }
 
     const permissionStrings = toPermissionKeys(userPerms.permissions);
-    const totalDuration = Date.now() - startTime;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'permissions/route.ts:79',message:'Permissions API complete',data:{totalDurationMs:totalDuration,isSuperAdmin:userPerms.isSuperAdmin},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
 
     return NextResponse.json({
       success: true,

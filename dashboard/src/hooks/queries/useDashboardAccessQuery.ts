@@ -78,21 +78,12 @@ export async function fetchDashboardAccess(): Promise<DashboardAccessData> {
  */
 export function useDashboardAccessQuery() {
   const staticConfig = getCacheConfig(CacheTier.STATIC);
-  
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useDashboardAccessQuery.ts:79',message:'useDashboardAccessQuery hook called',data:{cacheConfig:staticConfig},timestamp:Date.now(),runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-  // #endregion
-  
+
   return useQuery({
     queryKey: queryKeys.dashboardAccess(),
     queryFn: fetchDashboardAccess,
     ...staticConfig,
-    placeholderData: (previousData) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/2cc0b640-978a-4fbb-81f9-cf64378f704f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useDashboardAccessQuery.ts:86',message:'placeholderData check',data:{hasPreviousData:!!previousData},timestamp:Date.now(),runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
-      return previousData;
-    },
+    placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
       if (failureCount >= 3) return false;
       if (error instanceof Error) {

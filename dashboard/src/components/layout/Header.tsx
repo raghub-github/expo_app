@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useEffect, useMemo, useRef } from "react";
+import { memo, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight, User } from "lucide-react";
@@ -17,6 +17,8 @@ import { useLeftSidebarMobile } from "@/context/LeftSidebarMobileContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
+import { usePermission } from "@/hooks/usePermission";
+import type { ActionType } from "@/lib/db/schema";
 // Order Search Bar Component – syncs with URL so Food/Parcel/Ride order pages can read search params
 function OrderSearchBar() {
   const pathname = usePathname();
@@ -205,6 +207,9 @@ function HeaderComponent() {
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
+  /** Avoid duplicate Image() preloads (they double-hit Google CDN → 429 in dev/HMR). */
+  const gravatarUrlRef = useRef<string | null>(null);
+  const primaryOauthUrlRef = useRef<string | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const newMenuRef = useRef<HTMLDivElement>(null);
   const { user: authUser, authReady } = useAuth();
@@ -271,192 +276,65 @@ function HeaderComponent() {
                    (userEmail ? userEmail.split("@")[0] : null) ||
                    null;
 
-  // Get avatar URL - check multiple sources
+  // Avatar: use a single <img> load. Preloading with `new Image()` duplicated requests to Google
+  // (plus Strict Mode / Fast Refresh) and caused 429 Too Many Requests on lh3.googleusercontent.com.
   useEffect(() => {
-    let isMounted = true;
-    let timeoutIds: NodeJS.Timeout[] = [];
-    let imageInstances: HTMLImageElement[] = [];
+    if (!userEmail) {
+      return;
+    }
 
-    const cleanup = () => {
-      isMounted = false;
-      timeoutIds.forEach(id => clearTimeout(id));
-      timeoutIds = [];
-      imageInstances.forEach(img => {
-        img.onload = null;
-        img.onerror = null;
-      });
-      imageInstances = [];
-    };
+    const sessionUser = authUser;
 
-    if (userEmail) {
-      // Check Supabase session user data for avatar (from Google OAuth)
-      const sessionUser = authUser;
-      
-      if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
-        console.log("[Header] User metadata:", userMetadata);
-        console.log("[Header] Session user:", sessionUser);
-        console.log("[Header] App metadata:", (sessionUser as any)?.app_metadata);
-      }
+    if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
+      console.log("[Header] User metadata:", userMetadata);
+      console.log("[Header] Session user:", sessionUser);
+      console.log("[Header] App metadata:", (sessionUser as any)?.app_metadata);
+    }
 
-      // Collect all possible avatar sources
-      const possibleAvatarSources = [
-        userMetadata?.avatar_url,
-        userMetadata?.picture,
-        userMetadata?.avatar,
-        userMetadata?.avatar_url,
-        (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar_url,
-        (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.picture,
-        (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar,
-        // Also check app_metadata which sometimes contains Google profile data
-        (sessionUser as any)?.app_metadata?.avatar_url,
-        (sessionUser as any)?.app_metadata?.picture,
-        // Check raw user object properties
-        (sessionUser as any)?.avatar_url,
-        (sessionUser as any)?.picture,
-      ].filter(Boolean);
+    const possibleAvatarSources = [
+      userMetadata?.avatar_url,
+      userMetadata?.picture,
+      userMetadata?.avatar,
+      userMetadata?.avatar_url,
+      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar_url,
+      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.picture,
+      (sessionUser as { user_metadata?: Record<string, unknown> } | null)?.user_metadata?.avatar,
+      (sessionUser as any)?.app_metadata?.avatar_url,
+      (sessionUser as any)?.app_metadata?.picture,
+      (sessionUser as any)?.avatar_url,
+      (sessionUser as any)?.picture,
+    ].filter(Boolean);
 
-      // Try Supabase metadata first (from Google OAuth)
-      let urlToTry: string | null = null;
-      
-      if (possibleAvatarSources.length > 0) {
-        urlToTry = possibleAvatarSources[0] as string;
-        if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
-          console.log("[Header] Found avatar in metadata:", urlToTry);
-        }
+    const gravatarUrl = getUserAvatarUrl(userEmail, userMetadata, 40);
+    gravatarUrlRef.current = gravatarUrl;
+
+    const primaryOauth =
+      possibleAvatarSources.length > 0 ? (possibleAvatarSources[0] as string) : null;
+    primaryOauthUrlRef.current = primaryOauth;
+
+    if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
+      if (primaryOauth) {
+        console.log("[Header] Found avatar in metadata:", primaryOauth);
       } else {
-        urlToTry = getUserAvatarUrl(userEmail, userMetadata, 40);
-        if (process.env.NODE_ENV === "development" && process.env.NEXT_PUBLIC_DEBUG_HEADER === "true") {
-          console.log("[Header] Using Gravatar:", urlToTry);
-        }
-      }
-
-      // Helper function to try Gravatar fallback
-      const tryGravatarFallback = (email: string, metadata: any, failedUrl: string | null) => {
-        if (!isMounted) return;
-        
-        // Ensure we're in the browser before using Image constructor
-        if (typeof window === "undefined" || typeof Image === "undefined") {
-          if (isMounted) {
-            setAvatarError(true);
-            setAvatarUrl(null);
-          }
-          return;
-        }
-
-        const gravatarUrl = getUserAvatarUrl(email, metadata, 40);
-        if (gravatarUrl && gravatarUrl !== failedUrl) {
-          try {
-            const gravatarImg = new window.Image();
-            gravatarImg.crossOrigin = "anonymous";
-            imageInstances.push(gravatarImg);
-            
-            const gravatarTimeout = setTimeout(() => {
-              if (!isMounted) return;
-              gravatarImg.onload = null;
-              gravatarImg.onerror = null;
-              setAvatarError(true);
-              setAvatarUrl(null);
-            }, 3000);
-            timeoutIds.push(gravatarTimeout);
-            
-            gravatarImg.onload = () => {
-              if (!isMounted) return;
-              clearTimeout(gravatarTimeout);
-              setAvatarUrl(gravatarUrl);
-              setAvatarError(false);
-            };
-            
-            gravatarImg.onerror = () => {
-              if (!isMounted) return;
-              clearTimeout(gravatarTimeout);
-              setAvatarError(true);
-              setAvatarUrl(null);
-            };
-            
-            gravatarImg.src = gravatarUrl;
-          } catch (error) {
-            console.error("[Header] Error creating Image for Gravatar:", error);
-            if (isMounted) {
-              setAvatarError(true);
-              setAvatarUrl(null);
-            }
-          }
-        } else {
-          if (isMounted) {
-            setAvatarError(true);
-            setAvatarUrl(null);
-          }
-        }
-      };
-
-      if (urlToTry) {
-        // Ensure we're in the browser before using Image constructor
-        if (typeof window === "undefined" || typeof Image === "undefined") {
-          if (isMounted) {
-            setAvatarError(true);
-            setAvatarUrl(null);
-          }
-          return cleanup;
-        }
-
-        try {
-          // Verify the image exists by trying to load it with timeout
-          const img = new window.Image();
-          img.crossOrigin = "anonymous"; // Allow CORS for external images
-          imageInstances.push(img);
-          
-          // Suppress console errors for image loading (429, 404, CORS, etc.)
-          const originalError = console.error;
-          const suppressErrors = () => {
-            console.error = () => {}; // Suppress errors temporarily
-          };
-          const restoreErrors = () => {
-            console.error = originalError;
-          };
-
-          // Set a timeout to prevent hanging on slow/failed requests (like 429 errors)
-          const timeoutId = setTimeout(() => {
-            if (!isMounted) return;
-            restoreErrors();
-            img.onload = null;
-            img.onerror = null;
-            // Timeout reached (likely 429 or network issue), try Gravatar fallback silently
-            tryGravatarFallback(userEmail, userMetadata, urlToTry);
-          }, 2000); // 2 second timeout for faster fallback on 429 errors
-          timeoutIds.push(timeoutId);
-
-          suppressErrors(); // Suppress errors during image load
-          
-          img.onload = () => {
-            if (!isMounted) return;
-            restoreErrors();
-            clearTimeout(timeoutId);
-            setAvatarUrl(urlToTry);
-            setAvatarError(false);
-          };
-          
-          img.onerror = () => {
-            if (!isMounted) return;
-            restoreErrors();
-            clearTimeout(timeoutId);
-            // Image failed to load (could be 429, 404, CORS, etc.)
-            // Silently try Gravatar fallback without logging to reduce console noise
-            tryGravatarFallback(userEmail, userMetadata, urlToTry);
-          };
-          
-          img.src = urlToTry;
-        } catch (error) {
-          // Fallback to Gravatar on error (suppress error logging)
-          tryGravatarFallback(userEmail, userMetadata, urlToTry);
-        }
-      } else {
-        // No URL found, try Gravatar directly
-        tryGravatarFallback(userEmail, userMetadata, null);
+        console.log("[Header] Using Gravatar:", gravatarUrl);
       }
     }
 
-    return cleanup;
+    setAvatarUrl(primaryOauth ?? gravatarUrl);
+    setAvatarError(false);
   }, [userEmail, userMetadata, authUser]);
+
+  const handleAvatarImgError = useCallback(() => {
+    setAvatarUrl((current) => {
+      const primary = primaryOauthUrlRef.current;
+      const gravatar = gravatarUrlRef.current;
+      if (primary && current === primary && gravatar && gravatar !== primary) {
+        return gravatar;
+      }
+      queueMicrotask(() => setAvatarError(true));
+      return current;
+    });
+  }, []);
 
   const openLogoutConfirm = () => {
     setShowDropdown(false);
@@ -653,7 +531,7 @@ function HeaderComponent() {
                 src={avatarUrl}
                 alt={userName || userEmail || "User"}
                 className="h-8 w-8 flex-shrink-0 rounded-full object-cover border border-gray-200"
-                onError={() => setAvatarError(true)}
+                onError={handleAvatarImgError}
               />
             ) : (
               <div className="h-8 w-8 flex-shrink-0 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">

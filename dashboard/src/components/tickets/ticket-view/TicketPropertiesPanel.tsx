@@ -38,6 +38,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
 
   const agents = agentsData?.agents ?? [];
+  const currentUserId = agentsData?.currentUser?.id ?? null;
   const currentUser = agentsData?.currentUser
     ? { id: agentsData.currentUser.id, name: agentsData.currentUser.name || "Me" }
     : null;
@@ -87,6 +88,10 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
   const [tags, setTags] = useState<string[]>([]);
   const [tagsInput, setTagsInput] = useState("");
 
+  // Sync form from server ticket. Dependencies MUST be stable primitives — `ticket` and
+  // `currentUser` object change reference every render (agents query / normalized data), which
+  // caused setState → re-render → infinite "Maximum update depth exceeded".
+  const tagsFingerprint = ticket ? JSON.stringify(ticket.tags ?? []) : "";
   useEffect(() => {
     if (!ticket) return;
     setStatus(ticket.status || "open");
@@ -94,7 +99,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
     setGroupId(ticket.group?.id != null ? String(ticket.group.id) : "");
     setAgentId(
       ticket.assignee
-        ? currentUser && ticket.assignee.id === currentUser.id
+        ? currentUserId != null && ticket.assignee.id === currentUserId
           ? "me"
           : String(ticket.assignee.id)
         : ""
@@ -109,7 +114,18 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number }) {
       }
     } else setDueBy("");
     setTagsInput("");
-  }, [ticket, currentUser]);
+  }, [
+    ticketId,
+    ticket?.id,
+    ticket?.status,
+    ticket?.priority,
+    ticket?.group?.id,
+    ticket?.assignee?.id,
+    ticket?.slaDueAt,
+    ticket?.updatedAt,
+    tagsFingerprint,
+    currentUserId,
+  ]);
 
   const addTag = () => {
     const t = tagsInput.trim();

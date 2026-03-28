@@ -25,10 +25,20 @@ export async function POST(request: NextRequest) {
       console.warn("[logout] user_sessions close skipped:", e instanceof Error ? e.message : e);
     }
 
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return NextResponse.json(
+        { success: false, error: "Missing Supabase env", code: "MISSING_SUPABASE_ENV" },
+        { status: 500 }
+      );
+    }
+
     // Create Supabase client with cookie handling
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      supabaseUrl,
+      supabaseAnonKey,
       {
         cookies: {
           getAll() {

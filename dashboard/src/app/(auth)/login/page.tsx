@@ -8,6 +8,7 @@ import { Logo } from "@/components/brand/Logo";
 import { safeParseJson } from "@/lib/utils";
 import { Mail, Lock, ArrowRight, Loader2 } from "lucide-react";
 import { saveBootstrapToStorage } from "@/lib/dashboard-bootstrap-storage";
+import { postSetCookieWithTokens } from "@/lib/auth/sync-server-session";
 
 const OTP_LENGTH = 8;
 
@@ -118,28 +119,15 @@ export default function LoginPage() {
       // Set cookies on the server so middleware can see the session
       // The set-cookie endpoint will validate the user exists and has roles
       try {
-        const setCookieResponse = await fetch("/api/auth/set-cookie", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            access_token: result.data.session.access_token,
-            refresh_token: result.data.session.refresh_token,
-          }),
-        });
+        const cookieResult = await postSetCookieWithTokens(
+          result.data.session.access_token,
+          result.data.session.refresh_token
+        );
 
-        if (!setCookieResponse.ok) {
-          let errorMessage = "Your account is not authorized to access this portal. Please contact an administrator.";
-          try {
-            const text = await setCookieResponse.text();
-            if (text.trim()) {
-              const parsed = safeParseJson<{ error?: string }>(text, "");
-              if (parsed?.error) errorMessage = parsed.error;
-              else if (text.length < 300) errorMessage = text.trim();
-            }
-          } catch {
-            // Use default error message when body is not valid JSON
-          }
-          // Sign out from Supabase if validation failed
+        if (!cookieResult.ok) {
+          const errorMessage =
+            cookieResult.error ||
+            "Your account is not authorized to access this portal. Please contact an administrator.";
           await supabase.auth.signOut();
           setError(errorMessage);
           setLoading(false);

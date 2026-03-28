@@ -37,6 +37,8 @@ export const dashboardHomeApi = baseApi.injectEndpoints({
   endpoints: (build) => ({
     getServicePoints: build.query<ServicePoint[], void>({
       query: () => "/service-points",
+      // Keep map points warm across dashboard route switches so Home returns instantly.
+      keepUnusedDataFor: 60 * 30, // 30 minutes
       transformResponse: (response: { success?: boolean; data?: ServicePoint[] }) => {
         if (!response?.success || !response.data) return [];
         return Array.isArray(response.data) ? response.data : [];

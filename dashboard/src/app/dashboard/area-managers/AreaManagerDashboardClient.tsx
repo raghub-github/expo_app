@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";import Link from "next/link";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import {
   Store,
   Package,
@@ -51,18 +52,6 @@ interface RiderMetrics {
 }
 
 type MetricsData = MerchantMetrics | RiderMetrics;
-
-interface AreaManagerListItem {
-  id: number;
-  userId: number;
-  managerType: string;
-  areaCode: string | null;
-  localityCode: string | null;
-  city: string | null;
-  status: string;
-  fullName: string | null;
-  email: string | null;
-}
 
 function useDebouncedValue<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);

@@ -13,7 +13,6 @@ import {
   type DashboardSubRoute,
   type AreaManagerTypeFilter,
 } from "@/lib/navigation/dashboard-routes";
-import { useRiderDashboardOptional } from "@/context/RiderDashboardContext";
 import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { TicketPropertiesPanel } from "@/components/tickets/ticket-view/TicketPropertiesPanel";
 import { usePermission } from "@/hooks/usePermission";
@@ -33,7 +32,6 @@ interface RightSidebarProps {
 export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const riderCtx = useRiderDashboardOptional();
   const { hasDashboardAccess, isSuperAdmin } = usePermission();
   
   // Remove query parameters for comparison
@@ -168,12 +166,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
 
   const selectedRiderSearch = (searchParams.get("search") || "").trim();
 
-  // Debug: verify when selected rider is available for sidebar decisions.
-  if (isRiderDashboard) {
-    // eslint-disable-next-line no-console
-    console.log("RightSidebar - selectedRiderSearch:", selectedRiderSearch);
-  }
-
   // Don't show right sidebar if not in a specific dashboard.
   // For rider dashboard, allow sidebar even when there are no sub-routes,
   // but only after a rider search value is present.
@@ -212,11 +204,9 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
         />
       )}
       <aside
-        className={`fixed top-0 bottom-0 z-40 flex flex-col shadow-xl transition-[transform,width] duration-300 ease-out
-          lg:top-14
+        className={`fixed inset-y-0 z-40 flex flex-col shadow-xl transition-[transform,width] duration-300 ease-out
           ${isOpen ? "w-56" : "w-14"}
-          max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}
-          lg:translate-x-0`}
+          max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}`}
         style={{
           right: filterSidebarOpen ? "14rem" : 0,
           backgroundColor: "#E8F0F2",
@@ -224,46 +214,47 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
           scrollbarColor: "#9CA3AF #E8F0F2",
         }}
       >
-        {/* Sidebar Header - compact */}
-        <div className="flex h-12 sm:h-14 items-center justify-between border-b border-gray-300/30 px-2 shrink-0">
+        {/* Header: match main Header (h-14 + items-center) so title row aligns with navbar across the top band. */}
+        <div
+          className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3 ${
+            isOpen ? "gap-2" : "justify-center"
+          }`}
+        >
           {isOpen ? (
-            <div className="flex items-center justify-between flex-1 min-w-0 gap-2">
-              <div className="flex items-center space-x-2 flex-1 min-w-0">
-                {currentDashboard?.icon && (
-                  <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5 shrink-0">
-                    <currentDashboard.icon className="h-4 w-4 text-white" />
-                  </div>
-                )}
-                <h2 className="text-xs font-bold text-gray-800 truncate">{currentDashboard?.name}</h2>
-              </div>
-              {/* Agent Status Toggle - Only show on Tickets dashboard (API handles permission check) */}
-            </div>
-          ) : (
-            <div className="flex items-center justify-center w-full relative">
+            <>
               {currentDashboard?.icon && (
-                <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
-                  <currentDashboard.icon className="h-4 w-4 text-white" />
+                <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+                  <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
                 </div>
               )}
-            </div>
+              <h2 className="min-w-0 flex-1 truncate text-left text-xs font-bold leading-snug text-gray-800">
+                {currentDashboard?.name}
+              </h2>
+            </>
+          ) : (
+            currentDashboard?.icon && (
+              <div className="rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
+                <currentDashboard.icon className="h-4 w-4 text-white" aria-hidden />
+              </div>
+            )
           )}
         </div>
 
-        {/* Tickets dashboard: on ticket detail show Properties panel; else filters. Other dashboards: nav links. */}
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          {isTicketsDashboard && ticketIdFromPath != null && isOpen ? (
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              <TicketPropertiesPanel ticketId={ticketIdFromPath} />
-            </div>
-          ) : isTicketsDashboard && isOpen ? (
-            <div className="flex-1 min-h-0 overflow-y-auto">
-              <TicketFilters variant="sidebar" dark={false} />
-            </div>
-          ) : isTicketsDashboard ? (
-            /* Tickets collapsed: no duplicate icons, empty content */
-            <div className="flex-1 min-h-0" />
-          ) : (
-            <nav className="flex-1 space-y-2 overflow-y-auto px-2 py-3">
+        {/* Body: flex-1 scroll */}
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+            {isTicketsDashboard && ticketIdFromPath != null && isOpen ? (
+              <div className="min-h-0">
+                <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+              </div>
+            ) : isTicketsDashboard && isOpen ? (
+              <div className="min-h-0">
+                <TicketFilters variant="sidebar" dark={false} />
+              </div>
+            ) : isTicketsDashboard ? (
+              <div className="min-h-0" aria-hidden />
+            ) : (
+              <nav className="space-y-1.5 px-2 pb-2 pt-0" dir="ltr">
               {(() => {
                 // Wallet & Earnings sub-pages (wallet-history, earnings) should highlight "Wallet & Earnings", not Rider Information
                 const isWalletOrEarningsPath =
@@ -294,14 +285,14 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                     <Link
                       key={route.href}
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
-                      className={`group relative flex cursor-pointer items-center rounded-lg transition-all duration-200 ${
+                      className={`group relative cursor-pointer rounded-lg transition-all duration-200 ${
                         isOpen
-                          ? `space-x-2 px-2.5 py-2 text-xs font-medium ${
+                          ? `grid w-full min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-x-2 px-2 py-2 text-xs font-medium ${
                               isActive
                                 ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
                                 : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
                             }`
-                          : `justify-center px-2 py-2.5 ${
+                          : `flex justify-center px-2 py-2.5 ${
                               isActive
                                 ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg"
                                 : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900"
@@ -309,14 +300,23 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                       }`}
                       title={!isOpen ? route.name : route.description}
                     >
-                      <Icon className={`flex-shrink-0 ${isOpen ? "h-4 w-4" : "h-5 w-5"}`} />
-                      {isOpen && (
+                      {isOpen ? (
                         <>
-                          <span className="flex-1 truncate">{route.name}</span>
-                          {isActive && (
-                            <div className="absolute right-2 h-2 w-2 rounded-full bg-white animate-pulse shadow-lg shadow-white/50"></div>
-                          )}
+                          <span className="flex size-5 items-center justify-center justify-self-start text-current">
+                            <Icon className="h-4 w-4 shrink-0" aria-hidden />
+                          </span>
+                          <span className="relative min-w-0 truncate pr-5 text-left">
+                            {route.name}
+                            {isActive && (
+                              <span
+                                className="pointer-events-none absolute right-0 top-1/2 h-2 w-2 -translate-y-1/2 rounded-full bg-white shadow-lg shadow-white/50 animate-pulse"
+                                aria-hidden
+                              />
+                            )}
+                          </span>
                         </>
+                      ) : (
+                        <Icon className="h-5 w-5 shrink-0" aria-hidden />
                       )}
                       {!isOpen && (
                         <div className="absolute right-full mr-2 px-2 py-1 bg-gray-900 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-lg">
@@ -342,14 +342,16 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                       isOpen ? (
                         <Link
                           href="/dashboard/merchants/assign-am"
-                          className={`mt-1 flex cursor-pointer items-center space-x-2 rounded-lg px-2.5 py-2 text-xs font-medium transition-all duration-200 ${
+                          className={`mt-1 grid w-full min-w-0 cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-x-2 rounded-lg px-2 py-2 text-xs font-medium transition-all duration-200 ${
                             isAssignAmActive
                               ? "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg shadow-blue-500/20"
                               : "text-gray-900 hover:bg-gray-200/80 hover:text-gray-900 hover:-translate-x-1"
                           }`}
                         >
-                          <Users className="h-4 w-4 flex-shrink-0" />
-                          <span className="flex-1 truncate">Assign AM to Stores</span>
+                          <span className="flex size-5 items-center justify-center justify-self-start text-current">
+                            <Users className="h-4 w-4 shrink-0" aria-hidden />
+                          </span>
+                          <span className="min-w-0 truncate text-left">Assign AM to Stores</span>
                         </Link>
                       ) : (
                         <Link
@@ -390,21 +392,22 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                   </>
                 );
               })()}
-            </nav>
-          )}
+              </nav>
+            )}
+          </div>
         </div>
 
-        {/* Sidebar Footer with Toggle Button - hidden on Tickets dashboard (use Open/Hide in pagination bar instead) */}
         {!isTicketsDashboard && (
-          <div className="border-t border-gray-300/30 bg-gray-200/30 backdrop-blur-sm p-2">
+          <div className="relative z-20 shrink-0 border-t border-gray-300/40 bg-[#E8F0F2] p-2 shadow-[0_-4px_12px_-6px_rgba(15,23,42,0.1)]">
             <button
+              type="button"
               onClick={onToggle}
-              className={`flex w-full cursor-pointer items-center justify-center rounded-lg bg-gray-300/50 text-gray-800 transition-all hover:bg-gray-400/60 hover:shadow-lg hover:scale-105 ${
-                isOpen ? "space-x-2 px-3 py-2.5" : "p-2.5"
+              className={`flex w-full cursor-pointer items-center justify-center rounded-lg bg-gray-300/60 text-gray-800 transition-all hover:bg-gray-400/70 hover:shadow-md ${
+                isOpen ? "gap-2 px-3 py-2" : "p-2"
               }`}
               title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
             >
-              <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+              <ChevronRight className={`h-4 w-4 shrink-0 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
               {isOpen && <span className="text-xs font-semibold">Hide</span>}
             </button>
           </div>
