@@ -62,6 +62,8 @@ function toResponseCookieOptions(options: {
 
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  /** After login, redirect users back to /dashboard instead of "/" to avoid extra root round-trips on hosts. */
+  const normalizedRedirectPath = pathname === "/" ? "/dashboard" : pathname;
   const canTogglePortal = request.cookies.get("gm_portal_toggle_access")?.value === "1";
   // Set NEXT_PUBLIC_DEBUG_PROXY=true in .env.local to log [proxy] Path and redirect messages (off by default to reduce console noise).
   const debugProxy = process.env.NEXT_PUBLIC_DEBUG_PROXY === "true";
@@ -72,13 +74,18 @@ export async function proxy(request: NextRequest) {
   const response = NextResponse.next();
 
   try {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("[proxy] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
+      return response;
+    }
+
     // Create Supabase client for proxy
     // Note: Disable autoRefreshToken in proxy to avoid Edge Runtime fetch failures
     // Token refresh should happen in Server Components/API routes, not proxy
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
+    const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
         cookies: {
           getAll() {
             return request.cookies.getAll();
@@ -201,7 +208,7 @@ export async function proxy(request: NextRequest) {
         if (!pathname.startsWith("/login") && !pathname.startsWith("/auth/callback")) {
           const redirectUrl = request.nextUrl.clone();
           redirectUrl.pathname = "/login";
-          redirectUrl.searchParams.set("redirect", pathname);
+          redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
           redirectUrl.searchParams.set("reason", "session_invalid");
           return NextResponse.redirect(redirectUrl);
         }
@@ -245,13 +252,18 @@ export async function proxy(request: NextRequest) {
       }
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/login";
-      redirectUrl.searchParams.set("redirect", pathname);
+      redirectUrl.searchParams.set("redirect", normalizedRedirectPath);
       return NextResponse.redirect(redirectUrl);
     }
 
     // If Supabase session exists and trying to access login, redirect to dashboard
     if (session && pathname === "/login") {
       if (debugProxy) console.log("[proxy] Session exists, redirecting from login to dashboard");
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+
+    // Authenticated users hitting "/" — send to dashboard (stable first load on hosted setups).
+    if (session && pathname === "/") {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
 

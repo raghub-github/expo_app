@@ -218,7 +218,7 @@ export async function GET(
         WHERE ia.item_id = ${menuItemId}
           AND ad.applies_to IN ('ITEM', 'BOTH')
       `;
-      for (const row of itemAttributeRows as Array<{ attribute_name: string; value: unknown }>) {
+      for (const row of itemAttributeRows as unknown as Array<{ attribute_name: string; value: unknown }>) {
         if (!row?.attribute_name) continue;
         itemAttributes.set(row.attribute_name, row.value);
       }

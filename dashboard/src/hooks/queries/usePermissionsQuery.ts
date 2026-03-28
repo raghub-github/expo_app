@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { permissionsCacheConfig } from "@/lib/cache-strategies";
 import { safeParseJson } from "@/lib/utils";
@@ -25,12 +25,9 @@ interface PermissionsResponse {
 
 const PERMISSIONS_FETCH_TIMEOUT_MS = 30000; // 30s – avoid infinite loading; UI shows Retry and uses cache when available
 const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
-let permissionsInFlight: Promise<PermissionsData> | null = null;
 
 /** Exported for prefetch in dashboard layout */
 export async function fetchPermissions(): Promise<PermissionsData> {
-  if (permissionsInFlight) return permissionsInFlight;
-  permissionsInFlight = (async () => {
   const controller = new AbortController();
   const timeoutId = setTimeout(
     () => controller.abort(new DOMException("Request timed out. Tap Retry to try again.", "AbortError")),
@@ -81,12 +78,6 @@ export async function fetchPermissions(): Promise<PermissionsData> {
   } finally {
     clearTimeout(timeoutId);
   }
-  })();
-  try {
-    return await permissionsInFlight;
-  } finally {
-    permissionsInFlight = null;
-  }
 }
 
 /**
@@ -94,13 +85,9 @@ export async function fetchPermissions(): Promise<PermissionsData> {
  * Uses React Query for automatic caching and refetching
  */
 export function usePermissionsQuery() {
-  const queryClient = useQueryClient();
   return useQuery({
     queryKey: queryKeys.permissions(),
     queryFn: fetchPermissions,
-    initialData: () => {
-      return queryClient.getQueryData<PermissionsData>(queryKeys.permissions());
-    },
     ...permissionsCacheConfig,
     placeholderData: (previousData) => previousData,
     retry: (failureCount, error) => {
@@ -108,7 +95,6 @@ export function usePermissionsQuery() {
       if (error instanceof Error) {
         const code = (error as Error & { code?: string }).code;
         if (code === SERVICE_UNAVAILABLE || error.message.includes("503") || error.name === "AbortError") return true;
-        // Retry on network errors (e.g. "Failed to fetch", connection refused)
         if (error.message === "Failed to fetch" || error.name === "TypeError") return true;
       }
       return failureCount < 2;

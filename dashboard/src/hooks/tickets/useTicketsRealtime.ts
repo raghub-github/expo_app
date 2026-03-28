@@ -67,7 +67,7 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
 
   useEffect(() => {
     if (!listReady) return;
-    let debounce: ReturnType<typeof setTimeout> | null = null;
+    let debounce: number | null = null;
     const channel = supabase
       .channel(`tickets_activity_${Math.random().toString(36).slice(2)}`)
       .on(

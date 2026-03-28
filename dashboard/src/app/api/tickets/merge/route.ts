@@ -99,8 +99,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "One or more tickets were not found" }, { status: 404 });
     }
 
-    const byId = new Map<number, { id: number; ticket_id: string | null; status: string | null; parent_ticket_id: number | null }>();
-    for (const row of rows as Array<{ id: number; ticket_id: string | null; status: string | null; parent_ticket_id: number | null }>) {
+    type TicketRow = { id: number; ticket_id: string | null; status: string | null; parent_ticket_id: number | null };
+    const byId = new Map<number, TicketRow>();
+    for (const row of rows as unknown as TicketRow[]) {
       byId.set(Number(row.id), row);
     }
     const target = byId.get(targetTicketId);

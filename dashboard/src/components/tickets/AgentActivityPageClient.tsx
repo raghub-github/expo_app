@@ -459,7 +459,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                         </tr>
                       </thead>
                       <tbody>
-                        {data.data.dailyBreakdown.map((day: Record<string, unknown>, idx: number) => (
+                        {(data.data.dailyBreakdown as Array<Record<string, unknown>>).map((day, idx) => (
                           <tr key={idx} className="border-b border-gray-100">
                             <td className="px-2 py-2.5 text-gray-900">
                               {new Date(String(day.activity_date)).toLocaleDateString()}

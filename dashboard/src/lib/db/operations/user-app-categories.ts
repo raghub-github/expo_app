@@ -139,7 +139,8 @@ export async function updateUserAppCategory(
 
   if (orderChanged) {
     await sql.begin(async (tx) => {
-      const [other] = await tx`
+      const run = tx as unknown as typeof sql;
+      const [other] = await run`
         SELECT id
         FROM user_app_category
         WHERE store_type = ${nextStore}
@@ -149,13 +150,13 @@ export async function updateUserAppCategory(
       `;
       if (other) {
         const otherId = numId((other as Record<string, unknown>).id);
-        await tx`
+        await run`
           UPDATE user_app_category
           SET display_order = ${currentOrder}
           WHERE id = ${otherId}
         `;
       }
-      await tx`
+      await run`
         UPDATE user_app_category
         SET store_type = ${nextStore},
           name = ${nextName},

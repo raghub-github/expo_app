@@ -381,12 +381,20 @@ function HeaderComponent() {
     primaryOauthUrlRef.current = primaryOauth;
     return primaryOauth ?? gravatarUrl;
   }, [authUser, userEmail, userMetadata]);
-  const userName = systemUser?.fullName ||
-                   cachedIdentity.fullName ||
-                   userMetadata?.full_name || 
-                   userMetadata?.name || 
-                   (userEmail ? userEmail.split("@")[0] : null) ||
-                   null;
+  const metaFullName = userMetadata?.full_name;
+  const metaDisplayName = userMetadata?.name;
+  const stringFromUnknown = (v: unknown): string | null => {
+    if (typeof v === "string" && v.trim() !== "") return v.trim();
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    return null;
+  };
+  const userName: string | null =
+    systemUser?.fullName ||
+    cachedIdentity.fullName ||
+    stringFromUnknown(metaFullName) ||
+    stringFromUnknown(metaDisplayName) ||
+    (userEmail ? userEmail.split("@")[0] : null) ||
+    null;
 
   // Avatar: only update local avatar state when source identity actually changes.
   // This keeps the header image stable across unrelated re-renders.
@@ -422,7 +430,7 @@ function HeaderComponent() {
   }, [userName, userEmail, avatarUrl, cachedIdentity.avatarUrl]);
 
   const displayName = userName ?? "User";
-  const displayEmail = userEmail ?? "";
+  const displayEmail = typeof userEmail === "string" ? userEmail : "";
   const effectiveAvatarUrl = avatarUrl ?? cachedIdentity.avatarUrl;
 
   const handleAvatarImgError = useCallback(() => {

@@ -82,7 +82,8 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ success: false, error: "templates[] required" }, { status: 400 });
   }
 
-  const sql = getSql() as TicketAuditSqlClient;
+  const db = getSql();
+  const auditSql = db as TicketAuditSqlClient;
 
   try {
     for (const raw of templates) {
@@ -98,7 +99,7 @@ export async function PATCH(request: NextRequest) {
       const subject_template = typeof t.subject_template === "string" ? t.subject_template.slice(0, 500) : "";
       const body_template = typeof t.body_template === "string" ? t.body_template.slice(0, 50000) : "";
 
-      await sql.unsafe(
+      await auditSql.unsafe(
         `UPDATE public.ticket_notification_automation
          SET enabled = $1, email_to = $2, email_cc = $3, email_bcc = $4, subject_template = $5, body_template = $6, updated_at = NOW()
          WHERE event_code = $7`,
@@ -106,7 +107,7 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    const rows = await sql`
+    const rows = await db`
       SELECT event_code, enabled, email_to, email_cc, email_bcc, subject_template, body_template, updated_at
       FROM public.ticket_notification_automation
       ORDER BY event_code ASC
