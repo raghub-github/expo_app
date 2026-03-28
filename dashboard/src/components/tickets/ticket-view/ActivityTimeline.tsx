@@ -218,8 +218,9 @@ function isStatusUpdatedActivity(actionType: string): boolean {
 }
 
 export function ActivityTimeline({ ticketId, noScroll }: { ticketId: number; noScroll?: boolean }) {
+  const activityCacheId = String(ticketId);
   const { data, isPending, isError, error } = useQuery({
-    queryKey: queryKeys.tickets.activities(ticketId),
+    queryKey: queryKeys.tickets.activities(activityCacheId),
     queryFn: () => fetchTicketActivities(ticketId),
     enabled: !!ticketId,
     staleTime: TICKET_ACTIVITIES_STALE_MS,

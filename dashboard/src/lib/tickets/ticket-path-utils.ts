@@ -28,5 +28,5 @@ export function isTicketsAppDetailPath(cleanPathname: string): boolean {
 
 export const AGENT_ACTIVITY_PATH = "/dashboard/tickets/agent-activity";
 
-/** Helpdesk-style metrics dashboard (Freshdesk-like widgets). */
+/** GatiMitra Queue metrics dashboard (Freshdesk-like widgets). */
 export const TICKETS_HELPDESK_DASHBOARD_PATH = "/dashboard/tickets/dashboard";
