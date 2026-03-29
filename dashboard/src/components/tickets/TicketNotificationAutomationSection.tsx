@@ -51,7 +51,16 @@ function baseTemplateRow(code: "ticket_assigned" | "ticket_reopened"): TemplateR
 
 type NotificationAutomationResponse = { success: boolean; data: { templates: TemplateRow[] } };
 
-export function TicketNotificationAutomationSection({ variant = "page" }: { variant?: "page" | "plain" }) {
+export function TicketNotificationAutomationSection({
+  variant = "page",
+  viewMode = "both",
+  embedded = false,
+}: {
+  variant?: "page" | "plain";
+  /** Manager page: edit one trigger at a time. Save still persists both templates. */
+  viewMode?: "both" | "assigned" | "reopened";
+  embedded?: boolean;
+}) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isPlain = variant === "plain";
@@ -215,22 +224,45 @@ export function TicketNotificationAutomationSection({ variant = "page" }: { vari
     );
   }
 
+  const showAssigned = viewMode === "both" || viewMode === "assigned";
+  const showReopened = viewMode === "both" || viewMode === "reopened";
+
+  const saveLabel =
+    viewMode === "assigned"
+      ? "Save assigned email"
+      : viewMode === "reopened"
+        ? "Save reopened email"
+        : "Save notification automation";
+
   return (
-    <section className={isPlain ? "pt-6" : "rounded-xl border border-gray-200 bg-white p-5 shadow-sm"}>
-      <div className={`mb-4 flex items-start gap-2 ${isPlain ? "border-b border-gray-200 pb-3" : "border-b border-gray-100 pb-4"}`}>
-        <Bell className="h-5 w-5 shrink-0 text-violet-600" />
-        <div>
-          <h2 className={`font-semibold text-gray-900 ${isPlain ? "text-base" : "text-lg"}`}>Assign & reopen emails</h2>
-          <p className={`mt-0.5 text-gray-600 ${isPlain ? "text-xs" : "text-sm"}`}>
-            Turn each card&apos;s <span className="font-medium text-gray-700">Email trigger</span> on to send that email; when off, the server does not send it. Templates use dashboard SMTP / Resend. Placeholders:{" "}
-            <span className="font-mono text-[11px] text-gray-500">{PLACEHOLDER_HELP}</span>
-          </p>
+    <section
+      className={
+        isPlain ? (embedded ? "" : "pt-6") : "rounded-xl border border-gray-200 bg-white p-5 shadow-sm"
+      }
+    >
+      {!embedded && (
+        <div className={`mb-4 flex items-start gap-2 ${isPlain ? "border-b border-gray-200 pb-3" : "border-b border-gray-100 pb-4"}`}>
+          <Bell className="h-5 w-5 shrink-0 text-violet-600" />
+          <div>
+            <h2 className={`font-semibold text-gray-900 ${isPlain ? "text-base" : "text-lg"}`}>Assign & reopen emails</h2>
+            <p className={`mt-0.5 text-gray-600 ${isPlain ? "text-xs" : "text-sm"}`}>
+              Turn each card&apos;s <span className="font-medium text-gray-700">Email trigger</span> on to send that email; when off, the server does not send it. Templates use dashboard SMTP / Resend. Placeholders:{" "}
+              <span className="font-mono text-[11px] text-gray-500">{PLACEHOLDER_HELP}</span>
+            </p>
+          </div>
         </div>
-      </div>
+      )}
+
+      {embedded && isPlain ? (
+        <p className="mb-4 border-b border-gray-200 pb-3 text-xs text-gray-600">
+          <span className="font-medium text-gray-800">Email trigger</span> must be on for the server to send. Placeholders:{" "}
+          <span className="font-mono text-[11px] text-gray-500">{PLACEHOLDER_HELP}</span>
+        </p>
+      ) : null}
 
       <div className="space-y-8">
-        {renderEditor("Ticket assigned to an agent", assigned, setAssigned)}
-        {renderEditor("Ticket reopened", reopened, setReopened)}
+        {showAssigned ? renderEditor("Ticket assigned to an agent", assigned, setAssigned) : null}
+        {showReopened ? renderEditor("Ticket reopened", reopened, setReopened) : null}
       </div>
 
       <div className={`flex flex-wrap gap-2 ${isPlain ? "mt-6" : "mt-5"}`}>
@@ -240,7 +272,7 @@ export function TicketNotificationAutomationSection({ variant = "page" }: { vari
           disabled={saveMutation.isPending}
           className="cursor-pointer rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-60"
         >
-          {saveMutation.isPending ? "Saving…" : "Save notification automation"}
+          {saveMutation.isPending ? "Saving…" : saveLabel}
         </button>
       </div>
     </section>

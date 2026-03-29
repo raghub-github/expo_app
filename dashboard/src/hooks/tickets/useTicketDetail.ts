@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -366,44 +366,58 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
   };
 }
 
+/** Shared fetch for `useTicketDetail`, hover prefetch, and nav warm-up (same cache key). */
+export async function fetchTicketDetailById(ticketId: string): Promise<TicketDetail> {
+  const id = String(ticketId).trim();
+  if (!id) throw new Error("Ticket ID is required");
+  if (ticketDetailConfirmedNotFound.has(id)) {
+    throwCachedNotFound();
+  }
+  const response = await fetch(`/api/tickets/${encodeURIComponent(id)}`, { credentials: "include" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 404) {
+      ticketDetailConfirmedNotFound.add(id);
+      const err = new Error("") as Error & { httpStatus?: number };
+      err.httpStatus = 404;
+      throw err;
+    }
+    const msg = typeof data?.error === "string" ? data.error : "Failed to fetch ticket detail";
+    const err = new Error(msg) as Error & { httpStatus?: number };
+    err.httpStatus = response.status;
+    throw err;
+  }
+  const raw = data.data?.ticket;
+  if (!raw) {
+    const err = new Error(typeof data?.error === "string" ? data.error : "Invalid response") as Error & {
+      httpStatus?: number;
+    };
+    err.httpStatus = response.status;
+    throw err;
+  }
+  ticketDetailConfirmedNotFound.delete(id);
+  return normalizeTicket(raw);
+}
+
+export function prefetchTicketDetail(queryClient: QueryClient, ticketId: number | string): void {
+  const id = String(ticketId).trim();
+  if (!id) return;
+  void queryClient.prefetchQuery({
+    queryKey: queryKeys.tickets.detail(id),
+    queryFn: () => fetchTicketDetailById(id),
+    staleTime: 60 * 1000,
+  });
+}
+
 export function useTicketDetail(ticketId: number | string | null) {
   const id =
     ticketId == null || String(ticketId).trim() === "" ? null : String(ticketId).trim();
 
   return useQuery<TicketDetail>({
     queryKey: queryKeys.tickets.detail(id ?? ""),
-    queryFn: async () => {
-      if (!id) throw new Error("Ticket ID is required");
-      if (ticketDetailConfirmedNotFound.has(id)) {
-        throwCachedNotFound();
-      }
-      const response = await fetch(`/api/tickets/${encodeURIComponent(id)}`, { credentials: "include" });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        if (response.status === 404) {
-          ticketDetailConfirmedNotFound.add(id);
-          const err = new Error("") as Error & { httpStatus?: number };
-          err.httpStatus = 404;
-          throw err;
-        }
-        const msg = typeof data?.error === "string" ? data.error : "Failed to fetch ticket detail";
-        const err = new Error(msg) as Error & { httpStatus?: number };
-        err.httpStatus = response.status;
-        throw err;
-      }
-      const raw = data.data?.ticket;
-      if (!raw) {
-        const err = new Error(typeof data?.error === "string" ? data.error : "Invalid response") as Error & {
-          httpStatus?: number;
-        };
-        err.httpStatus = response.status;
-        throw err;
-      }
-      ticketDetailConfirmedNotFound.delete(id);
-      return normalizeTicket(raw);
-    },
+    queryFn: () => fetchTicketDetailById(id!),
     enabled: id != null,
-    staleTime: 10000, // 10 seconds
+    staleTime: 60 * 1000,
     /**
      * One HTTP call per cache entry unless something explicitly invalidates.
      * Global default retry:1 + refetchOnMount callbacks were still hammering 404s.

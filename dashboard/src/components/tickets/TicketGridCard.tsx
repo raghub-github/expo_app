@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { User, ChevronDown, X, Search, Copy } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
+import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 
 // Reference card: Ticket ID = purple-blue pill (white text), Status = light blue, Priority = light green,
@@ -90,6 +93,7 @@ export interface TicketGridCardProps {
   agentOptions: Array<{ value: string; label: string }>;
   statusOptions: Option[];
   currentUserId?: number;
+  detailHref?: string;
 }
 
 export function TicketGridCard({
@@ -105,7 +109,9 @@ export function TicketGridCard({
   agentOptions,
   statusOptions,
   currentUserId,
+  detailHref,
 }: TicketGridCardProps) {
+  const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -113,6 +119,10 @@ export function TicketGridCard({
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const prefetchThisTicket = useCallback(() => {
+    prefetchTicketDetail(queryClient, ticket.id);
+  }, [queryClient, ticket.id]);
 
   useLayoutEffect(() => {
     if (groupAgentOpen && triggerRef.current) {
@@ -258,6 +268,7 @@ export function TicketGridCard({
     <div
       className="rounded-lg border border-gray-200 bg-white shadow-sm transition-all flex flex-col min-h-0 overflow-visible"
       style={{ isolation: "isolate" }}
+      onPointerEnter={prefetchThisTicket}
     >
       <div
         className="h-1 rounded-t-lg shrink-0"
@@ -305,7 +316,11 @@ export function TicketGridCard({
         </div>
 
         {/* Title */}
-        <Link href={`/dashboard/tickets/${ticket.id}`} className="font-bold text-gray-900 text-[13px] line-clamp-2 leading-tight hover:text-blue-600 hover:underline -mx-0.5 px-0.5">
+        <Link
+          href={detailLink}
+          scroll={false}
+          className="font-bold text-gray-900 text-[13px] line-clamp-2 leading-tight hover:text-blue-600 hover:underline -mx-0.5 px-0.5"
+        >
           {ticket.subject || "No subject"}
         </Link>
 

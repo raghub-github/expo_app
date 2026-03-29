@@ -26,7 +26,14 @@ function formatLastUpdatedBy(data: {
   return null;
 }
 
-export function TicketComposeAutomationSection({ variant = "page" }: { variant?: "page" | "sidebar" | "plain" }) {
+export function TicketComposeAutomationSection({
+  variant = "page",
+  /** Hide the plain variant title block when the parent page supplies its own heading (e.g. queue Manager). */
+  embedded = false,
+}: {
+  variant?: "page" | "sidebar" | "plain";
+  embedded?: boolean;
+}) {
   const { toast } = useToast();
   const { isSuperAdmin } = usePermission();
   const { data, isError, error } = useTicketComposeAutomationQuery();
@@ -107,7 +114,7 @@ export function TicketComposeAutomationSection({ variant = "page" }: { variant?:
         </div>
       )}
 
-      {isPlain && (
+      {isPlain && !embedded && (
         <div className="mb-4 flex items-start gap-2 border-b border-gray-200 pb-3">
           <Zap className="h-5 w-5 shrink-0 text-violet-600" />
           <div>

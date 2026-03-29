@@ -12,6 +12,7 @@ import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
+import { QUEUE_HOME_ACTIVE_STATUS_DB } from "@/lib/tickets/queue-ticket-filters";
 
 export const runtime = "nodejs";
 
@@ -114,7 +115,11 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
 
-    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
+    const forExport =
+      searchParams.get("forExport") === "1" || searchParams.get("forExport") === "true";
+    const limit = forExport
+      ? Math.min(10000, Math.max(1, parseInt(searchParams.get("limit") || "5000", 10) || 5000))
+      : Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
     const offset = Math.max(0, parseInt(searchParams.get("offset") || "0", 10) || 0);
     const serviceTypeParam = searchParams.get("serviceType") || searchParams.getAll("serviceType").join(",");
     const ticketSection = searchParams.get("ticketSection");
@@ -123,6 +128,8 @@ export async function GET(request: NextRequest) {
     const ticketCategory = searchParams.get("ticketCategory");
     const assignedTo = searchParams.get("assignedTo");
     const assignedToIdsParam = searchParams.get("assignedToIds");
+    /** Agent queue home: force assignee = session user + active statuses only (ignores assignee spoofing). */
+    const queueScope = searchParams.get("queueScope") === "1";
     const sourceRoleParam = searchParams.get("sourceRole") || searchParams.getAll("sourceRole").join(",");
     const tagsParam = (searchParams.get("tags") || "").trim();
     const skillParam = (searchParams.get("skill") || "").trim();
@@ -169,7 +176,6 @@ export async function GET(request: NextRequest) {
     }
     const rawStatuses = statusParam ? statusParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     const statusAliases: Record<string, string> = {
-      OPEN_FRT: "OPEN",
       ASSIGNED: "OPEN",
     };
     const validStatusValues = new Set([
@@ -187,12 +193,30 @@ export async function GET(request: NextRequest) {
       "CANCELLED",
       "PROVISIONALLY_RESOLVED",
     ]);
+    /** OPEN + no first response yet (distinct from all OPEN when combined with plain OPEN in multi-status OR). */
+    const wantsOpenAwaitingFrt = rawStatuses.includes("OPEN_FRT");
     const statuses = rawStatuses
+      .filter((s) => s !== "OPEN_FRT")
       .map((s) => statusAliases[s] ?? s)
       .filter((s) => validStatusValues.has(s));
     if (rawStatuses.length > 0) {
-      if (statuses.length > 0) whereConditions.push(sqlClient`ut.status = ANY(${statuses})`);
-      else whereConditions.push(sqlClient`FALSE`);
+      const statusOrParts: unknown[] = [];
+      if (wantsOpenAwaitingFrt) {
+        statusOrParts.push(sqlClient`ut.status = 'OPEN' AND ut.first_response_at IS NULL`);
+      }
+      if (statuses.length > 0) {
+        statusOrParts.push(sqlClient`ut.status = ANY(${statuses})`);
+      }
+      if (statusOrParts.length === 0) {
+        whereConditions.push(sqlClient`FALSE`);
+      } else if (statusOrParts.length === 1) {
+        whereConditions.push(statusOrParts[0] as never);
+      } else {
+        const statusCombined = statusOrParts.reduce((acc, cond, idx) =>
+          idx === 0 ? cond : sqlClient`(${acc as never}) OR (${cond as never})`
+        );
+        whereConditions.push(sqlClient`(${statusCombined as never})`);
+      }
     }
     const priorities = priorityParam ? priorityParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     if (priorities.length > 0) {
@@ -216,7 +240,13 @@ export async function GET(request: NextRequest) {
     const assignedToIds = assignedToIdsParam
       ? assignedToIdsParam.split(",").map((s) => s.trim()).filter(Boolean)
       : assignedTo && assignedTo !== "all" ? [assignedTo] : [];
-    if (assignedToIds.length > 0) {
+    if (queueScope) {
+      whereConditions.push(sqlClient`ut.assigned_to_agent_id = ${systemUser.id}`);
+      whereConditions.push(sqlClient`ut.assigned_to_agent_id IS NOT NULL`);
+      whereConditions.push(
+        sqlClient`ut.status::text = ANY(${[...QUEUE_HOME_ACTIVE_STATUS_DB]})`
+      );
+    } else if (assignedToIds.length > 0) {
       const meIndex = assignedToIds.indexOf("me");
       const unassignedIndex = assignedToIds.indexOf("unassigned");
       const numericIds = assignedToIds.filter((id) => id !== "me" && id !== "unassigned").map((id) => parseInt(id, 10)).filter((id) => !isNaN(id));
@@ -426,7 +456,8 @@ export async function GET(request: NextRequest) {
     let ticketRows: Record<string, unknown>[];
 
     const redis = getRedisClient();
-    const cacheKey = systemUser ? `tickets:v21:${systemUser.id}:${request.nextUrl.searchParams.toString()}` : null;
+    const cacheKey =
+      forExport || !systemUser ? null : `tickets:v22:${systemUser.id}:${request.nextUrl.searchParams.toString()}`;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
     if (cacheKey) {
@@ -472,6 +503,7 @@ export async function GET(request: NextRequest) {
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
               ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+              ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at,
               tg.group_code AS group_code, tg.group_name AS group_name,
@@ -513,6 +545,7 @@ export async function GET(request: NextRequest) {
                 ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
                 ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                 ut.group_id, ut.metadata, ut.sla_due_at,
                 tg.group_code AS group_code, tg.group_name AS group_name,
@@ -550,6 +583,7 @@ export async function GET(request: NextRequest) {
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
                   ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                  ut.assigned_at, ut.satisfaction_rating,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id, ut.metadata, ut.sla_due_at,
                   tg.group_code AS group_code, tg.group_name AS group_name,
@@ -575,6 +609,7 @@ export async function GET(request: NextRequest) {
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
                   ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                  ut.assigned_at, ut.satisfaction_rating,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id,
                   tg.group_code AS group_code, tg.group_name AS group_name
@@ -599,6 +634,7 @@ export async function GET(request: NextRequest) {
               ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
               ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+              ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
               ut.group_id, ut.metadata, ut.sla_due_at,
               tg.group_code AS group_code, tg.group_name AS group_name,
@@ -639,6 +675,7 @@ export async function GET(request: NextRequest) {
                 ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
                 ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                 ut.group_id, ut.metadata, ut.sla_due_at,
                 tg.group_code AS group_code, tg.group_name AS group_name,
@@ -675,6 +712,7 @@ export async function GET(request: NextRequest) {
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
                   ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                  ut.assigned_at, ut.satisfaction_rating,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id, ut.metadata, ut.sla_due_at,
                   tg.group_code AS group_code, tg.group_name AS group_name,
@@ -699,6 +737,7 @@ export async function GET(request: NextRequest) {
                   ut.order_id, ut.order_type, ut.raised_by_type, ut.raised_by_name,
                   ut.subject, ut.description, ut.priority, ut.status, ut.is_spam,
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
+                  ut.assigned_at, ut.satisfaction_rating,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
                   ut.group_id,
                   tg.group_code AS group_code, tg.group_name AS group_name
@@ -716,6 +755,68 @@ export async function GET(request: NextRequest) {
       console.error("[GET /api/tickets] Query execution error:", queryError);
       console.error("[GET /api/tickets] Ensure public.unified_tickets table and enums exist.");
       throw queryError;
+    }
+
+    const enrichById = new Map<number, Record<string, unknown>>();
+    if (forExport && ticketRows.length > 0) {
+      const ids = ticketRows
+        .map((r) => {
+          const v = r.id;
+          const n = typeof v === "bigint" ? Number(v) : Number(v);
+          return Number.isFinite(n) ? n : NaN;
+        })
+        .filter((n) => !Number.isNaN(n));
+      if (ids.length > 0) {
+        try {
+          const enrichRows = (await sqlClient`
+            SELECT
+              ut.id,
+              ut.tags,
+              ut.resolution,
+              ut.metadata,
+              ut.internal_notes AS ticket_internal_notes,
+              ut.association_type AS ticket_association_type,
+              ut.agent_interaction_count AS ticket_agent_icount,
+              ut.customer_interaction_count AS ticket_customer_icount,
+              su.full_name AS agent_system_full_name,
+              su.email AS agent_email,
+              su.mobile AS agent_mobile,
+              su.alternate_mobile AS agent_alternate_mobile,
+              c.full_name AS cust_full_name,
+              c.customer_id AS cust_customer_id,
+              c.email AS cust_email,
+              c.primary_mobile AS cust_primary_mobile,
+              c.alternate_mobile AS cust_alternate_mobile,
+              c.preferred_language AS cust_language,
+              c.work_phone AS cust_work_phone,
+              c.facebook_id AS cust_facebook_id,
+              c.twitter_id AS cust_twitter_id,
+              c.time_zone AS cust_time_zone,
+              c.contact_tags AS cust_contact_tags,
+              c.job_title AS cust_job_title,
+              c.unique_external_id AS cust_unique_external_id,
+              c.twitter_verified AS cust_twitter_verified,
+              c.twitter_follower_count AS cust_twitter_follower_count,
+              ms.store_name AS store_name,
+              ms.store_display_name AS store_display_name,
+              COALESCE(mp.business_name, mp.parent_name, ms.store_name, '') AS export_company_name,
+              mp.company_domains AS mp_company_domains
+            FROM public.unified_tickets ut
+            LEFT JOIN public.system_users su ON su.id = ut.assigned_to_agent_id AND su.deleted_at IS NULL
+            LEFT JOIN public.customers c ON c.id = ut.customer_id AND c.deleted_at IS NULL
+            LEFT JOIN public.merchant_stores ms ON ms.id = ut.merchant_store_id AND ms.deleted_at IS NULL
+            LEFT JOIN public.merchant_parents mp ON mp.id = COALESCE(ut.merchant_parent_id, ms.parent_id)
+            WHERE ut.id = ANY(${ids})
+          `) as Record<string, unknown>[];
+          for (const er of enrichRows) {
+            const idRaw = er.id;
+            const idNum = typeof idRaw === "bigint" ? Number(idRaw) : Number(idRaw);
+            if (Number.isFinite(idNum)) enrichById.set(idNum, er);
+          }
+        } catch (enrichErr) {
+          console.error("[GET /api/tickets] forExport enrich query failed:", enrichErr);
+        }
+      }
     }
 
     const total = countResult[0]?.count ?? 0;
@@ -750,8 +851,118 @@ export async function GET(request: NextRequest) {
       const resolvedId = rowNum(t, "id", "id") ?? (t.id != null ? Number(t.id) : NaN);
       const slaRaw = t.sla_due_at ?? t.slaDueAt;
 
+      const ticketIdNum = Number.isFinite(resolvedId) ? resolvedId : 0;
+      const er = ticketIdNum > 0 ? enrichById.get(ticketIdNum) : undefined;
+      let exportMeta:
+        | {
+            tags: string;
+            resolutionText: string;
+            internalNotes: string;
+            associationType: string;
+            agentInteractionCount: string;
+            customerInteractionCount: string;
+            contactFullName: string;
+            contactExternalId: string;
+            contactEmail: string;
+            contactMobile: string;
+            contactAlternateMobile: string;
+            contactLanguage: string;
+            contactWorkPhone: string;
+            contactFacebookId: string;
+            contactTwitterId: string;
+            contactTimeZone: string;
+            contactTags: string;
+            contactJobTitle: string;
+            contactUniqueExternalId: string;
+            contactTwitterVerified: string;
+            contactTwitterFollowerCount: string;
+            /** Assigned agent (system_users) — maps to Contact: Full name, Email, Work/Mobile phone in export. */
+            agentExportFullName: string;
+            agentExportEmail: string;
+            agentExportMobile: string;
+            agentExportAlternateMobile: string;
+            companyName: string;
+            companyDisplayName: string;
+            companyDomains: string;
+          }
+        | undefined;
+      if (forExport && er) {
+        const tagVal = er.tags;
+        const tagsStr = Array.isArray(tagVal) ? tagVal.join(", ") : tagVal != null ? String(tagVal) : "";
+        const metaRaw = er.metadata;
+        let internalNotesMeta = "";
+        if (metaRaw && typeof metaRaw === "object" && !Array.isArray(metaRaw)) {
+          const m = metaRaw as Record<string, unknown>;
+          const n = m.internal_notes ?? m.internalNotes;
+          if (typeof n === "string") internalNotesMeta = n;
+        }
+        const internalNotesCol = rowStr(er, "ticket_internal_notes", "ticketInternalNotes");
+        const internalNotes = internalNotesCol.trim() || internalNotesMeta;
+
+        const tagContact = er.cust_contact_tags ?? er.custContactTags;
+        const contactTagsStr = Array.isArray(tagContact)
+          ? tagContact.join(", ")
+          : tagContact != null
+            ? String(tagContact)
+            : "";
+
+        const domainsVal = er.mp_company_domains ?? er.mpCompanyDomains;
+        let companyDomainsStr = "";
+        if (Array.isArray(domainsVal)) companyDomainsStr = domainsVal.join(", ");
+        else if (domainsVal != null) companyDomainsStr = String(domainsVal);
+
+        const tv = er.cust_twitter_verified ?? er.custTwitterVerified;
+        const contactTwitterVerified =
+          tv === true || tv === "t" || String(tv).toLowerCase() === "true"
+            ? "Yes"
+            : tv === false || tv === "f" || String(tv).toLowerCase() === "false"
+              ? "No"
+              : "";
+
+        const tfc = er.cust_twitter_follower_count ?? er.custTwitterFollowerCount;
+        const contactTwitterFollowerCount = tfc != null && String(tfc) !== "" ? String(tfc) : "";
+
+        const aic = er.ticket_agent_icount ?? er.ticketAgentIcount;
+        const cic = er.ticket_customer_icount ?? er.ticketCustomerIcount;
+
+        exportMeta = {
+          tags: tagsStr,
+          resolutionText: rowStr(er, "resolution", "resolution"),
+          internalNotes,
+          associationType: rowStr(er, "ticket_association_type", "ticketAssociationType"),
+          agentInteractionCount: aic != null && String(aic) !== "" ? String(aic) : "",
+          customerInteractionCount: cic != null && String(cic) !== "" ? String(cic) : "",
+          contactFullName: rowStr(er, "cust_full_name", "custFullName"),
+          contactExternalId: rowStr(er, "cust_customer_id", "custCustomerId"),
+          contactEmail: rowStr(er, "cust_email", "custEmail"),
+          contactMobile: rowStr(er, "cust_primary_mobile", "custPrimaryMobile"),
+          contactAlternateMobile: rowStr(er, "cust_alternate_mobile", "custAlternateMobile"),
+          contactLanguage: rowStr(er, "cust_language", "custLanguage"),
+          contactWorkPhone: rowStr(er, "cust_work_phone", "custWorkPhone"),
+          contactFacebookId: rowStr(er, "cust_facebook_id", "custFacebookId"),
+          contactTwitterId: rowStr(er, "cust_twitter_id", "custTwitterId"),
+          contactTimeZone: rowStr(er, "cust_time_zone", "custTimeZone"),
+          contactTags: contactTagsStr,
+          contactJobTitle: rowStr(er, "cust_job_title", "custJobTitle"),
+          contactUniqueExternalId: rowStr(er, "cust_unique_external_id", "custUniqueExternalId"),
+          contactTwitterVerified,
+          contactTwitterFollowerCount,
+          agentExportFullName: rowStr(er, "agent_system_full_name", "agentSystemFullName"),
+          agentExportEmail: rowStr(er, "agent_email", "agentEmail"),
+          agentExportMobile: rowStr(er, "agent_mobile", "agentMobile"),
+          agentExportAlternateMobile: rowStr(er, "agent_alternate_mobile", "agentAlternateMobile"),
+          companyName: rowStr(er, "export_company_name", "exportCompanyName"),
+          companyDisplayName: rowStr(er, "store_display_name", "storeDisplayName"),
+          companyDomains: companyDomainsStr,
+        };
+      }
+
+      const legacyAgentName = rowStr(t, "assigned_to_agent_name", "assignedToAgentName") || "";
+      const agentNameFromSystemUser = er ? rowStr(er, "agent_system_full_name", "agentSystemFullName").trim() : "";
+      const agentEmailFromSystemUser = er ? rowStr(er, "agent_email", "agentEmail") : "";
+
       return {
-        id: Number.isFinite(resolvedId) ? resolvedId : 0,
+        id: ticketIdNum,
         ticketNumber: rowStr(t, "ticket_id", "ticketId"),
         ticketType: rowStr(t, "ticket_type", "ticketType"),
         serviceType: rowStr(t, "service_type", "serviceType"),
@@ -776,8 +987,10 @@ export async function GET(request: NextRequest) {
           assigneeId != null
             ? {
                 id: assigneeId,
-                name: rowStr(t, "assigned_to_agent_name", "assignedToAgentName") || "",
-                email: "",
+                name: forExport
+                  ? agentNameFromSystemUser || legacyAgentName
+                  : legacyAgentName,
+                email: forExport ? agentEmailFromSystemUser : "",
               }
             : null,
         group:
@@ -792,6 +1005,17 @@ export async function GET(request: NextRequest) {
         closedAt: (t.closed_at ?? t.closedAt) != null ? String(t.closed_at ?? t.closedAt) : null,
         createdAt: String(t.created_at ?? t.createdAt ?? ""),
         updatedAt: String(t.updated_at ?? t.updatedAt ?? ""),
+        assignedAt:
+          (t.assigned_at ?? t.assignedAt) != null && String(t.assigned_at ?? t.assignedAt).trim() !== ""
+            ? String(t.assigned_at ?? t.assignedAt)
+            : null,
+        satisfactionRating: (() => {
+          const v = t.satisfaction_rating ?? t.satisfactionRating;
+          if (v == null || v === "") return null;
+          const n = typeof v === "bigint" ? Number(v) : Number(v);
+          return Number.isFinite(n) ? n : null;
+        })(),
+        ...(exportMeta ? { exportMeta } : {}),
       };
     });
 

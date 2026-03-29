@@ -86,10 +86,11 @@ export default function TicketSettingsPage() {
   const {
     data: referenceData,
     isLoading: referenceLoading,
-    isFetching: referenceFetching,
     error: referenceError,
   } = useGetTicketReferenceDataQuery(undefined, {
     skip: !isSuperAdmin,
+    refetchOnFocus: false,
+    refetchOnReconnect: false,
   } as any);
 
   const [createGroupMutation] = useCreateTicketGroupMutation();
@@ -108,12 +109,12 @@ export default function TicketSettingsPage() {
 
   useEffect(() => {
     if (!isSuperAdmin) return;
-    setLoadingData(referenceLoading || referenceFetching);
+    setLoadingData(referenceLoading && !referenceData);
     if (referenceData) {
       setGroups(referenceData.groups as Group[]);
       setTags(referenceData.tags as TagRecord[]);
     }
-  }, [isSuperAdmin, referenceData, referenceLoading, referenceFetching]);
+  }, [isSuperAdmin, referenceData, referenceLoading]);
 
   const createGroup = async () => {
     if (!groupForm?.groupCode?.trim() || !groupForm?.groupName?.trim()) {

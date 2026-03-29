@@ -306,7 +306,8 @@ function reducer(state: TicketFilterState, action: FilterAction): TicketFilterSt
   return { ...state, [action.key]: action.value };
 }
 
-function buildSearchParams(filters: TicketFilterState) {
+/** Build query string for `/api/tickets` from sidebar / URL filter state (used by list + export). */
+export function buildSearchParams(filters: TicketFilterState) {
   const params = new URLSearchParams();
   if (filters.serviceTypes.length > 0) {
     params.set("serviceType", filters.serviceTypes.join(","));

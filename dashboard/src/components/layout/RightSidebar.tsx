@@ -2,9 +2,18 @@
 
 import { useMemo, useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Zap, LineChart, LayoutDashboard } from "lucide-react";
-import { ChevronRight, Users, ClipboardList } from "lucide-react";
+import {
+  Zap,
+  LineChart,
+  LayoutDashboard,
+  Home,
+  Users,
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+} from "lucide-react";
 import {
   getCurrentDashboard,
   getCurrentDashboardSubRoutes,
@@ -21,9 +30,19 @@ import { useRightSidebar } from "@/context/RightSidebarContext";
 import {
   AGENT_ACTIVITY_PATH,
   TICKETS_HELPDESK_DASHBOARD_PATH,
+  TICKETS_QUEUE_HOME_PATH,
+  TICKETS_QUEUE_MANAGER_PATH,
+  TICKETS_QUEUE_SUPERVISOR_PATH,
   isTicketsAppDetailPath,
+  ticketDetailHasQueueContext,
   ticketsPathTicketId,
 } from "@/lib/tickets/ticket-path-utils";
+import { normalizeQueueManagerSection, type QueueManagerSection } from "@/lib/tickets/queue-manager-sections";
+import {
+  normalizeQueueSupervisorSection,
+  type QueueSupervisorSection,
+} from "@/lib/tickets/queue-supervisor-sections";
+import { queueSupervisorHref } from "@/lib/tickets/queue-supervisor-paths";
 import { usePermission } from "@/hooks/usePermission";
 import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { StoreInfoCard, StoreInfoCardSkeleton, type StoreInfoCardData } from "@/components/layout/StoreInfoCard";
@@ -36,9 +55,22 @@ interface RightSidebarProps {
   onToggle: () => void;
   /** When true, this (Properties) sidebar shifts left so Filters can sit at right: 0 */
   filterSidebarOpen?: boolean;
+  /** Queue workspace: dock this rail on the left (global icon sidebar is hidden). */
+  dockSide?: "left" | "right";
+  /**
+   * Queue ticket detail only: visibility of the fixed-right properties panel.
+   * When set, `isOpen` controls only the left queue rail (mutually exclusive with this).
+   */
+  ticketPropertiesRailOpen?: boolean;
 }
 
-export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSidebarProps) {
+export function RightSidebar({
+  isOpen,
+  onToggle,
+  filterSidebarOpen,
+  dockSide = "right",
+  ticketPropertiesRailOpen,
+}: RightSidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const rightSidebarCtx = useRightSidebar();
@@ -191,12 +223,57 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
     };
   }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal]);
 
+  const dockLeft = dockSide === "left";
+
   const isTicketsDashboard = currentDashboard?.href === "/dashboard/tickets";
   const isTicketDetailPage = isTicketsAppDetailPath(cleanPathname);
+  const queueDetailFromHome = isTicketDetailPage && ticketDetailHasQueueContext(searchParams);
+  /** Queue routes or ticket detail opened from queue home (`?fromQueue=1`). */
+  const isTicketsQueuePath =
+    cleanPathname.startsWith("/dashboard/tickets/queue") || queueDetailFromHome;
+  /** Match global `HierarchicalSidebar` chrome when queue rail is docked left. */
+  const queueDarkLeftRail = isTicketsQueuePath && dockLeft;
+  /** Ticket detail + queue context: dark gradient must show through (avoid light inner bg washing out white nav text). */
+  const ticketDetailQueueDarkLeft =
+    isTicketDetailPage && dockLeft && queueDarkLeftRail;
+  const showQueueDetailPropertiesPanel =
+    queueDetailFromHome &&
+    ticketIdFromPath != null &&
+    (ticketPropertiesRailOpen !== undefined ? ticketPropertiesRailOpen : isOpen);
+  /** Same active / inactive treatment as `HierarchicalSidebar` main nav. */
+  const queueNavActive = queueDarkLeftRail
+    ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg shadow-blue-500/25"
+    : "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25";
+  const queueNavInactive = queueDarkLeftRail
+    ? "text-white/85 hover:bg-white/10 hover:text-white"
+    : "text-gray-800 hover:bg-gray-200/80";
+  const queueNavCollapsedActive = queueDarkLeftRail
+    ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg"
+    : "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg";
+  /** Manager row when a child section is selected — softer than full active. */
+  const queueNavParentFaded = queueDarkLeftRail
+    ? "bg-gradient-to-r from-blue-500/40 to-indigo-500/40 text-white/80 shadow-md shadow-blue-950/20 ring-1 ring-white/10"
+    : "bg-gradient-to-r from-blue-500/50 to-indigo-500/50 text-white shadow-sm";
+  const queueNavCollapsedParentFaded = queueDarkLeftRail
+    ? "bg-gradient-to-r from-blue-500/40 to-indigo-500/40 text-white/90 shadow-md"
+    : "bg-gradient-to-r from-blue-500/50 to-indigo-500/50 text-white shadow-sm";
   const onAgentActivityPage = cleanPathname === AGENT_ACTIVITY_PATH;
   const onTicketsHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
   const onTicketsHubSectionsPage = onAgentActivityPage || onTicketsHelpdeskDashboard;
   const agentActivitySection = searchParams.get("section") === "automation" ? "automation" : "activity";
+  const onQueueHome =
+    cleanPathname === TICKETS_QUEUE_HOME_PATH ||
+    cleanPathname === "/dashboard/tickets/queue" ||
+    queueDetailFromHome;
+  const onQueueSupervisor = cleanPathname === TICKETS_QUEUE_SUPERVISOR_PATH;
+  const onQueueManager = cleanPathname === TICKETS_QUEUE_MANAGER_PATH;
+  const queueSupervisorSection: QueueSupervisorSection | null = onQueueSupervisor
+    ? normalizeQueueSupervisorSection(searchParams.get("section"))
+    : null;
+  const queueSupervisorAgentInUrl = (searchParams.get("agentId") ?? "").trim();
+  const queueManagerSection: QueueManagerSection | null = onQueueManager
+    ? normalizeQueueManagerSection(searchParams.get("section"))
+    : null;
 
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
@@ -243,24 +320,75 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
       )}
       <aside
         className={`fixed z-40 flex flex-col ${isTicketDetailPage ? "shadow-none" : "shadow-xl"} transition-[transform,width] duration-300 ease-out ${
-          isTicketDetailPage ? "bottom-0 top-14" : "inset-y-0"
+          /* Queue left rail: full viewport height (matches queue home). Right-docked ticket detail: start below header row. */
+          isTicketDetailPage && !(queueDarkLeftRail && dockLeft) ? "bottom-0 top-14" : "inset-y-0"
         }
-          ${isOpen ? (isTicketDetailPage ? "w-64" : "w-56") : "w-14"}
-          max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : "max-lg:translate-x-full"}`}
-        style={{
-          right: filterSidebarOpen ? "14rem" : 0,
-          backgroundColor: isTicketDetailPage ? "#F5F7F9" : "#E8F0F2",
-          scrollbarWidth: "thin",
-          scrollbarColor: isTicketDetailPage ? "#9CA3AF #F5F7F9" : "#9CA3AF #E8F0F2",
-        }}
+          ${isOpen ? (isTicketDetailPage && !queueDetailFromHome ? "w-64" : "w-56") : "w-14"}
+          max-lg:w-72 ${isOpen ? "max-lg:translate-x-0" : dockLeft ? "max-lg:-translate-x-full" : "max-lg:translate-x-full"}
+          ${queueDarkLeftRail ? "rounded-r-xl border-r border-white/10" : ""}`}
+        style={
+          queueDarkLeftRail
+            ? {
+                left: filterSidebarOpen ? "14rem" : 0,
+                right: "auto",
+                background: "linear-gradient(180deg, #0f2d42 0%, #12344D 50%, #0f2d42 100%)",
+                boxShadow: "4px 0 24px rgba(0,0,0,0.15)",
+                scrollbarWidth: "thin",
+                scrollbarColor: "rgba(255,255,255,0.2) transparent",
+              }
+            : {
+                ...(dockLeft
+                  ? { left: filterSidebarOpen ? "14rem" : 0, right: "auto" as const }
+                  : { right: filterSidebarOpen ? "14rem" : 0, left: "auto" as const }),
+                backgroundColor: isTicketDetailPage ? "#F5F7F9" : "#E8F0F2",
+                scrollbarWidth: "thin",
+                scrollbarColor: isTicketDetailPage ? "#9CA3AF #F5F7F9" : "#9CA3AF #E8F0F2",
+              }
+        }
       >
-        {!isTicketDetailPage && (
+        {(!isTicketDetailPage || queueDetailFromHome) && (
           <div
-            className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3 ${
-              isOpen ? "gap-2" : "justify-center"
-            }`}
+            className={`relative z-20 flex h-14 min-h-14 w-full min-w-0 shrink-0 items-center border-b ${
+              queueDarkLeftRail
+                ? "border-white/10 bg-transparent px-3"
+                : "border-gray-300/30 bg-[#E8F0F2] px-2 sm:px-3"
+            } ${isOpen ? "gap-2" : "justify-center"}`}
           >
-            {isOpen ? (
+            {queueDarkLeftRail ? (
+              isOpen ? (
+                <Link
+                  href="/dashboard"
+                  scroll={false}
+                  className="flex min-w-0 flex-1 items-center gap-2.5"
+                >
+                  <Image
+                    src="/onlylogo.png"
+                    alt="GatiMitra"
+                    width={36}
+                    height={36}
+                    className="shrink-0 rounded-lg object-contain"
+                    priority
+                  />
+                  <span className="truncate text-sm font-semibold text-white">GatiMitra</span>
+                </Link>
+              ) : (
+                <Link
+                  href="/dashboard"
+                  scroll={false}
+                  className="flex w-full items-center justify-center"
+                  title="GatiMitra"
+                >
+                  <Image
+                    src="/onlylogo.png"
+                    alt="GatiMitra"
+                    width={36}
+                    height={36}
+                    className="shrink-0 rounded-lg object-contain"
+                    priority
+                  />
+                </Link>
+              )
+            ) : isOpen ? (
               <>
                 {currentDashboard?.icon && (
                   <div className="flex shrink-0 items-center justify-center rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 p-1.5">
@@ -282,13 +410,23 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
         )}
 
         {/* Body: flex-1 scroll */}
-        <div className={`relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden ${isTicketDetailPage ? "border-l border-gray-200 bg-[#F5F7F9]" : ""}`}>
+        <div
+          className={`relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden ${
+            isTicketDetailPage
+              ? dockLeft
+                ? ticketDetailQueueDarkLeft
+                  ? "border-r border-white/10 bg-transparent"
+                  : "border-r border-gray-200 bg-[#F5F7F9]"
+                : "border-l border-gray-200 bg-[#F5F7F9]"
+              : ""
+          }`}
+        >
           <div
             className={`min-h-0 flex-1 overflow-x-hidden overscroll-y-contain ${
-              isTicketDetailPage ? "overflow-y-hidden" : "overflow-y-auto"
+              isTicketDetailPage && !ticketDetailQueueDarkLeft ? "overflow-y-hidden" : "overflow-y-auto"
             }`}
           >
-            {isTicketsDashboard && ticketIdFromPath != null && isOpen ? (
+            {isTicketsDashboard && ticketIdFromPath != null && isOpen && !queueDetailFromHome ? (
               <div className="h-full min-h-0">
                 {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
                   <TicketRightSidebarSettingsPanel />
@@ -296,11 +434,171 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                   <TicketPropertiesPanel ticketId={ticketIdFromPath} />
                 )}
               </div>
+            ) : isTicketsDashboard && isTicketsQueuePath && isOpen ? (
+              <div className="flex h-full min-h-0 flex-col">
+                <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-4" aria-label="Queue sections">
+                  <div className="space-y-1">
+                    <Link
+                      href={TICKETS_QUEUE_HOME_PATH}
+                      scroll={false}
+                      className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                        onQueueHome ? queueNavActive : queueNavInactive
+                      }`}
+                    >
+                      {onQueueHome ? (
+                        <span
+                          className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <Home className="h-5 w-5 shrink-0" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate">Queue</span>
+                      {onQueueHome ? (
+                        <span
+                          className="absolute right-2.5 h-1.5 w-1.5 animate-pulse rounded-full bg-white/90"
+                          aria-hidden
+                        />
+                      ) : null}
+                    </Link>
+                    <Link
+                      href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
+                      scroll={false}
+                      aria-expanded={onQueueSupervisor}
+                      className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                        onQueueSupervisor ? queueNavParentFaded : queueNavInactive
+                      }`}
+                    >
+                      {onQueueSupervisor ? (
+                        <span
+                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate">Supervisor</span>
+                      <ChevronDown
+                        className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
+                          onQueueSupervisor ? "rotate-0" : "-rotate-90"
+                        }`}
+                        aria-hidden
+                      />
+                    </Link>
+                    {onQueueSupervisor ? (
+                      <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
+                        {(
+                          [
+                            ["updated-agents", "Updated agents"],
+                            ["agent-tickets", "Agent tickets"],
+                            ["status-history", "Status history"],
+                          ] as const
+                        ).map(([id, label]) => {
+                          const active = queueSupervisorSection === id;
+                          return (
+                            <Link
+                              key={id}
+                              href={queueSupervisorHref(id, queueSupervisorAgentInUrl || undefined)}
+                              scroll={false}
+                              className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-xl px-3 py-2 text-xs font-medium transition-all duration-150 ${
+                                active ? queueNavActive : queueNavInactive
+                              }`}
+                            >
+                              {active ? (
+                                <span
+                                  className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
+                                  aria-hidden
+                                />
+                              ) : null}
+                              <span className="min-w-0 flex-1 truncate pl-0.5">{label}</span>
+                              {active ? (
+                                <span
+                                  className="absolute right-2.5 h-1.5 w-1.5 animate-pulse rounded-full bg-white/90"
+                                  aria-hidden
+                                />
+                              ) : null}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    <Link
+                      href={TICKETS_QUEUE_MANAGER_PATH}
+                      scroll={false}
+                      aria-expanded={onQueueManager}
+                      className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                        onQueueManager ? queueNavParentFaded : queueNavInactive
+                      }`}
+                    >
+                      {onQueueManager ? (
+                        <span
+                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate">Manager</span>
+                      <ChevronDown
+                        className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
+                          onQueueManager ? "rotate-0" : "-rotate-90"
+                        }`}
+                        aria-hidden
+                      />
+                    </Link>
+                    {onQueueManager ? (
+                      <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
+                        {(
+                          [
+                            ["max-open", "Max open tickets"],
+                            ["compose", "Default reply recipients"],
+                            ["email-assigned", "Email: assigned"],
+                            ["email-reopened", "Email: reopened"],
+                          ] as const
+                        ).map(([id, label]) => {
+                          const active = queueManagerSection === id;
+                          return (
+                            <Link
+                              key={id}
+                              href={`${TICKETS_QUEUE_MANAGER_PATH}?section=${id}`}
+                              scroll={false}
+                              className={`group relative flex min-h-[2.25rem] cursor-pointer items-center rounded-xl px-3 py-2 text-xs font-medium transition-all duration-150 ${
+                                active ? queueNavActive : queueNavInactive
+                              }`}
+                            >
+                              {active ? (
+                                <span
+                                  className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
+                                  aria-hidden
+                                />
+                              ) : null}
+                              <span className="min-w-0 flex-1 truncate pl-0.5">{label}</span>
+                              {active ? (
+                                <span
+                                  className="absolute right-2.5 h-1.5 w-1.5 animate-pulse rounded-full bg-white/90"
+                                  aria-hidden
+                                />
+                              ) : null}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                </nav>
+                {showQueueDetailPropertiesPanel ? (
+                  <div className="flex min-h-0 flex-1 flex-col border-t border-white/10 bg-[#F5F7F9] lg:hidden">
+                    {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
+                      <TicketRightSidebarSettingsPanel />
+                    ) : (
+                      <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+                    )}
+                  </div>
+                ) : null}
+              </div>
             ) : isTicketsDashboard && onTicketsHubSectionsPage && isOpen ? (
               <div className="flex h-full min-h-0 flex-col">
                 <nav className="flex flex-col gap-1 p-2 pt-3" aria-label="Tickets hub sections">
                   <Link
                     href={TICKETS_HELPDESK_DASHBOARD_PATH}
+                    scroll={false}
                     className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
                       onTicketsHelpdeskDashboard
                         ? "bg-blue-600 text-white shadow-sm"
@@ -309,18 +607,6 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                   >
                     <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden />
                     Dashboard
-                  </Link>
-                  <Link
-                    href={`${AGENT_ACTIVITY_PATH}?section=automation`}
-                    scroll={false}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium transition-colors ${
-                      onAgentActivityPage && agentActivitySection === "automation"
-                        ? "bg-blue-600 text-white shadow-sm"
-                        : "text-gray-800 hover:bg-gray-200/80"
-                    }`}
-                  >
-                    <Zap className="h-4 w-4 shrink-0" aria-hidden />
-                    Automation
                   </Link>
                   <Link
                     href={`${AGENT_ACTIVITY_PATH}?section=activity`}
@@ -336,6 +622,56 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
                   </Link>
                 </nav>
               </div>
+            ) : isTicketsDashboard && isTicketsQueuePath && !isOpen ? (
+              <nav className="flex flex-col px-2.5 py-4" aria-label="Queue sections">
+                <div className="space-y-1">
+                  <Link
+                    href={TICKETS_QUEUE_HOME_PATH}
+                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                      onQueueHome ? queueNavCollapsedActive : queueNavInactive
+                    }`}
+                    title="Queue"
+                  >
+                    {onQueueHome ? (
+                      <span
+                        className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full bg-white/90"
+                        aria-hidden
+                      />
+                    ) : null}
+                    <Home className="h-5 w-5 shrink-0" aria-hidden />
+                  </Link>
+                  <Link
+                    href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
+                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                      onQueueSupervisor ? queueNavCollapsedParentFaded : queueNavInactive
+                    }`}
+                    title="Supervisor"
+                  >
+                    {onQueueSupervisor ? (
+                      <span
+                        className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                        aria-hidden
+                      />
+                    ) : null}
+                    <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                  </Link>
+                  <Link
+                    href={TICKETS_QUEUE_MANAGER_PATH}
+                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                      onQueueManager ? queueNavCollapsedParentFaded : queueNavInactive
+                    }`}
+                    title="Manager"
+                  >
+                    {onQueueManager ? (
+                      <span
+                        className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                        aria-hidden
+                      />
+                    ) : null}
+                    <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                  </Link>
+                </div>
+              </nav>
             ) : isTicketsDashboard && isOpen ? (
               <div className="min-h-0">
                 <TicketFilters variant="sidebar" dark={false} />
@@ -551,6 +887,26 @@ export function RightSidebar({ isOpen, onToggle, filterSidebarOpen }: RightSideb
           </div>
         )}
       </aside>
+
+      {/* Queue-origin ticket detail: properties live on the right; left rail stays queue nav */}
+      {showQueueDetailPropertiesPanel && isTicketsDashboard ? (
+        <aside
+          className="fixed z-40 bottom-0 top-14 hidden w-64 flex-col border-l border-gray-200/80 bg-[#F5F7F9] shadow-xl lg:flex"
+          style={{
+            right: filterSidebarOpen ? "14rem" : 0,
+            transition: "right 0.3s ease-out",
+          }}
+          aria-label="Ticket properties"
+        >
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {rightSidebarCtx?.ticketRightSidebarPanel === "settings" ? (
+              <TicketRightSidebarSettingsPanel />
+            ) : (
+              <TicketPropertiesPanel ticketId={ticketIdFromPath} />
+            )}
+          </div>
+        </aside>
+      ) : null}
     </>
   );
 }

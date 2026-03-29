@@ -580,6 +580,10 @@ export function getCurrentPageName(pathname: string): string {
   if (cleanPath === "/dashboard/tickets/csat/details") {
     return "C&D-SAT — Daily breakdown";
   }
+
+  if (cleanPath.startsWith("/dashboard/tickets/queue")) {
+    return "Queue";
+  }
   
   // Check if we're on a sub-route (most specific first: match longer hrefs so wallet-history → Wallet & Earnings)
   if (currentDashboard.subRoutes) {

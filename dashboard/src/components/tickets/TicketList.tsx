@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { FixedSizeList as List, ListChildComponentProps } from "react-window";
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
-import { useTickets } from "@/hooks/tickets/useTickets";
+import { useTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { useQueryClient } from "@tanstack/react-query";
-import { TicketCard } from "./TicketCard";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -19,6 +19,8 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import type { Option } from "./InlineSearchableSelect";
 import { BulkUpdateModal } from "./BulkUpdateModal";
+import { ExportTicketsModal } from "./ExportTicketsModal";
+import { buildTicketDetailHref, TICKET_FROM_QUEUE_PARAM } from "@/lib/tickets/ticket-path-utils";
 
 export type TicketViewMode = "list" | "grid";
 
@@ -54,7 +56,21 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export function TicketList() {
+export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportAndSidebarToggle?: boolean } = {}) {
+  const pathname = usePathname();
+  const isQueueHome = pathname === "/dashboard/tickets/queue/home";
+  const searchParams = useSearchParams();
+  const detailHrefForTicket = useCallback(
+    (ticketId: number) => {
+      if (isQueueHome) {
+        const p = new URLSearchParams(searchParams.toString());
+        p.set(TICKET_FROM_QUEUE_PARAM, "1");
+        return buildTicketDetailHref(ticketId, p);
+      }
+      return buildTicketDetailHref(ticketId, searchParams);
+    },
+    [searchParams, isQueueHome]
+  );
   const { filters, appliedFilters, appliedTicketFilterCount, updateFilter, applySort } = useTicketFilters();
   const rightSidebar = useRightSidebar();
   const { toast } = useToast();
@@ -81,6 +97,7 @@ export function TicketList() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
   const autoSelectAllAfterPageSizeChangeRef = useRef(false);
   const pageSizeDropdownRef = useRef<HTMLDivElement>(null);
   const sortDropdownRef = useRef<HTMLDivElement>(null);
@@ -135,15 +152,23 @@ export function TicketList() {
 
   const debouncedSearchQuery = useDebouncedValue(appliedFilters.searchQuery, 400);
 
-  const queryFilters = useMemo(() => {
+  const queryFilters = useMemo((): TicketFilters => {
     const f = appliedFilters;
-    const base = {
+    const queueLocked = isQueueHome && currentUser != null;
+    const assignedToIds = queueLocked
+      ? [String(currentUser.id)]
+      : f.assignedToIds.length
+        ? f.assignedToIds
+        : undefined;
+    const statuses = queueLocked ? undefined : f.statuses.length ? f.statuses : undefined;
+
+    return {
       serviceTypes: f.serviceTypes.length ? f.serviceTypes : undefined,
       ticketSection: f.ticketSection !== "all" ? f.ticketSection : undefined,
-      statuses: f.statuses.length ? f.statuses : undefined,
+      statuses,
       priorities: f.priorities.length ? f.priorities : undefined,
       ticketCategory: f.ticketCategory !== "all" ? f.ticketCategory : undefined,
-      assignedToIds: f.assignedToIds.length ? f.assignedToIds : undefined,
+      assignedToIds,
       sourceRoles: f.sourceRoles.length ? f.sourceRoles : undefined,
       groupIds: f.groupIds.length ? f.groupIds : undefined,
       skill: f.skill.trim() ? f.skill : undefined,
@@ -162,16 +187,21 @@ export function TicketList() {
       slaBreach: f.slaBreach === "true" ? "true" : undefined,
       sortBy: f.sortBy || undefined,
       sortOrder: f.sortOrder || undefined,
+      limit,
+      offset,
+      ...(queueLocked ? { queueScope: true } : {}),
     };
-    return { ...base, limit, offset };
-  }, [appliedFilters, debouncedSearchQuery, limit, offset]);
+  }, [appliedFilters, debouncedSearchQuery, limit, offset, isQueueHome, currentUser?.id]);
 
   const updatesPollBase = useMemo(() => {
     const { limit: _l, offset: _o, ...rest } = queryFilters;
     return rest;
   }, [queryFilters]);
 
-  const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters);
+  const queueListReady = !isQueueHome || Boolean(currentUser);
+  const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters, {
+    enabled: queueListReady,
+  });
   const [loadingMessageSlow, setLoadingMessageSlow] = useState(false);
   const currentTotal = data?.total ?? 0;
   const listReadyForUpdates = Boolean(data) && !isLoading && !isPending;
@@ -209,6 +239,14 @@ export function TicketList() {
     () => [
       { value: "", label: "Unassigned" },
       ...(currentUser ? [{ value: "me", label: currentUser.name }] : []),
+      ...agents.map((a) => ({ value: String(a.id), label: a.name || a.email || `Agent ${a.id}` })),
+    ],
+    [agents, currentUser]
+  );
+  /** Numeric agent ids for export step (API expects assignedToIds, not "me"). */
+  const exportAgentOptions = useMemo(
+    () => [
+      ...(currentUser ? [{ value: String(currentUser.id), label: `${currentUser.name} (Me)` }] : []),
       ...agents.map((a) => ({ value: String(a.id), label: a.name || a.email || `Agent ${a.id}` })),
     ],
     [agents, currentUser]
@@ -291,7 +329,7 @@ export function TicketList() {
     [updateTicket, groupOptions, toast, ticketNumberById]
   );
   const handleUpdateAssignee = useCallback(
-    (ticketId: number, userId: number | null, assigneeLabel?: string) => {
+    async (ticketId: number, userId: number | null, assigneeLabel?: string) => {
       const resolvedLabel =
         userId == null
           ? "Unassigned"
@@ -299,13 +337,25 @@ export function TicketList() {
             (currentUser && userId === currentUser.id ? currentUser.name : agents.find((a) => a.id === userId)?.name) ||
             `Agent ${userId}`;
       const ticketNumber = ticketNumberById.get(ticketId) ?? String(ticketId);
-      toast(
-        `#${ticketNumber} Agent set as - ${resolvedLabel}`,
-        userId == null ? "error" : "success"
-      );
-      updateTicket.mutate(
-        { ticketId, currentAssigneeUserId: userId, currentAssigneeName: resolvedLabel }
-      );
+      if (userId == null) {
+        toast(`#${ticketNumber} Agent set as - ${resolvedLabel}`, "success");
+        updateTicket.mutate({
+          ticketId,
+          currentAssigneeUserId: null,
+          currentAssigneeName: resolvedLabel,
+        });
+        return;
+      }
+      try {
+        await updateTicket.mutateAsync({
+          ticketId,
+          currentAssigneeUserId: userId,
+          currentAssigneeName: resolvedLabel,
+        });
+        toast(`#${ticketNumber} Agent set as - ${resolvedLabel}`, "success");
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "Assignment failed", "error");
+      }
     },
     [updateTicket, currentUser, agents, toast, ticketNumberById]
   );
@@ -358,7 +408,10 @@ export function TicketList() {
       );
       const failed = results.filter((r) => r.status === "rejected").length;
       if (failed > 0) {
-        toast(`${failed} ticket${failed === 1 ? "" : "s"} failed to assign. Refreshing list.`, "error");
+        const firstRej = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+        const reason =
+          firstRej?.reason instanceof Error ? firstRej.reason.message : `${failed} ticket(s) failed to assign`;
+        toast(reason, "error");
         await refetch();
       }
     },
@@ -582,6 +635,7 @@ export function TicketList() {
             agentOptions={agentOptions}
             statusOptions={statusOptions}
             currentUserId={currentUser?.id}
+            detailHref={detailHrefForTicket(ticket.id)}
           />
         </div>
       );
@@ -599,6 +653,7 @@ export function TicketList() {
       agentOptions,
       statusOptions,
       currentUser?.id,
+      detailHrefForTicket,
     ]
   );
 
@@ -824,33 +879,38 @@ export function TicketList() {
               <LayoutGrid className="h-4 w-4" />
             </button>
           </div>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Export
-          </button>
-          {/* Right sidebar toggle */}
-          {rightSidebar && (
-            <button
-              type="button"
-              onClick={rightSidebar.onToggle}
-              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
-              title={rightSidebar.isOpen ? "Hide filters" : "Open filters"}
-            >
-              {rightSidebar.isOpen ? (
-                <>
-                  <PanelRightClose className="h-3 w-3" />
-                  <span>Hide</span>
-                </>
-              ) : (
-                <>
-                  <PanelRightOpen className="h-3 w-3" />
-                  <span>Open</span>
-                </>
+          {!hideExportAndSidebarToggle && (
+            <>
+              <button
+                type="button"
+                onClick={() => setExportModalOpen(true)}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export
+              </button>
+              {/* Right sidebar toggle */}
+              {rightSidebar && (
+                <button
+                  type="button"
+                  onClick={rightSidebar.onToggle}
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+                  title={rightSidebar.isOpen ? "Hide filters" : "Open filters"}
+                >
+                  {rightSidebar.isOpen ? (
+                    <>
+                      <PanelRightClose className="h-3 w-3" />
+                      <span>Hide</span>
+                    </>
+                  ) : (
+                    <>
+                      <PanelRightOpen className="h-3 w-3" />
+                      <span>Open</span>
+                    </>
+                  )}
+                </button>
               )}
-            </button>
+            </>
           )}
         </div>
       </div>
@@ -973,14 +1033,16 @@ export function TicketList() {
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            onClick={handleExportSelected}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Export
-          </button>
+          {!hideExportAndSidebarToggle && (
+            <button
+              type="button"
+              onClick={handleExportSelected}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSelectedIds(new Set())}
@@ -990,6 +1052,14 @@ export function TicketList() {
           </button>
         </div>
       )}
+
+      <ExportTicketsModal
+        isOpen={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        appliedFilters={appliedFilters}
+        exportAgentOptions={exportAgentOptions}
+        groupOptions={groupOptions}
+      />
 
       {/* Bulk update modal */}
       <BulkUpdateModal
@@ -1193,6 +1263,7 @@ export function TicketList() {
                   agentOptions={agentOptions}
                   statusOptions={statusOptions}
                   currentUserId={currentUser?.id}
+                  detailHref={detailHrefForTicket(ticket.id)}
                 />
               ))}
             </div>

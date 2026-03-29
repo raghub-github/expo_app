@@ -4,6 +4,9 @@ import { getSystemUserByEmail } from "@/lib/auth/user-mapping";
 import { getSql } from "@/lib/db/client";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
 import { headers } from "next/headers";
+import { runQueueBalanceAutoAssign } from "@/lib/tickets/queue-balance-auto-assign";
+import { addProfileMinutesAndDailyActivity } from "@/lib/agents/activity-daily-rollup";
+import { inferStatusSegmentStart, recordCompletedStatusSegment } from "@/lib/agents/status-segment-utils";
 
 /**
  * GET /api/agents/status
@@ -40,8 +43,8 @@ export async function GET() {
     if (!profileResult || profileResult.length === 0) {
       // Create profile if it doesn't exist
       await sqlClient`
-        INSERT INTO agent_profiles (user_id, current_status, is_online)
-        VALUES (${systemUser.id}, 'offline', false)
+        INSERT INTO agent_profiles (user_id, current_status, is_online, current_status_since)
+        VALUES (${systemUser.id}, 'offline', false, now())
         ON CONFLICT (user_id) DO NOTHING
       `;
       
@@ -67,6 +70,8 @@ export async function GET() {
         lastOnlineAt: profile.last_online_at,
         totalOnlineTimeMinutes: profile.total_online_time_minutes || 0,
         totalBreakTimeMinutes: profile.total_break_time_minutes || 0,
+        totalBusyTimeMinutes: profile.total_busy_time_minutes ?? 0,
+        busyStartedAt: profile.busy_started_at ?? null,
       },
     });
   } catch (error) {
@@ -126,6 +131,19 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    if (status === "offline") {
+      const offlineReason = typeof reason === "string" ? reason.trim() : "";
+      if (!offlineReason) {
+        return NextResponse.json(
+          { success: false, error: "Reason is required to go offline" },
+          { status: 400 }
+        );
+      }
+      if (offlineReason.length > 500) {
+        return NextResponse.json({ success: false, error: "Reason is too long" }, { status: 400 });
+      }
+    }
+
     const sqlClient = getSql();
     const headersList = await headers();
     const ipAddress = headersList.get("x-forwarded-for") || headersList.get("x-real-ip") || "unknown";
@@ -138,12 +156,21 @@ export async function PATCH(request: NextRequest) {
 
     let currentStatus = "offline";
     let previousStatus = "offline";
-    let breakStartedAt = null;
+    let breakStartedAt: string | null = null;
+    let busyStartedAt: string | null = null;
 
     if (currentProfileResult && currentProfileResult.length > 0) {
       currentStatus = currentProfileResult[0].current_status || "offline";
       previousStatus = currentStatus;
-      breakStartedAt = currentProfileResult[0].break_started_at;
+      breakStartedAt = currentProfileResult[0].break_started_at ?? null;
+      busyStartedAt = currentProfileResult[0].busy_started_at ?? null;
+    }
+
+    if (previousStatus === status) {
+      return NextResponse.json({
+        success: true,
+        data: { status },
+      });
     }
 
     // Handle status transitions - use ISO strings for postgres timestamp columns
@@ -154,11 +181,19 @@ export async function PATCH(request: NextRequest) {
       const now = new Date();
       const nowIso = toIso(now);
 
-      // If coming from break, calculate break duration
+      if (currentStatus === "busy" && busyStartedAt) {
+        await addProfileMinutesAndDailyActivity(sqlClient, {
+          agentUserId: systemUser.id,
+          segmentStart: new Date(busyStartedAt),
+          segmentEnd: now,
+          kind: "busy",
+        });
+      }
+
+      // If coming from break, close break log + roll into profile + daily activity_logs
       if (currentStatus === "break" && breakStartedAt) {
         const breakDuration = Math.floor((now.getTime() - new Date(breakStartedAt).getTime()) / 60000);
 
-        // Update break log
         await sqlClient`
           UPDATE agent_break_logs
           SET break_ended_at = ${nowIso},
@@ -168,34 +203,61 @@ export async function PATCH(request: NextRequest) {
           WHERE agent_user_id = ${systemUser.id} AND is_active = true
         `;
 
-        // Update total break time
-        await sqlClient`
-          UPDATE agent_profiles
-          SET total_break_time_minutes = total_break_time_minutes + ${breakDuration}
-          WHERE user_id = ${systemUser.id}
-        `;
+        await addProfileMinutesAndDailyActivity(sqlClient, {
+          agentUserId: systemUser.id,
+          segmentStart: new Date(breakStartedAt),
+          segmentEnd: now,
+          kind: "break",
+        });
       }
+
+      const profRowOnline = currentProfileResult?.[0] as Record<string, unknown> | undefined;
+      const segStartOnline = inferStatusSegmentStart(profRowOnline, previousStatus);
+      await recordCompletedStatusSegment(sqlClient, {
+        agentUserId: systemUser.id,
+        status: previousStatus,
+        startedAt: segStartOnline,
+        endedAt: now,
+        changeSource: "self",
+        changedByUserId: systemUser.id,
+      });
 
       // Update profile
       await sqlClient`
-        INSERT INTO agent_profiles (user_id, current_status, is_online, last_online_at, break_started_at, last_activity_at, updated_at)
-        VALUES (${systemUser.id}, ${status}, true, ${nowIso}, NULL, ${nowIso}, ${nowIso})
+        INSERT INTO agent_profiles (
+          user_id, current_status, is_online, last_online_at, break_started_at, busy_started_at, last_activity_at, updated_at,
+          current_status_since
+        )
+        VALUES (${systemUser.id}, ${status}, true, ${nowIso}, NULL, NULL, ${nowIso}, ${nowIso}, ${nowIso})
         ON CONFLICT (user_id) DO UPDATE SET
           current_status = ${status},
           is_online = true,
           last_online_at = ${nowIso},
           break_started_at = NULL,
+          busy_started_at = NULL,
           last_activity_at = ${nowIso},
-          updated_at = ${nowIso}
+          updated_at = ${nowIso},
+          current_status_since = ${nowIso}
+      `;
+
+      await sqlClient`
+        INSERT INTO agent_work_sessions (agent_user_id, started_at)
+        SELECT ${systemUser.id}, ${nowIso}
+        WHERE NOT EXISTS (
+          SELECT 1 FROM agent_work_sessions s
+          WHERE s.agent_user_id = ${systemUser.id} AND s.ended_at IS NULL
+        )
       `;
 
       // Log availability change
       await sqlClient`
         INSERT INTO agent_availability_logs (
-          agent_user_id, status, previous_status, ip_address, user_agent, changed_at
+          agent_user_id, status, previous_status, ip_address, user_agent, changed_at,
+          changed_by_user_id, change_source
         )
         VALUES (
-          ${systemUser.id}, ${status}, ${previousStatus}, ${ipAddress}, ${userAgent}, ${nowIso}
+          ${systemUser.id}, ${status}, ${previousStatus}, ${ipAddress}, ${userAgent}, ${nowIso},
+          ${systemUser.id}, 'self'
         )
       `;
     } else if (status === "break") {
@@ -203,18 +265,24 @@ export async function PATCH(request: NextRequest) {
       const now = new Date();
       const nowIso = toIso(now);
 
-      // If currently online, calculate online time
+      if (currentStatus === "busy" && busyStartedAt) {
+        await addProfileMinutesAndDailyActivity(sqlClient, {
+          agentUserId: systemUser.id,
+          segmentStart: new Date(busyStartedAt),
+          segmentEnd: now,
+          kind: "busy",
+        });
+      }
+
       if (currentStatus === "online") {
         const lastOnlineAt = currentProfileResult?.[0]?.last_online_at;
         if (lastOnlineAt) {
-          const onlineDuration = Math.floor((now.getTime() - new Date(lastOnlineAt).getTime()) / 60000);
-
-          // Update total online time
-          await sqlClient`
-            UPDATE agent_profiles
-            SET total_online_time_minutes = total_online_time_minutes + ${onlineDuration}
-            WHERE user_id = ${systemUser.id}
-          `;
+          await addProfileMinutesAndDailyActivity(sqlClient, {
+            agentUserId: systemUser.id,
+            segmentStart: new Date(lastOnlineAt as string),
+            segmentEnd: now,
+            kind: "online",
+          });
         }
       }
 
@@ -232,24 +300,39 @@ export async function PATCH(request: NextRequest) {
         )
       `;
 
+      const profRowBreak = currentProfileResult?.[0] as Record<string, unknown> | undefined;
+      const segStartBreak = inferStatusSegmentStart(profRowBreak, previousStatus);
+      await recordCompletedStatusSegment(sqlClient, {
+        agentUserId: systemUser.id,
+        status: previousStatus,
+        startedAt: segStartBreak,
+        endedAt: now,
+        changeSource: "self",
+        changedByUserId: systemUser.id,
+      });
+
       // Update profile
       await sqlClient`
         UPDATE agent_profiles
         SET current_status = ${status},
             is_online = false,
             break_started_at = ${nowIso},
+            busy_started_at = NULL,
             last_activity_at = ${nowIso},
-            updated_at = ${nowIso}
+            updated_at = ${nowIso},
+            current_status_since = ${nowIso}
         WHERE user_id = ${systemUser.id}
       `;
 
       // Log availability change
       await sqlClient`
         INSERT INTO agent_availability_logs (
-          agent_user_id, status, previous_status, reason, ip_address, user_agent, changed_at
+          agent_user_id, status, previous_status, reason, ip_address, user_agent, changed_at,
+          changed_by_user_id, change_source
         )
         VALUES (
-          ${systemUser.id}, ${status}, ${previousStatus}, ${reason || null}, ${ipAddress}, ${userAgent}, ${nowIso}
+          ${systemUser.id}, ${status}, ${previousStatus}, ${reason || null}, ${ipAddress}, ${userAgent}, ${nowIso},
+          ${systemUser.id}, 'self'
         )
       `;
     } else {
@@ -257,26 +340,30 @@ export async function PATCH(request: NextRequest) {
       const now = new Date();
       const nowIso = toIso(now);
 
-      // If currently online, calculate online time
+      if (currentStatus === "busy" && busyStartedAt) {
+        await addProfileMinutesAndDailyActivity(sqlClient, {
+          agentUserId: systemUser.id,
+          segmentStart: new Date(busyStartedAt),
+          segmentEnd: now,
+          kind: "busy",
+        });
+      }
+
       if (currentStatus === "online") {
         const lastOnlineAt = currentProfileResult?.[0]?.last_online_at;
         if (lastOnlineAt) {
-          const onlineDuration = Math.floor((now.getTime() - new Date(lastOnlineAt).getTime()) / 60000);
-
-          // Update total online time
-          await sqlClient`
-            UPDATE agent_profiles
-            SET total_online_time_minutes = total_online_time_minutes + ${onlineDuration}
-            WHERE user_id = ${systemUser.id}
-          `;
+          await addProfileMinutesAndDailyActivity(sqlClient, {
+            agentUserId: systemUser.id,
+            segmentStart: new Date(lastOnlineAt as string),
+            segmentEnd: now,
+            kind: "online",
+          });
         }
       }
 
-      // If coming from break, calculate break duration
       if (currentStatus === "break" && breakStartedAt) {
         const breakDuration = Math.floor((now.getTime() - new Date(breakStartedAt).getTime()) / 60000);
 
-        // Update break log
         await sqlClient`
           UPDATE agent_break_logs
           SET break_ended_at = ${nowIso},
@@ -286,34 +373,68 @@ export async function PATCH(request: NextRequest) {
           WHERE agent_user_id = ${systemUser.id} AND is_active = true
         `;
 
-        // Update total break time
-        await sqlClient`
-          UPDATE agent_profiles
-          SET total_break_time_minutes = total_break_time_minutes + ${breakDuration}
-          WHERE user_id = ${systemUser.id}
-        `;
+        await addProfileMinutesAndDailyActivity(sqlClient, {
+          agentUserId: systemUser.id,
+          segmentStart: new Date(breakStartedAt),
+          segmentEnd: now,
+          kind: "break",
+        });
       }
 
+      const profRowOther = currentProfileResult?.[0] as Record<string, unknown> | undefined;
+      const segStartOther = inferStatusSegmentStart(profRowOther, previousStatus);
+      await recordCompletedStatusSegment(sqlClient, {
+        agentUserId: systemUser.id,
+        status: previousStatus,
+        startedAt: segStartOther,
+        endedAt: now,
+        changeSource: "self",
+        changedByUserId: systemUser.id,
+      });
+
       // Update profile
+      const busyAt = status === "busy" ? nowIso : null;
       await sqlClient`
         UPDATE agent_profiles
         SET current_status = ${status},
             is_online = ${status === "busy" ? true : false},
             break_started_at = NULL,
+            busy_started_at = ${busyAt},
             last_activity_at = ${nowIso},
-            updated_at = ${nowIso}
+            updated_at = ${nowIso},
+            current_status_since = ${nowIso}
         WHERE user_id = ${systemUser.id}
       `;
+
+      if (status === "offline") {
+        await sqlClient`
+          UPDATE agent_work_sessions
+          SET ended_at = ${nowIso},
+              ended_by_user_id = ${systemUser.id},
+              end_source = 'self_offline'
+          WHERE agent_user_id = ${systemUser.id} AND ended_at IS NULL
+        `;
+      }
 
       // Log availability change
       await sqlClient`
         INSERT INTO agent_availability_logs (
-          agent_user_id, status, previous_status, reason, ip_address, user_agent, changed_at
+          agent_user_id, status, previous_status, reason, ip_address, user_agent, changed_at,
+          changed_by_user_id, change_source
         )
         VALUES (
-          ${systemUser.id}, ${status}, ${previousStatus}, ${reason || null}, ${ipAddress}, ${userAgent}, ${nowIso}
+          ${systemUser.id}, ${status}, ${previousStatus}, ${reason || null}, ${ipAddress}, ${userAgent}, ${nowIso},
+          ${systemUser.id}, 'self'
         )
       `;
+    }
+
+    if (status === "online") {
+      try {
+        await runQueueBalanceAutoAssign(sqlClient, { forAgentUserId: systemUser.id });
+      } catch (e) {
+        console.error("[PATCH /api/agents/status] queue auto-assign:", e);
+      }
     }
 
     return NextResponse.json({

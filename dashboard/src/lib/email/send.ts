@@ -18,6 +18,12 @@ function normalizeAddressList(input: string | string[] | undefined): string[] {
   return parts.map((s) => String(s).trim()).filter(Boolean);
 }
 
+export type OutboundEmailAttachment = {
+  filename: string;
+  content: Buffer;
+  contentType?: string;
+};
+
 export async function sendEmail(params: {
   to: string | string[];
   cc?: string | string[];
@@ -26,14 +32,30 @@ export async function sendEmail(params: {
   text: string;
   html?: string;
   from?: string;
+  attachments?: OutboundEmailAttachment[];
 }): Promise<SendEmailOutcome> {
-  const toList = normalizeAddressList(params.to);
-  if (toList.length === 0) {
-    console.warn("[email] sendEmail called with no to-addresses");
+  let toList = normalizeAddressList(params.to);
+  let ccList = normalizeAddressList(params.cc);
+  let bccList = normalizeAddressList(params.bcc);
+
+  if (toList.length === 0 && ccList.length === 0 && bccList.length === 0) {
+    console.warn("[email] sendEmail called with no recipients");
     return { ok: false, code: "SMTP_ERROR" };
   }
-  const ccList = normalizeAddressList(params.cc);
-  const bccList = normalizeAddressList(params.bcc);
+
+  /** SMTP/Resend need at least one visible `to`; promote Cc/Bcc when To is empty. */
+  if (toList.length === 0 && ccList.length > 0) {
+    toList = [ccList[0]];
+    ccList = ccList.slice(1);
+  } else if (toList.length === 0 && bccList.length > 0) {
+    toList = [bccList[0]];
+    bccList = bccList.slice(1);
+  }
+
+  if (toList.length === 0) {
+    console.warn("[email] sendEmail could not assign a primary recipient");
+    return { ok: false, code: "SMTP_ERROR" };
+  }
 
   const cfg = getSmtpConfig();
   if (cfg.ok) {
@@ -41,6 +63,13 @@ export async function sendEmail(params: {
       const transporter = await createSmtpTransporter();
       if (!transporter) return { ok: false, code: "SMTP_ERROR" };
       const fromHeader = params.from ?? `${cfg.fromName} <${cfg.fromEmail}>`;
+      const mailAttachments =
+        params.attachments?.map((a) => ({
+          filename: a.filename || "attachment",
+          content: a.content,
+          contentType: a.contentType || "application/octet-stream",
+        })) ?? [];
+
       await transporter.sendMail({
         from: fromHeader,
         to: toList.length === 1 ? toList[0] : toList,
@@ -50,6 +79,7 @@ export async function sendEmail(params: {
         subject: params.subject,
         text: params.text,
         html: params.html ?? params.text.replace(/\n/g, "<br />"),
+        ...(mailAttachments.length > 0 ? { attachments: mailAttachments } : {}),
       });
       return { ok: true };
     } catch (e: unknown) {
@@ -95,6 +125,12 @@ export async function sendEmail(params: {
     }
     if (bccList.length > 0) {
       body.bcc = bccList;
+    }
+    if (params.attachments?.length) {
+      body.attachments = params.attachments.map((a) => ({
+        filename: a.filename || "attachment",
+        content: Buffer.from(a.content).toString("base64"),
+      }));
     }
 
     const res = await fetch("https://api.resend.com/emails", {

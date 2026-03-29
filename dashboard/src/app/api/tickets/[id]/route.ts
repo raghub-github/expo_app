@@ -12,6 +12,8 @@ import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { queueTicketAssignedNotification, queueTicketReopenedNotification } from "@/lib/tickets/ticket-notification-send";
+import { validateAssigneeForTicket } from "@/lib/tickets/assignee-eligibility";
+import { pickRoundRobinAssigneeForGroup } from "@/lib/tickets/round-robin-auto-assign";
 
 export const runtime = "nodejs";
 
@@ -658,6 +660,42 @@ export async function PATCH(
       return NextResponse.json({ success: false, error: "Ticket not found" }, { status: 404 });
     }
 
+    const existingRow0 = existingResult[0] as {
+      assigned_to_agent_id?: unknown;
+      group_id?: unknown;
+    };
+
+    if (body.autoAssignRoundRobin === true) {
+      if (body.currentAssigneeUserId !== undefined) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Cannot combine autoAssignRoundRobin with currentAssigneeUserId",
+          },
+          { status: 400 }
+        );
+      }
+      const curAssign = normalizeTicketAssigneeId(existingRow0.assigned_to_agent_id);
+      if (curAssign != null) {
+        return NextResponse.json({ success: false, error: "Ticket already assigned" }, { status: 400 });
+      }
+      const gid = existingRow0.group_id != null ? Number(existingRow0.group_id) : NaN;
+      if (!Number.isFinite(gid)) {
+        return NextResponse.json(
+          { success: false, error: "Ticket has no group for auto-assign" },
+          { status: 400 }
+        );
+      }
+      const picked = await pickRoundRobinAssigneeForGroup(sqlClient, gid);
+      if (picked == null) {
+        return NextResponse.json(
+          { success: false, error: "No eligible agent for auto-assign" },
+          { status: 400 }
+        );
+      }
+      body.currentAssigneeUserId = picked;
+    }
+
     const updateFields: string[] = [];
     const updateValues: unknown[] = [];
 
@@ -671,12 +709,34 @@ export async function PATCH(
       updateValues.push(String(body.priority).toUpperCase());
     }
     if (body.currentAssigneeUserId !== undefined) {
-      const assigneeId = body.currentAssigneeUserId ?? null;
+      const rawAssignee = body.currentAssigneeUserId;
+      const assigneeId =
+        rawAssignee == null
+          ? null
+          : typeof rawAssignee === "number"
+            ? rawAssignee
+            : Number(rawAssignee);
+      const assigneeNum = assigneeId != null && Number.isFinite(assigneeId) ? assigneeId : null;
+
+      if (assigneeNum != null) {
+        const ticketGid = existingRow0.group_id != null ? Number(existingRow0.group_id) : null;
+        const ticketGroupId = ticketGid != null && Number.isFinite(ticketGid) ? ticketGid : null;
+        const check = await validateAssigneeForTicket(sqlClient, assigneeNum, ticketGroupId, {
+          enforceAvailability: false,
+        });
+        if (!check.ok) {
+          return NextResponse.json(
+            { success: false, error: check.message, code: check.code },
+            { status: 400 }
+          );
+        }
+      }
+
       updateFields.push(`assigned_to_agent_id = $${updateValues.length + 1}`);
-      updateValues.push(assigneeId);
+      updateValues.push(assigneeNum);
       let assigneeName: string | null = null;
-      if (assigneeId != null && typeof assigneeId === "number") {
-        const assigneeUser = await getSystemUserById(assigneeId);
+      if (assigneeNum != null) {
+        const assigneeUser = await getSystemUserById(assigneeNum);
         assigneeName = assigneeUser?.fullName ?? assigneeUser?.email ?? null;
       }
       updateFields.push(`assigned_to_agent_name = $${updateValues.length + 1}`);
@@ -801,6 +861,22 @@ export async function PATCH(
       }
     }
     const updated = Array.isArray(updatedRows) ? updatedRows[0] : null;
+
+    if (body.autoAssignRoundRobin === true && updated) {
+      const u = updated as { assigned_to_agent_id?: number | null };
+      const aid = u.assigned_to_agent_id;
+      if (aid != null && Number.isFinite(Number(aid))) {
+        try {
+          await sqlClient`
+            INSERT INTO public.ticket_assignment_history (
+              ticket_id, agent_user_id, assignment_type, actor_user_id
+            ) VALUES (${ticketId}, ${Number(aid)}, 'round_robin', ${systemUser.id})
+          `;
+        } catch (histErr) {
+          console.warn("[PATCH /api/tickets/[id]] ticket_assignment_history:", histErr);
+        }
+      }
+    }
     const existing = existingResult[0] as { status?: string; priority?: string; assigned_to_agent_id?: number | null; assigned_to_agent_name?: string | null; group_id?: number | null };
     const updatedRecord = updated as {
       status?: string;

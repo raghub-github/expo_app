@@ -27,6 +27,12 @@ import {
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useToast } from "@/context/ToastContext";
 import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
+import { useTicketLocationSearch } from "@/hooks/tickets/useTicketUrlPanel";
+import {
+  buildTicketDetailHref,
+  buildTicketsListHrefPreservingFilters,
+  ticketDetailHasQueueContext,
+} from "@/lib/tickets/ticket-path-utils";
 
 interface TicketActionBarProps {
   ticketId: number;
@@ -82,6 +88,15 @@ export function TicketActionBar({
   const mergeRef = useRef<HTMLDivElement>(null);
   const rightSidebar = useRightSidebar();
   const router = useRouter();
+  const locationSearch = useTicketLocationSearch();
+  const fromQueue = useMemo(() => ticketDetailHasQueueContext(locationSearch), [locationSearch]);
+  const allTicketsHref = useMemo(
+    () => buildTicketsListHrefPreservingFilters(locationSearch),
+    [locationSearch]
+  );
+  const pushTicketPreservingListContext = (id: number) => {
+    router.push(buildTicketDetailHref(id, locationSearch), { scroll: false });
+  };
   const { toast } = useToast();
   const markSpamMutation = useTicketUpdate();
 
@@ -143,7 +158,7 @@ export function TicketActionBar({
     try {
       const adjacentId = await findAdjacentTicketId(direction);
       if (adjacentId != null) {
-        router.push(`/dashboard/tickets/${adjacentId}`);
+        pushTicketPreservingListContext(adjacentId);
       }
     } finally {
       setIsNavLoading(null);
@@ -402,7 +417,7 @@ export function TicketActionBar({
             <button
               type="button"
               onClick={() => {
-                router.push(`/dashboard/tickets/${mergedIntoTicketId}`);
+                pushTicketPreservingListContext(mergedIntoTicketId);
                 setMergeLinkedOpen(false);
               }}
               className="inline-flex h-7.5 items-center gap-1 rounded-l-md border border-r-0 border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
@@ -435,7 +450,7 @@ export function TicketActionBar({
                   type="button"
                   onClick={() => {
                     setMergeLinkedOpen(false);
-                    router.push(`/dashboard/tickets/${mergedIntoTicketId}`);
+                    pushTicketPreservingListContext(mergedIntoTicketId);
                   }}
                   className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-blue-50"
                 >
@@ -497,7 +512,7 @@ export function TicketActionBar({
                     type="button"
                     onClick={() => {
                       setMergeLinkedOpen(false);
-                      router.push(`/dashboard/tickets/${t.id}`);
+                      pushTicketPreservingListContext(t.id);
                     }}
                     className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-blue-50"
                   >
@@ -564,11 +579,12 @@ export function TicketActionBar({
         <ChevronLeft className="h-4 w-4" />
       </button>
       <Link
-        href="/dashboard/tickets"
+        href={allTicketsHref}
+        scroll={false}
         className="inline-flex h-7.5 cursor-pointer items-center rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
-        aria-label="Back to ticket list"
+        aria-label={fromQueue ? "Back to queue" : "Back to ticket list"}
       >
-        All Tickets
+        {fromQueue ? "Queue" : "All Tickets"}
       </Link>
       <button
         type="button"

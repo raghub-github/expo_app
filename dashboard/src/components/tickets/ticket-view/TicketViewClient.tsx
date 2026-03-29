@@ -13,8 +13,6 @@ import { TicketHeader } from "./TicketHeader";
 import { ConversationPanel } from "./ConversationPanel";
 import { ActivityTimeline, fetchTicketActivities, TICKET_ACTIVITIES_STALE_MS } from "./ActivityTimeline";
 import { TicketCsatPanel } from "./TicketCsatPanel";
-import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
-import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 import { AgentActivityPageClient } from "@/components/tickets/AgentActivityPageClient";
 import { addToRecentViewed } from "@/components/search/GlobalSearch";
 import { Check, Copy, Download, Globe, Paperclip } from "lucide-react";
@@ -325,7 +323,6 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   };
 
   const isTicketSettingsMain = rightSidebar?.ticketRightSidebarPanel === "settings";
-  const settingsSection = rightSidebar?.ticketSettingsSection ?? "automation";
 
   if (isTicketSettingsMain) {
     return (
@@ -336,25 +333,14 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
       >
         <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div className="mx-auto min-w-0 max-w-5xl px-4 py-5 sm:px-6">
-            {settingsSection === "activity" && (
-              <header className="border-b border-gray-200 pb-4">
-                <h1 className="text-lg font-semibold text-gray-900">Activity & reports</h1>
-                <p className="mt-1 text-sm text-gray-600">
-                  Performance metrics, CSAT/DSAT, and time tracking for the selected period.
-                </p>
-              </header>
-            )}
-            <div className={settingsSection === "activity" ? "pt-6" : "pt-2"}>
-              {settingsSection === "automation" ? (
-                <>
-                  <TicketComposeAutomationSection variant="plain" />
-                  <div className="mt-10 border-t border-gray-200 pt-8">
-                    <TicketNotificationAutomationSection variant="plain" />
-                  </div>
-                </>
-              ) : (
-                <AgentActivityPageClient embed="ticketSettingsActivity" />
-              )}
+            <header className="border-b border-gray-200 pb-4">
+              <h1 className="text-lg font-semibold text-gray-900">Activity & reports</h1>
+              <p className="mt-1 text-sm text-gray-600">
+                Performance metrics, CSAT/DSAT, and time tracking for the selected period.
+              </p>
+            </header>
+            <div className="pt-6">
+              <AgentActivityPageClient embed="ticketSettingsActivity" />
             </div>
           </div>
         </div>

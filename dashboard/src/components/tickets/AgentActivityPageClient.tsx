@@ -1,11 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useRouter, useSearchParams } from "next/navigation";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Calendar } from "lucide-react";
-import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
-import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 type Period = "today" | "week" | "month" | "custom";
@@ -13,6 +11,7 @@ type Period = "today" | "week" | "month" | "custom";
 interface ActivitySummary {
   onlineTimeMinutes: number;
   breakTimeMinutes: number;
+  busyTimeMinutes: number;
   activeTimeMinutes: number;
   ticketsAssigned: number;
   ticketsResolved: number;
@@ -30,6 +29,8 @@ interface AgentActivityRow {
   email: string;
   onlineTimeMinutes: number;
   breakTimeMinutes: number;
+  busyTimeMinutes?: number;
+  workingTimeMinutes?: number;
   ticketsResolved: number;
   ticketsClosed: number;
   ticketsAssigned: number;
@@ -46,6 +47,8 @@ type AgentActivityApiResponse = {
     summary: ActivitySummary;
     profile: unknown;
     dailyBreakdown: unknown[];
+    statusSegments?: unknown[];
+    dailyTransitions?: unknown[];
     allAgents?: AgentActivityRow[];
   };
 };
@@ -125,9 +128,10 @@ function MetricTableRow({ label, value, valueClassName }: { label: string; value
 }
 
 export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const sectionFromUrl = searchParams.get("section") === "automation" ? "automation" : "activity";
-  const section = embed === "ticketSettingsActivity" ? "activity" : sectionFromUrl;
+  const activityQueryEnabled = embed === "ticketSettingsActivity" || sectionFromUrl !== "automation";
 
   const [period, setPeriod] = useState<Period>("today");
   const [startDate, setStartDate] = useState("");
@@ -146,7 +150,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
 
   const { data, error, isFetching, refetch } = useQuery<AgentActivityApiResponse>({
     queryKey: ["agentActivity", period, startDate, endDate],
-    enabled: section === "activity",
+    enabled: activityQueryEnabled,
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set("period", period);
@@ -162,12 +166,21 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
     gcTime: 24 * 60 * 60_000,
     initialData: initialActivitySnapshot,
     initialDataUpdatedAt: initialActivitySnapshot != null ? 0 : undefined,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
     if (!data?.success || !data.data) return;
     saveClientSnapshot(activitySnapshotKey, data);
   }, [data, activitySnapshotKey]);
+
+  useEffect(() => {
+    if (embed === "ticketSettingsActivity") return;
+    if (sectionFromUrl === "automation") {
+      router.replace("/dashboard/tickets/queue/manager");
+    }
+  }, [embed, router, sectionFromUrl]);
 
   const formatMinutes = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
@@ -178,9 +191,32 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
     return `${mins}m`;
   };
 
+  const formatStatusLabel = (s: string) =>
+    s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "—";
+
+  type TransitionTotals = { toOnline: number; toOffline: number; toBreak: number; toBusy: number };
+
+  const transitionTotals = useMemo((): TransitionTotals => {
+    const rows = (data?.data?.dailyTransitions as Array<Record<string, unknown>> | undefined) ?? [];
+    const init: TransitionTotals = { toOnline: 0, toOffline: 0, toBreak: 0, toBusy: 0 };
+    return rows.reduce<TransitionTotals>(
+      (acc, row) => ({
+        toOnline: acc.toOnline + (Number(row.to_online) || 0),
+        toOffline: acc.toOffline + (Number(row.to_offline) || 0),
+        toBreak: acc.toBreak + (Number(row.to_break) || 0),
+        toBusy: acc.toBusy + (Number(row.to_busy) || 0),
+      }),
+      init
+    );
+  }, [data?.data?.dailyTransitions]);
+
+  const dailyTransitionsRows = data?.data?.dailyTransitions as Array<Record<string, unknown>> | undefined;
+  const statusSegmentsRows = data?.data?.statusSegments as Array<Record<string, unknown>> | undefined;
+
   const summary = data?.data?.summary || {
     onlineTimeMinutes: 0,
     breakTimeMinutes: 0,
+    busyTimeMinutes: 0,
     activeTimeMinutes: 0,
     ticketsAssigned: 0,
     ticketsResolved: 0,
@@ -197,41 +233,29 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
 
   const rootClass = isEmbeddedActivity ? "min-w-0 space-y-4 py-2" : "min-w-0 space-y-5";
 
+  if (sectionFromUrl === "automation" && embed !== "ticketSettingsActivity") {
+    return (
+      <div className="flex min-h-[200px] items-center justify-center text-sm text-gray-500">
+        Opening Manager…
+      </div>
+    );
+  }
+
   return (
     <div className={rootClass}>
       {!isEmbeddedActivity && (
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-xl font-bold tracking-tight text-gray-900">
-              {section === "automation" ? "Automation & settings" : "Agent Activity"}
-            </h1>
+            <h1 className="text-xl font-bold tracking-tight text-gray-900">Agent Activity</h1>
             <p className="mt-1 text-sm text-gray-500">
-              {section === "automation"
-                ? "Global reply composer defaults (super admins) and per-account notification rules."
-                : "Performance metrics, CSAT, and time tracking for the selected period."}
+              Performance metrics, CSAT, and time tracking for the selected period.
             </p>
           </div>
-          {section === "activity" && (
-            <span className="text-xs font-medium text-blue-600">Summary</span>
-          )}
+          <span className="text-xs font-medium text-blue-600">Summary</span>
         </header>
       )}
 
-      {section === "automation" ? (
-        <div className={isEmbeddedActivity ? "space-y-4" : "space-y-5"}>
-          <div
-            className={`rounded-lg border border-gray-200 bg-white shadow-sm ${isEmbeddedActivity ? "p-4" : "p-6"}`}
-          >
-            <TicketComposeAutomationSection variant="plain" />
-          </div>
-          <div
-            className={`rounded-lg border border-gray-200 bg-white shadow-sm ${isEmbeddedActivity ? "p-4" : "p-6"}`}
-          >
-            <TicketNotificationAutomationSection variant="plain" />
-          </div>
-        </div>
-      ) : (
-        <>
+      <>
           {/* Period toolbar — Freshdesk-style white bar */}
           <div
             className={`flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white shadow-sm ${
@@ -277,7 +301,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
             )}
           </div>
 
-          {section === "activity" && error && !data ? (
+          {error && !data ? (
             <div
               className={`rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 ${
                 compact ? "" : ""
@@ -293,7 +317,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               </button>
             </div>
           ) : null}
-          {section === "activity" && isFetching ? (
+          {isFetching ? (
             <p className={`text-xs text-gray-400 ${compact ? "px-0.5" : ""}`}>Updating metrics…</p>
           ) : null}
 
@@ -366,13 +390,18 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                         valueClassName="text-amber-700"
                       />
                       <MetricTableRow
+                        label="Busy"
+                        value={formatMinutes(summary.busyTimeMinutes ?? 0)}
+                        valueClassName="text-purple-700"
+                      />
+                      <MetricTableRow
                         label="Active"
                         value={formatMinutes(summary.activeTimeMinutes)}
                         valueClassName="text-green-700"
                       />
                       <MetricTableRow
-                        label="Net work time"
-                        value={formatMinutes(Math.max(0, summary.onlineTimeMinutes - summary.breakTimeMinutes))}
+                        label="Working presence (online + busy)"
+                        value={formatMinutes(summary.onlineTimeMinutes + (summary.busyTimeMinutes ?? 0))}
                       />
                     </tbody>
                   </table>
@@ -409,13 +438,15 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                     </div>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[640px] text-sm">
+                    <table className="w-full min-w-[760px] text-sm">
                       <thead>
                         <tr className="border-b border-gray-200">
                           <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Agent</th>
                           <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Email</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Busy</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Working</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Assigned</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Closed</th>
@@ -433,6 +464,12 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                             </td>
                             <td className="px-2 py-2.5 text-right text-gray-700">
                               {formatMinutes(agent.breakTimeMinutes)}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(agent.busyTimeMinutes ?? 0)}
+                            </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(agent.workingTimeMinutes ?? agent.onlineTimeMinutes + (agent.busyTimeMinutes ?? 0))}
                             </td>
                             <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsAssigned}</td>
                             <td className="px-2 py-2.5 text-right font-medium text-green-700">{agent.ticketsResolved}</td>
@@ -467,6 +504,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                           <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Date</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Busy</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">CSAT</th>
                         </tr>
@@ -483,6 +521,9 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                             <td className="px-2 py-2.5 text-right text-gray-700">
                               {formatMinutes(Number(day.break_time_minutes) || 0)}
                             </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(Number(day.busy_time_minutes) || 0)}
+                            </td>
                             <td className="px-2 py-2.5 text-right text-gray-700">{Number(day.tickets_resolved) || 0}</td>
                             <td className="px-2 py-2.5 text-right text-gray-700">
                               {day.csat_score != null && typeof day.csat_score === "number"
@@ -496,8 +537,131 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                   </div>
                 </section>
               )}
+
+              {dailyTransitionsRows && dailyTransitionsRows.length > 0 ? (
+                <section
+                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                    compact ? "p-4" : "p-5"
+                  }`}
+                >
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-gray-100 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-gray-900">Status transitions</h2>
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        How often you switched state (from availability logs), per UTC day. Period totals: Online{" "}
+                        <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toOnline}</span>
+                        , Offline{" "}
+                        <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toOffline}</span>
+                        , Break <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toBreak}</span>
+                        , Busy{" "}
+                        <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toBusy}</span>.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Date (UTC)</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Online</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Offline</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Busy</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dailyTransitionsRows.map((row, idx: number) => (
+                          <tr key={idx} className="border-b border-gray-100">
+                            <td className="px-2 py-2.5 text-gray-900">
+                              {row.day != null ? String(row.day) : "—"}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_online) || 0}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_offline) || 0}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_break) || 0}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_busy) || 0}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
+              {statusSegmentsRows && statusSegmentsRows.length > 0 ? (
+                <section
+                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                    compact ? "p-4" : "p-5"
+                  }`}
+                >
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-gray-100 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-gray-900">Completed status intervals</h2>
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        Each row is a finished period in one state (start → end). Up to 500 intervals in this range.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[840px] text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Status</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Started</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Ended</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Duration</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Source</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Note</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {statusSegmentsRows.map((row, idx: number) => (
+                          <tr key={idx} className="border-b border-gray-100">
+                            <td className="px-2 py-2.5 font-medium text-gray-900">
+                              {formatStatusLabel(String(row.status ?? ""))}
+                            </td>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {row.started_at != null
+                                ? new Date(String(row.started_at)).toLocaleString(undefined, {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })
+                                : "—"}
+                            </td>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {row.ended_at != null
+                                ? new Date(String(row.ended_at)).toLocaleString(undefined, {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })
+                                : "—"}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {formatMinutes(Number(row.duration_minutes) || 0)}
+                            </td>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {row.change_source != null && String(row.change_source).length > 0
+                                ? formatStatusLabel(String(row.change_source))
+                                : "—"}
+                            </td>
+                            <td className="max-w-[200px] truncate px-2 py-2.5 text-gray-600" title={row.reason != null ? String(row.reason) : undefined}>
+                              {row.reason != null && String(row.reason).length > 0 ? String(row.reason) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
         </>
-      )}
     </div>
   );
 }

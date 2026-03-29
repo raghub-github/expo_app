@@ -65,8 +65,8 @@ export function NewTicketForm() {
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to create ticket");
       const ticketId = json?.data?.ticket?.id;
-      if (ticketId) router.push(`/dashboard/tickets/${ticketId}`);
-      else router.push("/dashboard/tickets");
+      if (ticketId) router.push(`/dashboard/tickets/${ticketId}`, { scroll: false });
+      else router.push("/dashboard/tickets", { scroll: false });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
@@ -87,6 +87,7 @@ export function NewTicketForm() {
       <div className="mb-6 flex items-center gap-3">
         <Link
           href="/dashboard/tickets"
+          scroll={false}
           className="flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-gray-900"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -254,6 +255,7 @@ export function NewTicketForm() {
             </button>
             <Link
               href="/dashboard/tickets"
+              scroll={false}
               className="rounded-xl border border-gray-300 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
             >
               Cancel

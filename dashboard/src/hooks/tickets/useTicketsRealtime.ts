@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase/client";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
+import { queryKeys } from "@/lib/queryKeys";
 
 const POLL_INTERVAL_MS = 18_000;
 const REALTIME_DEBOUNCE_MS = 800;
@@ -16,6 +18,7 @@ export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
  * Not a global DB event counter — avoids dummy totals matching full ticket count.
  */
 export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: boolean) {
+  const queryClient = useQueryClient();
   const [newTicketsCount, setNewTicketsCount] = useState(0);
   const ackTimeIsoRef = useRef<string | null>(null);
   const pollBaseKeyRef = useRef<string>("");
@@ -78,6 +81,7 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
           debounce = window.setTimeout(() => {
             debounce = null;
             void runPoll();
+            void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
           }, REALTIME_DEBOUNCE_MS);
         }
       )
@@ -93,7 +97,7 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
       if (debounce) window.clearTimeout(debounce);
       supabase.removeChannel(channel);
     };
-  }, [listReady, runPoll]);
+  }, [listReady, runPoll, queryClient]);
 
   return {
     hasNewTickets: newTicketsCount > 0,

@@ -81,6 +81,7 @@ export async function GET(request: NextRequest) {
         activity_date,
         online_time_minutes,
         break_time_minutes,
+        busy_time_minutes,
         active_time_minutes,
         tickets_assigned,
         tickets_resolved,
@@ -99,6 +100,39 @@ export async function GET(request: NextRequest) {
         AND activity_date >= ${startDate.toISOString().split('T')[0]}
         AND activity_date <= ${endDate.toISOString().split('T')[0]}
       ORDER BY activity_date DESC
+    `;
+
+    const statusSegmentsResult = await sqlClient`
+      SELECT
+        id,
+        status,
+        started_at,
+        ended_at,
+        duration_minutes,
+        reason,
+        change_source,
+        changed_by_user_id
+      FROM agent_status_segments
+      WHERE agent_user_id = ${systemUser.id}
+        AND ended_at >= ${startDate.toISOString()}::timestamptz
+        AND started_at <= ${endDate.toISOString()}::timestamptz
+      ORDER BY started_at DESC
+      LIMIT 500
+    `;
+
+    const dailyTransitionsResult = await sqlClient`
+      SELECT
+        (timezone('UTC', changed_at))::date AS day,
+        COUNT(*) FILTER (WHERE status = 'online')::int AS to_online,
+        COUNT(*) FILTER (WHERE status = 'offline')::int AS to_offline,
+        COUNT(*) FILTER (WHERE status = 'break')::int AS to_break,
+        COUNT(*) FILTER (WHERE status = 'busy')::int AS to_busy
+      FROM agent_availability_logs
+      WHERE agent_user_id = ${systemUser.id}
+        AND changed_at >= ${startDate.toISOString()}::timestamptz
+        AND changed_at <= ${endDate.toISOString()}::timestamptz
+      GROUP BY 1
+      ORDER BY 1 DESC
     `;
 
     // Get current profile stats
@@ -149,6 +183,7 @@ export async function GET(request: NextRequest) {
     const aggregated = activityLogsResult.reduce((acc, log) => {
       acc.onlineTimeMinutes += log.online_time_minutes || 0;
       acc.breakTimeMinutes += log.break_time_minutes || 0;
+      acc.busyTimeMinutes += Number(log.busy_time_minutes) || 0;
       acc.activeTimeMinutes += log.active_time_minutes || 0;
       acc.ticketsAssigned += log.tickets_assigned || 0;
       acc.ticketsResolved += log.tickets_resolved || 0;
@@ -162,6 +197,7 @@ export async function GET(request: NextRequest) {
     }, {
       onlineTimeMinutes: 0,
       breakTimeMinutes: 0,
+      busyTimeMinutes: 0,
       activeTimeMinutes: 0,
       ticketsAssigned: 0,
       ticketsResolved: 0,
@@ -186,6 +222,8 @@ export async function GET(request: NextRequest) {
         su.email,
         COALESCE(SUM(aal.online_time_minutes), 0)::int as online_time_minutes,
         COALESCE(SUM(aal.break_time_minutes), 0)::int as break_time_minutes,
+        COALESCE(SUM(aal.busy_time_minutes), 0)::int as busy_time_minutes,
+        (COALESCE(SUM(aal.online_time_minutes), 0) + COALESCE(SUM(aal.busy_time_minutes), 0))::int as working_time_minutes,
         COALESCE(SUM(aal.tickets_resolved), 0)::int as tickets_resolved,
         COALESCE(SUM(aal.tickets_closed), 0)::int as tickets_closed,
         COALESCE(SUM(aal.tickets_assigned), 0)::int as tickets_assigned,
@@ -206,6 +244,8 @@ export async function GET(request: NextRequest) {
       email: row.email || "",
       onlineTimeMinutes: Number(row.online_time_minutes) || 0,
       breakTimeMinutes: Number(row.break_time_minutes) || 0,
+      busyTimeMinutes: Number(row.busy_time_minutes) || 0,
+      workingTimeMinutes: Number(row.working_time_minutes) || 0,
       ticketsResolved: Number(row.tickets_resolved) || 0,
       ticketsClosed: Number(row.tickets_closed) || 0,
       ticketsAssigned: Number(row.tickets_assigned) || 0,
@@ -222,6 +262,7 @@ export async function GET(request: NextRequest) {
         summary: {
           onlineTimeMinutes: aggregated.onlineTimeMinutes,
           breakTimeMinutes: aggregated.breakTimeMinutes,
+          busyTimeMinutes: aggregated.busyTimeMinutes,
           activeTimeMinutes: aggregated.activeTimeMinutes,
           ticketsAssigned: Number(ticketStats.total_assigned) || 0,
           ticketsResolved: Number(ticketStats.resolved) || 0,
@@ -234,6 +275,8 @@ export async function GET(request: NextRequest) {
         },
         profile: profileResult[0] || null,
         dailyBreakdown: activityLogsResult,
+        statusSegments: statusSegmentsResult,
+        dailyTransitions: dailyTransitionsResult,
         allAgents,
       },
     });

@@ -1,10 +1,13 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
+import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 
 interface TicketListRowProps {
@@ -21,6 +24,8 @@ interface TicketListRowProps {
   statusOptions: Option[];
   /** Current user id so "Me" option displays and submits correctly */
   currentUserId?: number;
+  /** Full href to ticket detail (includes list query params when provided from the list page). */
+  detailHref?: string;
 }
 
 function formatTimeAgo(dateStr: string): string {
@@ -110,7 +115,9 @@ export const TicketListRow = React.memo(function TicketListRow({
   agentOptions,
   statusOptions,
   currentUserId,
+  detailHref,
 }: TicketListRowProps) {
+  const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -118,6 +125,10 @@ export const TicketListRow = React.memo(function TicketListRow({
   const [groupAgentMenuPlacement, setGroupAgentMenuPlacement] = useState<{ top: number; left: number } | null>(null);
   const groupAgentRef = useRef<HTMLDivElement>(null);
   const groupAgentMenuPortalRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const prefetchThisTicket = useCallback(() => {
+    prefetchTicketDetail(queryClient, ticket.id);
+  }, [queryClient, ticket.id]);
 
   useLayoutEffect(() => {
     if (!groupAgentOpen) {
@@ -389,6 +400,7 @@ export const TicketListRow = React.memo(function TicketListRow({
     <div
       className="flex items-center gap-2.5 border-b border-gray-200 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
       style={{ overflow: "visible" }}
+      onPointerEnter={prefetchThisTicket}
     >
       {/* Checkbox — fixed width column so text column aligns row-to-row */}
       <div className="shrink-0 w-4 flex justify-center" onClick={(e) => e.stopPropagation()}>
@@ -403,7 +415,8 @@ export const TicketListRow = React.memo(function TicketListRow({
 
       {/* Avatar: ticket source type (Merchant / Rider / Customer …), first letter only */}
       <Link
-        href={`/dashboard/tickets/${ticket.id}`}
+        href={detailLink}
+        scroll={false}
         className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-sm font-semibold leading-none tabular-nums shadow-sm hover:shadow-md hover:scale-[1.02] transition-all"
         aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
         title={sourceLabel ? `Type: ${sourceLabel}` : undefined}
@@ -451,7 +464,8 @@ export const TicketListRow = React.memo(function TicketListRow({
         </div>
 
         <Link
-          href={`/dashboard/tickets/${ticket.id}`}
+          href={detailLink}
+          scroll={false}
           className="block w-full min-w-0 text-left hover:underline underline-offset-2"
           title={`${ticket.subject} · #${ticket.ticketNumber || ticket.id}`}
         >
@@ -492,21 +506,41 @@ export const TicketListRow = React.memo(function TicketListRow({
         </div>
       </div>
 
-      {/* Right: Priority, Group/Agent, Status - stacked vertically; same width as header column, shifted left */}
-      <div className="flex flex-col gap-px shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
-        {/* Priority */}
-        <div className="w-full flex items-center min-h-[22px]">
-          <InlineSearchableSelect
-            value={ticket.priority}
-            options={priorityOptions}
-            onChange={(v) => onUpdatePriority(ticket.id, v)}
-            leadingIcon={
-              <span
-                className={`block w-1.5 h-1.5 rounded-full shrink-0 ${priorityDotColors[ticket.priority] ?? "bg-gray-400"}`}
-                aria-hidden
-              />
-            }
-          />
+      {/* Right: Priority + Status on one row; Group/Agent full width below */}
+      <div className="flex flex-col gap-1 shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
+        <div className="flex w-full min-h-[22px] flex-row items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <InlineSearchableSelect
+              value={ticket.priority}
+              options={priorityOptions}
+              onChange={(v) => onUpdatePriority(ticket.id, v)}
+              leadingIcon={
+                <span
+                  className={`block w-1.5 h-1.5 rounded-full shrink-0 ${priorityDotColors[ticket.priority] ?? "bg-gray-400"}`}
+                  aria-hidden
+                />
+              }
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <InlineSearchableSelect
+              value={ticket.status}
+              options={statusOptions}
+              onChange={(v) => onUpdateStatus(ticket.id, v)}
+              leadingIcon={
+                <span
+                  className={`block w-1.5 h-1.5 rounded-full shrink-0 ${
+                    ticket.status === "open" || ticket.status === "reopened"
+                      ? "bg-blue-500"
+                      : ticket.status === "resolved" || ticket.status === "closed"
+                        ? "bg-green-500"
+                        : "bg-amber-500"
+                  }`}
+                  aria-hidden
+                />
+              }
+            />
+          </div>
         </div>
         {/* Group / Agent - ONE dropdown */}
         <div
@@ -579,26 +613,6 @@ export const TicketListRow = React.memo(function TicketListRow({
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
             </button>
           </div>
-        </div>
-        {/* Status */}
-        <div className="w-full flex items-center">
-          <InlineSearchableSelect
-            value={ticket.status}
-            options={statusOptions}
-            onChange={(v) => onUpdateStatus(ticket.id, v)}
-            leadingIcon={
-              <span
-                className={`block w-1.5 h-1.5 rounded-full shrink-0 ${
-                  ticket.status === "open" || ticket.status === "reopened"
-                    ? "bg-blue-500"
-                    : ticket.status === "resolved" || ticket.status === "closed"
-                      ? "bg-green-500"
-                      : "bg-amber-500"
-                }`}
-                aria-hidden
-              />
-            }
-          />
         </div>
       </div>
     </div>

@@ -7,7 +7,9 @@ import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { fetchCustomers } from "@/hooks/queries/useCustomersQuery";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
+import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { fetchFoodOrders, type OrdersFilters } from "@/app/dashboard/orders/food/FoodOrdersClient";
+import { fetchTicketsReferenceData } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 
 const defaultTicketFilters: TicketFilters = {
   ticketSection: "all",
@@ -38,12 +40,26 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
     return;
   }
 
+  const ticketDetailMatch = /^\/dashboard\/tickets\/(\d+)$/.exec(path);
+  if (ticketDetailMatch) {
+    prefetchTicketDetail(queryClient, ticketDetailMatch[1]);
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.tickets.referenceData(),
+      queryFn: fetchTicketsReferenceData,
+    });
+    return;
+  }
+
   if (path === "/dashboard/tickets" || path.startsWith("/dashboard/tickets")) {
-    queryClient.prefetchQuery({
+    void queryClient.prefetchQuery({
       queryKey: queryKeys.tickets.list(
         defaultTicketFilters as unknown as Record<string, unknown>
       ),
       queryFn: () => fetchTickets(defaultTicketFilters),
+    });
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.tickets.referenceData(),
+      queryFn: fetchTicketsReferenceData,
     });
     return;
   }

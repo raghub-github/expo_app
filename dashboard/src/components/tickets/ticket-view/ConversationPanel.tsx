@@ -1013,15 +1013,24 @@ export function ConversationPanel({
         const isFirstResponse = Boolean(data.data?.isFirstResponse);
         const emailDispatch = data.data?.emailDispatch as { ok?: boolean; code?: string } | undefined;
         const isCustomerEmailReply = !composeAsInternalNote && noteVisibility === "private";
+        let showResponseSuccessToast = true;
         if (isCustomerEmailReply && emailDispatch && emailDispatch.ok === false) {
           const code = emailDispatch.code ?? "";
-          const msg =
-            code === "NO_RECIPIENT"
-              ? "Message saved. Add at least one address in To to send mail."
-              : code === "NOT_CONFIGURED"
-                ? "Message saved. Set EMAIL_ID and EMAIL_APP_PASSWORD (Zoho SMTP) in .env.local to send customer emails."
-                : "Message saved, but the customer email could not be sent. Check SMTP credentials.";
-          toast(msg, "error");
+          if (code === "NO_RECIPIENT") {
+            // Message is saved; do not show the old "add To address" toast.
+          } else if (code === "NOT_CONFIGURED") {
+            showResponseSuccessToast = false;
+            toast(
+              "Message saved. Set EMAIL_ID and EMAIL_APP_PASSWORD (Zoho SMTP) in .env.local to send customer emails.",
+              "error"
+            );
+          } else {
+            showResponseSuccessToast = false;
+            toast("Message saved, but the customer email could not be sent. Check SMTP credentials.", "error");
+          }
+        }
+        if (showResponseSuccessToast) {
+          toast("Response successfully Updated");
         }
         let ticketStatusAfterSend: string | undefined;
 
@@ -1470,8 +1479,9 @@ export function ConversationPanel({
               />
               <button
                 type="button"
+                disabled={sending}
                 onClick={() => fileInputRef.current?.click()}
-                className="cursor-pointer p-2 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+                className={`p-2 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-40 ${sending ? "cursor-not-allowed" : "cursor-pointer"}`}
                 title="Attach images, PDF, Excel, Word (max 50MB each)"
                 aria-label="Attach files"
               >
@@ -1504,14 +1514,15 @@ export function ConversationPanel({
                   {attachedFiles.map((f, i) => (
                     <span
                       key={`${f.name}-${i}-${f.size}`}
-                      className="inline-flex max-w-[200px] items-center gap-0.5 rounded border border-gray-200 bg-white pl-2 pr-1 py-0.5 text-[10px] text-gray-700"
+                      className="inline-flex max-w-[200px] items-center gap-0.5 rounded border border-emerald-300/90 bg-emerald-50 pl-2 pr-1 py-0.5 text-[10px] font-medium text-emerald-900 shadow-sm"
                       title={f.name}
                     >
                       <span className="truncate">{f.name}</span>
                       <button
                         type="button"
+                        disabled={sending}
                         onClick={() => setAttachedFiles((prev) => prev.filter((_, j) => j !== i))}
-                        className="shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                        className="shrink-0 rounded p-0.5 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-950 disabled:pointer-events-none disabled:opacity-40"
                         aria-label={`Remove ${f.name}`}
                       >
                         <X className="h-3 w-3" />
@@ -1547,7 +1558,15 @@ export function ConversationPanel({
               ) : hasComposerDraft ? (
                 <span className="text-xs text-gray-400">Draft</span>
               ) : null}
-              <button type="button" onClick={() => setShowDiscardConfirm(true)} className="p-2 rounded text-red-600 hover:bg-red-50 hover:text-red-700" aria-label="Delete draft"><Trash2 className="h-4 w-4" /></button>
+              <button
+                type="button"
+                disabled={sending}
+                onClick={() => setShowDiscardConfirm(true)}
+                className="p-2 rounded text-red-600 hover:bg-red-50 hover:text-red-700 disabled:pointer-events-none disabled:opacity-40"
+                aria-label="Delete draft"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
               {composeAsInternalNote || noteVisibility === "public" ? (
                 <button
                   type="button"
@@ -1572,8 +1591,9 @@ export function ConversationPanel({
                   <button
                     ref={sendDropdownTriggerRef}
                     type="button"
+                    disabled={sending}
                     onClick={openSendOptions}
-                    className="cursor-pointer rounded-r-lg border-l border-blue-500 bg-blue-600 px-1.5 py-1.5 text-white hover:bg-blue-700"
+                    className="cursor-pointer rounded-r-lg border-l border-blue-500 bg-blue-600 px-1.5 py-1.5 text-white hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-50"
                     aria-label="Send options"
                     aria-expanded={sendOptionsOpen}
                   >

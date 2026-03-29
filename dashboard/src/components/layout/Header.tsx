@@ -4,7 +4,22 @@ import { memo, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight, User } from "lucide-react";
+import {
+  LogOut,
+  Bell,
+  Search,
+  ChevronDown,
+  Plus,
+  Ticket,
+  Mail,
+  UserPlus,
+  Building2,
+  Menu,
+  X,
+  PanelRight,
+  PanelLeft,
+  User,
+} from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
@@ -26,6 +41,13 @@ import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
+import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
+import {
+  isTicketsAppDetailPath,
+  isTicketsQueueLayoutExperience,
+  resolveTicketsQueueHeaderTitle,
+  ticketDetailHasQueueContext,
+} from "@/lib/tickets/ticket-path-utils";
 
 const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
 const MERCHANTS_PORTAL_STORAGE_KEY = "dashboard_merchants_portal_v1";
@@ -204,9 +226,15 @@ function HeaderComponent() {
 
   const pageName = useMemo(() => {
     const clean = effectivePathname.split("?")[0].split("#")[0];
+    if (clean.startsWith("/dashboard/tickets/queue")) {
+      return resolveTicketsQueueHeaderTitle(clean, searchParams.get("section"));
+    }
+    if (isTicketsAppDetailPath(clean) && ticketDetailHasQueueContext(searchParams)) {
+      return "Queue";
+    }
     if (ROUTE_TITLES[clean]) return ROUTE_TITLES[clean];
     return getCurrentPageName(clean);
-  }, [effectivePathname]);
+  }, [effectivePathname, searchParams]);
   const isMerchantsArea = effectivePathname.startsWith("/dashboard/merchants");
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNewDropdown, setShowNewDropdown] = useState(false);
@@ -230,6 +258,10 @@ function HeaderComponent() {
   const leftSidebarMobile = useLeftSidebarMobile();
   const rightSidebar = useRightSidebar();
   const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
+  const isTicketsQueueWorkspace = useMemo(
+    () => isTicketsQueueLayoutExperience(cleanPathname, searchParams),
+    [cleanPathname, searchParams.toString()]
+  );
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
   const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
@@ -290,6 +322,12 @@ function HeaderComponent() {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
   };
+
+  useEffect(() => {
+    if (isTicketsQueueWorkspace) {
+      setShowProfileCard(false);
+    }
+  }, [isTicketsQueueWorkspace]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -464,7 +502,7 @@ function HeaderComponent() {
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Hamburger - only on tablet/mobile (<1024px) */}
-        {leftSidebarMobile && (
+        {leftSidebarMobile && !isTicketsQueueWorkspace && (
           <button
             type="button"
             onClick={leftSidebarMobile.toggleMobileMenu}
@@ -484,10 +522,20 @@ function HeaderComponent() {
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
         <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate flex-shrink min-w-0">{pageName}</h2>
-        {/* Online/Offline/Break toggle + Settings - only on Tickets, always visible when on route */}
-        {effectivePathname.startsWith("/dashboard/tickets") && (
-          <AgentStatusToggle />
-        )}
+        {/* Queue (new tab) + helpdesk gear — ticket list & related; status lives on Queue pages */}
+        {effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace && (
+            <div className="flex flex-shrink-0 items-center gap-2">
+              <a
+                href="/dashboard/tickets/queue/home"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex cursor-pointer items-center rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-50"
+              >
+                Queue
+              </a>
+              <TicketsHubGearButton />
+            </div>
+          )}
       </div>
 
       {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
@@ -526,7 +574,7 @@ function HeaderComponent() {
           </div>
         )}
         {/* Global search and + New: only on Tickets dashboard */}
-        {effectivePathname.startsWith("/dashboard/tickets") && (
+        {effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace && (
           <>
             <div className="w-full min-w-0 max-w-[160px] sm:max-w-[220px] md:max-w-[280px]">
               <GlobalSearch />
@@ -606,19 +654,31 @@ function HeaderComponent() {
             aria-label={rightSidebar?.isOpen ? "Close panel" : "Open panel"}
             aria-expanded={rightSidebar?.isOpen}
           >
-            <PanelRight className="h-5 w-5" aria-hidden />
+            {isTicketsQueueWorkspace ? (
+              <PanelLeft className="h-5 w-5" aria-hidden />
+            ) : (
+              <PanelRight className="h-5 w-5" aria-hidden />
+            )}
           </button>
         )}
         <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
           <Bell className="h-5 w-5" />
         </button>
 
+        {isTicketsQueueWorkspace && <AgentStatusToggle />}
+
         {/* User name + avatar + logout - hidden on mobile (moved to left sidebar) */}
         <div ref={userMenuRef} className="relative hidden lg:block">
           <button
             type="button"
-            onClick={() => setShowProfileCard(true)}
-            className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 min-w-0"
+            onClick={() => {
+              if (!isTicketsQueueWorkspace) {
+                setShowProfileCard(true);
+              }
+            }}
+            className={`flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 min-w-0 ${
+              isTicketsQueueWorkspace ? "cursor-default" : "hover:bg-gray-100"
+            }`}
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
               <span suppressHydrationWarning className="text-sm font-medium text-gray-900 truncate w-full">
@@ -702,9 +762,9 @@ function HeaderComponent() {
         </div>
       )}
 
-      {/* Floating profile status card */}
+      {/* Floating profile status card (hidden on Queue workspace — status is in header) */}
       <ProfileStatusCard
-        open={showProfileCard}
+        open={showProfileCard && !isTicketsQueueWorkspace}
         onClose={() => setShowProfileCard(false)}
         onSignOut={openLogoutConfirm}
       />

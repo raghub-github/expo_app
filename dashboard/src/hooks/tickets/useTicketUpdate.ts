@@ -159,6 +159,8 @@ export function useTicketUpdate() {
       });
       if (variables.ticketId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(variables.ticketId), refetchType: "inactive" });
+        // Status / assignee / etc. write activity rows server-side; timeline must refetch or it stays stale until staleTime.
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(variables.ticketId) });
       }
     },
   });

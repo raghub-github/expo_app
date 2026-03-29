@@ -11,7 +11,8 @@ import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine
 import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
-import { sendEmail } from "@/lib/email/send";
+import { sendEmail, type OutboundEmailAttachment } from "@/lib/email/send";
+import { loadTicketAttachmentBuffer } from "@/lib/tickets/ticket-attachment-buffer";
 
 export const runtime = "nodejs";
 
@@ -282,8 +283,12 @@ export async function POST(
         ticket_id?: unknown;
       };
 
-      if (toRecipientsParsed.length === 0) {
-        console.warn("[POST /api/tickets/[id]/messages] No To addresses; skipping SMTP (composer To is empty)");
+      if (
+        toRecipientsParsed.length === 0 &&
+        ccRecipientsParsed.length === 0 &&
+        bccRecipientsParsed.length === 0
+      ) {
+        console.warn("[POST /api/tickets/[id]/messages] No To/Cc/Bcc; skipping SMTP");
         emailDispatch = { ok: false, code: "NO_RECIPIENT" };
       } else {
         const ticketRef =
@@ -303,6 +308,30 @@ export async function POST(
           messageText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "(see ticket for full message)";
         const hasHtml = /<[a-z][\s\S]*>/i.test(messageText);
 
+        const outboundAttachments: OutboundEmailAttachment[] = [];
+        for (const raw of rawAttachments) {
+          if (!raw || typeof raw !== "object" || !("storageKey" in (raw as object))) continue;
+          const a = raw as { storageKey?: unknown; name?: unknown; mimeType?: unknown };
+          const key = typeof a.storageKey === "string" ? a.storageKey.trim() : "";
+          if (!key) continue;
+          const name =
+            typeof a.name === "string" && a.name.trim() ? a.name.trim() : key.split("/").pop() || "attachment";
+          const mime =
+            typeof a.mimeType === "string" && a.mimeType.trim()
+              ? a.mimeType.trim()
+              : "application/octet-stream";
+          const loaded = await loadTicketAttachmentBuffer(key, mime);
+          if (loaded) {
+            outboundAttachments.push({
+              filename: name,
+              content: loaded.buffer,
+              contentType: loaded.contentType,
+            });
+          } else {
+            console.warn("[POST /api/tickets/[id]/messages] Attachment not loaded for outbound email:", key);
+          }
+        }
+
         const outcome = await sendEmail({
           to: toRecipientsParsed.length === 1 ? toRecipientsParsed[0] : toRecipientsParsed,
           cc: ccRecipientsParsed.length ? ccRecipientsParsed : undefined,
@@ -310,6 +339,7 @@ export async function POST(
           subject,
           text: plain,
           ...(hasHtml ? { html: messageText } : {}),
+          ...(outboundAttachments.length > 0 ? { attachments: outboundAttachments } : {}),
         });
 
         emailDispatch = outcome.ok ? { ok: true } : { ok: false, code: outcome.code };
