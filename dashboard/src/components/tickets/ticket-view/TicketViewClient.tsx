@@ -4,7 +4,12 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import { useTicketUrlPanel, useTicketPanelNavigation } from "@/hooks/tickets/useTicketUrlPanel";
-import { useTicketDetail, type TicketDetail, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
+import {
+  useTicketDetail,
+  type TicketDetail,
+  type TicketMessage,
+  type TicketMessageSentPayload,
+} from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { isImageUrl } from "./AttachmentModal";
@@ -84,21 +89,57 @@ function formatCreatedLong(dateStr: string): string {
   return `${relative} (${absolute})`;
 }
 
-function getStoredLastViewed(ticketId: number): { updatedAt: string; messageCount: number } | null {
+type LastViewedStored = {
+  updatedAt: string;
+  messageCount: number;
+  /** Count of customer/merchant/rider/inbound thread rows (excludes agent + internal notes). */
+  inboundCount: number;
+};
+
+/** Inbound “user side” thread activity — not agent replies or internal notes (avoids chip on spam/status-only saves). */
+function isInboundUserSideMessage(msg: TicketMessage): boolean {
+  if (msg.isInternalNote) return false;
+  const mt = String(msg.messageType || "").toLowerCase();
+  if (mt === "internal_note") return false;
+  const t = (msg.senderType ?? "").trim().toUpperCase();
+  if (t === "AGENT") return false;
+  return true;
+}
+
+function countInboundUserMessages(messages: TicketMessage[]): number {
+  return messages.filter(isInboundUserSideMessage).length;
+}
+
+function getStoredLastViewed(ticketId: number): LastViewedStored | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY_PREFIX + ticketId);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { updatedAt?: string; messageCount?: number };
-    return parsed?.updatedAt != null ? { updatedAt: parsed.updatedAt, messageCount: parsed.messageCount ?? 0 } : null;
+    const parsed = JSON.parse(raw) as {
+      updatedAt?: string;
+      messageCount?: number;
+      inboundCount?: number;
+    };
+    if (parsed?.updatedAt == null) return null;
+    return {
+      updatedAt: parsed.updatedAt,
+      messageCount: parsed.messageCount ?? 0,
+      inboundCount: parsed.inboundCount ?? -1,
+    };
   } catch {
     return null;
   }
 }
 
-function setStoredLastViewed(ticketId: number, updatedAt: string, messageCount: number) {
+function setStoredLastViewed(ticketId: number, ticket: TicketDetail) {
   try {
-    sessionStorage.setItem(STORAGE_KEY_PREFIX + ticketId, JSON.stringify({ updatedAt, messageCount }));
+    const messages = ticket.messages ?? [];
+    const payload: LastViewedStored = {
+      updatedAt: ticket.updatedAt,
+      messageCount: messages.length,
+      inboundCount: countInboundUserMessages(messages),
+    };
+    sessionStorage.setItem(STORAGE_KEY_PREFIX + ticketId, JSON.stringify(payload));
   } catch {}
 }
 
@@ -173,49 +214,41 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     }
   }, [ticket?.id, ticket?.ticketNumber, ticket?.subject]);
 
-  // Chip badge: show when there are updates since last view (stored baseline)
+  // Baseline + chip: first visit writes sessionStorage immediately; later runs only show "N update(s)" when inbound
+  // (customer / merchant / rider) messages increase — not when ticket.updatedAt changes from spam, status, agent edits, etc.
   useEffect(() => {
     if (!ticket) return;
     const stored = getStoredLastViewed(ticket.id);
-    const messages = ticket.messages ?? [];
     if (!stored) {
+      setStoredLastViewed(ticket.id, ticket);
       setNewUpdatesCount(0);
       return;
     }
-    const updatedAfter = ticket.updatedAt && stored.updatedAt ? new Date(ticket.updatedAt) > new Date(stored.updatedAt) : false;
-    const newMessages = messages.length > stored.messageCount ? messages.length - stored.messageCount : 0;
-    if (updatedAfter || newMessages > 0) {
-      setNewUpdatesCount(Math.max(1, newMessages));
-    } else {
+    if (stored.inboundCount < 0) {
+      setStoredLastViewed(ticket.id, ticket);
       setNewUpdatesCount(0);
+      return;
     }
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
+    const currentInbound = countInboundUserMessages(ticket.messages ?? []);
+    const delta = currentInbound - stored.inboundCount;
+    setNewUpdatesCount(delta > 0 ? Math.min(delta, 99) : 0);
+  }, [ticket?.id, ticket?.messages, ticket]);
 
-  // Set "last viewed" baseline on first open so future visits can show update chip
-  useEffect(() => {
-    if (!ticket) return;
-    if (getStoredLastViewed(ticket.id) != null) return;
-    const t = setTimeout(() => {
-      setStoredLastViewed(ticket.id, ticket.updatedAt, (ticket.messages ?? []).length);
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
-
-  // Auto-dismiss chip after 3s (mark as viewed)
+  // Auto-dismiss chip after 3s (mark inbound baseline as caught up)
   useEffect(() => {
     if (!ticket || newUpdatesCount === 0) return;
     const t = setTimeout(() => {
-      setStoredLastViewed(ticket.id, ticket.updatedAt, (ticket.messages ?? []).length);
+      setStoredLastViewed(ticket.id, ticket);
       setNewUpdatesCount(0);
     }, 3000);
     return () => clearTimeout(t);
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages, newUpdatesCount]);
+  }, [ticket, newUpdatesCount]);
 
   const handleDismissUpdates = useCallback(() => {
     if (!ticket) return;
-    setStoredLastViewed(ticket.id, ticket.updatedAt, (ticket.messages ?? []).length);
+    setStoredLastViewed(ticket.id, ticket);
     setNewUpdatesCount(0);
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
+  }, [ticket]);
 
   /** No ticket yet and query hasn't failed — show skeleton. Do not tie to `isFetching` or background refetch flashes the full-page loader. */
   const stillLoading = !ticket && !isError && isLoading;

@@ -464,6 +464,18 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
             options={groupOptions}
             onChange={setGroupId}
           />
+          {ticket.automationLastRun ? (
+            <p className="mt-1.5 text-[11px] leading-snug text-gray-500">
+              Automation:{" "}
+              <span className="font-medium text-gray-700">{ticket.automationLastRun.ruleName}</span>
+              {ticket.automationLastRun.ruleCode ? (
+                <span className="font-mono text-[10px] text-gray-400"> ({ticket.automationLastRun.ruleCode})</span>
+              ) : null}
+              {ticket.automationLastRun.triggerEvent ? (
+                <span className="text-gray-400"> · {ticket.automationLastRun.triggerEvent.replace(/_/g, " ")}</span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
 
         {/* Assigned Agent */}

@@ -495,6 +495,41 @@ export async function GET(
           ? String(row.description).trim()
           : "";
 
+    let automation_last_run: {
+      rule_id: number;
+      rule_name: string;
+      rule_code: string;
+      trigger_event: string;
+      completed_at: string | null;
+    } | null = null;
+    try {
+      const autoRows = await sqlClient`
+        SELECT e.rule_id,
+               e.trigger_event::text AS trigger_event,
+               e.completed_at,
+               r.rule_name,
+               r.rule_code
+        FROM public.ticket_automation_executions e
+        LEFT JOIN public.ticket_automation_rules r ON r.id = e.rule_id
+        WHERE e.ticket_id = ${resolvedTicketId}
+          AND e.execution_status = 'completed'
+        ORDER BY e.completed_at DESC NULLS LAST, e.id DESC
+        LIMIT 1
+      `;
+      const ar = autoRows?.[0] as Record<string, unknown> | undefined;
+      if (ar && ar.rule_id != null) {
+        automation_last_run = {
+          rule_id: Number(ar.rule_id),
+          rule_name: ar.rule_name != null ? String(ar.rule_name) : "",
+          rule_code: ar.rule_code != null ? String(ar.rule_code) : "",
+          trigger_event: ar.trigger_event != null ? String(ar.trigger_event) : "",
+          completed_at: ar.completed_at != null ? String(ar.completed_at) : null,
+        };
+      }
+    } catch {
+      // automation tables optional in some environments
+    }
+
     let ticketRatingRows: Array<{
       rating_value: number;
       feedback_text: string | null;
@@ -595,6 +630,7 @@ export async function GET(
           : null,
       satisfaction_collected_at: row.satisfaction_collected_at != null ? String(row.satisfaction_collected_at) : null,
       ticket_ratings: ticketRatingRows,
+      automation_last_run,
     };
 
     return NextResponse.json({
@@ -661,9 +697,13 @@ export async function PATCH(
     }
 
     const existingRow0 = existingResult[0] as {
+      status?: unknown;
       assigned_to_agent_id?: unknown;
       group_id?: unknown;
     };
+    const existingStatusUpper = String(existingRow0.status ?? "OPEN")
+      .toUpperCase()
+      .replace(/-/g, "_");
 
     if (body.autoAssignRoundRobin === true) {
       if (body.currentAssigneeUserId !== undefined) {
@@ -700,7 +740,11 @@ export async function PATCH(
     const updateValues: unknown[] = [];
 
     if (body.status !== undefined) {
-      const statusValue = String(body.status).toUpperCase();
+      const statusValue = String(body.status).toUpperCase().replace(/-/g, "_");
+      const terminalPrev = ["RESOLVED", "CLOSED"].includes(existingStatusUpper);
+      if (terminalPrev && ["OPEN", "REOPENED"].includes(statusValue)) {
+        updateFields.push(`reopen_count = COALESCE(reopen_count, 0) + 1`);
+      }
       updateFields.push(`status = $${updateValues.length + 1}`);
       updateValues.push(statusValue);
     }
@@ -1051,6 +1095,48 @@ export async function PATCH(
         actor_email: actorEmail,
         actor_type: "AGENT",
       });
+    }
+
+    try {
+      const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
+      const { runTicketAutomation } = await import("@/lib/tickets/ticket-automation/engine");
+      await processPendingAutomationJobs(sqlClient, {
+        limit: 15,
+        workerId: `api-patch-ticket-${ticketId}`,
+      });
+      const newStatusForAutomation = String(updatedRecord?.status ?? "")
+        .toUpperCase()
+        .replace(/-/g, "_");
+      const terminalPriorAutomationReopen = new Set([
+        "RESOLVED",
+        "CLOSED",
+        "PROVISIONALLY_RESOLVED",
+        "REJECTED",
+        "CANCELLED",
+      ]);
+      const activeStatusAutomationReopenTargets = new Set([
+        "OPEN",
+        "REOPENED",
+        "IN_PROGRESS",
+        "PENDING",
+        "WAITING_FOR_USER",
+        "WAITING_FOR_MERCHANT",
+        "WAITING_FOR_RIDER",
+        "ESCALATED",
+      ]);
+      const fromTerminalForReopen = terminalPriorAutomationReopen.has(existingStatusUpper);
+      const isReopenAutomation =
+        !!updatedRecord &&
+        body.status !== undefined &&
+        fromTerminalForReopen &&
+        activeStatusAutomationReopenTargets.has(newStatusForAutomation);
+      const autoWorker = `api-patch-ticket-${ticketId}`;
+      if (isReopenAutomation) {
+        await runTicketAutomation(sqlClient, "ticket_reopened", ticketId, { workerLabel: autoWorker });
+      }
+      await runTicketAutomation(sqlClient, "ticket_updated", ticketId, { workerLabel: autoWorker });
+    } catch (autoErr) {
+      console.error("[PATCH /api/tickets/[id]] workflow automation:", autoErr);
     }
 
     return NextResponse.json({

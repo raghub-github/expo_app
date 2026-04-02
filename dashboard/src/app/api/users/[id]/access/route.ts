@@ -6,12 +6,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getUserDashboardAccess, getUserAccessPoints } from "@/lib/permissions/engine";
+import { getUserDashboardAccess } from "@/lib/permissions/engine";
 import { getSystemUserByEmail, getSystemUserById } from "@/lib/db/operations/users";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccess, dashboardAccessPoints, systemUsers } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { logActionByAuth } from "@/lib/audit/logger";
 
 export const runtime = 'nodejs';
@@ -60,13 +60,16 @@ export async function GET(
 
     // Get dashboard access
     const dashboards = await getUserDashboardAccess(userId);
-    
-    // Get access points for each dashboard
-    const allAccessPoints = [];
-    for (const dashboard of dashboards) {
-      const accessPoints = await getUserAccessPoints(userId, dashboard.dashboardType as any);
-      allAccessPoints.push(...accessPoints);
-    }
+
+    // Fetch active access points directly to avoid missing rows due to dashboard type variance.
+    const db = getDb();
+    const allAccessPoints = await db
+      .select()
+      .from(dashboardAccessPoints)
+      .where(and(eq(dashboardAccessPoints.systemUserId, userId), eq(dashboardAccessPoints.isActive, true)));
+
+    const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
+    const allAccessPointDefs = Object.values(DASHBOARD_DEFINITIONS).flatMap((d) => d.accessPoints);
 
     return NextResponse.json({
       success: true,
@@ -81,16 +84,31 @@ export async function GET(
           grantedByName: d.grantedByName,
           grantedAt: d.grantedAt,
         })),
-        accessPoints: allAccessPoints.map(ap => ({
-          id: ap.id,
-          dashboardType: ap.dashboardType,
-          accessPointGroup: ap.accessPointGroup,
-          accessPointName: ap.accessPointName,
-          accessPointDescription: ap.accessPointDescription,
-          allowedActions: ap.allowedActions,
-          context: ap.context,
-          isActive: ap.isActive,
-        })),
+        accessPoints: allAccessPoints.map((ap) => {
+          const dashboardType = String(ap.dashboardType);
+          const accessPointGroup = String(ap.accessPointGroup);
+          const dashboardScopedDef = (DASHBOARD_DEFINITIONS as any)?.[dashboardType]?.accessPoints?.find(
+            (p: any) => p.group === accessPointGroup
+          );
+          const fallbackDef = allAccessPointDefs.find((p: any) => p.group === accessPointGroup);
+          const def = dashboardScopedDef ?? fallbackDef;
+
+          let allowedActions = Array.isArray(ap.allowedActions) ? (ap.allowedActions as string[]) : [];
+          if (allowedActions.length === 0 && def && Array.isArray(def.allowedActions)) {
+            allowedActions = def.allowedActions;
+          }
+
+          return {
+            id: ap.id,
+            dashboardType,
+            accessPointGroup,
+            accessPointName: ap.accessPointName,
+            accessPointDescription: ap.accessPointDescription ?? undefined,
+            allowedActions,
+            context: (ap.context as Record<string, any>) ?? undefined,
+            isActive: ap.isActive === true,
+          };
+        }),
       },
     });
   } catch (error) {
@@ -261,6 +279,7 @@ export async function PUT(
 
     // Use definitions to populate label/description/actions when possible
     const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
+    const allAccessPointDefs = Object.values(DASHBOARD_DEFINITIONS).flatMap((d) => d.accessPoints);
 
     for (const p of accessPointsData) {
       const dashboardType = String(p.dashboardType);
@@ -270,13 +289,27 @@ export async function PUT(
       let accessPointDescription = "";
       let allowedActions: string[] = [];
 
-      const def = (DASHBOARD_DEFINITIONS as any)?.[dashboardType]?.accessPoints?.find(
+      const dashboardScopedDef = (DASHBOARD_DEFINITIONS as any)?.[dashboardType]?.accessPoints?.find(
         (ap: any) => ap.group === accessPointGroup
       );
+      const fallbackDef = allAccessPointDefs.find((ap: any) => ap.group === accessPointGroup);
+      const def = dashboardScopedDef ?? fallbackDef;
       if (def) {
         accessPointName = def.label;
         accessPointDescription = def.description;
-        allowedActions = def.allowedActions;
+        allowedActions = Array.isArray(def.allowedActions) ? def.allowedActions : [];
+      }
+      if (allowedActions.length === 0 && Array.isArray((p as any).allowedActions)) {
+        allowedActions = (p as any).allowedActions;
+      }
+      const groupUpper = accessPointGroup.trim().toUpperCase();
+      if (allowedActions.length === 0 && groupUpper === "TICKET_AGENT_STATUS_TOGGLE") {
+        allowedActions = ["UPDATE"];
+      } else if (
+        allowedActions.length === 0 &&
+        (groupUpper === "TICKET_QUEUE_SUPERVISOR" || groupUpper === "TICKET_QUEUE_MANAGER")
+      ) {
+        allowedActions = ["VIEW"];
       }
 
       const existing = existingPoints.find(
@@ -284,12 +317,15 @@ export async function PUT(
       );
 
       if (existing) {
+        const existingAllowedActions = Array.isArray(existing.allowedActions)
+          ? (existing.allowedActions as string[])
+          : [];
         await db
           .update(dashboardAccessPoints)
           .set({
             accessPointName,
             accessPointDescription,
-            allowedActions,
+            allowedActions: allowedActions.length > 0 ? allowedActions : existingAllowedActions,
             context: p.context ?? existing.context,
             isActive: true,
             revokedAt: null,
@@ -313,6 +349,24 @@ export async function PUT(
         });
       }
     }
+
+    const persistedPoints = await db
+      .select({
+        dashboardType: dashboardAccessPoints.dashboardType,
+        accessPointGroup: dashboardAccessPoints.accessPointGroup,
+        allowedActions: dashboardAccessPoints.allowedActions,
+      })
+      .from(dashboardAccessPoints)
+      .where(and(eq(dashboardAccessPoints.systemUserId, userId), eq(dashboardAccessPoints.isActive, true)));
+    console.info("[PUT /api/users/[id]/access] persisted summary", {
+      userId,
+      activeAccessPointsCount: persistedPoints.length,
+      hasTicketAgentStatusToggle: persistedPoints.some(
+        (p) =>
+          String(p.dashboardType).trim().toUpperCase() === "TICKET" &&
+          String(p.accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE"
+      ),
+    });
 
     await logActionByAuth(authUser.id, authUser.email ?? "", "SYSTEM", "UPDATE", {
       resourceType: "USER_ACCESS",

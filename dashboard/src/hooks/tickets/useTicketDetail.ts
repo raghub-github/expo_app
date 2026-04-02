@@ -104,6 +104,14 @@ export interface TicketDetail {
     ratedByType: string;
     createdAt: string;
   }>;
+  /** Most recent completed workflow automation run for this ticket (routing / assignment). */
+  automationLastRun: {
+    ruleId: number;
+    ruleName: string;
+    ruleCode: string;
+    triggerEvent: string;
+    completedAt: string | null;
+  } | null;
 }
 
 export interface TicketMessage {
@@ -320,6 +328,19 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
           }))
           .filter((tr) => Number.isFinite(tr.ratingValue) && tr.ratingValue >= 1 && tr.ratingValue <= 5)
       : [],
+    automationLastRun: (() => {
+      const a = raw.automation_last_run as Record<string, unknown> | null | undefined;
+      if (!a || a.rule_id == null) return null;
+      const rid = Number(a.rule_id);
+      if (!Number.isFinite(rid)) return null;
+      return {
+        ruleId: rid,
+        ruleName: a.rule_name != null ? String(a.rule_name) : "",
+        ruleCode: a.rule_code != null ? String(a.rule_code) : "",
+        triggerEvent: a.trigger_event != null ? String(a.trigger_event) : "",
+        completedAt: a.completed_at != null ? String(a.completed_at) : null,
+      };
+    })(),
     messages: ms.map((m) => ({
       id: m.id as number,
       ticketId: (m.ticket_id ?? m.ticketId) as number,

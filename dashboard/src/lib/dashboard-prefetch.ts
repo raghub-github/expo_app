@@ -10,6 +10,7 @@ import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import { fetchFoodOrders, type OrdersFilters } from "@/app/dashboard/orders/food/FoodOrdersClient";
 import { fetchTicketsReferenceData } from "@/hooks/tickets/useTicketsReferenceDataQuery";
+import { fetchTicketsAgents } from "@/hooks/tickets/useTicketsAgentsQuery";
 
 const defaultTicketFilters: TicketFilters = {
   ticketSection: "all",
@@ -43,6 +44,18 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
   const ticketDetailMatch = /^\/dashboard\/tickets\/(\d+)$/.exec(path);
   if (ticketDetailMatch) {
     prefetchTicketDetail(queryClient, ticketDetailMatch[1]);
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.tickets.referenceData(),
+      queryFn: fetchTicketsReferenceData,
+    });
+    return;
+  }
+
+  if (path.startsWith("/dashboard/tickets/queue")) {
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.tickets.agents(false, false),
+      queryFn: () => fetchTicketsAgents(false, false),
+    });
     void queryClient.prefetchQuery({
       queryKey: queryKeys.tickets.referenceData(),
       queryFn: fetchTicketsReferenceData,

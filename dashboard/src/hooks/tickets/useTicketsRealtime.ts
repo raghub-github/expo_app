@@ -9,11 +9,25 @@ import { queryKeys } from "@/lib/queryKeys";
 const POLL_INTERVAL_MS = 18_000;
 const REALTIME_DEBOUNCE_MS = 800;
 
+async function drainTicketAutomationJobs(): Promise<void> {
+  try {
+    await fetch("/api/tickets/automation/process-jobs", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 25 }),
+    });
+  } catch {
+    // non-fatal; GET /api/tickets also drains jobs
+  }
+}
+
 export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
 
 /**
- * “N new tickets” badge: count tickets that match the **current list filters** and were
- * created after the user’s last acknowledged time (load list, Apply filters, or click refresh).
+ * “N new / updated” badge: count tickets that match the **current list filters** and had
+ * **created_at or updated_at** after the user’s last acknowledged time (load list, filter change,
+ * or click refresh). Includes auto-assignments and other updates, not only brand-new rows.
  *
  * Not a global DB event counter — avoids dummy totals matching full ticket count.
  */
@@ -39,7 +53,7 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
         ...pollBase,
         limit: 1,
         offset: 0,
-        createdAfter: ackTimeIsoRef.current,
+        activityAfter: ackTimeIsoRef.current,
       });
       const n = Number(res.total ?? 0);
       if (!Number.isFinite(n) || n <= 0) return;
@@ -80,8 +94,11 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
           if (debounce) window.clearTimeout(debounce);
           debounce = window.setTimeout(() => {
             debounce = null;
-            void runPoll();
-            void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
+            void (async () => {
+              await drainTicketAutomationJobs();
+              void runPoll();
+              void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
+            })();
           }, REALTIME_DEBOUNCE_MS);
         }
       )

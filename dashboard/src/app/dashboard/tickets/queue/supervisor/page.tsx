@@ -1,6 +1,10 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { checkDashboardAccess, requireSuperAdminAccess } from "@/lib/permissions/page-protection";
+import {
+  checkDashboardAccess,
+  checkDashboardAccessPointAction,
+  requireSuperAdminAccess,
+} from "@/lib/permissions/page-protection";
 import { QueueSupervisorClient } from "@/components/tickets/queue/QueueSupervisorClient";
 import { normalizeQueueSupervisorSection } from "@/lib/tickets/queue-supervisor-sections";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -15,6 +19,22 @@ export default async function QueueSupervisorPage({
   const hasTicketAccess = await checkDashboardAccess("TICKET");
   if (!hasTicketAccess) {
     await requireSuperAdminAccess();
+  }
+  const hasQueueEntryAccess = await checkDashboardAccessPointAction(
+    "TICKET",
+    "TICKET_AGENT_STATUS_TOGGLE",
+    "UPDATE"
+  );
+  if (!hasQueueEntryAccess) {
+    redirect("/dashboard/tickets");
+  }
+  const hasSupervisorAccess = await checkDashboardAccessPointAction(
+    "TICKET",
+    "TICKET_QUEUE_SUPERVISOR",
+    "VIEW"
+  );
+  if (!hasSupervisorAccess) {
+    redirect("/dashboard/tickets/queue/home");
   }
   const sp = await searchParams;
   const section = normalizeQueueSupervisorSection(sp.section);

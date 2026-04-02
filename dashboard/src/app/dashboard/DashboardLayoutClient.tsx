@@ -207,6 +207,7 @@ function DashboardLayoutClient({
 
     const cleanPrev = (prevPath ?? "").split("?")[0].split("#")[0];
     const cleanNext = (pathname ?? "").split("?")[0].split("#")[0];
+    // Main tickets list, queue workspace, CSAT, etc.: keep list/detail caches when moving within this area.
     if (cleanPrev.startsWith("/dashboard/tickets") && cleanNext.startsWith("/dashboard/tickets")) {
       return;
     }
@@ -657,6 +658,13 @@ function DashboardLayoutContent({
                 cleanPathname === cleanTarget ||
                 (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
               if (isAlreadyActive) return;
+              // Tickets hub + queue share one app shell; let client routes load their own loaders instead of masking the whole main column.
+              if (
+                cleanPathname.startsWith("/dashboard/tickets") &&
+                cleanTarget.startsWith("/dashboard/tickets")
+              ) {
+                return;
+              }
               setPendingNavHref(cleanTarget);
             }}
           />

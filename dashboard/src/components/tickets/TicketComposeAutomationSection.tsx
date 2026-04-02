@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useLayoutEffect } from "react";
+import { useState, useLayoutEffect, useMemo } from "react";
 import { Zap } from "lucide-react";
 import {
   useTicketComposeAutomationQuery,
@@ -26,13 +26,29 @@ function formatLastUpdatedBy(data: {
   return null;
 }
 
+function normEmailField(s: string): string {
+  return (s ?? "").trim();
+}
+
 export function TicketComposeAutomationSection({
   variant = "page",
   /** Hide the plain variant title block when the parent page supplies its own heading (e.g. queue Manager). */
   embedded = false,
+  saveButtonLabel = "Save automation",
+  saveSuccessMessage = "Global automation saved for all ticket users",
+  resetSuccessMessage = "Global automation cleared (saved)",
+  /** Match queue settings page primary actions (slate) vs default violet. */
+  actionButtonTone = "violet" as "violet" | "slate",
+  /** When true, primary button stays disabled until draft differs from loaded server data. */
+  requireDirtyToSave = false,
 }: {
   variant?: "page" | "sidebar" | "plain";
   embedded?: boolean;
+  saveButtonLabel?: string;
+  saveSuccessMessage?: string;
+  resetSuccessMessage?: string;
+  actionButtonTone?: "violet" | "slate";
+  requireDirtyToSave?: boolean;
 }) {
   const { toast } = useToast();
   const { isSuperAdmin } = usePermission();
@@ -57,9 +73,26 @@ export function TicketComposeAutomationSection({
 
   const canManage = hydrated && (isSuperAdmin || data?.canManage === true);
 
+  const isDraftDirty = useMemo(() => {
+    if (!data) return false;
+    return (
+      normEmailField(draft.defaultTo) !== normEmailField(data.defaultTo) ||
+      normEmailField(draft.defaultCc) !== normEmailField(data.defaultCc) ||
+      normEmailField(draft.defaultBcc) !== normEmailField(data.defaultBcc)
+    );
+  }, [data, draft.defaultTo, draft.defaultCc, draft.defaultBcc]);
+
+  const hasAnythingToClear = useMemo(() => {
+    const d = normEmailField(draft.defaultTo) || normEmailField(draft.defaultCc) || normEmailField(draft.defaultBcc);
+    const s =
+      data &&
+      (normEmailField(data.defaultTo) || normEmailField(data.defaultCc) || normEmailField(data.defaultBcc));
+    return Boolean(d || s);
+  }, [data, draft.defaultTo, draft.defaultCc, draft.defaultBcc]);
+
   const save = () => {
     saveMutation.mutate(draft, {
-      onSuccess: () => toast("Global automation saved for all ticket users"),
+      onSuccess: () => toast(saveSuccessMessage),
       onError: (e: Error) => toast(e.message || "Save failed", "error"),
     });
   };
@@ -68,7 +101,7 @@ export function TicketComposeAutomationSection({
     const next = { defaultTo: "", defaultCc: "", defaultBcc: "" };
     setDraft(next);
     saveMutation.mutate(next, {
-      onSuccess: () => toast("Global automation cleared (saved)"),
+      onSuccess: () => toast(resetSuccessMessage),
       onError: (e: Error) => toast(e.message || "Save failed", "error"),
     });
   };
@@ -95,7 +128,9 @@ export function TicketComposeAutomationSection({
     <section
       className={
         isPlain
-          ? "py-4"
+          ? embedded
+            ? "pt-4"
+            : "py-4"
           : `rounded-xl border border-gray-200 bg-white shadow-sm ${isSidebar ? "p-3" : "p-5"}`
       }
     >
@@ -219,15 +254,25 @@ export function TicketComposeAutomationSection({
         <button
           type="button"
           onClick={save}
-          disabled={saveMutation.isPending || !canManage}
-          className={`cursor-pointer rounded-lg bg-violet-600 font-medium text-white hover:bg-violet-700 transition-colors disabled:opacity-60 ${isSidebar ? "min-w-0 flex-1 px-2 py-1.5 text-xs" : isPlain ? "px-3 py-2 text-xs sm:text-sm" : "px-4 py-2 text-sm"}`}
+          disabled={
+            saveMutation.isPending ||
+            !canManage ||
+            (requireDirtyToSave && !isDraftDirty)
+          }
+          className={
+            actionButtonTone === "slate"
+              ? `rounded-lg bg-slate-700 font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 ${
+                  isSidebar ? "min-w-0 flex-1 px-2 py-1.5 text-xs" : "px-4 py-2 text-sm"
+                }`
+              : `cursor-pointer rounded-lg bg-violet-600 font-medium text-white hover:bg-violet-700 transition-colors disabled:opacity-60 ${isSidebar ? "min-w-0 flex-1 px-2 py-1.5 text-xs" : isPlain ? "px-3 py-2 text-xs sm:text-sm" : "px-4 py-2 text-sm"}`
+          }
         >
-          {saveMutation.isPending ? "Saving…" : "Save automation"}
+          {saveMutation.isPending ? (actionButtonTone === "slate" ? "Updating…" : "Saving…") : saveButtonLabel}
         </button>
         <button
           type="button"
           onClick={reset}
-          disabled={saveMutation.isPending || !canManage}
+          disabled={saveMutation.isPending || !canManage || !hasAnythingToClear}
           className={`cursor-pointer rounded-lg border font-medium transition-colors disabled:opacity-60 ${
             isSidebar
               ? "min-w-0 flex-1 border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 hover:bg-gray-50"

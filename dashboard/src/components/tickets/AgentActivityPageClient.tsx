@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Calendar } from "lucide-react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { AgentActivityAgentSearch } from "@/components/tickets/AgentActivityAgentSearch";
 
 type Period = "today" | "week" | "month" | "custom";
 
@@ -55,6 +56,13 @@ type AgentActivityApiResponse = {
 
 const AGENT_ACTIVITY_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+function formatLocalDateInput(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export type AgentActivityEmbed = "ticketSettingsActivity";
 
 function StatMetricCard({
@@ -75,7 +83,12 @@ function StatMetricCard({
       }`}
     >
       <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
-      <p className={`mt-2 font-bold tabular-nums text-gray-900 ${compact ? "text-2xl" : "text-3xl"}`}>{value}</p>
+      <p
+        className={`mt-2 font-bold tabular-nums text-gray-900 ${compact ? "text-2xl" : "text-3xl"}`}
+        suppressHydrationWarning
+      >
+        {value}
+      </p>
       {sub ? <p className="mt-1 text-xs text-gray-500">{sub}</p> : null}
     </div>
   );
@@ -111,7 +124,7 @@ function WidgetShell({
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </div>
-      <div className={`min-h-0 flex-1 ${compact ? "px-4 py-3" : "px-5 py-4"}`}>{children}</div>
+      <div className={`${compact ? "px-4 py-3" : "px-5 py-4"}`}>{children}</div>
     </div>
   );
 }
@@ -128,6 +141,7 @@ function MetricTableRow({ label, value, valueClassName }: { label: string; value
 }
 
 export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed }) {
+  const queryClient = useQueryClient();
   const router = useRouter();
   const searchParams = useSearchParams();
   const sectionFromUrl = searchParams.get("section") === "automation" ? "automation" : "activity";
@@ -136,39 +150,64 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
   const [period, setPeriod] = useState<Period>("today");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  /** Avoid SSR vs client mismatch for blocks that depend on client-only query/snapshot data. */
+  const [activityUiMounted, setActivityUiMounted] = useState(false);
+  useEffect(() => {
+    setActivityUiMounted(true);
+  }, []);
+
+  const selectedAgentUserIdRaw = searchParams.get("agentUserId");
+  const parsedSelectedAgentUserId = selectedAgentUserIdRaw ? Number(selectedAgentUserIdRaw) : NaN;
+  const selectedAgentUserId =
+    Number.isFinite(parsedSelectedAgentUserId) && parsedSelectedAgentUserId > 0 ? parsedSelectedAgentUserId : null;
+  const selectedAgentSuffix = selectedAgentUserId != null ? String(selectedAgentUserId) : "all";
 
   const activitySnapshotKey = useMemo(() => {
     const suffix = period === "custom" ? `${startDate}|${endDate}` : period;
-    return `dashboard_snapshot:agentActivity:v1:${suffix}`;
-  }, [period, startDate, endDate]);
+    return `dashboard_snapshot:agentActivity:v1:${selectedAgentSuffix}:${suffix}`;
+  }, [period, startDate, endDate, selectedAgentSuffix]);
 
-  const initialActivitySnapshot = useMemo(() => {
-    const raw = loadClientSnapshot<AgentActivityApiResponse>(activitySnapshotKey, AGENT_ACTIVITY_SNAPSHOT_TTL_MS);
-    if (!raw?.success || !raw.data?.summary) return undefined;
-    return raw;
-  }, [activitySnapshotKey]);
+  const activityQueryKey = useMemo(
+    () => ["agentActivity", period, startDate, endDate, selectedAgentSuffix] as const,
+    [period, startDate, endDate, selectedAgentSuffix]
+  );
+
+  const customRangeReady = period !== "custom" || (Boolean(startDate) && Boolean(endDate));
+  const activityFetchEnabled = activityQueryEnabled && customRangeReady;
 
   const { data, error, isFetching, refetch } = useQuery<AgentActivityApiResponse>({
-    queryKey: ["agentActivity", period, startDate, endDate],
-    enabled: activityQueryEnabled,
+    queryKey: activityQueryKey,
+    enabled: activityFetchEnabled,
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set("period", period);
+      if (selectedAgentUserId != null && Number.isFinite(selectedAgentUserId) && selectedAgentUserId > 0) {
+        params.set("agentUserId", String(selectedAgentUserId));
+      }
       if (period === "custom" && startDate && endDate) {
         params.set("startDate", startDate);
         params.set("endDate", endDate);
       }
-      const res = await fetch(`/api/agents/activity?${params.toString()}`);
+      const res = await fetch(`/api/agents/activity?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch activity");
       return res.json();
     },
     staleTime: 60_000,
     gcTime: 24 * 60 * 60_000,
-    initialData: initialActivitySnapshot,
-    initialDataUpdatedAt: initialActivitySnapshot != null ? 0 : undefined,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: false,
   });
+
+  /** localStorage is unavailable on the server — never use snapshot as initialData or SSR and first paint diverge. */
+  useEffect(() => {
+    if (!activityUiMounted) return;
+    const snap = loadClientSnapshot<AgentActivityApiResponse>(activitySnapshotKey, AGENT_ACTIVITY_SNAPSHOT_TTL_MS);
+    if (!snap?.success || !snap.data?.summary) return;
+    const existing = queryClient.getQueryData<AgentActivityApiResponse>(activityQueryKey);
+    if (existing === undefined) {
+      queryClient.setQueryData(activityQueryKey, snap);
+    }
+  }, [activityUiMounted, activitySnapshotKey, activityQueryKey, queryClient]);
 
   useEffect(() => {
     if (!data?.success || !data.data) return;
@@ -181,6 +220,17 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
       router.replace("/dashboard/tickets/queue/manager");
     }
   }, [embed, router, sectionFromUrl]);
+
+  const applyPeriod = (p: Period) => {
+    setPeriod(p);
+    if (p === "custom") {
+      const end = new Date();
+      const start = new Date();
+      start.setMonth(start.getMonth() - 1);
+      setEndDate(formatLocalDateInput(end));
+      setStartDate(formatLocalDateInput(start));
+    }
+  };
 
   const formatMinutes = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
@@ -271,7 +321,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 <button
                   key={p}
                   type="button"
-                  onClick={() => setPeriod(p)}
+                  onClick={() => applyPeriod(p)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                     period === p
                       ? "bg-blue-600 text-white shadow-sm"
@@ -283,22 +333,34 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               ))}
             </div>
             {period === "custom" && (
-              <div className="flex flex-wrap items-center gap-2 border-l border-gray-200 pl-3">
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
-                />
-                <span className="text-xs text-gray-400">to</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
-                />
+              <div className="flex flex-col gap-1 border-l border-gray-200 pl-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="date"
+                    value={startDate}
+                    max={endDate || undefined}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
+                  />
+                  <span className="text-xs text-gray-400">to</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    min={startDate || undefined}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
+                  />
+                </div>
+                {!customRangeReady ? (
+                  <p className="text-[11px] text-amber-800">Select both dates to load metrics.</p>
+                ) : null}
               </div>
             )}
+            {!isEmbeddedActivity ? (
+              <div className="ml-auto w-full sm:w-[320px]">
+                <AgentActivityAgentSearch />
+              </div>
+            ) : null}
           </div>
 
           {error && !data ? (
@@ -317,10 +379,12 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               </button>
             </div>
           ) : null}
-          {isFetching ? (
-            <p className={`text-xs text-gray-400 ${compact ? "px-0.5" : ""}`}>Updating metrics…</p>
-          ) : null}
 
+          <div
+            className={`transition-opacity duration-200 ease-out ${
+              isFetching && data?.success ? "opacity-[0.88]" : "opacity-100"
+            }`}
+          >
           {/* Row 1 — four KPI cards */}
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <StatMetricCard
@@ -425,7 +489,10 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 </WidgetShell>
               </div>
 
-              {data?.data?.allAgents && data.data.allAgents.length > 0 && (
+              {activityUiMounted &&
+                selectedAgentUserId == null &&
+                data?.data?.allAgents &&
+                data.data.allAgents.length > 0 && (
                 <section
                   className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
                     compact ? "p-4" : "p-5"
@@ -484,7 +551,9 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 </section>
               )}
 
-              {data?.data?.dailyBreakdown && data.data.dailyBreakdown.length > 0 && (
+              {selectedAgentUserId != null &&
+                data?.data?.dailyBreakdown &&
+                data.data.dailyBreakdown.length > 0 && (
                 <section
                   id="agent-activity-daily"
                   className={`scroll-mt-4 rounded-lg border border-gray-200 bg-white shadow-sm ${
@@ -538,7 +607,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 </section>
               )}
 
-              {dailyTransitionsRows && dailyTransitionsRows.length > 0 ? (
+              {selectedAgentUserId != null && dailyTransitionsRows && dailyTransitionsRows.length > 0 ? (
                 <section
                   className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
                     compact ? "p-4" : "p-5"
@@ -595,7 +664,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 </section>
               ) : null}
 
-              {statusSegmentsRows && statusSegmentsRows.length > 0 ? (
+              {selectedAgentUserId != null && statusSegmentsRows && statusSegmentsRows.length > 0 ? (
                 <section
                   className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
                     compact ? "p-4" : "p-5"
@@ -661,6 +730,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                   </div>
                 </section>
               ) : null}
+          </div>
         </>
     </div>
   );

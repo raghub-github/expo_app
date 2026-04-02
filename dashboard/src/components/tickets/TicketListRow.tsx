@@ -130,6 +130,14 @@ export const TicketListRow = React.memo(function TicketListRow({
     prefetchTicketDetail(queryClient, ticket.id);
   }, [queryClient, ticket.id]);
 
+  useEffect(() => {
+    setGroupAgentOpen(false);
+    setGroupAgentTab("group");
+    setSearchGroup("");
+    setSearchAgent("");
+    setGroupAgentMenuPlacement(null);
+  }, [ticket.id]);
+
   useLayoutEffect(() => {
     if (!groupAgentOpen) {
       setGroupAgentMenuPlacement(null);
@@ -466,7 +474,9 @@ export const TicketListRow = React.memo(function TicketListRow({
         <Link
           href={detailLink}
           scroll={false}
-          className="block w-full min-w-0 text-left hover:underline underline-offset-2"
+          // Only the subject + ticket id text should be clickable.
+          // Avoid `w-full` here because it makes the whole row width clickable (including blank space).
+          className="inline-flex w-fit max-w-full min-w-0 text-left hover:underline underline-offset-2"
           title={`${ticket.subject} · #${ticket.ticketNumber || ticket.id}`}
         >
           <span className="font-medium text-gray-900 text-xs [overflow-wrap:anywhere]">{ticket.subject}</span>
@@ -514,6 +524,8 @@ export const TicketListRow = React.memo(function TicketListRow({
               value={ticket.priority}
               options={priorityOptions}
               onChange={(v) => onUpdatePriority(ticket.id, v)}
+              compact
+              resetMenusWhenChanged={ticket.id}
               leadingIcon={
                 <span
                   className={`block w-1.5 h-1.5 rounded-full shrink-0 ${priorityDotColors[ticket.priority] ?? "bg-gray-400"}`}
@@ -527,6 +539,8 @@ export const TicketListRow = React.memo(function TicketListRow({
               value={ticket.status}
               options={statusOptions}
               onChange={(v) => onUpdateStatus(ticket.id, v)}
+              compact
+              resetMenusWhenChanged={ticket.id}
               leadingIcon={
                 <span
                   className={`block w-1.5 h-1.5 rounded-full shrink-0 ${

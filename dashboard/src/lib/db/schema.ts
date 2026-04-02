@@ -767,9 +767,9 @@ export const dashboardAccessPoints = pgTable(
     isActiveIdx: index("dashboard_access_points_is_active_idx").on(
       table.isActive
     ),
-    uniqueUserDashboardGroup: uniqueIndex(
-      "dashboard_access_points_user_dashboard_group_unique"
-    ).on(table.systemUserId, table.dashboardType, table.accessPointGroup),
+    uniqueUserDashboardGroupOrderType: uniqueIndex(
+      "dashboard_access_points_unique_idx"
+    ).on(table.systemUserId, table.dashboardType, table.accessPointGroup, table.orderType),
   })
 );
 
@@ -903,6 +903,9 @@ export type AccessPointGroup =
   | "TICKET_ACTIONS_FOOD"
   | "TICKET_ACTIONS_PARCEL"
   | "TICKET_ACTIONS_PERSON_RIDE"
+  | "TICKET_AGENT_STATUS_TOGGLE"
+  | "TICKET_QUEUE_SUPERVISOR"
+  | "TICKET_QUEUE_MANAGER"
   | "OFFER_RIDER"
   | "OFFER_CUSTOMER"
   | "OFFER_MERCHANT"

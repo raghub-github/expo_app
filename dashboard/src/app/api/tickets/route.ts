@@ -10,8 +10,6 @@ import { getSql } from "@/lib/db/client";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
-import { getRedisClient } from "@/lib/redis";
-import { getCached, setCached } from "@/lib/server-cache";
 import { QUEUE_HOME_ACTIVE_STATUS_DB } from "@/lib/tickets/queue-ticket-filters";
 
 export const runtime = "nodejs";
@@ -145,6 +143,8 @@ export async function GET(request: NextRequest) {
     const updatedAfterRaw = (searchParams.get("updatedAfter") || "").trim();
     /** ISO-8601 timestamp: only tickets with created_at strictly after this (same filter set). */
     const createdAfterRaw = (searchParams.get("createdAfter") || "").trim();
+    /** ISO-8601: rows with created_at OR updated_at strictly after this (badge / activity poll; mutually exclusive with createdAfter/updatedAfter below). */
+    const activityAfterRaw = (searchParams.get("activityAfter") || "").trim();
     const orderIdParam = searchParams.get("orderId");
     const orderIdFilter = orderIdParam != null && orderIdParam !== "" ? parseInt(orderIdParam, 10) : null;
     const sortByParam = (searchParams.get("sortBy") || "created_at").toLowerCase();
@@ -161,6 +161,16 @@ export async function GET(request: NextRequest) {
         : `ut.${sortBy} ${sortOrder}, ut.updated_at DESC, ut.id DESC`;
 
     const sqlClient = getSql();
+    /** Drain ticket_automation_jobs (e.g. ticket_created from DB trigger) before listing so assignments are visible immediately. */
+    try {
+      const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
+      await processPendingAutomationJobs(sqlClient, {
+        limit: 25,
+        workerId: "api-get-tickets",
+      });
+    } catch (jobErr) {
+      console.error("[GET /api/tickets] processPendingAutomationJobs:", jobErr);
+    }
     /** Filter facets; combined with AND (see filtersClause). */
     const whereConditions: unknown[] = [];
     /** Always-AND constraints (used for realtime cursors like createdAfter/updatedAfter). */
@@ -380,11 +390,17 @@ export async function GET(request: NextRequest) {
         )`
       );
     }
-    if (updatedAfterRaw) {
-      whereConstraints.push(sqlClient`ut.updated_at > ${updatedAfterRaw}::timestamptz`);
-    }
-    if (createdAfterRaw) {
-      whereConstraints.push(sqlClient`ut.created_at > ${createdAfterRaw}::timestamptz`);
+    if (activityAfterRaw) {
+      whereConstraints.push(
+        sqlClient`(ut.created_at > ${activityAfterRaw}::timestamptz OR ut.updated_at > ${activityAfterRaw}::timestamptz)`
+      );
+    } else {
+      if (updatedAfterRaw) {
+        whereConstraints.push(sqlClient`ut.updated_at > ${updatedAfterRaw}::timestamptz`);
+      }
+      if (createdAfterRaw) {
+        whereConstraints.push(sqlClient`ut.created_at > ${createdAfterRaw}::timestamptz`);
+      }
     }
 
     const groupIdsParam = searchParams.get("groupIds");
@@ -454,43 +470,6 @@ export async function GET(request: NextRequest) {
 
     let countResult: { count: number }[];
     let ticketRows: Record<string, unknown>[];
-
-    const redis = getRedisClient();
-    const cacheKey =
-      forExport || !systemUser ? null : `tickets:v22:${systemUser.id}:${request.nextUrl.searchParams.toString()}`;
-    const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
-
-    if (cacheKey) {
-      const cached = getCached<{ tickets: unknown[]; total: number; limit: number; offset: number }>(cacheKey);
-      if (cached) {
-        return NextResponse.json({
-          success: true,
-          data: cached,
-        });
-      }
-    }
-
-    if (redis && cacheKey) {
-      try {
-        const cached = await redis.get(cacheKey);
-        if (cached) {
-          const parsed = JSON.parse(cached) as {
-            tickets: unknown[];
-            total: number;
-            limit: number;
-            offset: number;
-          };
-          // Populate memory cache too for immediate follow-up navigations.
-          setCached(cacheKey, parsed, MEMORY_TTL_MS);
-          return NextResponse.json({
-            success: true,
-            data: parsed,
-          });
-        }
-      } catch {
-        // ignore cache read errors
-      }
-    }
 
     try {
       if (whereClause) {
@@ -1034,18 +1013,6 @@ export async function GET(request: NextRequest) {
     }
 
     const payload = { tickets, total: Number(total), limit, offset };
-
-    if (cacheKey) {
-      setCached(cacheKey, payload, MEMORY_TTL_MS);
-    }
-
-    if (redis && cacheKey) {
-      try {
-        await redis.set(cacheKey, JSON.stringify(payload), "EX", 30);
-      } catch {
-        // ignore cache write errors
-      }
-    }
 
     return NextResponse.json({
       success: true,
