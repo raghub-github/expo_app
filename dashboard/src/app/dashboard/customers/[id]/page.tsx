@@ -1,42 +1,411 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, User, Mail, Phone, Shield, Calendar, CheckCircle, XCircle, Wallet, AlertCircle } from "lucide-react";
+import { useState, useEffect, useRef, Suspense } from "react";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { AlertCircle, ChevronDown, ExternalLink } from "lucide-react";
+import {
+  resolveTrustTier,
+  TRUST_TIER_LABEL,
+  trustTierUserTypeClass,
+  type CustomerTrustTier,
+} from "@/lib/customers/trust-tier";
+import type { CustomerAddressRow } from "@/lib/db/operations/customers";
 
-interface Customer {
+interface CustomerDetail {
   id: number;
   customerId: string;
+  customerUuid?: string | null;
   fullName: string;
-  firstName?: string | null;
-  lastName?: string | null;
   email?: string | null;
+  emailVerified?: boolean | null;
   primaryMobile: string;
+  primaryMobileNormalized?: string | null;
+  primaryMobileCountryCode?: string | null;
+  mobileVerified?: boolean | null;
+  alternateMobile?: string | null;
+  whatsappNumber?: string | null;
+  workPhone?: string | null;
+  gender?: string | null;
+  dateOfBirth?: string | null;
+  profileImageUrl?: string | null;
+  bio?: string | null;
+  preferredLanguage?: string | null;
+  ageGroup?: string | null;
+  profileCompleted?: boolean | null;
+  referralCode?: string | null;
+  referredBy?: string | null;
+  referrerCustomerId?: number | null;
   accountStatus: string;
+  statusReason?: string | null;
   riskFlag?: string | null;
-  trustScore?: number | null;
-  walletBalance?: number | null;
-  createdAt: Date | string;
+  isGlobalActive?: boolean | null;
+  trustScore?: number | string | null;
+  fraudScore?: number | string | null;
+  trustTier?: string | null;
+  walletBalance?: number | string | null;
+  walletLockedAmount?: number | string | null;
+  isIdentityVerified?: boolean | null;
+  isEmailVerified?: boolean | null;
+  isMobileVerified?: boolean | null;
+  emailVerifiedAt?: Date | string | null;
+  smsPermission?: boolean | null;
+  locationPermission?: boolean | null;
+  contactsPermission?: boolean | null;
+  gmitraPlusActive?: boolean | null;
+  lastLoginAt?: Date | string | null;
   lastOrderAt?: Date | string | null;
+  lastActivityAt?: Date | string | null;
+  sessionsInvalidBefore?: Date | string | null;
+  deletedAt?: Date | string | null;
+  deletedBy?: number | null;
+  deletionReason?: string | null;
+  createdAt: Date | string;
+  updatedAt?: Date | string | null;
+  createdVia?: string | null;
+  updatedBy?: string | null;
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+  country?: string | null;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
+  facebookId?: string | null;
+  twitterId?: string | null;
+  twitterVerified?: boolean | null;
+  twitterFollowerCount?: number | null;
+  timeZone?: string | null;
+  jobTitle?: string | null;
+  uniqueExternalId?: string | null;
+  contactTags?: string[] | null;
+  referralInstallCount?: number;
+  addresses?: CustomerAddressRow[];
 }
 
-export default function CustomerDetailsPage() {
+/** Drop redundant "Current location: " prefix from saved label + address strings. */
+function stripCurrentLocationPrefix(s: string): string {
+  const t = s.replace(/^\s*current\s+location\s*:\s*/i, "").trim();
+  return t.length > 0 ? t : s;
+}
+
+function formatAddressDisplay(a: CustomerAddressRow): string {
+  const label = a.customLabel?.trim() || a.label?.trim() || "";
+  const line = [a.addressLine1, a.addressLine2].filter(Boolean).join(", ");
+  const cityPart = [a.city, a.state, a.postalCode].filter(Boolean).join(", ");
+  const joined = [line, cityPart].filter(Boolean).join(" · ");
+  let raw: string;
+  if (a.landmark?.trim()) {
+    const withLm = joined ? `${joined} (${a.landmark.trim()})` : a.landmark.trim();
+    if (a.addressAuto?.trim()) {
+      const base = `${a.addressAuto.trim()} · ${withLm}`;
+      raw = label ? `${label}: ${base}` : base;
+    } else {
+      raw = label ? `${label}: ${withLm}` : withLm;
+    }
+  } else if (a.addressAuto?.trim()) {
+    const base = a.addressAuto.trim();
+    raw = label ? `${label}: ${base}` : joined ? `${base} · ${joined}` : base;
+  } else if (label && joined) {
+    raw = `${label}: ${joined}`;
+  } else {
+    raw = joined || label || "—";
+  }
+  return stripCurrentLocationPrefix(raw);
+}
+
+function formatShortDateTime(d: Date | string | null | undefined): string {
+  if (!d) return "—";
+  const x = new Date(d);
+  const dd = String(x.getDate()).padStart(2, "0");
+  const mm = String(x.getMonth() + 1).padStart(2, "0");
+  const yy = String(x.getFullYear()).slice(-2);
+  let h = x.getHours();
+  const m = String(x.getMinutes()).padStart(2, "0");
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${dd}-${mm}-${yy} ${h}:${m} ${ampm}`;
+}
+
+function formatIsoDateTime(d: Date | string | null | undefined): string {
+  if (!d) return "—";
+  const x = new Date(d);
+  const y = x.getFullYear();
+  const mo = String(x.getMonth() + 1).padStart(2, "0");
+  const da = String(x.getDate()).padStart(2, "0");
+  const hh = String(x.getHours()).padStart(2, "0");
+  const mm = String(x.getMinutes()).padStart(2, "0");
+  const ss = String(x.getSeconds()).padStart(2, "0");
+  return `${y}-${mo}-${da} ${hh}:${mm}:${ss}`;
+}
+
+function formatDateOnly(d: string | null | undefined): string {
+  if (!d) return "—";
+  const s = String(d).trim();
+  if (s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return s || "—";
+}
+
+function formatCoord(n: number | string | null | undefined): string {
+  if (n === null || n === undefined || n === "") return "—";
+  const x = Number(n);
+  if (Number.isNaN(x)) return "—";
+  return x.toFixed(5);
+}
+
+function fmtText(v: unknown): string {
+  if (v === null || v === undefined) return "—";
+  const s = String(v).trim();
+  return s.length > 0 ? s : "—";
+}
+
+function BoolVal({ v }: { v: boolean | null | undefined }) {
+  if (v === true) return <span className="font-semibold text-emerald-600">true</span>;
+  if (v === false) return <span className="font-semibold text-red-600">false</span>;
+  return <span className="text-[#0f2d42]/55">—</span>;
+}
+
+function FieldItem({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="min-w-0 max-w-full">
+      <span className="text-[#0f2d42]/70">{label}: </span>
+      {children}
+    </span>
+  );
+}
+
+function DetailRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-wrap gap-x-8 gap-y-2.5 py-3.5 text-sm text-[#0f2d42]">{children}</div>
+  );
+}
+
+/** GatiMitra control app (order detail pages). Override with NEXT_PUBLIC_CONTROL_APP_URL if needed. */
+const CONTROL_APP_BASE = (
+  typeof process !== "undefined" && process.env.NEXT_PUBLIC_CONTROL_APP_URL?.trim()
+    ? process.env.NEXT_PUBLIC_CONTROL_APP_URL.trim().replace(/\/$/, "")
+    : "https://control.gatimitra.com"
+) as string;
+
+function controlPortalOrderUrl(formattedOrderId: string | null | undefined): string | null {
+  const id = formattedOrderId?.trim();
+  if (!id) return null;
+  return `${CONTROL_APP_BASE}/order/${encodeURIComponent(id)}`;
+}
+
+/** URL `nav` values for inline orders_core table (Food / Parcel / Person Ride). */
+const ORDER_NAV_KEYS = ["food-orders", "parcel-orders", "person-ride"] as const;
+
+type CustomerOrderRow = {
+  id: number;
+  formattedOrderId: string | null;
+  orderType: string;
+  status: string;
+  paymentStatus: string | null;
+  grandTotal: number | null;
+  fareAmount: number | null;
+  createdAt: string;
+  dropAddressRaw: string | null;
+};
+
+type CustomerTicketRow = {
+  id: number;
+  ticketId: string;
+  status: string;
+  priority: string;
+  serviceType: string;
+  subject: string;
+  createdAt: string;
+};
+
+function customerNavPillClass(active: boolean, disabled?: boolean) {
+  if (disabled) {
+    return "inline-flex w-full min-h-[2.5rem] cursor-not-allowed items-center justify-center gap-1 rounded-full border border-slate-200/80 bg-slate-50/90 px-2 py-2 text-center text-[11px] font-medium leading-tight text-[#0f2d42]/45 sm:text-xs";
+  }
+  if (active) {
+    return "inline-flex w-full min-h-[2.5rem] items-center justify-center gap-1 rounded-full border-2 border-[#0d5c4a] bg-[#E6F6F5] px-2 py-2 text-center text-[11px] font-semibold leading-tight text-[#0f2d42] shadow-sm ring-2 ring-[#0d5c4a]/20 sm:text-xs";
+  }
+  return "inline-flex w-full min-h-[2.5rem] items-center justify-center gap-1 rounded-full border border-teal-200/60 bg-white/90 px-2 py-2 text-center text-[11px] font-medium leading-tight text-[#0f2d42] shadow-sm transition hover:bg-[#E6F6F5]/95 hover:border-teal-300/80 sm:text-xs";
+}
+
+/** Compact pills for sticky nav strip (smaller hit target, premium tight spacing). */
+function customerNavPillStripClass(active: boolean, disabled?: boolean) {
+  const base =
+    "inline-flex !w-auto shrink-0 items-center justify-center gap-0.5 rounded-full px-2.5 py-1.5 text-center text-[10px] font-medium leading-snug sm:px-3 sm:py-1.5 sm:text-[11px] sm:leading-tight";
+  if (disabled) {
+    return `${base} min-h-8 cursor-not-allowed border border-slate-200/90 bg-slate-50 text-[#0f2d42]/45`;
+  }
+  if (active) {
+    return `${base} min-h-8 border-2 border-[#0d5c4a] bg-[#E6F6F5] font-semibold text-[#0f2d42] shadow-sm ring-1 ring-[#0d5c4a]/15`;
+  }
+  return `${base} min-h-8 border border-teal-200/70 bg-white text-[#0f2d42] shadow-sm transition hover:border-teal-300/90 hover:bg-[#f0fdf9]`;
+}
+
+/** Min width per pill; labels fit without forcing full-width grid. */
+const NAV_PILL_MIN = "min-w-[7.25rem] max-w-[11rem] sm:min-w-[7.75rem]";
+
+/** Orders/tickets panel — plain block, no card border (matches dashboard main surface). */
+const RESULT_CARD_SHELL = "mt-[2px] w-full shrink-0 px-4 py-4 sm:px-6";
+
+function CustomerDetailsContent() {
   const params = useParams();
-  const router = useRouter();
+  const searchParams = useSearchParams();
   const customerId = params.id as string;
-  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [customer, setCustomer] = useState<CustomerDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [addressIndex, setAddressIndex] = useState(0);
+  const [addressMenuOpen, setAddressMenuOpen] = useState(false);
+  const addressMenuRef = useRef<HTMLDivElement>(null);
+  const [customerOrders, setCustomerOrders] = useState<CustomerOrderRow[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [customerTickets, setCustomerTickets] = useState<CustomerTicketRow[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketsError, setTicketsError] = useState<string | null>(null);
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const searchQs = searchParams.get("search");
+  const idLinkSuffix =
+    searchQs && searchQs.length > 0
+      ? `?search=${encodeURIComponent(searchQs)}`
+      : "";
 
   useEffect(() => {
+    setAddressIndex(0);
+    setAddressMenuOpen(false);
     if (customerId) {
-      fetchCustomer();
+      void fetchCustomer();
     } else {
       setError("Invalid customer ID");
       setLoading(false);
     }
   }, [customerId]);
+
+  const activeNavFromUrl = searchParams.get("nav");
+
+  useEffect(() => {
+    const nav = activeNavFromUrl;
+    const orderType =
+      nav === "food-orders"
+        ? "food"
+        : nav === "parcel-orders"
+          ? "parcel"
+          : nav === "person-ride"
+            ? "person_ride"
+            : null;
+
+    if (!orderType || !customerId) {
+      setCustomerOrders([]);
+      setOrdersError(null);
+      setOrdersLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setOrdersLoading(true);
+    setOrdersError(null);
+
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/customers/${encodeURIComponent(customerId)}/orders-core?orderType=${orderType}&limit=50`
+        );
+        const json: unknown = await res.json();
+        const body = json as { success?: boolean; error?: string; data?: CustomerOrderRow[] };
+        if (!res.ok) {
+          throw new Error(body.error || "Failed to load orders");
+        }
+        if (!body.success) {
+          throw new Error(body.error || "Failed to load orders");
+        }
+        if (!cancelled) {
+          setCustomerOrders(Array.isArray(body.data) ? body.data : []);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setOrdersError(e instanceof Error ? e.message : "Failed to load orders");
+          setCustomerOrders([]);
+        }
+      } finally {
+        if (!cancelled) setOrdersLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNavFromUrl, customerId]);
+
+  useEffect(() => {
+    if (activeNavFromUrl !== "tickets" || !customerId) {
+      setCustomerTickets([]);
+      setTicketsError(null);
+      setTicketsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setTicketsLoading(true);
+    setTicketsError(null);
+
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/customers/${encodeURIComponent(customerId)}/unified-tickets?limit=50`
+        );
+        const json: unknown = await res.json();
+        const body = json as {
+          success?: boolean;
+          error?: string;
+          data?: CustomerTicketRow[];
+        };
+        if (!res.ok) {
+          throw new Error(body.error || "Failed to load tickets");
+        }
+        if (!body.success) {
+          throw new Error(body.error || "Failed to load tickets");
+        }
+        if (!cancelled) {
+          setCustomerTickets(Array.isArray(body.data) ? body.data : []);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setTicketsError(e instanceof Error ? e.message : "Failed to load tickets");
+          setCustomerTickets([]);
+        }
+      } finally {
+        if (!cancelled) setTicketsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNavFromUrl, customerId]);
+
+  useEffect(() => {
+    if (!addressMenuOpen) return;
+    function handlePointerDown(e: MouseEvent) {
+      if (
+        addressMenuRef.current &&
+        !addressMenuRef.current.contains(e.target as Node)
+      ) {
+        setAddressMenuOpen(false);
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setAddressMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [addressMenuOpen]);
 
   const fetchCustomer = async () => {
     try {
@@ -74,71 +443,16 @@ export default function CustomerDetailsPage() {
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    const statusColors: Record<string, string> = {
-      ACTIVE: "bg-green-100 text-green-800",
-      INACTIVE: "bg-gray-100 text-gray-800",
-      SUSPENDED: "bg-yellow-100 text-yellow-800",
-      BLOCKED: "bg-red-100 text-red-800",
-      DELETED: "bg-red-100 text-red-800",
-    };
-
-    return (
-      <span
-        className={`px-3 py-1 text-sm font-medium rounded-full ${
-          statusColors[status] || statusColors.INACTIVE
-        }`}
-      >
-        {status}
-      </span>
-    );
-  };
-
-  const getRiskBadge = (riskFlag?: string | null) => {
-    if (!riskFlag) return null;
-    
-    const riskColors: Record<string, string> = {
-      LOW: "bg-green-100 text-green-800",
-      MEDIUM: "bg-yellow-100 text-yellow-800",
-      HIGH: "bg-orange-100 text-orange-800",
-      CRITICAL: "bg-red-100 text-red-800",
-    };
-
-    return (
-      <span
-        className={`px-3 py-1 text-sm font-medium rounded-full ${
-          riskColors[riskFlag] || riskColors.LOW
-        }`}
-      >
-        {riskFlag}
-      </span>
-    );
-  };
-
-  const formatDate = (date: Date | string | null | undefined) => {
-    if (!date) return "Never";
-    const d = new Date(date);
-    return d.toLocaleDateString("en-IN", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
-  const formatCurrency = (amount: number | null | undefined) => {
-    if (amount === null || amount === undefined) return "₹0.00";
+  const formatCurrency = (amount: number | string | null | undefined) => {
+    if (amount === null || amount === undefined) return "—";
     return `₹${Number(amount).toFixed(2)}`;
   };
 
   if (loading) {
     return (
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <div className="flex items-center justify-center py-12">
-            <div className="text-gray-500">Loading customer details...</div>
-          </div>
+      <div className="w-full max-w-full overflow-x-hidden py-2">
+        <div className="flex items-center justify-center py-16">
+          <div className="text-[#0f2d42]/70">Loading customer…</div>
         </div>
       </div>
     );
@@ -146,19 +460,18 @@ export default function CustomerDetailsPage() {
 
   if (error || !customer) {
     return (
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-        <div className="rounded-lg border border-red-200 bg-red-50 p-6">
+      <div className="w-full max-w-full overflow-x-hidden py-2">
+        <div className="rounded-xl border border-red-200/80 bg-red-50/90 p-6">
           <div className="flex items-center gap-2 text-red-800">
-            <AlertCircle className="h-5 w-5" />
+            <AlertCircle className="h-5 w-5 shrink-0" />
             <p className="font-medium">Error: {error || "Customer not found"}</p>
           </div>
           <div className="mt-4">
             <Link
               href="/dashboard/customers/all"
-              className="inline-flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800"
+              className="inline-flex items-center gap-2 text-sm font-medium text-[#0d5c4a] hover:underline"
             >
-              <ArrowLeft className="h-4 w-4" />
-              Back to Customers
+              Back to search
             </Link>
           </div>
         </div>
@@ -166,134 +479,454 @@ export default function CustomerDetailsPage() {
     );
   }
 
+  const tier = resolveTrustTier(
+    customer.trustTier,
+    customer.trustScore == null ? null : Number(customer.trustScore)
+  ) as CustomerTrustTier;
+  const tierLabel = TRUST_TIER_LABEL[tier];
+  const tierClass = trustTierUserTypeClass(tier);
+
+  const trustNum =
+    customer.trustScore == null ? null : Number(customer.trustScore);
+  const fraudNum =
+    customer.fraudScore == null ? null : Number(customer.fraudScore);
+
+  const gmitraActive = customer.gmitraPlusActive === true;
+
+  const addresses = customer.addresses ?? [];
+  const safeAddrIdx =
+    addresses.length === 0 ? 0 : Math.min(addressIndex, addresses.length - 1);
+  const otherAddressIndices = addresses
+    .map((_, i) => i)
+    .filter((i) => i !== safeAddrIdx);
+
+  const searchParam = encodeURIComponent(customer.customerId);
+
+  const setNavKey = (key: string) => {
+    const p = new URLSearchParams(searchParams.toString());
+    p.set("nav", key);
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+  };
+
+  const toggleOrderPillNav = (key: (typeof ORDER_NAV_KEYS)[number]) => {
+    const p = new URLSearchParams(searchParams.toString());
+    if (activeNavFromUrl === key) {
+      p.delete("nav");
+    } else {
+      p.set("nav", key);
+    }
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+  };
+
+  const toggleTicketsNav = () => {
+    const p = new URLSearchParams(searchParams.toString());
+    if (activeNavFromUrl === "tickets") {
+      p.delete("nav");
+    } else {
+      p.set("nav", "tickets");
+    }
+    router.replace(`${pathname}?${p.toString()}`, { scroll: false });
+  };
+
+  const navActive = (key: string) => activeNavFromUrl === key;
+
+  const showOrdersPanel =
+    activeNavFromUrl != null &&
+    (ORDER_NAV_KEYS as readonly string[]).includes(activeNavFromUrl);
+
+  const showTicketsPanel = activeNavFromUrl === "tickets";
+
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Link
-            href="/dashboard/customers/all"
-            className="text-gray-600 hover:text-gray-900"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div>
-            <h1 className="text-2xl font-semibold text-gray-900">Customer Details</h1>
-            <p className="text-sm text-gray-500 mt-1">Customer ID: {customer.customerId}</p>
+    <div className="flex w-full min-w-0 max-w-full flex-1 flex-col min-h-0">
+      <div className="rounded-2xl border border-teal-200/35 bg-gradient-to-br from-[#E6F6F5] via-white to-[#f0fdf9] shadow-sm ring-1 ring-[#0f2d42]/5">
+        {/* User Stats header + scrollable detail grid */}
+        <div className="px-4 py-5 sm:px-6">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-row items-baseline justify-between gap-4">
+            <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#0f2d42]/80">
+              User Stats
+            </p>
+            <span className="shrink-0 text-xs font-medium text-[#0f2d42]/70 text-right">
+              Current Addresses
+            </span>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <p className="min-w-0 flex-1 text-[11px] leading-snug text-[#0f2d42]/55 sm:text-xs sm:pr-2">
+              GatiMitra customer profile — trust & risk at a glance
+            </p>
+            <div className="flex min-w-0 w-full max-w-full shrink-0 flex-col items-stretch text-left sm:w-auto sm:max-w-[min(100%,42rem)]">
+              {addresses.length === 0 ? (
+                <span className="text-[11px] text-[#0f2d42]/80 sm:text-xs">—</span>
+              ) : addresses.length === 1 ? (
+                <span className="text-[11px] leading-snug text-[#0f2d42] [overflow-wrap:anywhere] break-words whitespace-normal sm:text-xs">
+                  {formatAddressDisplay(addresses[0])}
+                </span>
+              ) : (
+                <div className="relative w-full min-w-0" ref={addressMenuRef}>
+                  <button
+                    type="button"
+                    aria-expanded={addressMenuOpen}
+                    aria-haspopup="listbox"
+                    aria-label="Select saved address"
+                    onClick={() => setAddressMenuOpen((o) => !o)}
+                    className="flex w-full min-w-0 flex-row items-start gap-2 rounded-md bg-white/70 px-2 py-1.5 text-left text-[11px] leading-snug text-[#0f2d42] outline-none ring-0 transition hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-[#4EE5C1]/40 sm:text-xs"
+                  >
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere] break-words whitespace-normal">
+                      {formatAddressDisplay(addresses[safeAddrIdx])}
+                    </span>
+                    <ChevronDown
+                      className={`mt-0.5 h-4 w-4 shrink-0 text-[#0f2d42]/55 transition ${addressMenuOpen ? "rotate-180" : ""}`}
+                      aria-hidden
+                    />
+                  </button>
+                  {addressMenuOpen ? (
+                    <ul
+                      role="listbox"
+                      aria-label="Other saved addresses"
+                      className="absolute left-0 right-0 z-[100] mt-1 max-h-56 overflow-auto rounded-md bg-white py-1 text-[#0f2d42] shadow-[0_8px_24px_-4px_rgba(15,45,66,0.12)] ring-1 ring-[#0f2d42]/12"
+                    >
+                      {otherAddressIndices.map((i) => {
+                        const a = addresses[i];
+                        return (
+                          <li key={a.id} role="option" aria-selected={false}>
+                            <button
+                              type="button"
+                              className="w-full px-2 py-2 text-left text-[11px] font-medium leading-snug text-[#0f2d42] [overflow-wrap:anywhere] break-words whitespace-normal hover:bg-[#E6F6F5]/90 hover:text-[#0f2d42] sm:text-xs"
+                              onClick={() => {
+                                setAddressIndex(i);
+                                setAddressMenuOpen(false);
+                              }}
+                            >
+                              {formatAddressDisplay(a)}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
+                </div>
+              )}
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          {getStatusBadge(customer.accountStatus)}
-          <Link
-            href={`/dashboard/customers/${customerId}/edit`}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
-          >
-            Edit Customer
-          </Link>
+        </div>
+
+        <div className="divide-y divide-teal-200/60 border-t border-teal-200/60 px-4 sm:px-6 pb-4">
+          <DetailRow>
+            <FieldItem label="User Id">
+              <Link
+                href={`/dashboard/customers/${customer.id}${idLinkSuffix}`}
+                className="font-semibold text-[#0d5c4a] underline decoration-[#4EE5C1]/80 decoration-2 underline-offset-2 hover:text-[#0f2d42]"
+              >
+                {customer.customerId}
+              </Link>
+            </FieldItem>
+            <FieldItem label="Full name">
+              <span className="font-medium text-[#0f2d42]">{customer.fullName}</span>
+            </FieldItem>
+            <FieldItem label="Gender">{fmtText(customer.gender)}</FieldItem>
+            <FieldItem label="Date of birth">
+              <span className="tabular-nums">{formatDateOnly(customer.dateOfBirth ?? null)}</span>
+            </FieldItem>
+            <FieldItem label="Age group">{fmtText(customer.ageGroup)}</FieldItem>
+            <FieldItem label="Preferred language">{fmtText(customer.preferredLanguage)}</FieldItem>
+            <FieldItem label="Bio">
+              <span className="[overflow-wrap:anywhere] break-words whitespace-normal">
+                {fmtText(customer.bio)}
+              </span>
+            </FieldItem>
+          </DetailRow>
+
+          <DetailRow>
+            <FieldItem label="Primary mobile">
+              <span className="font-medium">{customer.primaryMobile}</span>
+            </FieldItem>
+            <FieldItem label="Mobile verified">
+              <BoolVal v={customer.mobileVerified} />
+            </FieldItem>
+            <FieldItem label="Email">{fmtText(customer.email)}</FieldItem>
+            <FieldItem label="Latitude">
+              <span className="tabular-nums">{formatCoord(customer.latitude)}</span>
+            </FieldItem>
+            <FieldItem label="Longitude">
+              <span className="tabular-nums">{formatCoord(customer.longitude)}</span>
+            </FieldItem>
+          </DetailRow>
+
+          <DetailRow>
+            <FieldItem label="User type ">
+              <span className={tierClass}>{tierLabel}</span>
+            </FieldItem>
+            <FieldItem label="Trust score">
+              <span className="tabular-nums font-medium">
+                {trustNum != null && !Number.isNaN(trustNum) ? trustNum.toFixed(2) : "—"}
+              </span>
+            </FieldItem>
+            <FieldItem label="Fraud score">
+              <span className="tabular-nums font-medium">
+                {fraudNum != null && !Number.isNaN(fraudNum) ? fraudNum.toFixed(2) : "—"}
+              </span>
+            </FieldItem>
+            <FieldItem label="Risk flag">{fmtText(customer.riskFlag)}</FieldItem>
+            <FieldItem label="Account status">{customer.accountStatus.toLowerCase()}</FieldItem>
+            <FieldItem label="Global active">
+              <BoolVal v={customer.isGlobalActive} />
+            </FieldItem>
+            <FieldItem label="Wallet balance">{formatCurrency(customer.walletBalance)}</FieldItem>
+            <FieldItem label="Wallet locked">{formatCurrency(customer.walletLockedAmount)}</FieldItem>
+          </DetailRow>
+
+          <DetailRow>
+            <FieldItem label="GMitra Plus">
+              {gmitraActive ? (
+                <span className="font-semibold text-emerald-600">Active</span>
+              ) : (
+                <span className="font-semibold text-red-600">Not active</span>
+              )}
+            </FieldItem>
+            <FieldItem label="Referral code">{fmtText(customer.referralCode)}</FieldItem>
+            <FieldItem label="Referred by (code)">{fmtText(customer.referredBy)}</FieldItem>
+            <FieldItem label="Referrer customer id">
+              {customer.referrerCustomerId != null ? (
+                <span className="tabular-nums font-medium">{customer.referrerCustomerId}</span>
+              ) : (
+                "—"
+              )}
+            </FieldItem>
+            <FieldItem label="App installs with referral">
+              <span className="tabular-nums font-medium">
+                {typeof customer.referralInstallCount === "number"
+                  ? customer.referralInstallCount
+                  : "—"}
+              </span>
+            </FieldItem>
+          </DetailRow>
+
+          <DetailRow>
+            <FieldItem label="Last login">{formatIsoDateTime(customer.lastLoginAt)}</FieldItem>
+            <FieldItem label="Last order">{formatIsoDateTime(customer.lastOrderAt)}</FieldItem>
+            <FieldItem label="Last activity">{formatIsoDateTime(customer.lastActivityAt)}</FieldItem>
+            <FieldItem label="Created at">{formatIsoDateTime(customer.createdAt)}</FieldItem>
+            <FieldItem label="Updated at">{formatIsoDateTime(customer.updatedAt)}</FieldItem>
+            <FieldItem label="Created via">{fmtText(customer.createdVia)}</FieldItem>
+          </DetailRow>
+
+          <DetailRow>
+            <FieldItem label="SMS permission">
+              <BoolVal v={customer.smsPermission} />
+            </FieldItem>
+            <FieldItem label="Location permission">
+              <BoolVal v={customer.locationPermission} />
+            </FieldItem>
+            <FieldItem label="Contacts permission">
+              <BoolVal v={customer.contactsPermission} />
+            </FieldItem>
+          </DetailRow>
+
+          <DetailRow>
+            <FieldItem label="Customer account">
+              <Link
+                href={`/dashboard/customers/${customer.id}/edit`}
+                className="font-medium text-[#0d5c4a] hover:underline"
+              >
+                Edit profile
+              </Link>
+              <ExternalLink className="inline h-3.5 w-3.5 ml-0.5 text-[#0d5c4a]" aria-hidden />
+            </FieldItem>
+            <FieldItem label="Customer notification">
+              <span className="inline-flex items-center gap-0.5 font-medium text-[#0d5c4a] cursor-pointer hover:underline">
+                link
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              </span>
+            </FieldItem>
+          </DetailRow>
         </div>
       </div>
 
-      {/* Customer Information */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Main Details */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Basic Information */}
-          <div className="rounded-lg border border-gray-200 bg-white p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Basic Information</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm font-medium text-gray-500">Full Name</label>
-                <div className="mt-1 flex items-center gap-2">
-                  <User className="h-4 w-4 text-gray-400" />
-                  <p className="text-sm text-gray-900">{customer.fullName}</p>
-                </div>
-              </div>
-              {customer.email && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500">Email</label>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Mail className="h-4 w-4 text-gray-400" />
-                    <p className="text-sm text-gray-900">{customer.email}</p>
-                  </div>
-                </div>
-              )}
-              <div>
-                <label className="text-sm font-medium text-gray-500">Mobile</label>
-                <div className="mt-1 flex items-center gap-2">
-                  <Phone className="h-4 w-4 text-gray-400" />
-                  <p className="text-sm text-gray-900">{customer.primaryMobile}</p>
-                </div>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-500">Account Status</label>
-                <div className="mt-1">{getStatusBadge(customer.accountStatus)}</div>
-              </div>
+      <nav
+        className="sticky top-[2px] z-[100] mt-3 w-full min-w-0 shrink-0 bg-white px-2 py-2 sm:mt-4 sm:px-3 sm:py-2.5"
+        aria-label="Order and account shortcuts"
+      >
+          <div className="max-w-full overflow-x-auto overflow-y-visible [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]">
+            <div className="flex min-w-full flex-wrap items-center justify-center gap-2 sm:gap-2.5">
+              <button
+                type="button"
+                onClick={() => toggleOrderPillNav("food-orders")}
+                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("food-orders"))}`}
+              >
+                Food · Orders
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleOrderPillNav("parcel-orders")}
+                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("parcel-orders"))}`}
+              >
+                Parcel · Orders
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleOrderPillNav("person-ride")}
+                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("person-ride"))}`}
+              >
+                Person · Ride
+              </button>
+              <button
+                type="button"
+                onClick={toggleTicketsNav}
+                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("tickets"))}`}
+              >
+                Tickets
+              </button>
+              <Link
+                href="/dashboard/payments"
+                onClick={() => setNavKey("transactions")}
+                className={`${NAV_PILL_MIN} cursor-pointer ${customerNavPillStripClass(navActive("transactions"))}`}
+              >
+                Transactions
+              </Link>
             </div>
           </div>
+      </nav>
 
-          {/* Risk & Trust */}
-          <div className="rounded-lg border border-gray-200 bg-white p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Risk & Trust</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {customer.riskFlag && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500">Risk Flag</label>
-                  <div className="mt-1">{getRiskBadge(customer.riskFlag)}</div>
-                </div>
-              )}
-              {customer.trustScore !== null && customer.trustScore !== undefined && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500">Trust Score</label>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Shield className="h-4 w-4 text-gray-400" />
-                    <p className="text-sm text-gray-900">{customer.trustScore}/100</p>
-                  </div>
-                </div>
-              )}
+      {showOrdersPanel ? (
+        <section
+          className={RESULT_CARD_SHELL}
+          aria-label="Customer orders from orders_core"
+        >
+          {ordersLoading ? (
+            <p className="text-sm text-[#0f2d42]/65">Loading orders…</p>
+          ) : ordersError ? (
+            <p className="text-sm font-medium text-red-700">{ordersError}</p>
+          ) : customerOrders.length === 0 ? (
+            <p className="text-sm text-[#0f2d42]/65">No orders found for this type.</p>
+          ) : (
+            <div className="overflow-x-auto -mx-1 px-1">
+              <table className="min-w-[640px] w-full border-collapse text-left text-sm text-[#0f2d42]">
+                <thead>
+                  <tr className="border-b border-teal-200/70 text-xs font-semibold uppercase tracking-wide text-[#0f2d42]/70">
+                    <th className="whitespace-nowrap py-2 pr-4">Order id</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Status</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Payment</th>
+                    <th className="whitespace-nowrap py-2 pr-4 text-right">Total</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Created</th>
+                    <th className="py-2 min-w-[12rem]">Drop address</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-teal-100/90">
+                  {customerOrders.map((row) => {
+                    const orderLabel = row.formattedOrderId ?? `#${row.id}`;
+                    const orderHref = controlPortalOrderUrl(row.formattedOrderId);
+                    return (
+                      <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
+                        <td className="py-2.5 pr-4 font-medium">
+                          {orderHref ? (
+                            <a
+                              href={orderHref}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-[#0d5c4a] underline decoration-[#4EE5C1]/70 underline-offset-2 hover:text-[#0f2d42]"
+                            >
+                              {orderLabel}
+                              <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                            </a>
+                          ) : (
+                            <span className="text-[#0f2d42]/90">{orderLabel}</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 pr-4 capitalize">{row.status}</td>
+                        <td className="py-2.5 pr-4 capitalize">
+                          {row.paymentStatus ?? "—"}
+                        </td>
+                        <td className="py-2.5 pr-4 text-right tabular-nums">
+                          {row.grandTotal != null
+                            ? `₹${Number(row.grandTotal).toFixed(2)}`
+                            : row.fareAmount != null
+                              ? `₹${Number(row.fareAmount).toFixed(2)}`
+                              : "—"}
+                        </td>
+                        <td className="py-2.5 pr-4 whitespace-nowrap text-[#0f2d42]/85">
+                          {formatShortDateTime(row.createdAt)}
+                        </td>
+                        <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
+                          {row.dropAddressRaw ?? "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </div>
-        </div>
+          )}
+        </section>
+      ) : null}
 
-        {/* Sidebar */}
-        <div className="space-y-6">
-          {/* Wallet */}
-          <div className="rounded-lg border border-gray-200 bg-white p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Wallet</h2>
-            <div className="flex items-center gap-2">
-              <Wallet className="h-5 w-5 text-gray-400" />
-              <div>
-                <p className="text-2xl font-semibold text-gray-900">
-                  {formatCurrency(customer.walletBalance)}
-                </p>
-                <p className="text-sm text-gray-500">Available Balance</p>
-              </div>
+      {showTicketsPanel ? (
+        <section
+          className={RESULT_CARD_SHELL}
+          aria-label="Customer tickets from unified_tickets"
+        >
+          {ticketsLoading ? (
+            <p className="text-sm text-[#0f2d42]/65">Loading tickets…</p>
+          ) : ticketsError ? (
+            <p className="text-sm font-medium text-red-700">{ticketsError}</p>
+          ) : customerTickets.length === 0 ? (
+            <p className="text-sm text-[#0f2d42]/65">No tickets found for this customer.</p>
+          ) : (
+            <div className="overflow-x-auto -mx-1 px-1">
+              <table className="min-w-[640px] w-full border-collapse text-left text-sm text-[#0f2d42]">
+                <thead>
+                  <tr className="border-b border-teal-200/70 text-xs font-semibold uppercase tracking-wide text-[#0f2d42]/70">
+                    <th className="whitespace-nowrap py-2 pr-4">Ticket id</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Status</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Priority</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Service</th>
+                    <th className="whitespace-nowrap py-2 pr-4">Created</th>
+                    <th className="py-2 min-w-[12rem]">Subject</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-teal-100/90">
+                  {customerTickets.map((row) => (
+                    <tr key={row.id} className="align-top hover:bg-[#f0fdf9]/80">
+                      <td className="py-2.5 pr-4 font-medium">
+                        <a
+                          href={`/dashboard/tickets/${row.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[#0d5c4a] underline decoration-[#4EE5C1]/70 underline-offset-2 hover:text-[#0f2d42]"
+                        >
+                          {row.ticketId}
+                          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                        </a>
+                      </td>
+                      <td className="py-2.5 pr-4 capitalize">{row.status}</td>
+                      <td className="py-2.5 pr-4 capitalize">{row.priority}</td>
+                      <td className="py-2.5 pr-4 capitalize">{row.serviceType ?? "—"}</td>
+                      <td className="py-2.5 pr-4 whitespace-nowrap text-[#0f2d42]/85">
+                        {formatShortDateTime(row.createdAt)}
+                      </td>
+                      <td className="py-2.5 max-w-md text-[#0f2d42]/90 [overflow-wrap:anywhere]">
+                        {row.subject ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-
-          {/* Activity */}
-          <div className="rounded-lg border border-gray-200 bg-white p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Activity</h2>
-            <div className="space-y-3">
-              <div>
-                <label className="text-sm font-medium text-gray-500">Created At</label>
-                <div className="mt-1 flex items-center gap-2">
-                  <Calendar className="h-4 w-4 text-gray-400" />
-                  <p className="text-sm text-gray-900">{formatDate(customer.createdAt)}</p>
-                </div>
-              </div>
-              {customer.lastOrderAt && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500">Last Order</label>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Calendar className="h-4 w-4 text-gray-400" />
-                    <p className="text-sm text-gray-900">{formatDate(customer.lastOrderAt)}</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
+          )}
+        </section>
+      ) : null}
     </div>
+  );
+}
+
+export default function CustomerDetailsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="w-full max-w-full py-16 text-center text-[#0f2d42]/60">Loading…</div>
+      }
+    >
+      <CustomerDetailsContent />
+    </Suspense>
   );
 }

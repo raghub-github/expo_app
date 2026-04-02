@@ -134,10 +134,10 @@ export const riderDashboardRoutes: DashboardSubRoute[] = [
  */
 export const customerDashboardRoutes: DashboardSubRoute[] = [
   {
-    name: "Overall Stats",
+    name: "User Stats",
     href: "/dashboard/customers/all",
     icon: UserCircle,
-    description: "View overall customer statistics",
+    description: "View customer statistics",
   },
   {
     name: "Food Customers",

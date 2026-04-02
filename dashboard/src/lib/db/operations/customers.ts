@@ -3,7 +3,7 @@
  * Handles all CRUD operations for customer management
  */
 
-import { getDb } from "../client";
+import { getDb, getSql } from "../client";
 import { customers, ordersCore } from "../schema";
 import {
   eq,
@@ -38,6 +38,144 @@ export interface CustomerOrderStats {
   lastOrderAt: Date | null;
 }
 
+export interface CustomerAddressRow {
+  id: number;
+  label: string | null;
+  customLabel: string | null;
+  addressLine1: string;
+  addressLine2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string | null;
+  isDefault: boolean;
+  landmark: string | null;
+  addressAuto: string | null;
+}
+
+function numPk(v: unknown): number {
+  if (typeof v === "bigint") return Number(v);
+  return Number(v);
+}
+
+/**
+ * Search semantics (customer_id, full_name, primary_mobile, email):
+ * - `GM` + digits only → **exact** `customer_id` (case-insensitive). Avoids `GM100001` matching `GM1000010`.
+ * - Phone-only input (digits + common separators) → **exact** normalized mobile match (no substring).
+ * - Otherwise → fuzzy `ILIKE` on customer_id, full_name, primary_mobile, email.
+ */
+function customerSearchSql(trim: string): SQL {
+  const raw = trim.trim();
+  const compact = raw.replace(/\s/g, "");
+
+  if (/^GM\d+$/i.test(compact)) {
+    return sql`LOWER(TRIM(${customers.customerId})) = LOWER(${compact})`;
+  }
+
+  const digitsOnly = compact.replace(/\D/g, "");
+  const phoneCharsOnly = /^[+\d\s\-().]*$/.test(raw.trim());
+  if (
+    phoneCharsOnly &&
+    digitsOnly.length >= 10 &&
+    digitsOnly.length <= 15
+  ) {
+    const variants = new Set<string>();
+    variants.add(digitsOnly);
+    if (digitsOnly.length === 10) variants.add(`91${digitsOnly}`);
+    if (digitsOnly.length === 12 && digitsOnly.startsWith("91")) {
+      variants.add(digitsOnly.slice(2));
+    }
+    const orParts: SQL[] = [];
+    for (const v of variants) {
+      orParts.push(
+        sql`regexp_replace(COALESCE(${customers.primaryMobile}, ''), '[^0-9]', '', 'g') = ${v}`
+      );
+    }
+    const last10 =
+      digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+    if (last10.length === 10) {
+      orParts.push(eq(customers.primaryMobileNormalized, last10));
+    }
+    return or(...orParts)!;
+  }
+
+  const searchTerm = `%${raw}%`;
+  return or(
+    ilike(customers.customerId, searchTerm),
+    ilike(customers.fullName, searchTerm),
+    ilike(customers.primaryMobile, searchTerm),
+    ilike(customers.email, searchTerm)
+  )!;
+}
+
+function mapCustomerAddressRow(r: Record<string, unknown>): CustomerAddressRow {
+  const def = r.is_default;
+  return {
+    id: numPk(r.id),
+    label: r.label != null ? String(r.label) : null,
+    customLabel: r.custom_label != null ? String(r.custom_label) : null,
+    addressLine1: String(r.address_line1 ?? ""),
+    addressLine2: r.address_line2 != null ? String(r.address_line2) : null,
+    city: String(r.city ?? ""),
+    state: String(r.state ?? ""),
+    postalCode: String(r.postal_code ?? ""),
+    country: r.country != null ? String(r.country) : null,
+    isDefault: def === true || def === "t",
+    landmark: r.landmark != null ? String(r.landmark) : null,
+    addressAuto: r.address_auto != null ? String(r.address_auto) : null,
+  };
+}
+
+/** Customers who installed/signup via this customer's referral (FK or matching referral code). */
+export async function getCustomerReferralInstallCount(
+  customerDbId: number
+): Promise<number> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT COUNT(*)::int AS cnt
+    FROM customers c
+    WHERE c.deleted_at IS NULL
+    AND (
+      c.referrer_customer_id = ${customerDbId}
+      OR EXISTS (
+        SELECT 1 FROM customers r
+        WHERE r.id = ${customerDbId}
+        AND r.referral_code IS NOT NULL
+        AND c.referred_by = r.referral_code
+      )
+    )
+  `;
+  const row = rows[0] as { cnt?: number } | undefined;
+  return Number(row?.cnt ?? 0);
+}
+
+export async function getCustomerAddresses(
+  customerDbId: number
+): Promise<CustomerAddressRow[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT
+      id,
+      label::text AS label,
+      custom_label,
+      address_line1,
+      address_line2,
+      city,
+      state,
+      postal_code,
+      country,
+      is_default,
+      landmark,
+      address_auto
+    FROM customer_addresses
+    WHERE customer_id = ${customerDbId}
+    AND deleted_at IS NULL
+    AND COALESCE(is_active, TRUE) = TRUE
+    ORDER BY is_default DESC NULLS LAST, id ASC
+  `;
+  return rows.map((r) => mapCustomerAddressRow(r as Record<string, unknown>));
+}
+
 export interface CustomerWithStats {
   id: number;
   customerId: string;
@@ -49,6 +187,7 @@ export interface CustomerWithStats {
   accountStatus: string;
   riskFlag: string | null;
   trustScore: number | null;
+  trustTier: string | null;
   walletBalance: number | null;
   createdAt: Date;
   lastOrderAt: Date | null;
@@ -73,15 +212,7 @@ export async function listCustomers(filters: CustomerFilters = {}) {
   
   // Search filter
   if (filters.search) {
-    const searchTerm = `%${filters.search.trim()}%`;
-    conditions.push(
-      or(
-        ilike(customers.customerId, searchTerm),
-        ilike(customers.fullName, searchTerm),
-        ilike(customers.primaryMobile, searchTerm),
-        ilike(customers.email, searchTerm)
-      )!
-    );
+    conditions.push(customerSearchSql(filters.search));
   }
   
   // Status filter
@@ -144,6 +275,7 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     accountStatus: customers.accountStatus,
     riskFlag: customers.riskFlag,
     trustScore: customers.trustScore,
+    trustTier: customers.trustTier,
     walletBalance: customers.walletBalance,
     createdAt: customers.createdAt,
     lastOrderAt: customers.lastOrderAt,
@@ -217,6 +349,7 @@ export async function listCustomers(filters: CustomerFilters = {}) {
         ...customer,
         trustScore:
           customer.trustScore == null ? null : Number(customer.trustScore),
+        trustTier: customer.trustTier ?? null,
         walletBalance:
           customer.walletBalance == null ? null : Number(customer.walletBalance),
         firstName: null,
@@ -269,7 +402,7 @@ export async function getCustomerOrderStats(
   }));
 }
 
-/** Safe customer columns (omit first_name/last_name when they do not exist in DB) */
+/** Customer columns for detail/list API (matches public.customers; no first_name/last_name in DB). */
 const customerSelectFields = {
   id: customers.id,
   customerId: customers.customerId,
@@ -294,12 +427,15 @@ const customerSelectFields = {
   statusReason: customers.statusReason,
   riskFlag: customers.riskFlag,
   trustScore: customers.trustScore,
+  trustTier: customers.trustTier,
   fraudScore: customers.fraudScore,
   walletBalance: customers.walletBalance,
   walletLockedAmount: customers.walletLockedAmount,
   isIdentityVerified: customers.isIdentityVerified,
   isEmailVerified: customers.isEmailVerified,
   isMobileVerified: customers.isMobileVerified,
+  smsPermission: customers.smsPermission,
+  gmitraPlusActive: customers.gmitraPlusActive,
   lastLoginAt: customers.lastLoginAt,
   lastOrderAt: customers.lastOrderAt,
   lastActivityAt: customers.lastActivityAt,
@@ -310,6 +446,31 @@ const customerSelectFields = {
   updatedAt: customers.updatedAt,
   createdVia: customers.createdVia,
   updatedBy: customers.updatedBy,
+  ageGroup: customers.ageGroup,
+  profileCompleted: customers.profileCompleted,
+  locationPermission: customers.locationPermission,
+  contactsPermission: customers.contactsPermission,
+  sessionsInvalidBefore: customers.sessionsInvalidBefore,
+  addressLine1: customers.addressLine1,
+  addressLine2: customers.addressLine2,
+  city: customers.city,
+  state: customers.state,
+  pincode: customers.pincode,
+  country: customers.country,
+  latitude: customers.latitude,
+  longitude: customers.longitude,
+  emailVerifiedAt: customers.emailVerifiedAt,
+  customerUuid: customers.customerUuid,
+  isGlobalActive: customers.isGlobalActive,
+  workPhone: customers.workPhone,
+  facebookId: customers.facebookId,
+  twitterId: customers.twitterId,
+  timeZone: customers.timeZone,
+  contactTags: customers.contactTags,
+  jobTitle: customers.jobTitle,
+  uniqueExternalId: customers.uniqueExternalId,
+  twitterVerified: customers.twitterVerified,
+  twitterFollowerCount: customers.twitterFollowerCount,
 };
 
 /**
@@ -325,12 +486,18 @@ export async function getCustomerById(id: number) {
     .limit(1);
 
   if (!customer) return null;
-  return { ...customer, firstName: null, lastName: null };
+  const [referralInstallCount, addresses] = await Promise.all([
+    getCustomerReferralInstallCount(id),
+    getCustomerAddresses(id),
+  ]);
+  return {
+    ...customer,
+    referralInstallCount,
+    addresses,
+  };
 }
 
-/**
- * Get customer by customer_id (uses safe columns; firstName/lastName not selected if missing in DB)
- */
+/** Get customer by public customer_id (e.g. GM…). */
 export async function getCustomerByCustomerId(customerId: string) {
   const db = getDb();
 
@@ -341,5 +508,13 @@ export async function getCustomerByCustomerId(customerId: string) {
     .limit(1);
 
   if (!customer) return null;
-  return { ...customer, firstName: null, lastName: null };
+  const [referralInstallCount, addresses] = await Promise.all([
+    getCustomerReferralInstallCount(customer.id),
+    getCustomerAddresses(customer.id),
+  ]);
+  return {
+    ...customer,
+    referralInstallCount,
+    addresses,
+  };
 }

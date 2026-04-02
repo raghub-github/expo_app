@@ -268,13 +268,16 @@ function DashboardLayoutClient({
 
   const isRiderDashboardLayout =
     cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
+  const isCustomersSection = cleanPathname.startsWith("/dashboard/customers");
 
   const hasRightSidebar = useMemo(() => {
+    // Customer dashboard: use full width — no secondary (right) nav rail.
+    if (isCustomersSection) return false;
     // For rider dashboard we always allow a right sidebar; the inner layout
     // will still hide it until a rider is actually selected.
     if (isRiderDashboardLayout) return true;
     return isInSpecificDashboard && currentSubRoutes.length > 0;
-  }, [isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
+  }, [isCustomersSection, isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -714,7 +717,7 @@ function DashboardLayoutContent({
                   />
                 </div>
               </div>
-              {(!isRiderDashboardLayout || hasRiderSidebarContent) && (
+              {hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && (
                 <RightSidebar
                   isOpen={isRightSidebarOpen}
                   onToggle={
