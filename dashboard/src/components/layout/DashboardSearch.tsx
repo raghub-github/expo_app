@@ -37,10 +37,31 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   const searchValue = searchParams.get("search") || "";
   const parentParam = searchParams.get("parent") === "true";
 
-  // Sync local search value and merchant type with URL (keeps search bar in sync when returning from store)
+  // Sync search with URL; on customer detail without ?search=, restore last query so the bar stays filled
   useEffect(() => {
-    setLocalSearchValue(searchValue);
-  }, [searchValue]);
+    const pathOnly = pathname.split("?")[0] ?? "";
+    if (searchValue) {
+      setLocalSearchValue(searchValue);
+      if (dashboardType === "CUSTOMER") {
+        try {
+          sessionStorage.setItem("customerDashboardLastSearch", searchValue);
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+    if (dashboardType === "CUSTOMER" && /^\/dashboard\/customers\/\d+$/.test(pathOnly)) {
+      try {
+        const stored = sessionStorage.getItem("customerDashboardLastSearch");
+        if (stored) setLocalSearchValue(stored);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      setLocalSearchValue("");
+    }
+  }, [searchValue, dashboardType, pathname]);
   useEffect(() => {
     setMerchantType(parentParam ? "parent" : "child");
   }, [parentParam]);
@@ -207,7 +228,15 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
         e.preventDefault();
         const value = localSearchValue.trim();
         if (!value) return;
-        
+
+        if (dashboardType === "CUSTOMER") {
+          try {
+            sessionStorage.setItem("customerDashboardLastSearch", value);
+          } catch {
+            /* ignore */
+          }
+        }
+
         // For customer dashboard, route directly to /all with search params
         // For area manager stores, keep search on stores page
         const params = new URLSearchParams(searchParams.toString());
@@ -215,6 +244,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
         let targetPath: string;
         if (dashboardType === "CUSTOMER") {
+          // Global customer search — always use one route (no food/parcel/ride segments in URL).
           targetPath = "/dashboard/customers/all";
         } else if (dashboardType === "AREA_MANAGER" && pathname.includes("/stores")) {
           targetPath = pathname;

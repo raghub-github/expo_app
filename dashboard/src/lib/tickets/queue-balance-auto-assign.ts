@@ -11,7 +11,13 @@ function auditSql(tx: SqlClient): TicketAuditSqlClient {
   return tx as unknown as TicketAuditSqlClient;
 }
 
-const TERMINAL_STATUSES = ["CLOSED", "REJECTED", "RESOLVED", "CANCELLED"] as const;
+const TERMINAL_STATUSES = [
+  "CLOSED",
+  "REJECTED",
+  "RESOLVED",
+  "CANCELLED",
+  "PROVISIONALLY_RESOLVED",
+] as const;
 
 const TERMINAL_STATUS_LIST = [...TERMINAL_STATUSES] as string[];
 
@@ -67,7 +73,16 @@ export async function redistributeOverCapacityTickets(
           FROM public.unified_tickets x
           WHERE x.assigned_to_agent_id = ut.assigned_to_agent_id
             AND NOT (x.status::text = ANY(${TERMINAL_STATUS_LIST}))
-        ) > ${maxCap}
+        ) > LEAST(
+          ${maxCap}::int,
+          COALESCE(
+            (SELECT apx.max_open_tickets_override
+             FROM public.agent_profiles apx
+             WHERE apx.user_id = ut.assigned_to_agent_id
+             LIMIT 1),
+            ${maxCap}::int
+          )
+        )
       ORDER BY
         CASE ut.priority::text
           WHEN 'LOW' THEN 0
@@ -97,7 +112,8 @@ export async function redistributeOverCapacityTickets(
       SELECT qa.system_user_id AS uid,
         (SELECT COUNT(*)::int FROM public.unified_tickets ut2
           WHERE ut2.assigned_to_agent_id = qa.system_user_id
-            AND NOT (ut2.status::text = ANY(${TERMINAL_STATUS_LIST}))) AS open_n
+            AND NOT (ut2.status::text = ANY(${TERMINAL_STATUS_LIST}))) AS open_n,
+        LEAST(${maxCap}::int, COALESCE(ap.max_open_tickets_override, ${maxCap}::int)) AS eff_cap
       FROM public.ticket_agent_queue_assignments qa
       INNER JOIN public.agent_profiles ap ON ap.user_id = qa.system_user_id
       WHERE (${gid} = ANY (qa.primary_group_ids) OR ${gid} = ANY (qa.secondary_group_ids))
@@ -105,9 +121,9 @@ export async function redistributeOverCapacityTickets(
         AND ap.is_online = true
         AND LOWER(COALESCE(ap.current_status::text, '')) = 'online'
       ORDER BY open_n ASC, qa.system_user_id ASC
-    `) as { uid?: unknown; open_n?: unknown }[];
+    `) as { uid?: unknown; open_n?: unknown; eff_cap?: unknown }[];
 
-    const pick = candidates.find((c) => Number(c.open_n) < maxCap);
+    const pick = candidates.find((c) => Number(c.open_n) < Number(c.eff_cap ?? maxCap));
     if (!pick?.uid) break;
 
     const toAid = Number(pick.uid);
@@ -163,12 +179,14 @@ export async function redistributeOverCapacityTickets(
  */
 export async function runQueueBalanceAutoAssign(
   sql: SqlClient,
-  opts: { forAgentUserId?: number }
+  opts: { forAgentUserId?: number; groupIds?: number[] }
 ): Promise<{ assigned: number }> {
   const maxCap = await getMaxOpenTicketsPerAgent(sql);
   let groupIds: number[] = [];
 
-  if (opts.forAgentUserId != null) {
+  if (opts.groupIds != null && opts.groupIds.length > 0) {
+    groupIds = opts.groupIds.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0);
+  } else if (opts.forAgentUserId != null) {
     const qa = (await sql`
       SELECT primary_group_ids, secondary_group_ids
       FROM public.ticket_agent_queue_assignments
@@ -228,16 +246,17 @@ export async function runQueueBalanceAutoAssign(
           SELECT qa.system_user_id AS uid,
             (SELECT COUNT(*)::int FROM public.unified_tickets ut2
               WHERE ut2.assigned_to_agent_id = qa.system_user_id
-                AND NOT (ut2.status::text = ANY(${TERMINAL_STATUS_LIST}))) AS open_n
+                AND NOT (ut2.status::text = ANY(${TERMINAL_STATUS_LIST}))) AS open_n,
+            LEAST(${maxCap}::int, COALESCE(ap.max_open_tickets_override, ${maxCap}::int)) AS eff_cap
           FROM public.ticket_agent_queue_assignments qa
           INNER JOIN public.agent_profiles ap ON ap.user_id = qa.system_user_id
           WHERE (${gid} = ANY (qa.primary_group_ids) OR ${gid} = ANY (qa.secondary_group_ids))
             AND ap.is_online = true
             AND LOWER(COALESCE(ap.current_status::text, '')) = 'online'
           ORDER BY open_n ASC, qa.system_user_id ASC
-        `) as { uid?: unknown; open_n?: unknown }[];
+        `) as { uid?: unknown; open_n?: unknown; eff_cap?: unknown }[];
 
-        const pick = candidates.find((c) => Number(c.open_n) < maxCap);
+        const pick = candidates.find((c) => Number(c.open_n) < Number(c.eff_cap ?? maxCap));
         if (!pick?.uid) break;
 
         const agentId = Number(pick.uid);

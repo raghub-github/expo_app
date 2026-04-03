@@ -6,7 +6,6 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   LogOut,
-  Bell,
   Search,
   ChevronDown,
   Plus,
@@ -19,6 +18,8 @@ import {
   PanelRight,
   PanelLeft,
   User,
+  ArrowLeft,
+  IndianRupee,
 } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
@@ -31,7 +32,7 @@ const AgentStatusToggle = dynamic(
   () => import("@/components/tickets/AgentStatusToggle").then((m) => m.AgentStatusToggle),
   {
     ssr: false,
-    loading: () => <div className="h-7 w-[104px] shrink-0" aria-hidden />,
+    loading: () => <div className="h-10 w-40 shrink-0" aria-hidden />,
   }
 );
 import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
@@ -40,6 +41,7 @@ import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
 import {
@@ -47,6 +49,7 @@ import {
   isTicketsQueueLayoutExperience,
   resolveTicketsQueueHeaderTitle,
   ticketDetailHasQueueContext,
+  TICKETS_QUEUE_HOME_PATH,
 } from "@/lib/tickets/ticket-path-utils";
 
 const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
@@ -211,7 +214,10 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/system": "System",
   "/dashboard/analytics": "Analytics",
   "/dashboard/super-admin": "Super Admin",
+  "/dashboard/super-admin/store-onboarding-fee": "Store onboarding fee",
 };
+
+const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
 
 function HeaderComponent() {
   const pathname = usePathname();
@@ -264,8 +270,26 @@ function HeaderComponent() {
   );
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
-  const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
-  const { canTogglePortal = false } = usePermissions();
+  const hasRightSidebar = Boolean(
+    currentDashboard &&
+      cleanPathname !== "/dashboard" &&
+      currentSubRoutes.length > 0 &&
+      !cleanPathname.startsWith("/dashboard/customers")
+  );
+  const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
+  const { data: dashboardAccessData } = useDashboardAccessQuery();
+  const canOpenQueueFromTickets = useMemo(() => {
+    if (isSuperAdmin) return true;
+    const points = dashboardAccessData?.accessPoints ?? [];
+    return points.some((ap) => {
+      if (!ap?.isActive) return false;
+      if (String(ap.accessPointGroup).trim().toUpperCase() !== "TICKET_AGENT_STATUS_TOGGLE") {
+        return false;
+      }
+      const actions = Array.isArray(ap.allowedActions) ? ap.allowedActions : [];
+      return actions.some((action) => String(action).trim().toUpperCase() === "UPDATE");
+    });
+  }, [dashboardAccessData?.accessPoints, isSuperAdmin]);
 
   const portalParam = searchParams.get("portal");
   const portalFromUrl = portalParam === "admin" || portalParam === "merchant" ? portalParam : null;
@@ -489,11 +513,15 @@ function HeaderComponent() {
   };
 
   const handleLogoutConfirm = () => {
-    setShowLogoutConfirm(false);
-    logoutMutation.mutate();
+    logoutMutation.mutate(undefined, {
+      onSuccess: () => {
+        setShowLogoutConfirm(false);
+      },
+    });
   };
 
   const handleLogoutCancel = () => {
+    if (logoutMutation.isPending) return;
     setShowLogoutConfirm(false);
   };
 
@@ -521,18 +549,41 @@ function HeaderComponent() {
         <Link href="/dashboard" className="sm:hidden flex-shrink-0">
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
-        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate flex-shrink min-w-0">{pageName}</h2>
+        {cleanPathname === STORE_ONBOARDING_FEE_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <IndianRupee className="h-5 w-5 shrink-0 text-violet-600" strokeWidth={2} aria-hidden />
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : (
+          <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg flex-shrink">{pageName}</h2>
+        )}
         {/* Queue (new tab) + helpdesk gear — ticket list & related; status lives on Queue pages */}
-        {effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace && (
+        {effectivePathname.startsWith("/dashboard/tickets") &&
+          !isTicketsQueueWorkspace &&
+          // Hide Queue + helpdesk gear on the ticket detail inner page.
+          !isTicketsAppDetailPath(cleanPathname) && (
             <div className="flex flex-shrink-0 items-center gap-2">
-              <a
-                href="/dashboard/tickets/queue/home"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex cursor-pointer items-center rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-50"
-              >
-                Queue
-              </a>
+              {canOpenQueueFromTickets && (
+                <Link
+                  href={TICKETS_QUEUE_HOME_PATH}
+                  prefetch={false}
+                  scroll={false}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex cursor-pointer items-center rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-50"
+                  title="Open agent queue in a new tab"
+                  aria-label="Open agent queue in a new tab"
+                >
+                  Queue
+                </Link>
+              )}
               <TicketsHubGearButton />
             </div>
           )}
@@ -661,10 +712,6 @@ function HeaderComponent() {
             )}
           </button>
         )}
-        <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
-          <Bell className="h-5 w-5" />
-        </button>
-
         {isTicketsQueueWorkspace && <AgentStatusToggle />}
 
         {/* User name + avatar + logout - hidden on mobile (moved to left sidebar) */}
@@ -714,7 +761,7 @@ function HeaderComponent() {
           aria-modal="true"
           aria-labelledby="logout-dialog-title"
           aria-describedby="logout-dialog-desc"
-          onClick={handleLogoutCancel}
+          onClick={logoutMutation.isPending ? undefined : handleLogoutCancel}
         >
           <div
             className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden"
@@ -734,6 +781,7 @@ function HeaderComponent() {
                 <button
                   type="button"
                   onClick={handleLogoutCancel}
+                  disabled={logoutMutation.isPending}
                   className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors"
                 >
                   Cancel

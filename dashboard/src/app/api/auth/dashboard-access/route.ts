@@ -6,10 +6,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getUserDashboardAccess, getUserAccessPoints, isSuperAdmin } from "@/lib/permissions/engine";
+import { getUserDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { getDb } from "@/lib/db/client";
+import { dashboardAccessPoints } from "@/lib/db/schema";
 import { apiErrorResponse } from "@/lib/api-errors";
 import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
+import { and, eq } from "drizzle-orm";
 
 export const runtime = "nodejs";
 
@@ -95,11 +98,31 @@ export async function GET(request: NextRequest) {
     // Get dashboard access for regular users
     const dashboards = await getUserDashboardAccess(systemUser.id);
 
-    // Get access points for all dashboards in parallel (faster first paint)
-    const accessPointsArrays = await Promise.all(
-      dashboards.map((d) => getUserAccessPoints(systemUser.id, d.dashboardType as "RIDER" | "MERCHANT" | "TICKET" | "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" | "OFFER" | "AREA_MANAGER" | "CUSTOMER" | "PAYMENT" | "SYSTEM" | "ANALYTICS"))
+    // Fetch all active access points directly for the user.
+    // Do not rely on dashboard_access rows only, because legacy/mixed dashboard types
+    // can cause valid points (e.g. TICKET_AGENT_STATUS_TOGGLE) to be skipped.
+    const db = getDb();
+    const allAccessPoints = await db
+      .select()
+      .from(dashboardAccessPoints)
+      .where(
+        and(
+          eq(dashboardAccessPoints.systemUserId, systemUser.id),
+          eq(dashboardAccessPoints.isActive, true)
+        )
+      );
+    const hasStatusToggleInAccessPoints = allAccessPoints.some(
+      (ap) =>
+        String(ap.dashboardType).trim().toUpperCase() === "TICKET" &&
+        String(ap.accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE" &&
+        Array.isArray(ap.allowedActions) &&
+        (ap.allowedActions as unknown[]).some((a) => String(a).trim().toUpperCase() === "UPDATE")
     );
-    const allAccessPoints = accessPointsArrays.flat();
+    console.info("[GET /api/auth/dashboard-access] resolved access points", {
+      systemUserId: systemUser.id,
+      count: allAccessPoints.length,
+      hasStatusToggleInAccessPoints,
+    });
 
     return NextResponse.json({
       success: true,

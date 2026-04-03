@@ -74,7 +74,7 @@ export function RightSidebar({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const rightSidebarCtx = useRightSidebar();
-  const { hasDashboardAccess, isSuperAdmin } = usePermission();
+  const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
   
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
@@ -274,6 +274,10 @@ export function RightSidebar({
   const queueManagerSection: QueueManagerSection | null = onQueueManager
     ? normalizeQueueManagerSection(searchParams.get("section"))
     : null;
+  const canViewQueueSupervisor = isSuperAdmin
+    || canPerformAction("TICKET", "VIEW", { access_point_group: "TICKET_QUEUE_SUPERVISOR" });
+  const canViewQueueManager = isSuperAdmin
+    || canPerformAction("TICKET", "VIEW", { access_point_group: "TICKET_QUEUE_MANAGER" });
 
   const isRiderDashboard =
     cleanPathname === "/dashboard/riders" ||
@@ -460,30 +464,32 @@ export function RightSidebar({
                         />
                       ) : null}
                     </Link>
-                    <Link
-                      href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
-                      scroll={false}
-                      aria-expanded={onQueueSupervisor}
-                      className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
-                        onQueueSupervisor ? queueNavParentFaded : queueNavInactive
-                      }`}
-                    >
-                      {onQueueSupervisor ? (
-                        <span
-                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                    {canViewQueueSupervisor ? (
+                      <Link
+                        href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
+                        scroll={false}
+                        aria-expanded={onQueueSupervisor}
+                        className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                          onQueueSupervisor ? queueNavParentFaded : queueNavInactive
+                        }`}
+                      >
+                        {onQueueSupervisor ? (
+                          <span
+                            className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                            aria-hidden
+                          />
+                        ) : null}
+                        <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                        <span className="min-w-0 flex-1 truncate">Supervisor</span>
+                        <ChevronDown
+                          className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
+                            onQueueSupervisor ? "rotate-0" : "-rotate-90"
+                          }`}
                           aria-hidden
                         />
-                      ) : null}
-                      <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate">Supervisor</span>
-                      <ChevronDown
-                        className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
-                          onQueueSupervisor ? "rotate-0" : "-rotate-90"
-                        }`}
-                        aria-hidden
-                      />
-                    </Link>
-                    {onQueueSupervisor ? (
+                      </Link>
+                    ) : null}
+                    {canViewQueueSupervisor && onQueueSupervisor ? (
                       <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
                         {(
                           [
@@ -520,35 +526,39 @@ export function RightSidebar({
                         })}
                       </div>
                     ) : null}
-                    <Link
-                      href={TICKETS_QUEUE_MANAGER_PATH}
-                      scroll={false}
-                      aria-expanded={onQueueManager}
-                      className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
-                        onQueueManager ? queueNavParentFaded : queueNavInactive
-                      }`}
-                    >
-                      {onQueueManager ? (
-                        <span
-                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                    {canViewQueueManager ? (
+                      <Link
+                        href={TICKETS_QUEUE_MANAGER_PATH}
+                        scroll={false}
+                        aria-expanded={onQueueManager}
+                        className={`group relative flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                          onQueueManager ? queueNavParentFaded : queueNavInactive
+                        }`}
+                      >
+                        {onQueueManager ? (
+                          <span
+                            className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                            aria-hidden
+                          />
+                        ) : null}
+                        <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                        <span className="min-w-0 flex-1 truncate">Manager</span>
+                        <ChevronDown
+                          className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
+                            onQueueManager ? "rotate-0" : "-rotate-90"
+                          }`}
                           aria-hidden
                         />
-                      ) : null}
-                      <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate">Manager</span>
-                      <ChevronDown
-                        className={`h-4 w-4 shrink-0 opacity-70 transition-transform duration-200 ${
-                          onQueueManager ? "rotate-0" : "-rotate-90"
-                        }`}
-                        aria-hidden
-                      />
-                    </Link>
-                    {onQueueManager ? (
+                      </Link>
+                    ) : null}
+                    {canViewQueueManager && onQueueManager ? (
                       <div className="mt-2 space-y-1.5 border-l border-white/15 pl-3 ml-1">
                         {(
                           [
-                            ["max-open", "Max open tickets"],
-                            ["compose", "Default reply recipients"],
+                            ["max-open", "Queue settings"],
+                            ["agent-capacity", "Agent capacity"],
+                            ["assignment-sound", "Queue alert sound"],
+                            ["workflow-rules", "Workflow rules"],
                             ["email-assigned", "Email: assigned"],
                             ["email-reopened", "Email: reopened"],
                           ] as const
@@ -640,36 +650,40 @@ export function RightSidebar({
                     ) : null}
                     <Home className="h-5 w-5 shrink-0" aria-hidden />
                   </Link>
-                  <Link
-                    href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
-                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
-                      onQueueSupervisor ? queueNavCollapsedParentFaded : queueNavInactive
-                    }`}
-                    title="Supervisor"
-                  >
-                    {onQueueSupervisor ? (
-                      <span
-                        className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
-                        aria-hidden
-                      />
-                    ) : null}
-                    <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-                  </Link>
-                  <Link
-                    href={TICKETS_QUEUE_MANAGER_PATH}
-                    className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
-                      onQueueManager ? queueNavCollapsedParentFaded : queueNavInactive
-                    }`}
-                    title="Manager"
-                  >
-                    {onQueueManager ? (
-                      <span
-                        className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
-                        aria-hidden
-                      />
-                    ) : null}
-                    <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
-                  </Link>
+                  {canViewQueueSupervisor ? (
+                    <Link
+                      href={queueSupervisorHref("updated-agents", queueSupervisorAgentInUrl || undefined)}
+                      className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                        onQueueSupervisor ? queueNavCollapsedParentFaded : queueNavInactive
+                      }`}
+                      title="Supervisor"
+                    >
+                      {onQueueSupervisor ? (
+                        <span
+                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <Users className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                    </Link>
+                  ) : null}
+                  {canViewQueueManager ? (
+                    <Link
+                      href={TICKETS_QUEUE_MANAGER_PATH}
+                      className={`group relative flex w-full cursor-pointer items-center justify-center rounded-xl p-2.5 transition-all duration-150 ${
+                        onQueueManager ? queueNavCollapsedParentFaded : queueNavInactive
+                      }`}
+                      title="Manager"
+                    >
+                      {onQueueManager ? (
+                        <span
+                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-white/50"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <Zap className="h-5 w-5 shrink-0 opacity-90" aria-hidden />
+                    </Link>
+                  ) : null}
                 </div>
               </nav>
             ) : isTicketsDashboard && isOpen ? (

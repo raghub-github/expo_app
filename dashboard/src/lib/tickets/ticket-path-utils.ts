@@ -16,16 +16,18 @@ const RESERVED_TICKETS_FIRST_SEGMENT = new Set([
   "queue",
 ]);
 
-/** Punch-in / queue workspace (opens in its own tab from the ticket list header). */
+/** Punch-in / queue workspace (linked from the tickets hub header via client-side navigation). */
 export const TICKETS_QUEUE_HOME_PATH = "/dashboard/tickets/queue/home";
 export const TICKETS_QUEUE_SUPERVISOR_PATH = "/dashboard/tickets/queue/supervisor";
 export const TICKETS_QUEUE_MANAGER_PATH = "/dashboard/tickets/queue/manager";
 
 const QUEUE_MANAGER_HEADER_TITLES: Record<QueueManagerSection, string> = {
-  "max-open": "Max open tickets",
-  compose: "Automation",
+  "max-open": "Queue settings",
+  "agent-capacity": "Agent capacity",
+  "assignment-sound": "Queue alert sound",
   "email-assigned": "Email: assigned",
   "email-reopened": "Email: reopened",
+  "workflow-rules": "Workflow rules",
 };
 
 /** Title for the main app header on `/dashboard/tickets/queue/*` (uses `section` when relevant). */

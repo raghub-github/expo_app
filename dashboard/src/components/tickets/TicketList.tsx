@@ -8,7 +8,8 @@ import { useTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { playQueueAssignmentSound } from "@/lib/tickets/play-queue-assignment-sound";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -105,6 +106,24 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const updateTicket = useTicketUpdate();
   const queryClient = useQueryClient();
 
+  /** Shared cache with header AgentStatusToggle — used for queue-home empty state when offline. */
+  const { data: agentStatusRes, isFetched: agentStatusFetched } = useQuery<{
+    success: boolean;
+    data?: { currentStatus?: string; isOnline?: boolean };
+  }>({
+    queryKey: ["agentStatus"],
+    queryFn: async () => {
+      const res = await fetch("/api/agents/status");
+      if (!res.ok) throw new Error("Failed to fetch status");
+      return res.json();
+    },
+    staleTime: 10_000,
+  });
+  // Match AgentStatusToggle: default missing status to offline so list chrome and queue body stay in sync.
+  const queueResolvedAgentStatus = agentStatusRes?.data?.currentStatus || "offline";
+  const queueHomeAgentOffline =
+    isQueueHome && agentStatusFetched && queueResolvedAgentStatus === "offline";
+
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
 
@@ -199,13 +218,90 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   }, [queryFilters]);
 
   const queueListReady = !isQueueHome || Boolean(currentUser);
+  /** Queue home: wait for agent status before fetching tickets so we never show a stale "online" list after going offline. */
+  const queueHomeTicketsEnabled =
+    !isQueueHome || (agentStatusFetched && !queueHomeAgentOffline);
   const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters, {
-    enabled: queueListReady,
+    enabled: queueListReady && queueHomeTicketsEnabled,
   });
   const [loadingMessageSlow, setLoadingMessageSlow] = useState(false);
   const currentTotal = data?.total ?? 0;
-  const listReadyForUpdates = Boolean(data) && !isLoading && !isPending;
+  const listReadyForUpdates =
+    Boolean(data) && !isLoading && !isPending && queueHomeTicketsEnabled;
   const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(updatesPollBase, listReadyForUpdates);
+
+  const { data: queueSoundCfg } = useQuery({
+    queryKey: ["queueAssignmentSound"],
+    queryFn: async (): Promise<{ enabled: boolean; soundUrl: string }> => {
+      const res = await fetch("/api/tickets/queue-assignment-sound", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const j = (await res.json()) as {
+        success?: boolean;
+        data?: { enabled?: boolean; soundUrl?: string };
+      };
+      if (!res.ok || !j.success) {
+        return { enabled: true, soundUrl: "/notification.wav" };
+      }
+      return {
+        enabled: j.data?.enabled !== false,
+        soundUrl: String(j.data?.soundUrl ?? "/notification.wav"),
+      };
+    },
+    staleTime: 60_000,
+  });
+
+  const queueSoundListKey = useMemo(
+    () =>
+      isQueueHome && currentUser
+        ? `${page}-${pageSize}-${appliedTicketFilterCount}-${JSON.stringify(queryFilters)}`
+        : "",
+    [isQueueHome, currentUser, page, pageSize, appliedTicketFilterCount, queryFilters]
+  );
+
+  const queueSoundSeenRef = useRef<{ key: string; ids: Set<number> } | null>(null);
+  /** Plays buzzer when activity badge count rises (assignments may not be on the current page). */
+  const queueSoundLastBadgeCountRef = useRef(0);
+
+  useEffect(() => {
+    if (!isQueueHome || !queueSoundCfg?.enabled) {
+      return;
+    }
+    const url = queueSoundCfg.soundUrl;
+    if (!url?.startsWith("/")) return;
+    const prev = queueSoundLastBadgeCountRef.current;
+    if (newTicketsCount > prev) {
+      playQueueAssignmentSound(url);
+    }
+    queueSoundLastBadgeCountRef.current = newTicketsCount;
+  }, [isQueueHome, queueSoundCfg?.enabled, queueSoundCfg?.soundUrl, newTicketsCount]);
+
+  useEffect(() => {
+    if (!isQueueHome || !currentUser?.id || !queueSoundCfg?.enabled || data?.tickets == null) {
+      return;
+    }
+    const url = queueSoundCfg.soundUrl;
+    if (!url?.startsWith("/")) return;
+    const key = queueSoundListKey;
+    if (!key) return;
+
+    const seenBag = queueSoundSeenRef.current;
+    const currentIds = data.tickets.map((t) => t.id);
+
+    if (!seenBag || seenBag.key !== key) {
+      queueSoundSeenRef.current = { key, ids: new Set(currentIds) };
+      return;
+    }
+
+    const { ids: seen } = seenBag;
+    for (const id of currentIds) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        playQueueAssignmentSound(url);
+      }
+    }
+  }, [data?.tickets, isQueueHome, currentUser?.id, queueSoundCfg?.enabled, queueSoundCfg?.soundUrl, queueSoundListKey]);
 
   useEffect(() => {
     if (!autoSelectAllAfterPageSizeChangeRef.current) return;
@@ -622,7 +718,6 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       return (
         <div style={style}>
           <TicketListRow
-            key={ticket.id}
             ticket={ticket}
             selected={selectedIds.has(ticket.id)}
             onSelect={(checked) => onSelect(ticket.id, checked)}
@@ -658,7 +753,9 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   );
 
   // isLoading is false while the query is disabled (e.g. auth not ready); isPending stays true with no data — show spinner, not empty state.
-  const awaitingTickets = isLoading || (isPending && data == null);
+  // When queue home is offline we intentionally disable the tickets query — never spin forever on a disabled query with no data.
+  const awaitingTickets =
+    !(isQueueHome && queueHomeAgentOffline) && (isLoading || (isPending && data == null));
   if (awaitingTickets) {
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
@@ -695,6 +792,33 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
 
   const showInlineError = Boolean(error && hasCachedData);
 
+  if (queueHomeAgentOffline) {
+    return (
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-white">
+        {showInlineError && (
+          <div className="shrink-0 border-b border-red-100 bg-red-50 px-4 py-3">
+            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
+            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-4 py-12 text-center">
+          <div className="max-w-md text-gray-800">
+            <p className="text-base font-semibold text-gray-900">
+              Hit online to start receiving and viewing tickets from the queue.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!data || data.tickets.length === 0) {
     const emptyBecauseOfFilters = appliedTicketFilterCount > 0;
     return (
@@ -713,10 +837,16 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
           </div>
         )}
         <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-4 py-12 text-center">
-          {emptyBecauseOfFilters ? (
+          {queueHomeAgentOffline ? (
             <div className="max-w-md text-gray-800">
-              <p className="text-lg font-semibold tracking-tight">😒 Ohh Nooo......</p>
-              <p className="mt-3 text-base font-normal text-gray-600">You took a wrong turn!</p>
+              <p className="text-base font-semibold text-gray-900">
+                Hit online to start receiving and viewing tickets from the queue.
+              </p>
+            </div>
+          ) : emptyBecauseOfFilters ? (
+            <div className="max-w-md text-gray-800">
+              <p className="text-lg font-semibold tracking-tight">😒 Ohh Nooo there's nothing here......</p>
+              <p className="mt-3 text-base font-normal text-gray-600">Cool - We’re preparing your queue. Tickets will appear shortly.</p>
             </div>
           ) : (
             <p className="text-sm text-gray-500">No tickets to display.</p>
@@ -844,10 +974,22 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
               type="button"
               onClick={handleLoadNewTickets}
               className="inline-flex items-center gap-2 rounded-full border border-blue-400 bg-gray-100 px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-gray-200 hover:border-blue-500 transition-colors shrink-0 shadow-sm"
-              aria-label={`Load ${newTicketsCount} new ticket${newTicketsCount !== 1 ? "s" : ""}`}
+              aria-label={
+                isQueueHome
+                  ? `Load ${newTicketsCount} new or updated ticket${newTicketsCount !== 1 ? "s" : ""}`
+                  : `Load ${newTicketsCount} new ticket${newTicketsCount !== 1 ? "s" : ""}`
+              }
             >
               <RefreshCw className="h-4 w-4 text-blue-600" />
-              {newTicketsCount} new ticket{newTicketsCount !== 1 ? "s" : ""}
+              {isQueueHome ? (
+                <>
+                  {newTicketsCount} New updated
+                </>
+              ) : (
+                <>
+                  {newTicketsCount} new ticket{newTicketsCount !== 1 ? "s" : ""}
+                </>
+              )}
             </button>
           )}
         </div>
@@ -856,6 +998,14 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
         <div className="flex items-center gap-2 text-sm text-gray-600 shrink-0">
           <span className="text-xs text-gray-600 tabular-nums whitespace-nowrap" aria-live="polite">
             Page {page} of {Math.max(1, Math.ceil(currentTotal / pageSize) || 1)}
+            {isQueueHome && hasNewTickets ? (
+              <>
+                {" "}
+                <span className="font-medium text-blue-600">
+                  · {newTicketsCount} New updated
+                </span>
+              </>
+            ) : null}
             {" · "}
             Showing {currentTotal === 0 ? "0" : `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, currentTotal)}`} of {currentTotal}
           </span>

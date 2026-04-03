@@ -1,5 +1,10 @@
 import { Suspense } from "react";
-import { checkDashboardAccess, requireSuperAdminAccess } from "@/lib/permissions/page-protection";
+import { redirect } from "next/navigation";
+import {
+  checkDashboardAccess,
+  checkDashboardAccessPointAction,
+  requireSuperAdminAccess,
+} from "@/lib/permissions/page-protection";
 import { QueueManagerClient } from "@/components/tickets/queue/QueueManagerClient";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 
@@ -9,6 +14,22 @@ export default async function QueueManagerPage() {
   const hasTicketAccess = await checkDashboardAccess("TICKET");
   if (!hasTicketAccess) {
     await requireSuperAdminAccess();
+  }
+  const hasQueueEntryAccess = await checkDashboardAccessPointAction(
+    "TICKET",
+    "TICKET_AGENT_STATUS_TOGGLE",
+    "UPDATE"
+  );
+  if (!hasQueueEntryAccess) {
+    redirect("/dashboard/tickets");
+  }
+  const hasManagerAccess = await checkDashboardAccessPointAction(
+    "TICKET",
+    "TICKET_QUEUE_MANAGER",
+    "VIEW"
+  );
+  if (!hasManagerAccess) {
+    redirect("/dashboard/tickets/queue/home");
   }
   return (
     <Suspense

@@ -1,8 +1,6 @@
 import DashboardLayoutClient from "./DashboardLayoutClient";
 
-/** Force dynamic rendering so Home and Ticket detail (and all dashboard routes) always show latest UI — no cached HTML. */
-export const dynamic = "force-dynamic";
-
+/** Layout shell is static; individual pages opt into dynamic data via `cookies()` / server checks. Keeps client navigation from over-invalidating the whole dashboard. */
 export default function DashboardLayout({
   children,
 }: {

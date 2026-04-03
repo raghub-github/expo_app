@@ -4,11 +4,19 @@ type SqlClient = ReturnType<typeof import("@/lib/db/client").getSql>;
 
 type Tier = "primary" | "secondary";
 
-const TERMINAL_STATUS_LIST = ["CLOSED", "REJECTED", "RESOLVED", "CANCELLED"];
+const TERMINAL_STATUS_LIST = ["CLOSED", "REJECTED", "RESOLVED", "CANCELLED", "PROVISIONALLY_RESOLVED"];
+
+const MIN_CYCLE = 1;
+const MAX_CYCLE = 50;
+
+function clampCycle(n: number): number {
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(MAX_CYCLE, Math.max(MIN_CYCLE, Math.floor(n)));
+}
 
 /**
- * Picks next online agent for auto-assignment using 2:1 primary:secondary rhythm
- * (two consecutive picks from primary-mapped agents for the group, then one from secondary).
+ * Picks next online agent for auto-assignment using N:M primary:secondary rhythm
+ * (N consecutive picks from primary-mapped agents, then M from secondary, repeat).
  * Respects offline/break and queue group mappings. Returns null if no candidate.
  */
 export async function pickRoundRobinAssigneeForGroup(
@@ -18,32 +26,63 @@ export async function pickRoundRobinAssigneeForGroup(
   const maxCap = await getMaxOpenTicketsPerAgent(sql);
 
   const distRows = (await sql`
-    SELECT primary_slots_remaining
+    SELECT primary_slots_remaining,
+           secondary_slots_remaining,
+           primary_per_cycle,
+           secondary_per_cycle
     FROM public.ticket_auto_assign_distribution
     WHERE id = 1
     LIMIT 1
-  `) as { primary_slots_remaining?: number }[];
+  `) as {
+    primary_slots_remaining?: unknown;
+    secondary_slots_remaining?: unknown;
+    primary_per_cycle?: unknown;
+    secondary_per_cycle?: unknown;
+  }[];
 
-  let slots = Math.max(0, Number(distRows[0]?.primary_slots_remaining ?? 2) || 2);
-  if (slots > 2) slots = 2;
+  const row = distRows[0];
+  const primaryPerCycle = clampCycle(Number(row?.primary_per_cycle ?? 2) || 2);
+  const secondaryPerCycle = clampCycle(Number(row?.secondary_per_cycle ?? 1) || 1);
 
-  const tier: Tier = slots > 0 ? "primary" : "secondary";
+  let primaryLeft = Math.max(0, Math.floor(Number(row?.primary_slots_remaining ?? primaryPerCycle)));
+  if (!Number.isFinite(primaryLeft) || primaryLeft > primaryPerCycle) primaryLeft = primaryPerCycle;
+
+  let secondaryLeft = Math.max(0, Math.floor(Number(row?.secondary_slots_remaining ?? 0)));
+  if (!Number.isFinite(secondaryLeft) || secondaryLeft > secondaryPerCycle) secondaryLeft = 0;
+
+  const tier: Tier = primaryLeft > 0 ? "primary" : "secondary";
   const picked = await pickAgentInTier(sql, ticketGroupId, tier, maxCap);
   if (picked == null) return null;
 
-  let nextSlots = slots;
+  let nextPrimary = primaryLeft;
+  let nextSecondary = secondaryLeft;
+
   if (tier === "primary") {
-    nextSlots = Math.max(0, slots - 1);
+    nextPrimary = Math.max(0, primaryLeft - 1);
   } else {
-    nextSlots = 2;
+    if (nextSecondary === 0) {
+      nextSecondary = secondaryPerCycle;
+    }
+    nextSecondary = Math.max(0, nextSecondary - 1);
+    if (nextSecondary === 0) {
+      nextPrimary = primaryPerCycle;
+    }
   }
 
   await sql`
-    INSERT INTO public.ticket_auto_assign_distribution (id, primary_slots_remaining, updated_at)
-    VALUES (1, ${nextSlots}, now())
+    INSERT INTO public.ticket_auto_assign_distribution (
+      id,
+      primary_slots_remaining,
+      secondary_slots_remaining,
+      primary_per_cycle,
+      secondary_per_cycle,
+      updated_at
+    )
+    VALUES (1, ${nextPrimary}, ${nextSecondary}, ${primaryPerCycle}, ${secondaryPerCycle}, now())
     ON CONFLICT (id) DO UPDATE SET
-      primary_slots_remaining = ${nextSlots},
-      updated_at = now()
+      primary_slots_remaining = EXCLUDED.primary_slots_remaining,
+      secondary_slots_remaining = EXCLUDED.secondary_slots_remaining,
+      updated_at = EXCLUDED.updated_at
   `;
 
   return picked;
@@ -69,8 +108,9 @@ async function pickAgentInTier(
       AND LOWER(COALESCE(ap.current_status::text, '')) = 'online'
       AND (SELECT COUNT(*)::int FROM public.unified_tickets ut
              WHERE ut.assigned_to_agent_id = qa.system_user_id
-               AND NOT (ut.status::text = ANY(${TERMINAL_STATUS_LIST}))) < ${maxCap}
-    ORDER BY open_n ASC, random()
+               AND NOT (ut.status::text = ANY(${TERMINAL_STATUS_LIST})))
+          < LEAST(${maxCap}::int, COALESCE(ap.max_open_tickets_override, ${maxCap}::int))
+    ORDER BY open_n ASC, qa.system_user_id ASC
     LIMIT 1
   `) as { uid?: unknown }[])
       : ((await sql`
@@ -85,8 +125,9 @@ async function pickAgentInTier(
       AND LOWER(COALESCE(ap.current_status::text, '')) = 'online'
       AND (SELECT COUNT(*)::int FROM public.unified_tickets ut
              WHERE ut.assigned_to_agent_id = qa.system_user_id
-               AND NOT (ut.status::text = ANY(${TERMINAL_STATUS_LIST}))) < ${maxCap}
-    ORDER BY open_n ASC, random()
+               AND NOT (ut.status::text = ANY(${TERMINAL_STATUS_LIST})))
+          < LEAST(${maxCap}::int, COALESCE(ap.max_open_tickets_override, ${maxCap}::int))
+    ORDER BY open_n ASC, qa.system_user_id ASC
     LIMIT 1
   `) as { uid?: unknown }[]);
 

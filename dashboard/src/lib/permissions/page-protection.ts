@@ -9,8 +9,14 @@
 import { redirect } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
-import { hasDashboardAccessByAuth, isSuperAdmin, getDashboardTypeFromPath } from "./engine";
-import type { DashboardType } from "../db/schema";
+import {
+  hasDashboardAccessByAuth,
+  isSuperAdmin,
+  getDashboardTypeFromPath,
+  getSystemUserIdFromAuthUser,
+  hasAccessPointAction,
+} from "./engine";
+import type { AccessPointGroup, ActionType, DashboardType } from "../db/schema";
 
 const maxGetUserAttempts = 2;
 
@@ -143,6 +149,43 @@ export async function checkDashboardAccess(
     );
   } catch (err) {
     console.error("Error checking dashboard access:", err);
+    return false;
+  }
+}
+
+/**
+ * Check access-point action without redirecting.
+ * Useful for page-level guards that depend on specific feature toggles.
+ */
+export async function checkDashboardAccessPointAction(
+  dashboardType: DashboardType,
+  accessPointGroup: AccessPointGroup,
+  actionType: ActionType
+): Promise<boolean> {
+  try {
+    const { user, error } = await getAuthenticatedUser();
+    if (error || !user?.email) {
+      return false;
+    }
+
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
+    if (userIsSuperAdmin) {
+      return true;
+    }
+
+    const hasAccess = await hasDashboardAccessByAuth(user.id, user.email, dashboardType);
+    if (!hasAccess) {
+      return false;
+    }
+
+    const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email);
+    if (!systemUserId) {
+      return false;
+    }
+
+    return hasAccessPointAction(systemUserId, dashboardType, accessPointGroup, actionType);
+  } catch (err) {
+    console.error("Error checking dashboard access point action:", err);
     return false;
   }
 }

@@ -1,15 +1,20 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { createPortal } from "react-dom";
-import { MoreVertical, Eye, Edit } from "lucide-react";
+import Link from "next/link";
 import { CustomerWithStats } from "@/lib/db/operations/customers";
-import { useRouter } from "next/navigation";
+import {
+  resolveTrustTier,
+  TRUST_TIER_LABEL,
+  trustTierBadgeClass,
+  type CustomerTrustTier,
+} from "@/lib/customers/trust-tier";
 
 interface CustomerTableProps {
   customers: CustomerWithStats[];
   loading?: boolean;
   pageType?: "all" | "food" | "parcel" | "person_ride";
+  /** Preserved in links so the header search bar stays after opening a customer. */
+  searchQuery?: string;
   onPageChange?: (page: number) => void;
   currentPage?: number;
   totalPages?: number;
@@ -27,67 +32,15 @@ export function CustomerTable({
   customers,
   loading = false,
   pageType = "all",
+  searchQuery,
   onPageChange,
   currentPage = 1,
   totalPages = 1,
 }: CustomerTableProps) {
-  const router = useRouter();
-  const [openDropdownId, setOpenDropdownId] = useState<number | null>(null);
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
-  const buttonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
-
-  // Calculate dropdown position when opened
-  useEffect(() => {
-    if (openDropdownId !== null && buttonRefs.current[openDropdownId]) {
-      const button = buttonRefs.current[openDropdownId];
-      if (button) {
-        const rect = button.getBoundingClientRect();
-        setDropdownPosition({
-          top: rect.top - 8, // Position above the button
-          left: rect.right - 192, // Align to right edge (192px = w-48)
-        });
-      }
-    } else {
-      setDropdownPosition(null);
-    }
-  }, [openDropdownId]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (openDropdownId !== null) {
-        const button = buttonRefs.current[openDropdownId];
-        const target = event.target as Node;
-        if (button && !button.contains(target)) {
-          // Check if click is on the portal dropdown
-          const portalDropdown = document.querySelector('[data-customer-action-menu]');
-          if (portalDropdown && !portalDropdown.contains(target)) {
-            setOpenDropdownId(null);
-          }
-        }
-      }
-    };
-
-    if (openDropdownId !== null) {
-      document.addEventListener("mousedown", handleClickOutside);
-      return () => {
-        document.removeEventListener("mousedown", handleClickOutside);
-      };
-    }
-  }, [openDropdownId]);
-
-  const handleViewDetails = (customerId: number) => {
-    setOpenDropdownId(null);
-    // Navigate to customer details page
-    router.push(`/dashboard/customers/${customerId}`);
-  };
-
-  const handleEdit = (customerId: number) => {
-    setOpenDropdownId(null);
-    // Navigate to customer edit page
-    router.push(`/dashboard/customers/${customerId}/edit`);
-  };
-
+  const searchSuffix =
+    searchQuery && searchQuery.trim().length > 0
+      ? `?search=${encodeURIComponent(searchQuery.trim())}`
+      : "";
   const formatCurrency = (amount: number | null | undefined) => {
     if (amount === null || amount === undefined) return "₹0.00";
     return `₹${Number(amount).toFixed(2)}`;
@@ -145,94 +98,94 @@ export function CustomerTable({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full divide-y divide-gray-200">
-        <thead className="bg-gray-50">
+    <div className="overflow-x-auto rounded-xl border border-teal-200/60 bg-gradient-to-br from-[#E6F6F5]/80 to-white shadow-sm ring-1 ring-teal-900/5">
+      <table className="min-w-full divide-y divide-teal-100/80">
+        <thead className="bg-[#0f2d42]/90">
           <tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
               Customer ID
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
               Name
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+            <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
               Mobile
             </th>
             {pageType === "all" && (
               <>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Order Types
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Total Orders
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Total Spent
                 </th>
               </>
             )}
             {pageType === "food" && (
               <>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Food Orders
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Total Spent
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Last Order
                 </th>
               </>
             )}
             {pageType === "parcel" && (
               <>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Parcel Orders
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Total Spent
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Last Order
                 </th>
               </>
             )}
             {pageType === "person_ride" && (
               <>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Ride Bookings
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Total Spent
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
                   Last Ride
                 </th>
               </>
             )}
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Status
+            <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
+              Trust tier
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-              Actions
+            <th className="px-6 py-3 text-left text-xs font-medium text-white/90 uppercase tracking-wider">
+              Status
             </th>
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
+        <tbody className="bg-white/90 divide-y divide-teal-100/90">
           {customers.map((customer) => {
             const foodStats = getOrderStatsForType(customer.orderStats, "food");
             const parcelStats = getOrderStatsForType(customer.orderStats, "parcel");
             const rideStats = getOrderStatsForType(customer.orderStats, "person_ride");
 
             return (
-              <tr key={customer.id} className="hover:bg-gray-50">
+              <tr key={customer.id} className="hover:bg-teal-50/50 transition-colors">
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <button
-                    onClick={() => handleViewDetails(customer.id)}
-                    className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                  <Link
+                    href={`/dashboard/customers/${customer.id}${searchSuffix}`}
+                    className="font-medium text-[#0d5c4a] hover:text-[#0f2d42] hover:underline"
                   >
                     {customer.customerId}
-                  </button>
+                  </Link>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                   {customer.fullName}
@@ -293,6 +246,23 @@ export function CustomerTable({
                   </>
                 )}
                 <td className="px-6 py-4 whitespace-nowrap">
+                  {(() => {
+                    const tier = resolveTrustTier(
+                      customer.trustTier,
+                      customer.trustScore
+                    ) as CustomerTrustTier;
+                    return (
+                      <span
+                        className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${trustTierBadgeClass(
+                          tier
+                        )}`}
+                      >
+                        {TRUST_TIER_LABEL[tier]}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
                   <span
                     className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                       STATUS_COLORS[customer.accountStatus] ||
@@ -302,79 +272,20 @@ export function CustomerTable({
                     {customer.accountStatus}
                   </span>
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <button
-                    ref={(el) => {
-                      buttonRefs.current[customer.id] = el;
-                    }}
-                    onClick={() =>
-                      setOpenDropdownId(
-                        openDropdownId === customer.id ? null : customer.id
-                      )
-                    }
-                    className="text-gray-400 hover:text-gray-600 focus:outline-none"
-                    aria-label="Customer actions"
-                  >
-                    <MoreVertical className="h-5 w-5" />
-                  </button>
-                </td>
               </tr>
             );
           })}
         </tbody>
       </table>
 
-      {/* Action Dropdown Portal */}
-      {openDropdownId !== null &&
-        dropdownPosition !== null &&
-        typeof document !== "undefined" &&
-        createPortal(
-          <>
-            {/* Backdrop to close on outside click */}
-            <div
-              className="fixed inset-0 z-[9998]"
-              onClick={() => setOpenDropdownId(null)}
-              aria-hidden="true"
-            />
-            {/* Dropdown Menu */}
-            <div
-              data-customer-action-menu
-              className="fixed z-[9999] w-48 bg-white rounded-md shadow-xl border border-gray-200 py-1"
-              style={{
-                top: `${dropdownPosition.top}px`,
-                left: `${dropdownPosition.left}px`,
-              }}
-              role="menu"
-            >
-              <button
-                onClick={() => handleViewDetails(openDropdownId)}
-                className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                role="menuitem"
-              >
-                <Eye className="h-4 w-4" />
-                View Details
-              </button>
-              <button
-                onClick={() => handleEdit(openDropdownId)}
-                className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                role="menuitem"
-              >
-                <Edit className="h-4 w-4" />
-                Edit
-              </button>
-            </div>
-          </>,
-          document.body
-        )}
-
-      {/* Pagination */}
       {totalPages > 1 && onPageChange && (
-        <div className="flex items-center justify-between px-6 py-4 border-t border-gray-200 bg-white">
+        <div className="flex items-center justify-between px-6 py-4 border-t border-teal-100/90 bg-[#f6fdfc]/80">
           <div className="text-sm text-gray-700">
             Page {currentPage} of {totalPages}
           </div>
           <div className="flex gap-2">
             <button
+              type="button"
               onClick={() => onPageChange(Math.max(1, currentPage - 1))}
               disabled={currentPage === 1}
               className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -382,6 +293,7 @@ export function CustomerTable({
               Previous
             </button>
             <button
+              type="button"
               onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
               disabled={currentPage === totalPages}
               className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"

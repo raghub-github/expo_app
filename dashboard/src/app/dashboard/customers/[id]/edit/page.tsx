@@ -9,8 +9,6 @@ interface Customer {
   id: number;
   customerId: string;
   fullName: string;
-  firstName?: string | null;
-  lastName?: string | null;
   email?: string | null;
   primaryMobile: string;
   accountStatus: string;

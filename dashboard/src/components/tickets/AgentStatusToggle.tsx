@@ -85,7 +85,25 @@ export function AgentStatusToggle() {
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (_json, variables) => {
+      const next = variables.status;
+      queryClient.setQueryData<AgentStatusResponse>(["agentStatus"], (prev) => {
+        const d = prev?.data;
+        const isOnline = next === "online" ? true : next === "offline" ? false : Boolean(d?.isOnline);
+        return {
+          success: true,
+          data: {
+            isOnline,
+            currentStatus: next,
+            breakStartedAt: d?.breakStartedAt ?? null,
+            lastOnlineAt: d?.lastOnlineAt ?? null,
+            totalOnlineTimeMinutes: d?.totalOnlineTimeMinutes ?? 0,
+            totalBreakTimeMinutes: d?.totalBreakTimeMinutes ?? 0,
+            totalBusyTimeMinutes: d?.totalBusyTimeMinutes ?? 0,
+            busyStartedAt: d?.busyStartedAt ?? null,
+          },
+        };
+      });
       queryClient.invalidateQueries({ queryKey: ["agentStatus"] });
       void queryClient.invalidateQueries({ queryKey: ["tickets", "agents"] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
@@ -110,6 +128,16 @@ export function AgentStatusToggle() {
       });
     }
   }, [isMenuOpen]);
+
+  const handleMainButtonClick = () => {
+    if (statusUnknown || updateStatusMutation.isPending) return;
+    if (currentStatus === "offline") {
+      setIsMenuOpen(false);
+      updateStatusMutation.mutate({ status: "online" });
+      return;
+    }
+    setIsMenuOpen((open) => !open);
+  };
 
   const handleStatusChange = (newStatus: "online" | "offline" | "break" | "busy") => (e: React.MouseEvent) => {
     e.preventDefault();
@@ -203,32 +231,53 @@ export function AgentStatusToggle() {
           ? "bg-green-600/30 text-green-700 hover:bg-green-600/40"
           : "bg-gray-300/50 text-gray-600 hover:bg-gray-300/70";
 
+  const showLiveRadar = !statusUnknown && isOnline && currentStatus === "online";
+
   return (
     <div className="flex items-center gap-2 relative flex-shrink-0">
-      {/* Online / Offline / Break / Busy toggle - always visible, same size when loading */}
+      {/* Live radar (queue header — replaces former notification slot when online) */}
+      {showLiveRadar ? (
+        <span
+          className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-emerald-600/90"
+          aria-hidden
+          title="Live — queue active"
+        >
+          <span className="absolute inline-flex h-6 w-6 rounded-full bg-emerald-500/18 animate-ping" />
+          <span className="absolute inline-flex h-4 w-4 rounded-full bg-emerald-500/12 animate-ping [animation-delay:0.45s]" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-600/85 shadow-sm ring-1 ring-white/90" />
+        </span>
+      ) : null}
       <div className="relative">
         <button
           ref={buttonRef}
           type="button"
-          onClick={() => !statusUnknown && setIsMenuOpen(!isMenuOpen)}
-          disabled={statusUnknown}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all min-w-[72px] justify-center ${
+          onClick={handleMainButtonClick}
+          disabled={statusUnknown || updateStatusMutation.isPending}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg min-w-[72px] justify-center cursor-pointer select-none transition-all duration-200 ease-out outline-none focus-visible:ring-2 focus-visible:ring-green-500/50 focus-visible:ring-offset-1 hover:brightness-[1.03] active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60 disabled:cursor-not-allowed ${
             statusUnknown ? "bg-gray-200/80 text-gray-500 animate-pulse" : statusStyles
           }`}
-          title={statusUnknown ? "Loading…" : isOnline ? "Change status" : "Go online"}
-          aria-haspopup="menu"
-          aria-expanded={isMenuOpen}
+          title={
+            statusUnknown
+              ? "Loading…"
+              : updateStatusMutation.isPending
+                ? "Updating…"
+                : currentStatus === "offline"
+                  ? "Go online"
+                  : "Change status"
+          }
+          aria-haspopup={currentStatus === "offline" ? undefined : "menu"}
+          aria-expanded={currentStatus === "offline" ? undefined : isMenuOpen}
         >
           {statusUnknown ? (
             <div className="h-3.5 w-3.5 rounded-full bg-gray-400 animate-pulse" />
           ) : (
             <Power
-              className={`h-3.5 w-3.5 ${
+              className={`h-3.5 w-3.5 transition-transform duration-200 ${
                 isOnline ? "text-green-700" : currentStatus === "break" ? "text-amber-700" : currentStatus === "busy" ? "text-orange-700" : "text-gray-600"
               }`}
             />
           )}
-          <span className="text-xs font-medium">{statusUnknown ? "…" : statusLabel}</span>
+          <span className="text-xs font-medium">{statusUnknown ? "…" : updateStatusMutation.isPending ? "…" : statusLabel}</span>
         </button>
 
         {/* Status Menu - rendered in portal so it's always on top and clickable */}

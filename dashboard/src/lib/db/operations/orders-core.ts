@@ -32,6 +32,8 @@ export interface ListOrdersCoreFilters {
   page?: number;
   limit?: number;
   id?: number;
+  /** Filter by `orders_core.customer_id` (internal `customers.id`). */
+  customerDbId?: number;
   search?: string;
   searchType?: OrderSearchType;
   statusFilter?: OrderStatusFilter;
@@ -139,6 +141,10 @@ export async function listOrdersCore(
 
   if (filters.id != null && Number.isFinite(filters.id)) {
     conditions.push(eq(ordersCore.id, filters.id));
+  }
+
+  if (filters.customerDbId != null && Number.isFinite(filters.customerDbId)) {
+    conditions.push(eq(ordersCore.customerId, filters.customerDbId));
   }
 
   // Status filter
@@ -320,11 +326,7 @@ export async function listOrdersCore(
                 ilike(customers.primaryMobile, customerTerm),
                 ilike(customers.primaryMobileNormalized, customerTerm)
               )!
-            : or(
-                ilike(customers.fullName, customerTerm),
-                ilike(customers.firstName, customerTerm),
-                ilike(customers.lastName, customerTerm)
-              )!
+            : ilike(customers.fullName, customerTerm)!
         )
       )
       .orderBy(orderBy)
@@ -352,11 +354,7 @@ export async function listOrdersCore(
                 ilike(customers.primaryMobile, `%${search}%`),
                 ilike(customers.primaryMobileNormalized, `%${search}%`)
               )!
-            : or(
-                ilike(customers.fullName, `%${search}%`),
-                ilike(customers.firstName, `%${search}%`),
-                ilike(customers.lastName, `%${search}%`)
-              )!
+            : ilike(customers.fullName, `%${search}%`)!
         )
       );
 

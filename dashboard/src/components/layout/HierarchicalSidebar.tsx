@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import {
@@ -43,6 +43,7 @@ interface HierarchicalSidebarProps {
 
 export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard, onNavigationStart }: HierarchicalSidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
   const handleNavPrefetch = useCallback(
@@ -123,6 +124,19 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   useEffect(() => {
     setPendingNavHref(null);
   }, [cleanPathname]);
+
+  /** Same moment as optimistic sidebar highlight — updates the address bar immediately (App Router Link alone can lag behind context). */
+  const pushIfNavigating = useCallback(
+    (targetHref: string) => {
+      const cleanTarget = targetHref.split("?")[0].split("#")[0];
+      const isAlreadyActive =
+        cleanPathname === cleanTarget ||
+        (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
+      if (isAlreadyActive) return;
+      router.push(targetHref);
+    },
+    [cleanPathname, router]
+  );
 
   const effectiveSuperAdmin = hasError || useFallback ? true : isSuperAdmin;
 
@@ -218,7 +232,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <>
-              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2.5 flex-1 min-w-0"
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  onNavigationStart?.("/dashboard");
+                  setPendingNavHref("/dashboard");
+                  currentRouteCtx?.setCurrentRoute("/dashboard");
+                  pushIfNavigating("/dashboard");
+                }}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  setMobileMenuOpen(false);
+                  if (e.detail === 0) {
+                    onNavigationStart?.("/dashboard");
+                    setPendingNavHref("/dashboard");
+                    currentRouteCtx?.setCurrentRoute("/dashboard");
+                    pushIfNavigating("/dashboard");
+                  }
+                }}
+              >
                 <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
                 <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
               </Link>
@@ -227,7 +263,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
               </button>
             </>
           ) : (
-            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+            <Link
+              href="/dashboard"
+              className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1"
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                onNavigationStart?.("/dashboard");
+                setPendingNavHref("/dashboard");
+                currentRouteCtx?.setCurrentRoute("/dashboard");
+                pushIfNavigating("/dashboard");
+              }}
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                setMobileMenuOpen(false);
+                if (e.detail === 0) {
+                  onNavigationStart?.("/dashboard");
+                  setPendingNavHref("/dashboard");
+                  currentRouteCtx?.setCurrentRoute("/dashboard");
+                  pushIfNavigating("/dashboard");
+                }
+              }}
+            >
               <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
               <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
             </Link>
@@ -255,14 +313,27 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 <Link
                   key={item.name}
                   href={itemHref}
-                  onMouseDown={() => {
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
                     onNavigationStart?.(itemHref);
                     setPendingNavHref(itemHref);
                     currentRouteCtx?.setCurrentRoute(itemHref);
+                    pushIfNavigating(itemHref);
                   }}
                   onMouseEnter={() => handleNavPrefetch(itemHref)}
                   onFocus={() => handleNavPrefetch(itemHref)}
-                  onClick={() => setMobileMenuOpen(false)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                    e.preventDefault();
+                    setMobileMenuOpen(false);
+                    if (e.detail === 0) {
+                      onNavigationStart?.(itemHref);
+                      setPendingNavHref(itemHref);
+                      currentRouteCtx?.setCurrentRoute(itemHref);
+                      pushIfNavigating(itemHref);
+                    }
+                  }}
                   className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
                     isOpen
                       ? `gap-3 px-3 py-2.5 text-sm font-medium ${

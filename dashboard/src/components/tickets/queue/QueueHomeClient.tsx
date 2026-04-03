@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { TicketDashboardClient } from "@/components/tickets/TicketDashboardClient";
@@ -11,6 +11,7 @@ export function QueueHomeClient() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [, startTransition] = useTransition();
   const { data: agentsData, isSuccess } = useTicketsAgentsQuery();
 
   useEffect(() => {
@@ -23,7 +24,10 @@ export function QueueHomeClient() {
     const next = new URLSearchParams(searchParams.toString());
     next.set("assignedToIds", id);
     next.set("status", statusWant);
-    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+    const url = `${pathname}?${next.toString()}`;
+    startTransition(() => {
+      router.replace(url, { scroll: false });
+    });
   }, [isSuccess, agentsData?.currentUser?.id, pathname, router, searchParams]);
 
   return (

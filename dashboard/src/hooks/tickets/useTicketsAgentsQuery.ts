@@ -32,7 +32,7 @@ export interface TicketsAgentsData {
   currentUser?: { id: number; name: string; email: string };
 }
 
-async function fetchTicketsAgents(
+export async function fetchTicketsAgents(
   includePresence: boolean,
   accessApprovedOnly: boolean
 ): Promise<TicketsAgentsData> {

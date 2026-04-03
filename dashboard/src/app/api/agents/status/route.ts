@@ -101,20 +101,87 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
     }
 
-    // Check if user has ticket action permissions (UPDATE or ASSIGN)
-    const hasTicketEditAccess = await canPerformActionByAuth(
-      user.id,
-      user.email!,
+    // Check if user has ticket action permissions (UPDATE or ASSIGN).
+    // Some users are configured on ticket sub-dashboards, so validate across all ticket dashboard variants.
+    const ticketDashboards = [
       "TICKET",
-      "UPDATE"
-    ) || await canPerformActionByAuth(
-      user.id,
-      user.email!,
-      "TICKET",
-      "ASSIGN"
-    );
+      "TICKET_FOOD",
+      "TICKET_PARCEL",
+      "TICKET_PERSON_RIDE",
+      "TICKET_GENERAL",
+      "TICKET_CUSTOMER_FOOD",
+      "TICKET_CUSTOMER_PARCEL",
+      "TICKET_CUSTOMER_PERSON_RIDE",
+      "TICKET_CUSTOMER_GENERAL",
+      // Legacy/normalized values seen in older data
+      "ticket",
+      "tickets",
+      "ticket_food",
+      "ticket_parcel",
+      "ticket_person_ride",
+      "ticket_general",
+      "ticket_customer_food",
+      "ticket_customer_parcel",
+      "ticket_customer_person_ride",
+      "ticket_customer_general",
+    ] as const;
 
-    if (!hasTicketEditAccess) {
+    let hasTicketEditAccess = false;
+    const permissionDebug: Array<{ dashboardType: string; canUpdate: boolean; canAssign: boolean }> = [];
+    for (const dashboardType of ticketDashboards) {
+      const canUpdate = await canPerformActionByAuth(
+        user.id,
+        user.email!,
+        dashboardType as any,
+        "UPDATE"
+      );
+      let canAssign = false;
+      if (canUpdate) {
+        permissionDebug.push({ dashboardType, canUpdate, canAssign });
+        hasTicketEditAccess = true;
+        break;
+      }
+      canAssign = await canPerformActionByAuth(
+        user.id,
+        user.email!,
+        dashboardType as any,
+        "ASSIGN"
+      );
+      permissionDebug.push({ dashboardType, canUpdate, canAssign });
+      if (canAssign) {
+        hasTicketEditAccess = true;
+        break;
+      }
+    }
+
+    // Dedicated grant for queue header online/offline toggle (Super Admin can assign explicitly).
+    const hasStatusToggleAccess =
+      (await canPerformActionByAuth(
+        user.id,
+        user.email!,
+        "TICKET",
+        "UPDATE",
+        undefined,
+        { access_point_group: "TICKET_AGENT_STATUS_TOGGLE" }
+      )) ||
+      (await canPerformActionByAuth(
+        user.id,
+        user.email!,
+        "ticket" as any,
+        "UPDATE",
+        undefined,
+        { access_point_group: "TICKET_AGENT_STATUS_TOGGLE" }
+      ));
+
+    if (!hasTicketEditAccess && !hasStatusToggleAccess) {
+      console.warn("[PATCH /api/agents/status] permission denied", {
+        authUserId: user.id,
+        email: user.email,
+        systemUserId: systemUser.id,
+        primaryRole: systemUser.primary_role,
+        permissionDebug,
+        hasStatusToggleAccess,
+      });
       return NextResponse.json(
         { success: false, error: "You don't have permission to change status" },
         { status: 403 }
@@ -434,6 +501,42 @@ export async function PATCH(request: NextRequest) {
         await runQueueBalanceAutoAssign(sqlClient, { forAgentUserId: systemUser.id });
       } catch (e) {
         console.error("[PATCH /api/agents/status] queue auto-assign:", e);
+      }
+      try {
+        const { runAgentAutomation } = await import("@/lib/tickets/ticket-automation/engine");
+        const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
+        await runAgentAutomation(sqlClient, systemUser.id, { workerLabel: "api-agents-status-online" });
+        await processPendingAutomationJobs(sqlClient, {
+          limit: 12,
+          workerId: `api-agents-status-${systemUser.id}`,
+        });
+      } catch (autoErr) {
+        console.error("[PATCH /api/agents/status] workflow automation:", autoErr);
+      }
+    }
+
+    // Fully offline only: release + automation. Break/busy never enqueue agent_went_offline
+    // (tickets stay assigned while the agent is on break or busy).
+    if (status === "offline") {
+      try {
+        const { getTicketQueueOfflineReleaseSettings } = await import("@/lib/tickets/ticket-queue-offline-settings");
+        const { enqueueTicketAutomationJob } = await import("@/lib/tickets/ticket-automation/enqueue-automation-job");
+        const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
+        const offlineSettings = await getTicketQueueOfflineReleaseSettings(sqlClient);
+        if (offlineSettings.releaseWhenAgentOffline) {
+          await enqueueTicketAutomationJob(sqlClient, {
+            ticketId: null,
+            agentUserId: systemUser.id,
+            triggerEvent: "agent_went_offline",
+            idempotencyKey: `agent-offline:${systemUser.id}:${Math.floor(Date.now() / 1000)}`,
+          });
+          await processPendingAutomationJobs(sqlClient, {
+            limit: 20,
+            workerId: `api-agents-offline-${systemUser.id}`,
+          });
+        }
+      } catch (autoErr) {
+        console.error("[PATCH /api/agents/status] offline automation:", autoErr);
       }
     }
 

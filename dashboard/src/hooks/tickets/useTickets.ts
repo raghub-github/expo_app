@@ -40,6 +40,8 @@ export interface TicketFilters {
   updatedAfter?: string;
   /** Count/list only rows created strictly after this ISO timestamp (new-ticket badge). */
   createdAfter?: string;
+  /** Count/list rows with created_at OR updated_at strictly after this (queue/main “new or updated” poll). */
+  activityAfter?: string;
   limit?: number;
   offset?: number;
   /** When true, GET /api/tickets applies queue home rules (session assignee + active statuses only). */
@@ -167,6 +169,7 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   if (filters.sortOrder) params.set("sortOrder", filters.sortOrder);
   if (filters.updatedAfter?.trim()) params.set("updatedAfter", filters.updatedAfter.trim());
   if (filters.createdAfter?.trim()) params.set("createdAfter", filters.createdAfter.trim());
+  if (filters.activityAfter?.trim()) params.set("activityAfter", filters.activityAfter.trim());
   if (filters.queueScope) params.set("queueScope", "1");
   params.set("limit", String(filters.limit || 50));
   params.set("offset", String(filters.offset || 0));

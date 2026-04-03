@@ -207,6 +207,7 @@ function DashboardLayoutClient({
 
     const cleanPrev = (prevPath ?? "").split("?")[0].split("#")[0];
     const cleanNext = (pathname ?? "").split("?")[0].split("#")[0];
+    // Main tickets list, queue workspace, CSAT, etc.: keep list/detail caches when moving within this area.
     if (cleanPrev.startsWith("/dashboard/tickets") && cleanNext.startsWith("/dashboard/tickets")) {
       return;
     }
@@ -267,13 +268,16 @@ function DashboardLayoutClient({
 
   const isRiderDashboardLayout =
     cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
+  const isCustomersSection = cleanPathname.startsWith("/dashboard/customers");
 
   const hasRightSidebar = useMemo(() => {
+    // Customer dashboard: use full width — no secondary (right) nav rail.
+    if (isCustomersSection) return false;
     // For rider dashboard we always allow a right sidebar; the inner layout
     // will still hide it until a rider is actually selected.
     if (isRiderDashboardLayout) return true;
     return isInSpecificDashboard && currentSubRoutes.length > 0;
-  }, [isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
+  }, [isCustomersSection, isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -657,6 +661,13 @@ function DashboardLayoutContent({
                 cleanPathname === cleanTarget ||
                 (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
               if (isAlreadyActive) return;
+              // Tickets hub + queue share one app shell; let client routes load their own loaders instead of masking the whole main column.
+              if (
+                cleanPathname.startsWith("/dashboard/tickets") &&
+                cleanTarget.startsWith("/dashboard/tickets")
+              ) {
+                return;
+              }
               setPendingNavHref(cleanTarget);
             }}
           />
@@ -706,7 +717,7 @@ function DashboardLayoutContent({
                   />
                 </div>
               </div>
-              {(!isRiderDashboardLayout || hasRiderSidebarContent) && (
+              {hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && (
                 <RightSidebar
                   isOpen={isRightSidebarOpen}
                   onToggle={

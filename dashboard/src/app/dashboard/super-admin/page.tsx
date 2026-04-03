@@ -57,6 +57,13 @@ const CategoriesIcon = dynamic(async () => {
   };
 });
 
+const StoreOnboardingIcon = dynamic(async () => {
+  const { IndianRupee } = await import("lucide-react");
+  return function StoreOnboardingIcon(props: { className?: string }) {
+    return <IndianRupee {...props} />;
+  };
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -105,6 +112,14 @@ const adminOptions: AdminOption[] = [
     description: "Manage home and browse categories shown in the customer app",
     color: "text-cyan-600",
     bgColor: "bg-cyan-50 hover:bg-cyan-100",
+  },
+  {
+    name: "Store onboarding fee",
+    href: "/dashboard/super-admin/store-onboarding-fee",
+    Icon: StoreOnboardingIcon,
+    description: "Commission plan step: onboarding fee, service fee %, and registration copy",
+    color: "text-violet-600",
+    bgColor: "bg-violet-50 hover:bg-violet-100",
   },
 ];
 

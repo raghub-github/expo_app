@@ -11,7 +11,7 @@ const lora = Lora({
 
 export interface TicketHeaderProps {
   ticket: TicketDetail;
-  /** When > 0, show chip "N update(s)" centered under the title row (subject variant only). */
+  /** When > 0, show chip for new inbound (customer/merchant/rider) messages while on this ticket. */
   newUpdatesCount?: number;
   onDismissUpdates?: () => void;
   variant?: "full" | "subjectOnly" | "metaOnly";
