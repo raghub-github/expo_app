@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 import path from "path";
 
+/** Where Fastify lives when the merchant app uses EXPO_PUBLIC_API_BASE_URL=http://localhost:3000 (Next dev). */
+const merchantApiProxyTarget =
+  process.env.MERCHANT_API_PROXY_TARGET?.trim() ||
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:4000" : "");
+
 const nextConfig: NextConfig = {
   output: "standalone",
   // Keep tracing inside dashboard so this repo is fully standalone
@@ -38,6 +43,17 @@ const nextConfig: NextConfig = {
   // In dev, disable browser cache for dashboard so HTML/JS updates show after code changes.
   // Default dev uses webpack (npm run dev --webpack) to avoid Turbopack ChunkLoadError; use npm run dev:turbopack for Turbopack.
   // If UI still doesn't update, run: npm run dev:clean to clear .next cache.
+  /**
+   * Proxy REST API so mobile/web clients can use the same host:port as `next dev` (3000)
+   * while Fastify runs on another port (default 4000 in development).
+   * Override: MERCHANT_API_PROXY_TARGET=http://127.0.0.1:YOUR_API_PORT
+   */
+  async rewrites() {
+    if (!merchantApiProxyTarget) return [];
+    const base = merchantApiProxyTarget.replace(/\/+$/, "");
+    return [{ source: "/v1/:path*", destination: `${base}/v1/:path*` }];
+  },
+
   async headers() {
     if (process.env.NODE_ENV !== "development") return [];
     return [

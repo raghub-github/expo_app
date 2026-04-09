@@ -1,6 +1,7 @@
 "use client";
 
 import { Lora } from "next/font/google";
+import { useEffect, useState } from "react";
 import { Ban, Globe, RefreshCw } from "lucide-react";
 import type { TicketDetail } from "@/hooks/tickets/useTicketDetail";
 
@@ -8,6 +9,21 @@ const lora = Lora({
   subsets: ["latin"],
   weight: ["600", "700"],
 });
+
+function formatSnoozeCountdown(snoozedUntil: string): { label: string; tone: "violet" | "amber" | "red" } | null {
+  const endMs = new Date(snoozedUntil).getTime();
+  if (!Number.isFinite(endMs)) return null;
+  const diff = endMs - Date.now();
+  if (diff <= 0) return { label: "Resuming now", tone: "red" };
+  const totalSeconds = Math.floor(diff / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const tone: "violet" | "amber" | "red" = totalSeconds < 60 ? "red" : totalSeconds < 300 ? "amber" : "violet";
+  if (hours > 0) return { label: `Resumes in ${hours}h ${minutes}m ${seconds}s`, tone };
+  if (minutes > 0) return { label: `Resumes in ${minutes}m ${seconds}s`, tone };
+  return { label: `Resumes in ${seconds}s`, tone };
+}
 
 export interface TicketHeaderProps {
   ticket: TicketDetail;
@@ -36,6 +52,21 @@ export function TicketHeader({
     subjectRaw.length > 0 ? `${subjectRaw.charAt(0).toUpperCase()}${subjectRaw.slice(1)}` : subjectRaw;
   const showSubject = variant !== "metaOnly";
   const showMeta = variant !== "subjectOnly";
+  const [countdown, setCountdown] = useState<{ label: string; tone: "violet" | "amber" | "red" } | null>(
+    ticket.status === "snoozed" && ticket.snoozedUntil ? formatSnoozeCountdown(ticket.snoozedUntil) : null
+  );
+  const [showSnoozeDetails, setShowSnoozeDetails] = useState(false);
+
+  useEffect(() => {
+    if (ticket.status !== "snoozed" || !ticket.snoozedUntil) {
+      setCountdown(null);
+      return;
+    }
+    const update = () => setCountdown(formatSnoozeCountdown(ticket.snoozedUntil!));
+    update();
+    const id = window.setInterval(update, 1000);
+    return () => window.clearInterval(id);
+  }, [ticket.status, ticket.snoozedUntil]);
 
   return (
     <div className={`bg-white ${showSubject ? "pt-1" : ""}`}>
@@ -46,9 +77,33 @@ export function TicketHeader({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">
-              <h1 className="text-[20px] font-semibold leading-[1.25] tracking-tight text-[#1f2937]">
+              <h1 className="flex flex-wrap items-center gap-2 text-[20px] font-semibold leading-[1.25] tracking-tight text-[#1f2937]">
                 <span className={lora.className}>{normalizedSubject}</span>
+                {countdown ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowSnoozeDetails((v) => !v)}
+                    title={ticket.snoozeReason ? `Reason: ${ticket.snoozeReason}` : "No snooze reason added"}
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                      countdown.tone === "red"
+                        ? "bg-red-50 text-red-700"
+                        : countdown.tone === "amber"
+                          ? "bg-amber-50 text-amber-700"
+                          : "bg-violet-50 text-violet-700"
+                    }`}
+                  >
+                    {countdown.label}
+                  </button>
+                ) : null}
               </h1>
+              {countdown && showSnoozeDetails ? (
+                <p className="mt-1 text-[11px] text-gray-600">
+                  Snooze reason:{" "}
+                  <span className="font-medium text-gray-700">
+                    {ticket.snoozeReason && ticket.snoozeReason.trim() !== "" ? ticket.snoozeReason : "Not provided"}
+                  </span>
+                </p>
+              ) : null}
               <span className="mr-3 flex shrink-0 flex-wrap items-center justify-end gap-1.5 text-[12px] font-medium text-slate-600 sm:mr-4">
                 {ticket.isSpam ? (
                   <span
@@ -87,6 +142,11 @@ export function TicketHeader({
             <p className="text-xs text-gray-600">
               Created by <span className="font-semibold text-gray-700">{createdBy}</span>
             </p>
+            {ticket.status === "snoozed" && ticket.snoozedUntil ? (
+              <p className="text-xs text-violet-700">
+                Snoozed until <span className="font-semibold">{new Date(ticket.snoozedUntil).toLocaleString()}</span>
+              </p>
+            ) : null}
           </div>
         </div>
       )}

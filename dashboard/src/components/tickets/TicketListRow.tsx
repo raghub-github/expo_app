@@ -53,6 +53,24 @@ function formatDateTime(dateStr: string): string {
   });
 }
 
+function formatSnoozeCountdownShort(
+  snoozedUntil: string,
+  nowMs: number
+): { label: string; tone: "violet" | "amber" | "red" } | null {
+  const endMs = new Date(snoozedUntil).getTime();
+  if (!Number.isFinite(endMs)) return null;
+  const diff = endMs - nowMs;
+  if (diff <= 0) return { label: "Resuming now", tone: "red" };
+  const totalSeconds = Math.floor(diff / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const tone: "violet" | "amber" | "red" = totalSeconds < 60 ? "red" : totalSeconds < 300 ? "amber" : "violet";
+  if (hours > 0) return { label: `${hours}h ${minutes}m ${seconds}s`, tone };
+  if (minutes > 0) return { label: `${minutes}m ${seconds}s`, tone };
+  return { label: `${seconds}s`, tone };
+}
+
 function formatOverdue(slaDueAt: string): string {
   const due = new Date(slaDueAt);
   const now = new Date();
@@ -197,6 +215,7 @@ export const TicketListRow = React.memo(function TicketListRow({
     !isResolvedOrClosed &&
     Date.now() - new Date(ticket.createdAt).getTime() > getPriorityResponseSlaMs(ticket.priority);
   const showOverdue = isSlaBreached || isOverdue15;
+  const overdueLabel = showOverdue && ticket.slaDueAt ? `Overdue ${formatOverdue(ticket.slaDueAt)}` : "Overdue";
 
   const sourceLabel = ticket.sourceRole?.trim() ? formatTicketSourceRole(ticket.sourceRole) : "";
   const typeAvatarLetter = ticketTypeAvatarLetter(ticket.sourceRole);
@@ -254,6 +273,16 @@ export const TicketListRow = React.memo(function TicketListRow({
   const filteredAgentOptions = searchAgent.trim()
     ? agentOptions.filter((o) => o.label.toLowerCase().includes(searchAgent.toLowerCase()))
     : agentOptions;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (ticket.status !== "snoozed" || !ticket.snoozedUntil) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [ticket.status, ticket.snoozedUntil]);
+  const snoozeCountdown =
+    ticket.status === "snoozed" && ticket.snoozedUntil
+      ? formatSnoozeCountdownShort(ticket.snoozedUntil, nowMs)
+      : null;
 
   const groupAgentMenuPanel =
     groupAgentOpen && groupAgentMenuPlacement != null && typeof document !== "undefined" ? (
@@ -438,7 +467,7 @@ export const TicketListRow = React.memo(function TicketListRow({
           {showOverdue && (
             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
               <AlertCircle className="h-2.5 w-2.5 shrink-0" />
-              Overdue
+              {overdueLabel}
             </span>
           )}
           <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
@@ -505,19 +534,26 @@ export const TicketListRow = React.memo(function TicketListRow({
               <span>SLA due {formatDateTime(ticket.slaDueAt)}</span>
             </>
           ) : null}
-          {showOverdue && ticket.slaDueAt && (
-            <>
-              <span aria-hidden className="text-gray-300">
-                ·
-              </span>
-              <span className="text-red-600 font-medium">Overdue {formatOverdue(ticket.slaDueAt)}</span>
-            </>
-          )}
         </div>
       </div>
 
       {/* Right: Priority + Status on one row; Group/Agent full width below */}
       <div className="flex flex-col gap-1 shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
+        {snoozeCountdown ? (
+          <div className="w-full text-right">
+            <span
+              className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                snoozeCountdown.tone === "red"
+                  ? "bg-red-50 text-red-700"
+                  : snoozeCountdown.tone === "amber"
+                    ? "bg-amber-50 text-amber-700"
+                    : "bg-violet-50 text-violet-700"
+              }`}
+            >
+              Resumes in {snoozeCountdown.label}
+            </span>
+          </div>
+        ) : null}
         <div className="flex w-full min-h-[22px] flex-row items-center gap-1">
           <div className="min-w-0 flex-1">
             <InlineSearchableSelect
@@ -546,6 +582,8 @@ export const TicketListRow = React.memo(function TicketListRow({
                   className={`block w-1.5 h-1.5 rounded-full shrink-0 ${
                     ticket.status === "open" || ticket.status === "reopened"
                       ? "bg-blue-500"
+                      : ticket.status === "snoozed"
+                        ? "bg-violet-500"
                       : ticket.status === "resolved" || ticket.status === "closed"
                         ? "bg-green-500"
                         : "bg-amber-500"

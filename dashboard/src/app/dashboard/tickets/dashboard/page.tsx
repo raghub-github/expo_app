@@ -1,11 +1,5 @@
-import { requireSuperAdminAccess, checkDashboardAccess } from "@/lib/permissions/page-protection";
-import { TicketHelpdeskDashboardClient } from "@/components/tickets/TicketHelpdeskDashboardClient";
+import { redirect } from "next/navigation";
 
-export default async function TicketsHelpdeskDashboardPage() {
-  const hasTicketAccess = await checkDashboardAccess("TICKET");
-  if (!hasTicketAccess) {
-    await requireSuperAdminAccess();
-  }
-
-  return <TicketHelpdeskDashboardClient />;
+export default function TicketsHelpdeskDashboardRedirectPage() {
+  redirect("/dashboard/tickets/dashboard_snapshot");
 }

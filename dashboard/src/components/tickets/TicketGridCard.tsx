@@ -41,6 +41,24 @@ const priorityDotColors: Record<string, string> = {
 // Model/category tags: light purple background, purple text (RIDER, magicfleet_OMS style)
 const modelTagClass = "bg-purple-100 text-purple-800";
 
+function formatSnoozeCountdownShort(
+  snoozedUntil: string,
+  nowMs: number
+): { label: string; tone: "violet" | "amber" | "red" } | null {
+  const endMs = new Date(snoozedUntil).getTime();
+  if (!Number.isFinite(endMs)) return null;
+  const diff = endMs - nowMs;
+  if (diff <= 0) return { label: "Resuming now", tone: "red" };
+  const totalSeconds = Math.floor(diff / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const tone: "violet" | "amber" | "red" = totalSeconds < 60 ? "red" : totalSeconds < 300 ? "amber" : "violet";
+  if (hours > 0) return { label: `${hours}h ${minutes}m ${seconds}s`, tone };
+  if (minutes > 0) return { label: `${minutes}m ${seconds}s`, tone };
+  return { label: `${seconds}s`, tone };
+}
+
 function formatTimeAgo(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
@@ -175,6 +193,16 @@ export function TicketGridCard({
   const filteredAgentOptions = searchAgent.trim()
     ? agentOptions.filter((o) => o.label.toLowerCase().includes(searchAgent.toLowerCase()))
     : agentOptions;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (ticket.status !== "snoozed" || !ticket.snoozedUntil) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [ticket.status, ticket.snoozedUntil]);
+  const snoozeCountdown =
+    ticket.status === "snoozed" && ticket.snoozedUntil
+      ? formatSnoozeCountdownShort(ticket.snoozedUntil, nowMs)
+      : null;
 
   const sourceLabel = ticket.sourceRole ? ticket.sourceRole.replace(/_/g, " ").toUpperCase() : "";
   const ticketTypeLabel = ticket.ticketCategory?.toLowerCase() === "other"
@@ -296,6 +324,21 @@ export function TicketGridCard({
           </div>
         </div>
         {/* Row 2: Status, Priority, Overdue */}
+        {snoozeCountdown ? (
+          <div className="flex justify-end">
+            <span
+              className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                snoozeCountdown.tone === "red"
+                  ? "bg-red-50 text-red-700"
+                  : snoozeCountdown.tone === "amber"
+                    ? "bg-amber-50 text-amber-700"
+                    : "bg-violet-50 text-violet-700"
+              }`}
+            >
+              Resumes in {snoozeCountdown.label}
+            </span>
+          </div>
+        ) : null}
         <div className="flex items-center gap-1 flex-wrap">
           {showOverdue && (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-800">

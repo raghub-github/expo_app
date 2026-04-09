@@ -7,7 +7,11 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
-import { listUserAppCategories, createUserAppCategory } from "@/lib/db/operations/user-app-categories";
+import {
+  listUserAppCategories,
+  createUserAppCategory,
+  normalizeDisplayOrdersForStore,
+} from "@/lib/db/operations/user-app-categories";
 import {
   parseUserAppCategoryStoreType,
   parseUserAppCategoryStatus,
@@ -114,7 +118,10 @@ export async function POST(request: NextRequest) {
     if (!result.ok) {
       return NextResponse.json({ success: false, error: "Invalid status" }, { status: 400 });
     }
-    return NextResponse.json({ success: true, item: result.row }, { status: 201 });
+    await normalizeDisplayOrdersForStore(store_type);
+    const items = await listUserAppCategories({ storeType: store_type, includeInactive: true });
+    const item = items.find((r) => r.id === result.row.id) ?? result.row;
+    return NextResponse.json({ success: true, item }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/admin/user-app-categories]", e);
     return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });

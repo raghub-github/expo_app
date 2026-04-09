@@ -11,6 +11,7 @@ import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { QUEUE_HOME_ACTIVE_STATUS_DB } from "@/lib/tickets/queue-ticket-filters";
+import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 
 export const runtime = "nodejs";
 
@@ -149,6 +150,8 @@ export async function GET(request: NextRequest) {
     const orderIdFilter = orderIdParam != null && orderIdParam !== "" ? parseInt(orderIdParam, 10) : null;
     const sortByParam = (searchParams.get("sortBy") || "created_at").toLowerCase();
     const sortOrderParam = (searchParams.get("sortOrder") || "desc").toLowerCase();
+    const includeSnoozed = searchParams.get("includeSnoozed") === "1" || searchParams.get("includeSnoozed") === "true";
+    const snoozedOnly = searchParams.get("snoozedOnly") === "1" || searchParams.get("snoozedOnly") === "true";
 
     const allowedSortColumns = ["created_at", "updated_at", "sla_due_at", "priority", "status"];
     const sortBy = allowedSortColumns.includes(sortByParam) ? sortByParam : "created_at";
@@ -161,13 +164,134 @@ export async function GET(request: NextRequest) {
         : `ut.${sortBy} ${sortOrder}, ut.updated_at DESC, ut.id DESC`;
 
     const sqlClient = getSql();
+    // Opportunistic wake-up: avoid stale "Resuming now" when cron has not run yet.
+    try {
+      const wokeRows = await sqlClient`
+        WITH due AS (
+          SELECT id
+          FROM public.unified_tickets
+          WHERE status = 'SNOOZED'
+            AND snoozed_until IS NOT NULL
+            AND snoozed_until <= NOW()
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE public.unified_tickets ut
+        SET status = 'OPEN',
+            snoozed_until = NULL,
+            snooze_reason = NULL,
+            updated_at = NOW()
+        FROM due
+        WHERE ut.id = due.id
+        RETURNING ut.id
+      ` as Record<string, unknown>[];
+      const sqlAudit = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
+      for (const row of wokeRows) {
+        const id = Number(row.id);
+        if (!Number.isFinite(id)) continue;
+        await insertTicketActivityAudit(sqlAudit, {
+          ticket_id: id,
+          activity_type: "auto_unsnoozed",
+          activity_category: "status_change",
+          activity_description: "Ticket auto-resumed after snooze expiry",
+          actor_user_id: null,
+          actor_name: "System",
+          actor_email: null,
+          actor_type: "SYSTEM",
+          old_status: "SNOOZED",
+          new_status: "OPEN",
+        });
+      }
+    } catch (wakeErr) {
+      console.warn("[GET /api/tickets] opportunistic snooze wake skipped:", wakeErr);
+    }
+    // Keep SLA fields/tag in DB synced with real time:
+    // 1) populate missing sla_due_at from priority SLA settings
+    // 2) add/remove SLA_BREACHED tag when due crosses NOW()
+    try {
+      await sqlClient`
+        WITH cfg AS (
+          SELECT
+            COALESCE(sla_minutes_low, 30) AS low_mins,
+            COALESCE(sla_minutes_medium, 25) AS medium_mins,
+            COALESCE(sla_minutes_high, 20) AS high_mins,
+            COALESCE(sla_minutes_urgent, 15) AS urgent_mins,
+            COALESCE(sla_minutes_critical, 10) AS critical_mins
+          FROM public.ticket_queue_auto_assign_settings
+          WHERE id = 1
+          LIMIT 1
+        )
+        UPDATE public.unified_tickets ut
+        SET
+          sla_due_at = ut.created_at + make_interval(mins => (
+            CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
+              WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
+              WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
+              WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
+              WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
+              ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
+            END
+          )),
+          updated_at = NOW()
+        WHERE ut.sla_due_at IS NULL
+          AND ut.status::text NOT IN ('RESOLVED', 'CLOSED');
+      `;
+
+      await sqlClient`
+        UPDATE public.unified_tickets ut
+        SET
+          tags = CASE
+            WHEN ut.status::text IN ('RESOLVED', 'CLOSED')
+              THEN CASE
+                WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                  THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+                ELSE COALESCE(ut.tags, ARRAY[]::text[])
+              END
+            WHEN ut.sla_due_at IS NOT NULL AND ut.sla_due_at <= NOW()
+              THEN CASE
+                WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                  THEN COALESCE(ut.tags, ARRAY[]::text[])
+                ELSE array_append(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+              END
+            ELSE CASE
+              WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+              ELSE COALESCE(ut.tags, ARRAY[]::text[])
+            END
+          END,
+          updated_at = NOW()
+        WHERE (
+          ut.status::text IN ('RESOLVED', 'CLOSED')
+          AND COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+        ) OR (
+          ut.status::text NOT IN ('RESOLVED', 'CLOSED')
+          AND ut.sla_due_at IS NOT NULL
+          AND (
+            (ut.sla_due_at <= NOW() AND NOT (COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]))
+            OR
+            (ut.sla_due_at > NOW() AND COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[])
+          )
+        );
+      `;
+    } catch (slaSyncErr) {
+      console.warn("[GET /api/tickets] SLA sync skipped:", slaSyncErr);
+    }
     /** Drain ticket_automation_jobs (e.g. ticket_created from DB trigger) before listing so assignments are visible immediately. */
     try {
       const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
-      await processPendingAutomationJobs(sqlClient, {
-        limit: 25,
-        workerId: "api-get-tickets",
-      });
+      if (queueScope) {
+        // Queue list should return fast on reload; process jobs in background.
+        void processPendingAutomationJobs(sqlClient, {
+          limit: 10,
+          workerId: "api-get-tickets-queue",
+        }).catch((jobErr) => {
+          console.error("[GET /api/tickets] processPendingAutomationJobs(queue):", jobErr);
+        });
+      } else {
+        await processPendingAutomationJobs(sqlClient, {
+          limit: 25,
+          workerId: "api-get-tickets",
+        });
+      }
     } catch (jobErr) {
       console.error("[GET /api/tickets] processPendingAutomationJobs:", jobErr);
     }
@@ -191,6 +315,7 @@ export async function GET(request: NextRequest) {
     const validStatusValues = new Set([
       "OPEN",
       "IN_PROGRESS",
+      "SNOOZED",
       "RESOLVED",
       "CLOSED",
       "REJECTED",
@@ -228,6 +353,13 @@ export async function GET(request: NextRequest) {
         whereConditions.push(sqlClient`(${statusCombined as never})`);
       }
     }
+    if (!queueScope) {
+      if (snoozedOnly) {
+        whereConditions.push(sqlClient`ut.status::text = 'SNOOZED'`);
+      } else if (!includeSnoozed && !rawStatuses.includes("SNOOZED")) {
+        whereConditions.push(sqlClient`ut.status::text <> 'SNOOZED'`);
+      }
+    }
     const priorities = priorityParam ? priorityParam.split(",").map((s) => s.trim().toUpperCase().replace(/-/g, "_")).filter(Boolean) : [];
     if (priorities.length > 0) {
       whereConditions.push(sqlClient`ut.priority = ANY(${priorities})`);
@@ -253,9 +385,17 @@ export async function GET(request: NextRequest) {
     if (queueScope) {
       whereConditions.push(sqlClient`ut.assigned_to_agent_id = ${systemUser.id}`);
       whereConditions.push(sqlClient`ut.assigned_to_agent_id IS NOT NULL`);
-      whereConditions.push(
-        sqlClient`ut.status::text = ANY(${[...QUEUE_HOME_ACTIVE_STATUS_DB]})`
-      );
+      if (snoozedOnly) {
+        whereConditions.push(sqlClient`ut.status::text = 'SNOOZED'`);
+      } else if (includeSnoozed) {
+        whereConditions.push(
+          sqlClient`ut.status::text = ANY(${[...QUEUE_HOME_ACTIVE_STATUS_DB, "SNOOZED"]})`
+        );
+      } else {
+        whereConditions.push(
+          sqlClient`ut.status::text = ANY(${[...QUEUE_HOME_ACTIVE_STATUS_DB]})`
+        );
+      }
     } else if (assignedToIds.length > 0) {
       const meIndex = assignedToIds.indexOf("me");
       const unassignedIndex = assignedToIds.indexOf("unassigned");
@@ -263,9 +403,18 @@ export async function GET(request: NextRequest) {
       const orParts: unknown[] = [];
       if (meIndex !== -1) orParts.push(sqlClient`ut.assigned_to_agent_id = ${systemUser.id}`);
       if (unassignedIndex !== -1) {
-        orParts.push(
-          sqlClient`NOT EXISTS (SELECT 1 FROM public.system_users su WHERE su.id = ut.assigned_to_agent_id)`
-        );
+        orParts.push(sqlClient`
+          (
+            ut.assigned_to_agent_id IS NULL
+            OR ut.assigned_to_agent_id = 0
+            OR BTRIM(COALESCE(ut.assigned_to_agent_name, '')) = ''
+            OR NOT EXISTS (
+              SELECT 1 FROM public.system_users su
+              WHERE su.id = ut.assigned_to_agent_id
+                AND su.deleted_at IS NULL
+            )
+          )
+        `);
       }
       if (numericIds.length > 0) orParts.push(sqlClient`ut.assigned_to_agent_id = ANY(${numericIds})`);
       if (orParts.length > 0) {
@@ -484,7 +633,7 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-              ut.group_id, ut.metadata, ut.sla_due_at,
+              ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
               tg.group_code AS group_code, tg.group_name AS group_name,
               tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
               landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
@@ -526,7 +675,7 @@ export async function GET(request: NextRequest) {
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                 ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                ut.group_id, ut.metadata, ut.sla_due_at,
+                ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
                 tg.group_code AS group_code, tg.group_name AS group_name,
                 tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
                 landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
@@ -564,7 +713,7 @@ export async function GET(request: NextRequest) {
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                   ut.assigned_at, ut.satisfaction_rating,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                  ut.group_id, ut.metadata, ut.sla_due_at,
+                  ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
                   tg.group_code AS group_code, tg.group_name AS group_name,
                   tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
                 FROM public.unified_tickets ut
@@ -615,7 +764,7 @@ export async function GET(request: NextRequest) {
               ut.assigned_to_agent_id, ut.assigned_to_agent_name,
               ut.assigned_at, ut.satisfaction_rating,
               ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-              ut.group_id, ut.metadata, ut.sla_due_at,
+              ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
               tg.group_code AS group_code, tg.group_name AS group_name,
               tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
               landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
@@ -656,7 +805,7 @@ export async function GET(request: NextRequest) {
                 ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                 ut.assigned_at, ut.satisfaction_rating,
                 ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                ut.group_id, ut.metadata, ut.sla_due_at,
+                ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
                 tg.group_code AS group_code, tg.group_name AS group_name,
                 tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name,
                 landed_match.lid AS rule_landed_group_id, landed_match.lcode AS rule_landed_group_code, landed_match.lname AS rule_landed_group_name
@@ -693,7 +842,7 @@ export async function GET(request: NextRequest) {
                   ut.assigned_to_agent_id, ut.assigned_to_agent_name,
                   ut.assigned_at, ut.satisfaction_rating,
                   ut.created_at, ut.updated_at, ut.resolved_at, ut.closed_at,
-                  ut.group_id, ut.metadata, ut.sla_due_at,
+                  ut.group_id, ut.metadata, ut.sla_due_at, ut.snoozed_until, ut.snooze_reason,
                   tg.group_code AS group_code, tg.group_name AS group_name,
                   tgl.id AS meta_landed_group_id, tgl.group_code AS meta_landed_group_code, tgl.group_name AS meta_landed_group_name
                 FROM public.unified_tickets ut
@@ -994,6 +1143,15 @@ export async function GET(request: NextRequest) {
           const n = typeof v === "bigint" ? Number(v) : Number(v);
           return Number.isFinite(n) ? n : null;
         })(),
+        snoozedUntil:
+          (t.snoozed_until ?? t.snoozedUntil) != null
+            ? String(t.snoozed_until ?? t.snoozedUntil)
+            : null,
+        snoozeReason:
+          (t.snooze_reason ?? t.snoozeReason) != null &&
+          String(t.snooze_reason ?? t.snoozeReason).trim() !== ""
+            ? String(t.snooze_reason ?? t.snoozeReason)
+            : null,
         ...(exportMeta ? { exportMeta } : {}),
       };
     });

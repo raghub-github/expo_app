@@ -56,6 +56,8 @@ export interface TicketDetail {
   slaDueAt: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
+  snoozedUntil: string | null;
+  snoozeReason: string | null;
   createdAt: string;
   updatedAt: string;
   firstResponseAt: string | null;
@@ -264,6 +266,8 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
     slaDueAt: (raw.sla_due_at ?? null) as string | null,
     resolvedAt: (raw.resolved_at ?? null) as string | null,
     closedAt: (raw.closed_at ?? null) as string | null,
+    snoozedUntil: (raw.snoozed_until ?? null) as string | null,
+    snoozeReason: (raw.snooze_reason ?? null) as string | null,
     createdAt: (raw.created_at ?? "") as string,
     updatedAt: (raw.updated_at ?? "") as string,
     firstResponseAt: (raw.first_response_at ?? null) as string | null,

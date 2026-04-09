@@ -14,6 +14,51 @@ export const runtime = "nodejs";
 
 type Row = Record<string, unknown>;
 
+function rowInt(v: unknown): number {
+  if (v == null) return 0;
+  if (typeof v === "bigint") return Number(v);
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parseISODate(raw: string | null): string | null {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  return raw;
+}
+
+/** Shared WHERE on `ut` / `ut_u` (spam, group, created range). Same $1..$n in one statement. */
+function buildTicketWhereParts(
+  groupFilter: number | null,
+  dateFrom: string | null,
+  dateTo: string | null
+): { whereUt: string; whereUtU: string; whereUtAll: string; params: unknown[] } {
+  const params: unknown[] = [];
+  let n = 1;
+  const baseChunks: string[] = [];
+  if (groupFilter != null) {
+    baseChunks.push(`ut.group_id = $${n}`);
+    params.push(groupFilter);
+    n++;
+  }
+  if (dateFrom) {
+    baseChunks.push(`ut.created_at >= $${n}::date`);
+    params.push(dateFrom);
+    n++;
+  }
+  if (dateTo) {
+    baseChunks.push(`ut.created_at < ($${n}::date + interval '1 day')`);
+    params.push(dateTo);
+    n++;
+  }
+  const spamSafeClause = "COALESCE(ut.is_spam, false) = false";
+  const whereUt = [spamSafeClause, ...baseChunks].join(" AND ");
+  const whereUtU = [spamSafeClause, ...baseChunks]
+    .map((c) => c.replace(/\but\./g, "ut_u."))
+    .join(" AND ");
+  const whereUtAll = baseChunks.length > 0 ? baseChunks.join(" AND ") : "TRUE";
+  return { whereUt, whereUtU, whereUtAll, params };
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createServerSupabaseClient();
@@ -50,38 +95,63 @@ export async function GET(request: NextRequest) {
     const groupFilter =
       groupId != null && Number.isFinite(groupId) && groupId > 0 ? groupId : null;
 
+    const dateFrom = parseISODate(searchParams.get("dateFrom"));
+    const dateTo = parseISODate(searchParams.get("dateTo"));
+
+    const { whereUt, whereUtU, whereUtAll, params } = buildTicketWhereParts(groupFilter, dateFrom, dateTo);
+
     const sqlClient = getSql();
     const sqlUnsafe = (sqlClient as { unsafe: (q: string, v?: unknown[]) => Promise<Row[]> }).unsafe;
 
-    const spamOff = "COALESCE(ut.is_spam, false) = false";
-    const groupClause = groupFilter != null ? ` AND ut.group_id = $1` : "";
-    const groupClauseU = groupFilter != null ? ` AND ut_u.group_id = $1` : "";
-    const params: unknown[] = groupFilter != null ? [groupFilter] : [];
-
     /**
-     * Unassigned is a separate scalar count so it matches the ticket list filter `assignedToIds=unassigned`:
-     * - Any status (list does not restrict status for that filter alone)
-     * - Includes spam tickets (list does not hide spam unless user enables a spam filter)
-     * - No row in system_users for assigned_to_agent_id (NULL, 0, orphaned id)
+     * Unassigned = no effective agent (same rules as GET /api/tickets `assignedToIds=unassigned`).
+     * Scoped to non-spam + same group/date filters as other dashboard totals.
      */
     const summarySql = `
+      WITH filtered AS (
+        SELECT
+          ut.*,
+          UPPER(COALESCE(ut.status::text, '')) AS status_norm
+        FROM public.unified_tickets ut
+        WHERE ${whereUt}
+      )
       SELECT
         COUNT(*) FILTER (
-          WHERE ut.status::text NOT IN ('CLOSED','CANCELLED','REJECTED','RESOLVED')
+          WHERE f.status_norm NOT IN ('CLOSED','CANCELLED','REJECTED','RESOLVED','SNOOZED')
         )::int AS unresolved,
-        COUNT(*) FILTER (WHERE ut.status::text = 'OPEN')::int AS open_count,
+        COUNT(*) FILTER (WHERE f.status_norm = 'OPEN')::int AS open_count,
         COUNT(*) FILTER (
-          WHERE ut.status::text IN ('WAITING_FOR_USER','WAITING_FOR_MERCHANT','WAITING_FOR_RIDER')
+          WHERE f.status_norm IN ('PENDING','WAITING_FOR_USER')
         )::int AS on_hold,
         (
           SELECT COUNT(*)::int
-          FROM public.unified_tickets ut_u
-          LEFT JOIN public.system_users su_u ON su_u.id = ut_u.assigned_to_agent_id
-          WHERE su_u.id IS NULL
-            ${groupClauseU}
-        ) AS unassigned
-      FROM public.unified_tickets ut
-      WHERE ${spamOff}${groupClause}
+          FROM public.unified_tickets ut_all
+          WHERE ${whereUtAll.replace(/\but\./g, "ut_all.")}
+        ) AS total_count,
+        COUNT(*) FILTER (WHERE f.status_norm = 'RESOLVED')::int AS resolved_count,
+        COUNT(*) FILTER (
+          WHERE f.sla_due_at IS NOT NULL
+            AND f.sla_due_at < NOW()
+            AND f.status_norm NOT IN ('CLOSED','CANCELLED','REJECTED','RESOLVED','SNOOZED')
+        )::int AS overdue,
+        COUNT(*) FILTER (
+          WHERE f.sla_due_at IS NOT NULL
+            AND f.sla_due_at >= date_trunc('day', NOW())
+            AND f.sla_due_at < date_trunc('day', NOW()) + interval '1 day'
+            AND f.status_norm NOT IN ('CLOSED','CANCELLED','REJECTED','RESOLVED','SNOOZED')
+        )::int AS due_today,
+        COUNT(*) FILTER (
+          WHERE
+            f.assigned_to_agent_id IS NULL
+            OR f.assigned_to_agent_id = 0
+            OR BTRIM(COALESCE(f.assigned_to_agent_name, '')) = ''
+            OR NOT EXISTS (
+              SELECT 1 FROM public.system_users su_a
+              WHERE su_a.id = f.assigned_to_agent_id
+                AND su_a.deleted_at IS NULL
+            )
+        )::int AS unassigned
+      FROM filtered f
     `;
 
     let summaryRow: Row = {};
@@ -90,7 +160,16 @@ export async function GET(request: NextRequest) {
       summaryRow = r ?? {};
     } catch (e) {
       console.error("[helpdesk-dashboard] summary query failed:", e);
-      summaryRow = { unresolved: 0, open_count: 0, on_hold: 0, unassigned: 0 };
+      summaryRow = {
+        unresolved: 0,
+        open_count: 0,
+        on_hold: 0,
+        unassigned: 0,
+        total_count: 0,
+        resolved_count: 0,
+        overdue: 0,
+        due_today: 0,
+      };
     }
 
     const unresolvedByGroupSql = `
@@ -99,9 +178,8 @@ export async function GET(request: NextRequest) {
         COUNT(*)::int AS cnt
       FROM public.unified_tickets ut
       LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
-      WHERE ${spamOff}
-        AND ut.status::text NOT IN ('CLOSED','CANCELLED','REJECTED','RESOLVED')
-        ${groupFilter != null ? "AND ut.group_id = $1" : ""}
+      WHERE ${whereUt}
+        AND UPPER(COALESCE(ut.status::text, '')) NOT IN ('CLOSED','CANCELLED','REJECTED','RESOLVED','SNOOZED')
       GROUP BY tg.id, tg.group_name
       ORDER BY cnt DESC
       LIMIT 25
@@ -128,8 +206,7 @@ export async function GET(request: NextRequest) {
         INNER JOIN public.unified_tickets ut ON ut.id = m.ticket_id
         LEFT JOIN public.ticket_groups tg ON tg.id = ut.group_id
         WHERE m.outbound_email_status = 'failed'
-          AND ${spamOff}
-          ${groupFilter != null ? "AND ut.group_id = $1" : ""}
+          AND ${whereUt}
         GROUP BY tg.id, tg.group_name
         ORDER BY cnt DESC
         LIMIT 25
@@ -147,13 +224,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: {
-        unresolved: Number(summaryRow.unresolved ?? 0) || 0,
-        open: Number(summaryRow.open_count ?? 0) || 0,
-        onHold: Number(summaryRow.on_hold ?? 0) || 0,
-        unassigned: Number(summaryRow.unassigned ?? 0) || 0,
+        unresolved: rowInt(summaryRow.unresolved),
+        open: rowInt(summaryRow.open_count),
+        onHold: rowInt(summaryRow.on_hold),
+        unassigned: rowInt(summaryRow.unassigned),
+        total: rowInt(summaryRow.total_count),
+        resolved: rowInt(summaryRow.resolved_count),
+        overdue: rowInt(summaryRow.overdue),
+        dueToday: rowInt(summaryRow.due_today),
         undeliveredByGroup,
         unresolvedByGroup,
         groupIdFilter: groupFilter,
+        dateFrom,
+        dateTo,
       },
     });
   } catch (error) {

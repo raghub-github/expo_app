@@ -6,6 +6,7 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import { Calendar } from "lucide-react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import { AgentActivityAgentSearch } from "@/components/tickets/AgentActivityAgentSearch";
+import { AGENT_ACTIVITY_PATH } from "@/lib/tickets/ticket-path-utils";
 
 type Period = "today" | "week" | "month" | "custom";
 
@@ -37,6 +38,10 @@ interface AgentActivityRow {
   ticketsAssigned: number;
   ticketsUpdated: number;
   ticketsReopened: number;
+  ticketsReassignedFromAgent?: number;
+  ticketsSnoozed?: number;
+  privateNotes?: number;
+  responses?: number;
 }
 
 type AgentActivityApiResponse = {
@@ -78,13 +83,13 @@ function StatMetricCard({
 }) {
   return (
     <div
-      className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
-        compact ? "p-4" : "p-5"
+      className={`rounded-md border border-gray-200 bg-white ${
+        compact ? "p-3.5" : "p-4"
       }`}
     >
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
+      <p className="text-xs font-medium text-gray-600">{label}</p>
       <p
-        className={`mt-2 font-bold tabular-nums text-gray-900 ${compact ? "text-2xl" : "text-3xl"}`}
+        className={`mt-2 font-semibold tabular-nums text-slate-800 ${compact ? "text-2xl" : "text-[34px]"}`}
         suppressHydrationWarning
       >
         {value}
@@ -109,7 +114,7 @@ function WidgetShell({
 }) {
   return (
     <div
-      className={`flex min-h-[200px] flex-col rounded-lg border border-gray-200 bg-white shadow-sm ${
+      className={`flex min-h-[200px] flex-col rounded-md border border-gray-200 bg-white ${
         compact ? "" : "min-h-[240px]"
       }`}
     >
@@ -119,7 +124,7 @@ function WidgetShell({
         }`}
       >
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
           {subtitle ? <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p> : null}
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
@@ -161,6 +166,17 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
   const selectedAgentUserId =
     Number.isFinite(parsedSelectedAgentUserId) && parsedSelectedAgentUserId > 0 ? parsedSelectedAgentUserId : null;
   const selectedAgentSuffix = selectedAgentUserId != null ? String(selectedAgentUserId) : "all";
+
+  useEffect(() => {
+    if (embed === "ticketSettingsActivity") return;
+    if (sectionFromUrl !== "activity") return;
+    if (!searchParams.get("agentUserId")) return;
+    // Always land on "All agents" by default when opening Activity.
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("section", "activity");
+    next.delete("agentUserId");
+    router.replace(`${AGENT_ACTIVITY_PATH}?${next.toString()}`, { scroll: false });
+  }, [embed, sectionFromUrl, searchParams, router]);
 
   const activitySnapshotKey = useMemo(() => {
     const suffix = period === "custom" ? `${startDate}|${endDate}` : period;
@@ -281,7 +297,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
   const isEmbeddedActivity = embed === "ticketSettingsActivity";
   const compact = isEmbeddedActivity;
 
-  const rootClass = isEmbeddedActivity ? "min-w-0 space-y-4 py-2" : "min-w-0 space-y-5";
+  const rootClass = isEmbeddedActivity ? "min-w-0 space-y-4 py-2" : "min-w-0 space-y-4 rounded-md bg-[#f5f6f8] p-3";
 
   if (sectionFromUrl === "automation" && embed !== "ticketSettingsActivity") {
     return (
@@ -293,22 +309,10 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
 
   return (
     <div className={rootClass}>
-      {!isEmbeddedActivity && (
-        <header className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-gray-900">Agent Activity</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Performance metrics, CSAT, and time tracking for the selected period.
-            </p>
-          </div>
-          <span className="text-xs font-medium text-blue-600">Summary</span>
-        </header>
-      )}
-
       <>
           {/* Period toolbar — Freshdesk-style white bar */}
           <div
-            className={`flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white shadow-sm ${
+            className={`flex flex-wrap items-center gap-3 rounded-md border border-gray-200 bg-white ${
               compact ? "px-3 py-2.5" : "px-4 py-3"
             }`}
           >
@@ -381,12 +385,12 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
           ) : null}
 
           <div
-            className={`transition-opacity duration-200 ease-out ${
+            className={`space-y-4 transition-opacity duration-200 ease-out ${
               isFetching && data?.success ? "opacity-[0.88]" : "opacity-100"
             }`}
           >
           {/* Row 1 — four KPI cards */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <StatMetricCard
                   compact={compact}
                   label="Online time"
@@ -403,19 +407,11 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               </div>
 
               {/* Row 2 — three widgets */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <WidgetShell
                   compact={compact}
                   title="Ticket metrics"
                   subtitle="Across the selected period"
-                  action={
-                    <a
-                      href="#agent-activity-daily"
-                      className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline"
-                    >
-                      View details
-                    </a>
-                  }
                 >
                   <table className="w-full border-collapse text-sm">
                     <thead>
@@ -494,7 +490,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 data?.data?.allAgents &&
                 data.data.allAgents.length > 0 && (
                 <section
-                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                  className={`rounded-md border border-gray-200 bg-white ${
                     compact ? "p-4" : "p-5"
                   }`}
                 >
@@ -504,45 +500,41 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                       <p className="mt-0.5 text-xs text-gray-500">Activity for everyone in the selected period.</p>
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[760px] text-sm">
+                  <div className="overflow-x-auto rounded-md border border-gray-200">
+                    <table className="w-full min-w-[860px] text-sm">
                       <thead>
-                        <tr className="border-b border-gray-200">
-                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Agent</th>
-                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Email</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Busy</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Working</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Assigned</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Closed</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Updated</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Reopened</th>
+                        <tr className="bg-gray-50">
+                          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-medium text-gray-500">Agent name</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Online</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Busy</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Working</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets assigned to agent</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets resolved</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets reopened</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets reassigned from agent</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets snoozed</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Private notes</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Responses</th>
                         </tr>
                       </thead>
                       <tbody>
                         {data.data.allAgents.map((agent) => (
-                          <tr key={agent.userId} className="border-b border-gray-100 hover:bg-gray-50/80">
-                            <td className="px-2 py-2.5 font-medium text-gray-900">{agent.name}</td>
-                            <td className="px-2 py-2.5 text-gray-600">{agent.email}</td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">
-                              {formatMinutes(agent.onlineTimeMinutes)}
+                          <tr key={agent.userId} className="hover:bg-gray-50/80">
+                            <td className="border border-gray-200 px-3 py-2.5 font-medium text-gray-900">{agent.name}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{formatMinutes(agent.onlineTimeMinutes)}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{formatMinutes(agent.breakTimeMinutes)}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{formatMinutes(agent.busyTimeMinutes ?? 0)}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">
+                              {formatMinutes(agent.workingTimeMinutes ?? (agent.onlineTimeMinutes + (agent.busyTimeMinutes ?? 0)))}
                             </td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">
-                              {formatMinutes(agent.breakTimeMinutes)}
-                            </td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">
-                              {formatMinutes(agent.busyTimeMinutes ?? 0)}
-                            </td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">
-                              {formatMinutes(agent.workingTimeMinutes ?? agent.onlineTimeMinutes + (agent.busyTimeMinutes ?? 0))}
-                            </td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsAssigned}</td>
-                            <td className="px-2 py-2.5 text-right font-medium text-green-700">{agent.ticketsResolved}</td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsClosed}</td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsUpdated}</td>
-                            <td className="px-2 py-2.5 text-right text-orange-700">{agent.ticketsReopened}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsAssigned}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsResolved}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsReopened}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsReassignedFromAgent ?? 0}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsSnoozed ?? 0}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.privateNotes ?? 0}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.responses ?? 0}</td>
                           </tr>
                         ))}
                       </tbody>

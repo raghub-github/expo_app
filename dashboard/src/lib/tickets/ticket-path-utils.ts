@@ -8,6 +8,7 @@ import { normalizeQueueSupervisorSection } from "@/lib/tickets/queue-supervisor-
 const RESERVED_TICKETS_FIRST_SEGMENT = new Set([
   "agent-activity",
   "dashboard",
+  "dashboard_snapshot",
   "unified",
   "new",
   "food",
@@ -28,6 +29,7 @@ const QUEUE_MANAGER_HEADER_TITLES: Record<QueueManagerSection, string> = {
   "email-assigned": "Email: assigned",
   "email-reopened": "Email: reopened",
   "workflow-rules": "Workflow rules",
+  "response-templates": "Response library",
 };
 
 /** Title for the main app header on `/dashboard/tickets/queue/*` (uses `section` when relevant). */
@@ -97,7 +99,7 @@ export function isTicketsAppDetailPath(cleanPathname: string): boolean {
 export const AGENT_ACTIVITY_PATH = "/dashboard/tickets/agent-activity";
 
 /** GatiMitra Queue metrics dashboard (Freshdesk-like widgets). */
-export const TICKETS_HELPDESK_DASHBOARD_PATH = "/dashboard/tickets/dashboard";
+export const TICKETS_HELPDESK_DASHBOARD_PATH = "/dashboard/tickets/dashboard_snapshot";
 
 /** Ticket detail URL carrying list filters/sort; strips `panel` so detail sub-views still use a clean default. */
 export function buildTicketDetailHref(ticketId: number | string, listSearchParams: URLSearchParams | string): string {

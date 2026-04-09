@@ -288,7 +288,7 @@ export function getMerchantSubRoutesForPath(pathname: string): DashboardSubRoute
 export const ticketDashboardRoutes: DashboardSubRoute[] = [
   {
     name: "Dashboard",
-    href: "/dashboard/tickets/dashboard",
+    href: "/dashboard/tickets/dashboard_snapshot",
     icon: LayoutDashboard,
     description: "GatiMitra Queue metrics, queues, and email delivery",
   },
@@ -619,7 +619,7 @@ export function getCurrentPageName(pathname: string): string {
 
   // Check for special pages
   const pageNameMap: Record<string, string> = {
-    "/dashboard/tickets/dashboard": "Dashboard",
+    "/dashboard/tickets/dashboard_snapshot": "Dashboard",
     "/dashboard/users": "User Management",
     "/dashboard/users/new": "Add User",
     "/dashboard/users/roles": "System roles",

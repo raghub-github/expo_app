@@ -72,7 +72,50 @@ interface FilterState {
   grocery: boolean;
   pharma: boolean;
   overview: boolean;
-  userType: string[]; // Array for multiple selections: "Premium" | "Very Good" | "Good" | "Bad"
+  /** Trust tier labels matching DB `customer_trust_tier` / TRUST_TIER_LABEL */
+  userType: string[];
+}
+
+/** Serialized in URL `foodFilters` and sent to /api/orders/core */
+export interface FoodFiltersPayload {
+  delivery?: ("GatiMitra" | "Merchant")[];
+  pickUp?: boolean;
+  food?: boolean;
+  fashion?: boolean;
+  grocery?: boolean;
+  pharma?: boolean;
+  overview?: boolean;
+  userType?: string[];
+}
+
+const DEFAULT_FILTER_STATE: FilterState = {
+  delivery: [],
+  pickUp: false,
+  food: false,
+  fashion: false,
+  grocery: false,
+  pharma: false,
+  overview: false,
+  userType: [],
+};
+
+const USER_TYPE_OPTIONS = [
+  "Premium",
+  "Very Good",
+  "Good",
+  "Bad",
+  "Very Bad",
+  "Fraud",
+] as const;
+
+/** True when any panel filter is applied (URL foodFilters). */
+function hasAppliedFoodFilters(p: FoodFiltersPayload | undefined): boolean {
+  if (!p) return false;
+  return (
+    (p.delivery?.length ?? 0) > 0 ||
+    (p.userType?.length ?? 0) > 0 ||
+    Boolean(p.pickUp || p.food || p.fashion || p.grocery || p.pharma || p.overview)
+  );
 }
 
 interface OrdersApiResponse {
@@ -94,6 +137,7 @@ export interface OrdersFilters {
   searchType: string;
   page: number;
   limit: number;
+  foodFilters?: FoodFiltersPayload;
 }
 
 function useDebouncedValue<T>(value: T, delay: number): T {
@@ -118,6 +162,9 @@ export async function fetchFoodOrders(
   if (filters.searchType) params.set("searchType", filters.searchType);
   params.set("page", String(filters.page));
   params.set("limit", String(filters.limit));
+  if (filters.foodFilters) {
+    params.set("foodFilters", encodeURIComponent(JSON.stringify(filters.foodFilters)));
+  }
 
   const res = await fetch(`/api/orders/core?${params.toString()}`, { credentials: "include", signal });
   const body: OrdersApiResponse = await res.json().catch(() => ({ success: false }));
@@ -148,9 +195,7 @@ function useFoodOrdersQuery(
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
-    // Keep previous data during refetch so table never goes blank.
-    placeholderData: (prev) => prev,
-    // SWR: show snapshot immediately, then refresh in background.
+    // Do not keep previous rows when search/filters change — avoids showing wrong orders (e.g. stale mobiles).
     refetchOnMount: true,
   });
 
@@ -176,21 +221,45 @@ export default function FoodOrdersClient() {
   const urlSearch = searchParams.get("search") ?? "";
   const urlSearchType = searchParams.get("searchType") ?? "Order Id";
 
-  const [filters, setFilters] = useState<FilterState>({
-    delivery: [],
-    pickUp: false,
-    food: false,
-    fashion: false,
-    grocery: false,
-    pharma: false,
-    overview: false,
-    userType: [],
-  });
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTER_STATE);
+
+  const foodFiltersRaw = searchParams.get("foodFilters");
+  const foodFiltersPayload = useMemo((): FoodFiltersPayload | undefined => {
+    if (!foodFiltersRaw) return undefined;
+    try {
+      return JSON.parse(decodeURIComponent(foodFiltersRaw)) as FoodFiltersPayload;
+    } catch {
+      return undefined;
+    }
+  }, [foodFiltersRaw]);
+
+  useEffect(() => {
+    if (!foodFiltersRaw) {
+      setFilters(DEFAULT_FILTER_STATE);
+      return;
+    }
+    try {
+      const p = JSON.parse(decodeURIComponent(foodFiltersRaw)) as FoodFiltersPayload;
+      setFilters({
+        delivery: (p.delivery as FilterState["delivery"]) ?? [],
+        pickUp: p.pickUp ?? false,
+        food: p.food ?? false,
+        fashion: p.fashion ?? false,
+        grocery: p.grocery ?? false,
+        pharma: p.pharma ?? false,
+        overview: p.overview ?? false,
+        userType: p.userType ?? [],
+      });
+    } catch {
+      setFilters(DEFAULT_FILTER_STATE);
+    }
+  }, [foodFiltersRaw]);
 
   const selectedStatus = urlStatus ?? null;
   const [page] = useState(1);
   const [limit] = useState(20);
-  const debouncedSearch = useDebouncedValue(urlSearch, 400);  const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
+  const debouncedSearch = useDebouncedValue(urlSearch, 400);
+  const [showDeliveryDropdown, setShowDeliveryDropdown] = useState(false);
   const [showUserTypeDropdown, setShowUserTypeDropdown] = useState(false);
   const deliveryRef = useRef<HTMLDivElement>(null);
   const userTypeRef = useRef<HTMLDivElement>(null);
@@ -222,15 +291,24 @@ export default function FoodOrdersClient() {
       searchType: urlSearchType,
       page,
       limit,
+      foodFilters: foodFiltersPayload,
     }),
-    [selectedStatus, debouncedSearch, urlSearchType, page, limit]
+    [selectedStatus, debouncedSearch, urlSearchType, page, limit, foodFiltersPayload]
+  );
+
+  const hasListCriteria = useMemo(
+    () =>
+      Boolean(debouncedSearch.trim()) ||
+      selectedStatus != null ||
+      hasAppliedFoodFilters(foodFiltersPayload),
+    [debouncedSearch, selectedStatus, foodFiltersPayload]
   );
 
   const SNAPSHOT_TTL_MS = 10_000;
   const snapshotKey = useMemo(() => {
-    if (!shouldFetch) return null;
+    if (!shouldFetch || !hasListCriteria) return null;
     return `dashboard_snapshot:orders_food:${pathname}:${JSON.stringify(filtersForQuery)}`;
-  }, [shouldFetch, pathname, filtersForQuery]);
+  }, [shouldFetch, hasListCriteria, pathname, filtersForQuery]);
 
   const initialSnapshot = useMemo(() => {
     if (!snapshotKey) return null;
@@ -242,11 +320,11 @@ export default function FoodOrdersClient() {
     isFetching,
     isLoading,
     refetch: refetchOrders,
-  } = useFoodOrdersQuery(filtersForQuery, shouldFetch, snapshotKey, initialSnapshot);
+  } = useFoodOrdersQuery(filtersForQuery, shouldFetch && hasListCriteria, snapshotKey, initialSnapshot);
 
   const orders = ordersData?.orders ?? [];
   const total = ordersData?.total ?? 0;
-  const loading = isFetching || (isLoading && !ordersData);
+  const loading = hasListCriteria && (isFetching || (isLoading && !ordersData));
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -329,19 +407,41 @@ export default function FoodOrdersClient() {
     }
   }, []);
 
+  const applyFilters = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    const payload: FoodFiltersPayload = {
+      delivery: filters.delivery as FoodFiltersPayload["delivery"],
+      pickUp: filters.pickUp,
+      food: filters.food,
+      fashion: filters.fashion,
+      grocery: filters.grocery,
+      pharma: filters.pharma,
+      overview: filters.overview,
+      userType: filters.userType,
+    };
+    const hasAny =
+      (payload.delivery?.length ?? 0) > 0 ||
+      payload.pickUp ||
+      payload.food ||
+      payload.fashion ||
+      payload.grocery ||
+      payload.pharma ||
+      payload.overview ||
+      (payload.userType?.length ?? 0) > 0;
+    if (hasAny) {
+      params.set("foodFilters", encodeURIComponent(JSON.stringify(payload)));
+    } else {
+      params.delete("foodFilters");
+    }
+    router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+  }, [router, searchParams, filters]);
+
   const clearAllFilters = useCallback(() => {
-    setFilters({
-      delivery: [],
-      pickUp: false,
-      food: false,
-      fashion: false,
-      grocery: false,
-      pharma: false,
-      overview: false,
-      userType: [],
-    });
-    router.replace("/dashboard/orders/food", { scroll: false });
-  }, [router]);
+    setFilters(DEFAULT_FILTER_STATE);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("foodFilters");
+    router.replace(`/dashboard/orders/food?${params.toString()}`, { scroll: false });
+  }, [router, searchParams]);
 
   const refreshData = useCallback(() => {
     void refetchOrders();
@@ -571,51 +671,31 @@ export default function FoodOrdersClient() {
             </button>
             {showUserTypeDropdown && (
               <div
-                className="absolute top-full left-0 mt-1 w-48 border rounded-lg shadow-lg z-50"
+                className="absolute top-full left-0 mt-1 w-48 border rounded-lg shadow-lg z-50 max-h-64 overflow-y-auto"
                 style={{ backgroundColor: CONTENT_BG, borderColor: BORDER_COLOR }}
               >
-                <label className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.userType.includes("Premium")}
-                    onChange={() => handleUserTypeToggle("Premium")}
-                    className="mr-2"
-                  />
-                  <span className="text-sm" style={{ color: DARK_TEXT }}>Premium</span>
-                </label>
-                <label className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.userType.includes("Very Good")}
-                    onChange={() => handleUserTypeToggle("Very Good")}
-                    className="mr-2"
-                  />
-                  <span className="text-sm" style={{ color: DARK_TEXT }}>Very Good</span>
-                </label>
-                <label className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.userType.includes("Good")}
-                    onChange={() => handleUserTypeToggle("Good")}
-                    className="mr-2"
-                  />
-                  <span className="text-sm" style={{ color: DARK_TEXT }}>Good</span>
-                </label>
-                <label className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.userType.includes("Bad")}
-                    onChange={() => handleUserTypeToggle("Bad")}
-                    className="mr-2"
-                  />
-                  <span className="text-sm" style={{ color: DARK_TEXT }}>Bad</span>
-                </label>
+                {USER_TYPE_OPTIONS.map((label) => (
+                  <label
+                    key={label}
+                    className="flex items-center px-4 py-2 hover:bg-gray-100 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={filters.userType.includes(label)}
+                      onChange={() => handleUserTypeToggle(label)}
+                      className="mr-2"
+                    />
+                    <span className="text-sm" style={{ color: DARK_TEXT }}>{label}</span>
+                  </label>
+                ))}
               </div>
             )}
           </div>
 
           {/* Apply Filter Button */}
           <button
+            type="button"
+            onClick={applyFilters}
             className="ml-auto px-3 py-1.5 rounded-md text-xs font-medium uppercase border cursor-pointer"
             style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
           >
@@ -710,7 +790,7 @@ export default function FoodOrdersClient() {
           <button
             type="button"
             onClick={refreshData}
-            disabled={loading}
+            disabled={loading || !hasListCriteria}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: MINT_GREEN, color: DARK_TEXT, borderColor: BORDER_COLOR }}
           >
@@ -769,7 +849,16 @@ export default function FoodOrdersClient() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200" style={{ backgroundColor: CONTENT_BG }}>
-            {loading ? (
+            {!hasListCriteria ? (
+              <tr>
+                <td
+                  colSpan={10}
+                  className="px-2 py-6"
+                  style={{ backgroundColor: CONTENT_BG }}
+                  aria-hidden
+                />
+              </tr>
+            ) : loading ? (
               <tr>
                 <td colSpan={10} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
                   Loading…
@@ -777,8 +866,8 @@ export default function FoodOrdersClient() {
               </tr>
             ) : orders.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-2 py-4 text-center" style={{ color: TABLE_TEXT }}>
-                  No orders found
+                <td colSpan={10} className="px-2 py-4 text-center text-xs" style={{ color: TABLE_TEXT }}>
+                  We couldn&apos;t find any data for this ID.
                 </td>
               </tr>
             ) : (

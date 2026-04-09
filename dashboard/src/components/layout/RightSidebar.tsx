@@ -190,7 +190,19 @@ export function RightSidebar({
     return match ? match[1] : null;
   }, [cleanPathname]);
 
-  const { store: sidebarStoreData } = useStore(storeIdFromPath);
+  /** Unmount store card immediately on navigation — do not rely on query/context clearing (avoids stale flash). */
+  const showRightSidebarStoreCard = useMemo(() => {
+    const p = cleanPathname;
+    return (
+      p === "/dashboard/orders" ||
+      p.startsWith("/dashboard/orders/") ||
+      p === "/dashboard/merchants" ||
+      p.startsWith("/dashboard/merchants/")
+    );
+  }, [cleanPathname]);
+
+  const storeIdForSidebarStoreQuery = showRightSidebarStoreCard ? storeIdFromPath : null;
+  const { store: sidebarStoreData } = useStore(storeIdForSidebarStoreQuery);
   const merchantsSearch = useMerchantsSearch();
 
   const sidebarStore: StoreInfoCardData | null = useMemo(() => {
@@ -209,9 +221,18 @@ export function RightSidebar({
 
   const isMerchantsListPage = cleanPathname === "/dashboard/merchants";
   const showMerchantSearchSkeleton =
-    isMerchantsListPage && portal === "merchant" && Boolean(merchantsSearch?.isLoading);
+    showRightSidebarStoreCard &&
+    isMerchantsListPage &&
+    portal === "merchant" &&
+    Boolean(merchantsSearch?.isLoading);
   const merchantSearchResultStore: StoreInfoCardData | null = useMemo(() => {
-    if (!merchantsSearch?.searchResultStore || !isMerchantsListPage || portal !== "merchant") return null;
+    if (
+      !showRightSidebarStoreCard ||
+      !merchantsSearch?.searchResultStore ||
+      !isMerchantsListPage ||
+      portal !== "merchant"
+    )
+      return null;
     const s = merchantsSearch.searchResultStore;
     return {
       storeId: s.storeId,
@@ -221,7 +242,7 @@ export function RightSidebar({
       approval_status: s.approval_status ?? null,
       store_phones: s.store_phones ?? null,
     };
-  }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal]);
+  }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal, showRightSidebarStoreCard]);
 
   const dockLeft = dockSide === "left";
 
@@ -561,6 +582,7 @@ export function RightSidebar({
                             ["workflow-rules", "Workflow rules"],
                             ["email-assigned", "Email: assigned"],
                             ["email-reopened", "Email: reopened"],
+                            ["response-templates", "Response library"],
                           ] as const
                         ).map(([id, label]) => {
                           const active = queueManagerSection === id;
@@ -865,8 +887,8 @@ export function RightSidebar({
                         </Link>
                       )
                     )}
-                    {/* Store Information Card: merchant portal — from URL store, or from search result on list page; skeleton when search loading */}
-                    {isOpen && portal === "merchant" && (
+                    {/* Store Information Card: merchant portal — only on orders/* or merchants/*; unmounts immediately on other routes (no CSS hide). */}
+                    {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
                       <div className="mt-3 min-w-0">
                         {showMerchantSearchSkeleton ? (
                           <StoreInfoCardSkeleton />
@@ -876,7 +898,7 @@ export function RightSidebar({
                           <StoreInfoCard store={merchantSearchResultStore} />
                         ) : null}
                       </div>
-                    )}
+                    ) : null}
                   </>
                 );
               })()}

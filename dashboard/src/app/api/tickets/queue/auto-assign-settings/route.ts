@@ -17,6 +17,29 @@ function clampCycle(n: number): number {
   return Math.min(CYCLE_MAX, Math.max(CYCLE_MIN, Math.floor(n)));
 }
 
+type SlaPriorityMinutes = {
+  low: number;
+  medium: number;
+  high: number;
+  urgent: number;
+  critical: number;
+};
+
+const SLA_MIN_LIMIT = 1;
+const SLA_MAX_LIMIT = 1440;
+const DEFAULT_SLA_MINUTES: SlaPriorityMinutes = {
+  low: 30,
+  medium: 25,
+  high: 20,
+  urgent: 15,
+  critical: 10,
+};
+
+function clampSlaMinutes(n: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(SLA_MIN_LIMIT, Math.min(SLA_MAX_LIMIT, Math.floor(n)));
+}
+
 export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
@@ -108,6 +131,39 @@ export async function GET() {
       // 0177_ticket_routing_default_group_and_docs.sql not applied
     }
 
+    let slaMinutesByPriority = { ...DEFAULT_SLA_MINUTES };
+    let slaSettingsAvailable = false;
+    try {
+      const slaRows = (await sql`
+        SELECT
+          sla_minutes_low,
+          sla_minutes_medium,
+          sla_minutes_high,
+          sla_minutes_urgent,
+          sla_minutes_critical
+        FROM public.ticket_queue_auto_assign_settings
+        WHERE id = 1
+        LIMIT 1
+      `) as {
+        sla_minutes_low?: number | null;
+        sla_minutes_medium?: number | null;
+        sla_minutes_high?: number | null;
+        sla_minutes_urgent?: number | null;
+        sla_minutes_critical?: number | null;
+      }[];
+      const row = slaRows[0] ?? {};
+      slaSettingsAvailable = true;
+      slaMinutesByPriority = {
+        low: clampSlaMinutes(Number(row.sla_minutes_low), DEFAULT_SLA_MINUTES.low),
+        medium: clampSlaMinutes(Number(row.sla_minutes_medium), DEFAULT_SLA_MINUTES.medium),
+        high: clampSlaMinutes(Number(row.sla_minutes_high), DEFAULT_SLA_MINUTES.high),
+        urgent: clampSlaMinutes(Number(row.sla_minutes_urgent), DEFAULT_SLA_MINUTES.urgent),
+        critical: clampSlaMinutes(Number(row.sla_minutes_critical), DEFAULT_SLA_MINUTES.critical),
+      };
+    } catch {
+      // 0193_ticket_sla_priority_settings.sql not applied yet
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -122,6 +178,8 @@ export async function GET() {
         offlineReleaseSettingsAvailable,
         defaultRoutingGroupId,
         defaultRoutingGroupAvailable,
+        slaMinutesByPriority,
+        slaSettingsAvailable,
       },
     });
   } catch (e) {
@@ -157,6 +215,7 @@ export async function PUT(request: NextRequest) {
       releaseAssignmentsWhenAgentOffline?: unknown;
       offlineReleaseMaxTickets?: unknown;
       defaultRoutingGroupId?: unknown;
+      slaMinutesByPriority?: Partial<Record<keyof SlaPriorityMinutes, unknown>>;
     };
 
     const hasCap = body.maxOpenTicketsPerAgent !== undefined && body.maxOpenTicketsPerAgent !== null;
@@ -168,13 +227,16 @@ export async function PUT(request: NextRequest) {
     const hasOfflineMax =
       body.offlineReleaseMaxTickets !== undefined && body.offlineReleaseMaxTickets !== null;
     const hasDefaultGroup = Object.prototype.hasOwnProperty.call(body, "defaultRoutingGroupId");
+    const hasSlaByPriority =
+      body.slaMinutesByPriority != null &&
+      typeof body.slaMinutesByPriority === "object";
 
-    if (!hasCap && !hasRR && !hasOfflineRelease && !hasOfflineMax && !hasDefaultGroup) {
+    if (!hasCap && !hasRR && !hasOfflineRelease && !hasOfflineMax && !hasDefaultGroup && !hasSlaByPriority) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "Send maxOpenTicketsPerAgent, primary/secondaryPerCycle, offline release fields, or defaultRoutingGroupId (see API)",
+            "Send maxOpenTicketsPerAgent, primary/secondaryPerCycle, offline release fields, defaultRoutingGroupId, or slaMinutesByPriority",
         },
         { status: 400 }
       );
@@ -382,6 +444,88 @@ export async function PUT(request: NextRequest) {
       }
     }
 
+    if (hasSlaByPriority) {
+      const raw = body.slaMinutesByPriority as Partial<Record<keyof SlaPriorityMinutes, unknown>>;
+      const hasAnySlaKey = ["low", "medium", "high", "urgent", "critical"].some((k) =>
+        Object.prototype.hasOwnProperty.call(raw, k)
+      );
+      if (hasAnySlaKey) {
+        let current = { ...DEFAULT_SLA_MINUTES };
+        try {
+          const rows = (await sql`
+            SELECT
+              sla_minutes_low,
+              sla_minutes_medium,
+              sla_minutes_high,
+              sla_minutes_urgent,
+              sla_minutes_critical
+            FROM public.ticket_queue_auto_assign_settings
+            WHERE id = 1
+            LIMIT 1
+          `) as {
+            sla_minutes_low?: number | null;
+            sla_minutes_medium?: number | null;
+            sla_minutes_high?: number | null;
+            sla_minutes_urgent?: number | null;
+            sla_minutes_critical?: number | null;
+          }[];
+          const row = rows[0] ?? {};
+          current = {
+            low: clampSlaMinutes(Number(row.sla_minutes_low), DEFAULT_SLA_MINUTES.low),
+            medium: clampSlaMinutes(Number(row.sla_minutes_medium), DEFAULT_SLA_MINUTES.medium),
+            high: clampSlaMinutes(Number(row.sla_minutes_high), DEFAULT_SLA_MINUTES.high),
+            urgent: clampSlaMinutes(Number(row.sla_minutes_urgent), DEFAULT_SLA_MINUTES.urgent),
+            critical: clampSlaMinutes(Number(row.sla_minutes_critical), DEFAULT_SLA_MINUTES.critical),
+          };
+        } catch {
+          // fallback to defaults
+        }
+        const low = Number(raw.low ?? current.low);
+        const medium = Number(raw.medium ?? current.medium);
+        const high = Number(raw.high ?? current.high);
+        const urgent = Number(raw.urgent ?? current.urgent);
+        const critical = Number(raw.critical ?? current.critical);
+        const entries: Array<[string, number]> = [
+          ["low", low],
+          ["medium", medium],
+          ["high", high],
+          ["urgent", urgent],
+          ["critical", critical],
+        ];
+        for (const [key, value] of entries) {
+          if (!Number.isFinite(value) || value < SLA_MIN_LIMIT || value > SLA_MAX_LIMIT) {
+            return NextResponse.json(
+              { success: false, error: `slaMinutesByPriority.${key} must be between ${SLA_MIN_LIMIT} and ${SLA_MAX_LIMIT}` },
+              { status: 400 }
+            );
+          }
+        }
+
+        try {
+          await sql`
+            UPDATE public.ticket_queue_auto_assign_settings
+            SET
+              sla_minutes_low = ${Math.floor(low)},
+              sla_minutes_medium = ${Math.floor(medium)},
+              sla_minutes_high = ${Math.floor(high)},
+              sla_minutes_urgent = ${Math.floor(urgent)},
+              sla_minutes_critical = ${Math.floor(critical)},
+              updated_at = now()
+            WHERE id = 1
+          `;
+        } catch (e) {
+          console.error("[PUT auto-assign-settings] sla minutes:", e);
+          return NextResponse.json(
+            {
+              success: false,
+              error: "Could not save SLA settings — run migration 0193_ticket_sla_priority_settings.sql.",
+            },
+            { status: 503 }
+          );
+        }
+      }
+    }
+
     const capRows = (await sql`
       SELECT max_open_tickets_per_agent FROM public.ticket_queue_auto_assign_settings WHERE id = 1 LIMIT 1
     `) as { max_open_tickets_per_agent?: number }[];
@@ -444,6 +588,39 @@ export async function PUT(request: NextRequest) {
       // 0177 not applied
     }
 
+    let slaMinutesByPriority = { ...DEFAULT_SLA_MINUTES };
+    let slaSettingsAvailable = false;
+    try {
+      const slaRows = (await sql`
+        SELECT
+          sla_minutes_low,
+          sla_minutes_medium,
+          sla_minutes_high,
+          sla_minutes_urgent,
+          sla_minutes_critical
+        FROM public.ticket_queue_auto_assign_settings
+        WHERE id = 1
+        LIMIT 1
+      `) as {
+        sla_minutes_low?: number | null;
+        sla_minutes_medium?: number | null;
+        sla_minutes_high?: number | null;
+        sla_minutes_urgent?: number | null;
+        sla_minutes_critical?: number | null;
+      }[];
+      const row = slaRows[0] ?? {};
+      slaSettingsAvailable = true;
+      slaMinutesByPriority = {
+        low: clampSlaMinutes(Number(row.sla_minutes_low), DEFAULT_SLA_MINUTES.low),
+        medium: clampSlaMinutes(Number(row.sla_minutes_medium), DEFAULT_SLA_MINUTES.medium),
+        high: clampSlaMinutes(Number(row.sla_minutes_high), DEFAULT_SLA_MINUTES.high),
+        urgent: clampSlaMinutes(Number(row.sla_minutes_urgent), DEFAULT_SLA_MINUTES.urgent),
+        critical: clampSlaMinutes(Number(row.sla_minutes_critical), DEFAULT_SLA_MINUTES.critical),
+      };
+    } catch {
+      // 0193 not applied
+    }
+
     return NextResponse.json({
       success: true,
       data: {
@@ -456,6 +633,8 @@ export async function PUT(request: NextRequest) {
         offlineReleaseSettingsAvailable,
         defaultRoutingGroupId,
         defaultRoutingGroupAvailable,
+        slaMinutesByPriority,
+        slaSettingsAvailable,
       },
     });
   } catch (e) {

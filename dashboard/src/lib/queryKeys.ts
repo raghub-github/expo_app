@@ -98,6 +98,8 @@ export const queryKeys = {
         accessApprovedOnly ? "dashboardAccessOnly" : "all",
       ] as const,
     referenceData: () => ["tickets", "reference-data"] as const,
+    /** Prefix-matches all `["tickets","helpdesk-dashboard", ...]` metric queries. */
+    helpdeskDashboard: () => ["tickets", "helpdesk-dashboard"] as const,
   },
 
   // Unified tickets (public.unified_tickets)

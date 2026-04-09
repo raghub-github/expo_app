@@ -55,6 +55,29 @@ export async function listUserAppCategories(opts: {
   return arr.map((x) => mapRow(x as Record<string, unknown>));
 }
 
+/** Set display_order to 0..n-1 for all rows in a store, preserving current sort (display_order, id). */
+export async function normalizeDisplayOrdersForStore(storeType: string): Promise<void> {
+  const sql = getSql();
+  const raw = await sql`
+    SELECT id FROM user_app_category
+    WHERE store_type = ${storeType}
+    ORDER BY display_order ASC, id ASC
+  `;
+  const arr = Array.isArray(raw) ? raw : [];
+  if (arr.length === 0) return;
+  await sql.begin(async (tx) => {
+    const run = tx as unknown as typeof sql;
+    for (let i = 0; i < arr.length; i++) {
+      const rowId = numId((arr[i] as Record<string, unknown>).id);
+      await run`
+        UPDATE user_app_category
+        SET display_order = ${i}
+        WHERE id = ${rowId}
+      `;
+    }
+  });
+}
+
 export async function createUserAppCategory(input: {
   store_type: string;
   name: string;
@@ -191,14 +214,16 @@ export async function deleteUserAppCategory(
   id: number
 ): Promise<{ ok: true } | { ok: false; error: "not_found" }> {
   const sql = getSql();
-  const deleted = await sql`
-    DELETE FROM user_app_category
+  const [existing] = await sql`
+    SELECT id, store_type FROM user_app_category
     WHERE id = ${id}
-    RETURNING id
+    LIMIT 1
   `;
-  const rows = Array.isArray(deleted) ? deleted : [];
-  if (rows.length === 0) {
+  if (!existing) {
     return { ok: false, error: "not_found" };
   }
+  const storeType = String((existing as Record<string, unknown>).store_type ?? "FOOD");
+  await sql`DELETE FROM user_app_category WHERE id = ${id}`;
+  await normalizeDisplayOrdersForStore(storeType);
   return { ok: true };
 }

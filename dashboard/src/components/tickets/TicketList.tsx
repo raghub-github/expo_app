@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { FixedSizeList as List, ListChildComponentProps } from "react-window";
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
-import { useTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
+import { useTickets, fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
@@ -24,6 +24,7 @@ import { ExportTicketsModal } from "./ExportTicketsModal";
 import { buildTicketDetailHref, TICKET_FROM_QUEUE_PARAM } from "@/lib/tickets/ticket-path-utils";
 
 export type TicketViewMode = "list" | "grid";
+type TicketScopeTab = "active" | "snoozed";
 
 const PAGE_SIZE_OPTIONS = [30, 50, 100] as const;
 
@@ -99,6 +100,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [scopeTab, setScopeTab] = useState<TicketScopeTab>("active");
   const autoSelectAllAfterPageSizeChangeRef = useRef(false);
   const pageSizeDropdownRef = useRef<HTMLDivElement>(null);
   const sortDropdownRef = useRef<HTMLDivElement>(null);
@@ -123,6 +125,22 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const queueResolvedAgentStatus = agentStatusRes?.data?.currentStatus || "offline";
   const queueHomeAgentOffline =
     isQueueHome && agentStatusFetched && queueResolvedAgentStatus === "offline";
+  const [queueGateTimedOut, setQueueGateTimedOut] = useState(false);
+
+  // Fast fallback: if agent-status API is slow on hard reload,
+  // don't block queue list forever behind the status gate.
+  useEffect(() => {
+    if (!isQueueHome) {
+      setQueueGateTimedOut(false);
+      return;
+    }
+    if (agentStatusFetched) {
+      setQueueGateTimedOut(false);
+      return;
+    }
+    const id = window.setTimeout(() => setQueueGateTimedOut(true), 1200);
+    return () => window.clearTimeout(id);
+  }, [isQueueHome, agentStatusFetched]);
 
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
@@ -208,9 +226,11 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       sortOrder: f.sortOrder || undefined,
       limit,
       offset,
+      includeSnoozed: scopeTab === "snoozed",
+      snoozedOnly: scopeTab === "snoozed",
       ...(queueLocked ? { queueScope: true } : {}),
     };
-  }, [appliedFilters, debouncedSearchQuery, limit, offset, isQueueHome, currentUser?.id]);
+  }, [appliedFilters, debouncedSearchQuery, limit, offset, isQueueHome, currentUser?.id, scopeTab]);
 
   const updatesPollBase = useMemo(() => {
     const { limit: _l, offset: _o, ...rest } = queryFilters;
@@ -220,12 +240,50 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
   const queueListReady = !isQueueHome || Boolean(currentUser);
   /** Queue home: wait for agent status before fetching tickets so we never show a stale "online" list after going offline. */
   const queueHomeTicketsEnabled =
-    !isQueueHome || (agentStatusFetched && !queueHomeAgentOffline);
+    !isQueueHome || ((agentStatusFetched || queueGateTimedOut) && !queueHomeAgentOffline);
   const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters, {
     enabled: queueListReady && queueHomeTicketsEnabled,
   });
+  const activeCountFilters = useMemo<TicketFilters>(() => {
+    const { limit: _l, offset: _o, includeSnoozed: _is, snoozedOnly: _so, ...base } = queryFilters;
+    return {
+      ...base,
+      includeSnoozed: false,
+      snoozedOnly: false,
+      limit: 1,
+      offset: 0,
+    };
+  }, [queryFilters]);
+  const snoozedCountFilters = useMemo<TicketFilters>(() => {
+    const { limit: _l, offset: _o, includeSnoozed: _is, snoozedOnly: _so, ...base } = queryFilters;
+    return {
+      ...base,
+      includeSnoozed: true,
+      snoozedOnly: true,
+      limit: 1,
+      offset: 0,
+    };
+  }, [queryFilters]);
+  const { data: activeCountData } = useQuery({
+    queryKey: [...queryKeys.tickets.list(activeCountFilters as unknown as Record<string, unknown>), "countOnly"],
+    queryFn: ({ signal }) => fetchTickets(activeCountFilters, signal),
+    enabled: queueListReady && queueHomeTicketsEnabled,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
+  });
+  const { data: snoozedCountData } = useQuery({
+    queryKey: [...queryKeys.tickets.list(snoozedCountFilters as unknown as Record<string, unknown>), "countOnly"],
+    queryFn: ({ signal }) => fetchTickets(snoozedCountFilters, signal),
+    enabled: queueListReady && queueHomeTicketsEnabled,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
+  });
   const [loadingMessageSlow, setLoadingMessageSlow] = useState(false);
   const currentTotal = data?.total ?? 0;
+  const activeCountDisplay = Number(activeCountData?.total ?? 0);
+  const snoozedCountDisplay = Number(snoozedCountData?.total ?? 0);
   const listReadyForUpdates =
     Boolean(data) && !isLoading && !isPending && queueHomeTicketsEnabled;
   const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(updatesPollBase, listReadyForUpdates);
@@ -309,6 +367,37 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     setSelectedIds(new Set(data.tickets.map((t) => t.id)));
     autoSelectAllAfterPageSizeChangeRef.current = false;
   }, [data]);
+
+  // Keep page within valid range when total shrinks after bulk actions.
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [data?.total, page, pageSize]);
+
+  // Expiry-driven refresh: as soon as the next visible snoozed ticket reaches snoozed_until,
+  // refetch lists/counts so Active/Snoozed counts and rows move without waiting for poll cycle.
+  useEffect(() => {
+    if (!data || !Array.isArray(data.tickets) || data.tickets.length === 0) return;
+    const now = Date.now();
+    let minDelayMs: number | null = null;
+    for (const t of data.tickets) {
+      if (String(t.status).toLowerCase() !== "snoozed" || !t.snoozedUntil) continue;
+      const endMs = new Date(t.snoozedUntil).getTime();
+      if (!Number.isFinite(endMs)) continue;
+      const delay = Math.max(0, endMs - now + 450);
+      minDelayMs = minDelayMs == null ? delay : Math.min(minDelayMs, delay);
+    }
+    if (minDelayMs == null) return;
+    const timer = window.setTimeout(() => {
+      void queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+    }, minDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [data, queryClient]);
 
   useEffect(() => {
     const waiting = isLoading || (isPending && data == null);
@@ -654,6 +743,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       await queryClient.invalidateQueries({
         predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
       });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
       await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(targetTicketId) });
       await refetch();
     } catch {
@@ -663,25 +753,43 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     }
   }, [selectedIds, mergeTargetId, mergeReason, toast, ticketNumberById, queryClient, refetch]);
   const handleBulkUpdateApply = useCallback(
-    (updates: {
+    async (updates: {
       priority?: string;
       status?: string;
       groupId?: number | null;
       assigneeId?: number | null;
     }) => {
-      selectedIds.forEach((id) => {
+      const ids = Array.from(selectedIds);
+      if (ids.length === 0) return;
+
+      const results = await Promise.allSettled(ids.map(async (id) => {
         const payload: Parameters<(typeof updateTicket)["mutate"]>[0] = { ticketId: id };
         if (updates.priority !== undefined) payload.priority = updates.priority;
         if (updates.status !== undefined) payload.status = updates.status;
         if (updates.groupId !== undefined) payload.groupId = updates.groupId;
         if (updates.assigneeId !== undefined)
           payload.currentAssigneeUserId = updates.assigneeId ?? null;
-        updateTicket.mutate(payload);
+        await updateTicket.mutateAsync(payload);
+      }));
+
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) {
+        toast(`${failed} ticket${failed === 1 ? "" : "s"} failed during bulk update.`, "error");
+      } else {
+        toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} updated successfully.`, "success");
+      }
+
+      await queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
       });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      setPage(1);
+      await refetch();
+
       setBulkUpdateOpen(false);
       setSelectedIds(new Set());
     },
-    [selectedIds, updateTicket]
+    [selectedIds, updateTicket, toast, queryClient, refetch]
   );
   const handleExportSelected = useCallback(() => {
     const selected = tickets.filter((t) => selectedIds.has(t.id));
@@ -819,7 +927,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     );
   }
 
-  if (!data || data.tickets.length === 0) {
+  if (!data) {
     const emptyBecauseOfFilters = appliedTicketFilterCount > 0;
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-white">
@@ -884,87 +992,108 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       )}
       {/* Toolbar: fixed 3-column layout so Sort by position never changes */}
       <div className="sticky top-0 z-30 flex-shrink-0 flex items-center gap-2 border-b border-gray-200/90 bg-white px-3 py-2">
-        {/* Left: Sort by - fixed position */}
-        <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600 shrink-0" ref={sortDropdownRef}>
+        {/* Left: Sort by + scope tabs */}
+        <div className="flex items-center gap-2 shrink-0">
           <span className="hidden sm:inline font-medium text-gray-700">Sort by:</span>
-          <button
-            type="button"
-            onClick={() => setSortDropdownOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
-            aria-expanded={sortDropdownOpen}
-            aria-haspopup="listbox"
-            aria-label="Sort options"
-          >
-            {appliedFilters.sortBy === "created_at" && "Date created"}
-            {appliedFilters.sortBy === "updated_at" && "Last modified"}
-            {appliedFilters.sortBy === "sla_due_at" && "Due by"}
-            {appliedFilters.sortBy === "priority" && "Priority"}
-            {appliedFilters.sortBy === "status" && "Status"}
-            <span className="text-gray-400">·</span>
-            {appliedFilters.sortOrder === "asc" ? "Ascending" : "Descending"}
-            <ChevronDown className={`h-3.5 w-3.5 text-gray-500 transition-transform ${sortDropdownOpen ? "rotate-180" : ""}`} />
-          </button>
-          {sortDropdownOpen && (
-            <div
-              className="absolute left-0 top-full z-50 mt-1 min-w-[184px] rounded-lg border border-gray-200 bg-white py-0.5 shadow-lg sm:left-auto sm:right-0"
-              role="listbox"
+          <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600 shrink-0" ref={sortDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setSortDropdownOpen((o) => !o)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
+              aria-expanded={sortDropdownOpen}
+              aria-haspopup="listbox"
+              aria-label="Sort options"
             >
-              <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                Sort by
+              {appliedFilters.sortBy === "created_at" && "Date created"}
+              {appliedFilters.sortBy === "updated_at" && "Last modified"}
+              {appliedFilters.sortBy === "sla_due_at" && "Due by"}
+              {appliedFilters.sortBy === "priority" && "Priority"}
+              {appliedFilters.sortBy === "status" && "Status"}
+              <span className="text-gray-400">·</span>
+              {appliedFilters.sortOrder === "asc" ? "Ascending" : "Descending"}
+              <ChevronDown className={`h-3.5 w-3.5 text-gray-500 transition-transform ${sortDropdownOpen ? "rotate-180" : ""}`} />
+            </button>
+            {sortDropdownOpen && (
+              <div
+                className="absolute left-0 top-full z-50 mt-1 min-w-[184px] rounded-lg border border-gray-200 bg-white py-0.5 shadow-lg sm:left-auto sm:right-0"
+                role="listbox"
+              >
+                <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Sort by
+                </div>
+                {[
+                  { value: "created_at", label: "Date created" },
+                  { value: "updated_at", label: "Last modified" },
+                  { value: "sla_due_at", label: "Due by" },
+                  { value: "priority", label: "Priority" },
+                  { value: "status", label: "Status" },
+                ].map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="option"
+                    aria-selected={appliedFilters.sortBy === opt.value}
+                    onClick={() => {
+                      setSortDropdownOpen(false);
+                      const order = opt.value === "created_at" ? "desc" : appliedFilters.sortOrder;
+                      applySort(opt.value, order);
+                    }}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
+                      appliedFilters.sortBy === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className={appliedFilters.sortBy === opt.value ? "font-medium" : ""}>{opt.label}</span>
+                    {appliedFilters.sortBy === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                  </button>
+                ))}
+                <div className="my-0.5 border-t border-gray-200" />
+                <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Order
+                </div>
+                {[
+                  { value: "asc", label: "Ascending" },
+                  { value: "desc", label: "Descending" },
+                ].map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="option"
+                    aria-selected={appliedFilters.sortOrder === opt.value}
+                    onClick={() => {
+                      setSortDropdownOpen(false);
+                      applySort(appliedFilters.sortBy, opt.value);
+                    }}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
+                      appliedFilters.sortOrder === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className={appliedFilters.sortOrder === opt.value ? "font-medium" : ""}>{opt.label}</span>
+                    {appliedFilters.sortOrder === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                  </button>
+                ))}
               </div>
-              {[
-                { value: "created_at", label: "Date created" },
-                { value: "updated_at", label: "Last modified" },
-                { value: "sla_due_at", label: "Due by" },
-                { value: "priority", label: "Priority" },
-                { value: "status", label: "Status" },
-              ].map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  role="option"
-                  aria-selected={appliedFilters.sortBy === opt.value}
-                  onClick={() => {
-                    setSortDropdownOpen(false);
-                    // Date created: default to Descending so latest tickets show first
-                    const order = opt.value === "created_at" ? "desc" : appliedFilters.sortOrder;
-                    applySort(opt.value, order);
-                  }}
-                  className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
-                    appliedFilters.sortBy === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  <span className={appliedFilters.sortBy === opt.value ? "font-medium" : ""}>{opt.label}</span>
-                  {appliedFilters.sortBy === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
-                </button>
-              ))}
-              <div className="my-0.5 border-t border-gray-200" />
-              <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                Order
-              </div>
-              {[
-                { value: "asc", label: "Ascending" },
-                { value: "desc", label: "Descending" },
-              ].map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  role="option"
-                  aria-selected={appliedFilters.sortOrder === opt.value}
-                  onClick={() => {
-                    setSortDropdownOpen(false);
-                    applySort(appliedFilters.sortBy, opt.value);
-                  }}
-                  className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
-                    appliedFilters.sortOrder === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  <span className={appliedFilters.sortOrder === opt.value ? "font-medium" : ""}>{opt.label}</span>
-                  {appliedFilters.sortOrder === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
-                </button>
-              ))}
-            </div>
-          )}
+            )}
+          </div>
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50/80 p-0.5">
+            <button
+              type="button"
+              onClick={() => setScopeTab("active")}
+              className={`cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                scopeTab === "active" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-800"
+              }`}
+            >
+              Active ({activeCountDisplay})
+            </button>
+            <button
+              type="button"
+              onClick={() => setScopeTab("snoozed")}
+              className={`cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                scopeTab === "snoozed" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-800"
+              }`}
+            >
+              Snoozed ({snoozedCountDisplay})
+            </button>
+          </div>
         </div>
 
         {/* Center: New Updated button (Freshdesk style) - only when there are new/updated tickets */}
@@ -1345,7 +1474,12 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
       <div
         className={`flex-1 min-h-0 overflow-y-auto overflow-x-visible ${viewMode === "grid" ? "p-4" : ""}`}
       >
-        {viewMode === "list" ? (
+        {tickets.length === 0 ? (
+          <div className="flex h-full min-h-0 w-full flex-col items-center justify-center px-4 py-12 text-center">
+            <p className="text-base font-semibold text-gray-900">Whoa, relax 😄 no stress at all!</p>
+            <p className="mt-2 text-sm text-gray-600">Seems like there’s no ticket to worry about.</p>
+          </div>
+        ) : viewMode === "list" ? (
           <div className="w-full relative" style={{ overflow: "visible" }}>
             {/* List header row - compact, single line */}
             <div className="flex items-center gap-2.5 border-b border-gray-200 bg-slate-50/90 pl-2 pr-1 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">

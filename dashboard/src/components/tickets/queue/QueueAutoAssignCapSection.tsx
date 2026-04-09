@@ -25,6 +25,14 @@ type SettingsResponseData = {
   offlineReleaseSettingsAvailable?: boolean;
   defaultRoutingGroupId?: number | null;
   defaultRoutingGroupAvailable?: boolean;
+  slaMinutesByPriority?: {
+    low?: number;
+    medium?: number;
+    high?: number;
+    urgent?: number;
+    critical?: number;
+  };
+  slaSettingsAvailable?: boolean;
 };
 
 function applySettingsJson(
@@ -101,6 +109,19 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
   const [baselineDefaultGroup, setBaselineDefaultGroup] = useState<string>("");
   const [defaultGroupSettingsAvailable, setDefaultGroupSettingsAvailable] = useState(false);
   const [savingDefaultGroup, setSavingDefaultGroup] = useState(false);
+  const [slaSettingsAvailable, setSlaSettingsAvailable] = useState(false);
+  const [slaLow, setSlaLow] = useState(30);
+  const [slaMedium, setSlaMedium] = useState(25);
+  const [slaHigh, setSlaHigh] = useState(20);
+  const [slaUrgent, setSlaUrgent] = useState(15);
+  const [slaCritical, setSlaCritical] = useState(10);
+  const [baselineSlaKey, setBaselineSlaKey] = useState("");
+  const [savingSla, setSavingSla] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -145,6 +166,24 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
       setDefaultRoutingGroupId(dgStr);
       setBaselineDefaultGroup(dgStr);
       setDefaultGroupSettingsAvailable(json.data?.defaultRoutingGroupAvailable === true);
+      setSlaSettingsAvailable(json.data?.slaSettingsAvailable === true);
+      const sla = json.data?.slaMinutesByPriority;
+      const low = Number(sla?.low);
+      const medium = Number(sla?.medium);
+      const high = Number(sla?.high);
+      const urgent = Number(sla?.urgent);
+      const critical = Number(sla?.critical);
+      const nextLow = Number.isFinite(low) ? Math.max(1, Math.min(1440, Math.floor(low))) : 30;
+      const nextMedium = Number.isFinite(medium) ? Math.max(1, Math.min(1440, Math.floor(medium))) : 25;
+      const nextHigh = Number.isFinite(high) ? Math.max(1, Math.min(1440, Math.floor(high))) : 20;
+      const nextUrgent = Number.isFinite(urgent) ? Math.max(1, Math.min(1440, Math.floor(urgent))) : 15;
+      const nextCritical = Number.isFinite(critical) ? Math.max(1, Math.min(1440, Math.floor(critical))) : 10;
+      setSlaLow(nextLow);
+      setSlaMedium(nextMedium);
+      setSlaHigh(nextHigh);
+      setSlaUrgent(nextUrgent);
+      setSlaCritical(nextCritical);
+      setBaselineSlaKey(`${nextLow}|${nextMedium}|${nextHigh}|${nextUrgent}|${nextCritical}`);
     } catch {
       setLoadError("Network error while loading settings.");
     } finally {
@@ -181,6 +220,7 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
     baselineOfflineMax !== null &&
     (releaseOffline !== baselineRelease ||
       Math.floor(Number(offlineMax)) !== baselineOfflineMax);
+  const slaDirty = baselineSlaKey !== `${slaLow}|${slaMedium}|${slaHigh}|${slaUrgent}|${slaCritical}`;
 
   const saveOffline = async () => {
     const mx = Math.floor(Number(offlineMax));
@@ -257,6 +297,56 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
       toast(e instanceof Error ? e.message : "Save failed", "error");
     } finally {
       setSavingDefaultGroup(false);
+    }
+  };
+
+  const saveSlaByPriority = async () => {
+    const values = [slaLow, slaMedium, slaHigh, slaUrgent, slaCritical].map((v) => Math.floor(Number(v)));
+    if (values.some((v) => !Number.isFinite(v) || v < 1 || v > 1440)) {
+      toast("SLA minutes must be between 1 and 1440", "error");
+      return;
+    }
+    setSavingSla(true);
+    try {
+      const res = await fetch("/api/tickets/queue/auto-assign-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          slaMinutesByPriority: {
+            low: values[0],
+            medium: values[1],
+            high: values[2],
+            urgent: values[3],
+            critical: values[4],
+          },
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+        data?: SettingsResponseData;
+      };
+      if (!res.ok || !json.success) {
+        throw new Error(json.error ?? `Save failed (${res.status})`);
+      }
+      const sla = json.data?.slaMinutesByPriority;
+      const nextLow = Number.isFinite(Number(sla?.low)) ? Math.floor(Number(sla?.low)) : values[0];
+      const nextMedium = Number.isFinite(Number(sla?.medium)) ? Math.floor(Number(sla?.medium)) : values[1];
+      const nextHigh = Number.isFinite(Number(sla?.high)) ? Math.floor(Number(sla?.high)) : values[2];
+      const nextUrgent = Number.isFinite(Number(sla?.urgent)) ? Math.floor(Number(sla?.urgent)) : values[3];
+      const nextCritical = Number.isFinite(Number(sla?.critical)) ? Math.floor(Number(sla?.critical)) : values[4];
+      setSlaLow(nextLow);
+      setSlaMedium(nextMedium);
+      setSlaHigh(nextHigh);
+      setSlaUrgent(nextUrgent);
+      setSlaCritical(nextCritical);
+      setBaselineSlaKey(`${nextLow}|${nextMedium}|${nextHigh}|${nextUrgent}|${nextCritical}`);
+      toast("SLA thresholds updated", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "error");
+    } finally {
+      setSavingSla(false);
     }
   };
 
@@ -363,12 +453,16 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
   const inputClass =
     "w-28 rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500";
 
-  const fieldsLocked = !accessReady || (accessReady && !canUse);
+  const fieldsLocked = !accessReady || !canUse;
   const saveLocked = permLoading || !canUse || !!loadError || settingsFetching;
+
+  if (!isMounted) {
+    return <div className="w-full" />;
+  }
 
   if (accessReady && !canUse) {
     return (
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+      <div className="w-full py-2 text-sm text-amber-900">
         You do not have access to ticket queue settings.
       </div>
     );
@@ -376,20 +470,8 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
 
   return (
     <div className="w-full">
-      {embedded ? (
-        <header className="mb-6">
-          <h2 className="text-base font-semibold text-gray-900">Queue settings</h2>
-          <p className="mt-1 max-w-3xl text-sm text-gray-600">
-            Limits for auto-assignment, round-robin counts, and what happens when someone goes{" "}
-            <strong className="font-medium text-gray-800">fully offline</strong>.{" "}
-            <span className="text-gray-700">Break</span> and <span className="text-gray-700">busy</span> never unassign
-            tickets.
-          </p>
-        </header>
-      ) : null}
-
       {loadError ? (
-        <p className="mt-3 text-sm text-red-600">
+        <p className="mb-2 text-sm text-red-600">
           {loadError}{" "}
           <button type="button" onClick={() => void load()} className="font-medium text-red-700 underline">
             Retry
@@ -397,20 +479,14 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
         </p>
       ) : null}
 
-      {!defaultGroupSettingsAvailable ? (
-        <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          Optional: apply{" "}
-          <code className="font-mono">0177_ticket_routing_default_group_and_docs.sql</code> to enable a{" "}
-          <strong className="font-medium">default queue</strong> when no automation rule sets a group.
-        </p>
-      ) : (
-        <section className={`mt-6 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-4 ${settingsFetching ? "opacity-80" : ""}`}>
+      {defaultGroupSettingsAvailable ? (
+        <section className={`mb-3 py-1 ${settingsFetching ? "opacity-80" : ""}`}>
           <h3 className="text-sm font-semibold text-gray-900">Default routing queue</h3>
-          <p className="mt-1 max-w-2xl text-xs text-gray-600">
+          <p className="mt-0.5 max-w-3xl text-xs text-gray-600">
             If automations finish and the ticket still has no group, it is moved here (e.g. general / unassigned). Specific
             rules for service, source, keywords, etc. should use higher priority in Automations.
           </p>
-          <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
             <label className="flex min-w-[240px] flex-1 flex-col gap-1.5 text-sm text-gray-700">
               <span className="font-medium text-gray-800">Fallback group</span>
               <select
@@ -437,15 +513,58 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
             </button>
           </div>
         </section>
-      )}
+      ) : null}
+
+      {slaSettingsAvailable ? (
+        <section className={`mb-3 py-1 ${settingsFetching ? "opacity-80" : ""}`}>
+          <h3 className="text-sm font-semibold text-gray-900">SLA breach thresholds by priority</h3>
+          <p className="mt-0.5 max-w-3xl text-xs text-gray-600">
+            Automatically sets ticket SLA due time and marks <strong className="font-medium text-gray-800">SLA_BREACHED</strong>{" "}
+            tag when due time passes.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-5">
+            {[
+              { label: "Low", value: slaLow, set: setSlaLow },
+              { label: "Medium", value: slaMedium, set: setSlaMedium },
+              { label: "High", value: slaHigh, set: setSlaHigh },
+              { label: "Urgent", value: slaUrgent, set: setSlaUrgent },
+              { label: "Critical", value: slaCritical, set: setSlaCritical },
+            ].map((item) => (
+              <label key={item.label} className="flex flex-col gap-1 text-xs text-gray-700">
+                <span className="font-medium text-gray-800">{item.label} (min)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={item.value}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n)) item.set(Math.max(1, Math.min(1440, Math.floor(n))));
+                  }}
+                  disabled={fieldsLocked}
+                  className="rounded-lg border border-gray-300 bg-white px-2.5 py-2 text-sm text-gray-900 shadow-sm disabled:opacity-60"
+                />
+              </label>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => void saveSlaByPriority()}
+            disabled={saveLocked || savingSla || !slaDirty}
+            className="mt-2 rounded-lg bg-slate-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {savingSla ? "Updating…" : "Update SLA thresholds"}
+          </button>
+        </section>
+      ) : null}
 
       <div
-        className={`grid grid-cols-1 gap-8 md:grid-cols-2 md:gap-0 ${!embedded ? "mt-6" : "mt-6"} ${settingsFetching ? "opacity-80" : ""}`}
+        className={`grid grid-cols-1 gap-4 border-t border-gray-200 pt-3 md:grid-cols-2 md:gap-0 ${settingsFetching ? "opacity-80" : ""}`}
         aria-busy={settingsFetching}
       >
         <section className="md:pr-8">
           <h3 className="text-sm font-semibold text-gray-900">Max open per agent</h3>
-          <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+          <div className="mt-2 flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1.5 text-sm text-gray-700">
               <span className="font-medium text-gray-800">Concurrent open tickets</span>
               <input
@@ -486,8 +605,7 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
               needed).
             </p>
           ) : null}
-          <div className="mt-4 flex flex-col gap-4">
-            <div className="flex flex-wrap items-end gap-6">
+          <div className="mt-2 flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1.5 text-sm text-gray-700">
                 <span className="font-medium text-gray-800">Primary</span>
                 <input
@@ -528,7 +646,6 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
                   className={`${inputClass} disabled:opacity-50`}
                 />
               </label>
-            </div>
             <button
               type="button"
               onClick={() => void saveDistribution()}
@@ -542,24 +659,24 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
       </div>
 
       <section
-        className={`mt-10 border-t border-gray-200 pt-8 ${settingsFetching ? "opacity-80" : ""}`}
+        className={`mt-4 border-t border-gray-200 pt-3 ${settingsFetching ? "opacity-80" : ""}`}
         aria-busy={settingsFetching}
       >
         <h3 className="text-sm font-semibold text-gray-900">Agent fully offline</h3>
-        <p className="mt-1 max-w-3xl text-sm text-gray-600">
+        <p className="mt-0.5 max-w-3xl text-xs text-gray-600">
           When an agent selects <strong className="font-medium text-gray-800">Offline</strong> (with a reason), open
           tickets assigned to them can be cleared and re-queued immediately so others can pick them up.{" "}
           <strong className="font-medium text-gray-800">Break</strong> and{" "}
           <strong className="font-medium text-gray-800">busy</strong> only pause availability — assignments stay.
         </p>
         {offlineSettingsMissing ? (
-          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <p className="mt-2 rounded-md border border-amber-200 px-2.5 py-2 text-xs text-amber-900">
             Offline controls require database migration{" "}
             <code className="font-mono">0171_ticket_queue_offline_release_settings.sql</code>.
           </p>
         ) : null}
 
-        <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           <label className="flex cursor-pointer items-center gap-3 text-sm text-gray-800">
             <input
               type="checkbox"
@@ -572,7 +689,7 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
           </label>
         </div>
 
-        <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+        <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
           <label className="flex flex-col gap-1.5 text-sm text-gray-700">
             <span className="font-medium text-gray-800">Max tickets to release per offline event</span>
             <input
@@ -603,9 +720,9 @@ export function QueueAutoAssignCapSection({ embedded = false }: { embedded?: boo
           </button>
         </div>
 
-        <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50/80 p-4">
+        <div className="mt-3 rounded-md border border-gray-200 p-3">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-600">Automation queue</h4>
-          <p className="mt-1 text-sm text-gray-600">
+          <p className="mt-1 text-xs text-gray-600">
             Run pending workflow jobs once (offline releases, ticket rules, etc.). Normally the dashboard runs a batch
             when an agent goes offline; use this if something is delayed.
           </p>
