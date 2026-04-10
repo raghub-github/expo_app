@@ -8,19 +8,26 @@ import { queryKeys } from "@/lib/queryKeys";
 import {
   computeTicketCopresenceLive,
   countDistinctTicketPresenceRoles,
+  listOtherTicketAgentViewers,
+  type TicketOtherAgentViewer,
   type TicketPresenceRole,
 } from "@/lib/tickets/ticket-presence";
 import {
   ticketPostgresRealtimeTopic,
   ticketPresenceRealtimeTopic,
 } from "@/lib/tickets/ticket-realtime-topics";
+import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
 
 /** Batch rapid postgres_events into one refetch (status + multi-message bursts). */
 const INVALIDATE_DEBOUNCE_MS = 160;
-/** If Realtime never reaches SUBSCRIBED, fall back to light polling. */
-const SUBSCRIBE_PROBE_MS = 8_000;
+/** If Realtime never reaches SUBSCRIBED, fall back to light polling (cold WS / slow auth). */
+const SUBSCRIBE_PROBE_MS = 22_000;
 /** When postgres subscription fails (e.g. RLS), poll often so the thread still updates. */
-const FALLBACK_POLL_MS = 4_000;
+export const TICKET_ROOM_FALLBACK_POLL_MS = 4_000;
+
+function serializeOtherAgentViewers(v: TicketOtherAgentViewer[]): string {
+  return JSON.stringify(v.map((x) => [x.userId, x.displayName]));
+}
 
 export type TicketRoomSyncState = "idle" | "connecting" | "live" | "polling";
 
@@ -44,6 +51,8 @@ export function useTicketRoomRealtime(options: {
   const [syncState, setSyncState] = useState<TicketRoomSyncState>("idle");
   const [copresenceLive, setCopresenceLive] = useState(false);
   const [distinctRoleCount, setDistinctRoleCount] = useState(0);
+  const [otherAgentViewers, setOtherAgentViewers] = useState<TicketOtherAgentViewer[]>([]);
+  const otherAgentsSerializedRef = useRef(serializeOtherAgentViewers([]));
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const subscribedRef = useRef(false);
   const probeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -65,11 +74,20 @@ export function useTicketRoomRealtime(options: {
     }, INVALIDATE_DEBOUNCE_MS);
   }, [queryClient, ticketCacheId]);
 
-  const refreshCopresence = useCallback((ch: RealtimeChannel, selfRole: TicketPresenceRole) => {
-    const state = ch.presenceState() as Record<string, unknown[]>;
-    setCopresenceLive(computeTicketCopresenceLive(state, selfRole));
-    setDistinctRoleCount(countDistinctTicketPresenceRoles(state));
-  }, []);
+  const refreshCopresence = useCallback(
+    (ch: RealtimeChannel, selfRole: TicketPresenceRole, selfUserId: string) => {
+      const state = ch.presenceState() as Record<string, unknown[]>;
+      setCopresenceLive(computeTicketCopresenceLive(state, selfRole));
+      setDistinctRoleCount(countDistinctTicketPresenceRoles(state));
+      const next = listOtherTicketAgentViewers(state, selfUserId);
+      const ser = serializeOtherAgentViewers(next);
+      if (ser !== otherAgentsSerializedRef.current) {
+        otherAgentsSerializedRef.current = ser;
+        setOtherAgentViewers(next);
+      }
+    },
+    []
+  );
 
   const presenceUserId = presence?.userId?.trim() ?? "";
   const presenceRole = presence?.role ?? null;
@@ -82,6 +100,7 @@ export function useTicketRoomRealtime(options: {
       return;
     }
 
+    let cancelled = false;
     subscribedRef.current = false;
     setSyncState("connecting");
 
@@ -96,71 +115,84 @@ export function useTicketRoomRealtime(options: {
     const filterTicket = `ticket_id=eq.${ticketNumericId}`;
     const filterRow = `id=eq.${ticketNumericId}`;
 
-    const channel = supabase.channel(topic);
+    let channel: RealtimeChannel | null = null;
 
-    channel
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "unified_ticket_messages",
-          filter: filterTicket,
-        },
-        scheduleInvalidate
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "unified_ticket_messages",
-          filter: filterTicket,
-        },
-        scheduleInvalidate
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "DELETE",
-          schema: "public",
-          table: "unified_ticket_messages",
-          filter: filterTicket,
-        },
-        scheduleInvalidate
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "unified_tickets",
-          filter: filterRow,
-        },
-        scheduleInvalidate
-      );
+    void (async () => {
+      await hydrateBrowserSupabaseFromCookies();
+      if (cancelled) return;
 
-    channel.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        subscribedRef.current = true;
-        if (probeRef.current) {
-          window.clearTimeout(probeRef.current);
-          probeRef.current = null;
+      const ch = supabase.channel(topic);
+      if (cancelled) {
+        void supabase.removeChannel(ch);
+        return;
+      }
+      channel = ch;
+
+      ch
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "unified_ticket_messages",
+            filter: filterTicket,
+          },
+          scheduleInvalidate
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "unified_ticket_messages",
+            filter: filterTicket,
+          },
+          scheduleInvalidate
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "DELETE",
+            schema: "public",
+            table: "unified_ticket_messages",
+            filter: filterTicket,
+          },
+          scheduleInvalidate
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "unified_tickets",
+            filter: filterRow,
+          },
+          scheduleInvalidate
+        );
+
+      ch.subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          subscribedRef.current = true;
+          if (probeRef.current) {
+            window.clearTimeout(probeRef.current);
+            probeRef.current = null;
+          }
+          setSyncState("live");
         }
-        setSyncState("live");
-      }
-      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        subscribedRef.current = false;
-        setSyncState("polling");
-      }
-    });
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          subscribedRef.current = false;
+          setSyncState("polling");
+        }
+      });
+    })();
 
     return () => {
+      cancelled = true;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       debounceRef.current = null;
       if (probeRef.current) window.clearTimeout(probeRef.current);
       probeRef.current = null;
-      void supabase.removeChannel(channel);
+      if (channel) void supabase.removeChannel(channel);
     };
   }, [ticketNumericId, ticketCacheId, scheduleInvalidate]);
 
@@ -168,47 +200,69 @@ export function useTicketRoomRealtime(options: {
     if (ticketNumericId == null || !Number.isInteger(ticketNumericId) || ticketNumericId < 1) {
       setCopresenceLive(false);
       setDistinctRoleCount(0);
+      otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
+      setOtherAgentViewers([]);
       return;
     }
     if (!hasPresenceConfig || !presenceRole) {
       setCopresenceLive(false);
       setDistinctRoleCount(0);
+      otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
+      setOtherAgentViewers([]);
       return;
     }
 
-    const topic = ticketPresenceRealtimeTopic(ticketNumericId);
-    const channel = supabase.channel(topic, {
-      config: { presence: { key: presenceUserId } } as const,
-    });
+    let cancelled = false;
+    let channel: RealtimeChannel | null = null;
 
-    const bump = () => refreshCopresence(channel, presenceRole);
-    channel.on("presence", { event: "sync" }, bump);
-    channel.on("presence", { event: "join" }, bump);
-    channel.on("presence", { event: "leave" }, bump);
+    void (async () => {
+      await hydrateBrowserSupabaseFromCookies();
+      if (cancelled) return;
 
-    channel.subscribe(async (status) => {
-      if (status === "SUBSCRIBED") {
-        try {
-          await channel.track({
-            user_id: presenceUserId,
-            role: presenceRole,
-            name: presenceDisplayName,
-          });
-        } catch {
-          /* track can fail if channel dropped */
+      const topic = ticketPresenceRealtimeTopic(ticketNumericId);
+      const ch = supabase.channel(topic, {
+        config: { presence: { key: presenceUserId } } as const,
+      });
+      if (cancelled) {
+        void supabase.removeChannel(ch);
+        return;
+      }
+      channel = ch;
+
+      const bump = () => refreshCopresence(ch, presenceRole, presenceUserId);
+      ch.on("presence", { event: "sync" }, bump);
+      ch.on("presence", { event: "join" }, bump);
+      ch.on("presence", { event: "leave" }, bump);
+
+      ch.subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          try {
+            await ch.track({
+              user_id: presenceUserId,
+              role: presenceRole,
+              name: presenceDisplayName || undefined,
+            });
+          } catch {
+            /* track can fail if channel dropped */
+          }
+          bump();
         }
-        bump();
-      }
-      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        setCopresenceLive(false);
-        setDistinctRoleCount(0);
-      }
-    });
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          setCopresenceLive(false);
+          setDistinctRoleCount(0);
+          otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
+          setOtherAgentViewers([]);
+        }
+      });
+    })();
 
     return () => {
-      void supabase.removeChannel(channel);
+      cancelled = true;
+      if (channel) void supabase.removeChannel(channel);
       setCopresenceLive(false);
       setDistinctRoleCount(0);
+      otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
+      setOtherAgentViewers([]);
     };
   }, [
     ticketNumericId,
@@ -232,10 +286,10 @@ export function useTicketRoomRealtime(options: {
         queryKey: queryKeys.tickets.activities(ticketCacheId),
         refetchType: "active",
       });
-    }, FALLBACK_POLL_MS);
+    }, TICKET_ROOM_FALLBACK_POLL_MS);
 
     return () => window.clearInterval(id);
   }, [ticketNumericId, ticketCacheId, syncState, queryClient]);
 
-  return { syncState, copresenceLive, distinctRoleCount };
+  return { syncState, copresenceLive, distinctRoleCount, otherAgentViewers };
 }

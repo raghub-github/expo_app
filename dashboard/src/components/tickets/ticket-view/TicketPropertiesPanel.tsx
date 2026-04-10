@@ -8,6 +8,7 @@ import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { useToast } from "@/context/ToastContext";
 import { useRightSidebar } from "@/context/RightSidebarContext";
+import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
 
 const PRIORITY_DOT: Record<string, string> = {
   low: "bg-gray-400",
@@ -62,9 +63,13 @@ function getReadableTextColor(bg: string): string {
   return yiq >= 140 ? "#1f2937" : "#ffffff";
 }
 
-function TicketLiveBadge() {
+/** Shown when merchant app and agent dashboard are both on this ticket (Supabase Presence). */
+function TicketCopresenceLiveBadge() {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 ring-1 ring-emerald-200/80">
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 ring-1 ring-emerald-200/80"
+      title="Merchant is viewing this ticket in the app"
+    >
       <span className="relative flex h-2 w-2">
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
         <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
@@ -74,12 +79,42 @@ function TicketLiveBadge() {
   );
 }
 
+function formatOtherAgentsTooltip(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length === 1) return `${names[0]} is also viewing this ticket.`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are also viewing this ticket.`;
+  const head = names.slice(0, -1).join(", ");
+  const last = names[names.length - 1];
+  return `${head}, and ${last} are also viewing this ticket.`;
+}
+
+/** Other internal agents on this ticket (Supabase Presence); always shown when N > 0, even if Live is hidden. */
+function TicketOtherAgentsViewerIndicator({ viewers }: { viewers: TicketOtherAgentViewer[] }) {
+  if (viewers.length === 0) return null;
+  const names = viewers.map((v) => v.displayName);
+  const title = formatOtherAgentsTooltip(names);
+  return (
+    <span
+      className="inline-flex cursor-help items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-200/80"
+      title={title}
+      aria-label={title}
+    >
+      <span className="relative flex h-2 w-2 shrink-0" aria-hidden>
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
+        <span className="relative inline-flex h-2 w-2 animate-pulse rounded-full bg-red-600" />
+      </span>
+      <span>+{viewers.length}</span>
+    </span>
+  );
+}
+
 export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
   const { toast } = useToast();
   const rightSidebar = useRightSidebar();
-  const copresenceLive = Boolean(rightSidebar?.ticketCopresenceLive);
+  const ticketCopresenceLive = Boolean(rightSidebar?.ticketCopresenceLive);
+  const ticketOtherAgentViewers = rightSidebar?.ticketOtherAgentViewers ?? [];
 
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
@@ -338,9 +373,10 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
             <p className="text-[20px] font-semibold leading-tight tracking-tight text-[#1f3553]">{statusLabel}</p>
             <p className="mt-1 text-xs font-medium text-[#4b647f]">on {formatStatusTime(statusTime)}</p>
           </div>
-          {copresenceLive ? (
-            <div className="shrink-0 pt-0.5">
-              <TicketLiveBadge />
+          {ticketOtherAgentViewers.length > 0 || ticketCopresenceLive ? (
+            <div className="flex shrink-0 items-center gap-2 pt-0.5">
+              <TicketOtherAgentsViewerIndicator viewers={ticketOtherAgentViewers} />
+              {ticketCopresenceLive ? <TicketCopresenceLiveBadge /> : null}
             </div>
           ) : null}
         </div>

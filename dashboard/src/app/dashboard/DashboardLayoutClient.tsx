@@ -22,6 +22,7 @@ import { TicketFilters } from "@/components/tickets/TicketFilters";
 import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
+import { hydrateBrowserSupabaseFromCookies } from "@/lib/auth/hydrate-browser-supabase";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
 import { CurrentRouteProvider, useCurrentRoute } from "@/context/CurrentRouteContext";
 import {
@@ -30,6 +31,7 @@ import {
   ticketDetailHasQueueContext,
   ticketsPathTicketId,
 } from "@/lib/tickets/ticket-path-utils";
+import type { TicketOtherAgentViewer } from "@/lib/tickets/ticket-presence";
 /** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
 function DashboardBootstrapSkeleton() {
   return (
@@ -87,6 +89,8 @@ function useBootstrapGate(queryClient: ReturnType<typeof useQueryClient>) {
       // Mirror Supabase client session → httpOnly cookies when /auth/callback was skipped
       // (wrong Site URL / redirect) but the user still has tokens in the browser.
       await syncServerSessionCookies();
+      // Cookie-only sessions: copy server session into the browser client for Realtime + RLS.
+      void hydrateBrowserSupabaseFromCookies();
 
       const cached = queryClient.getQueryData(["auth", "session"]);
       if (cached != null) {
@@ -534,8 +538,12 @@ function DashboardLayoutContent({
   }, [isRightSidebarOpen, setRightSidebarOpen]);
 
   const [ticketCopresenceLive, setTicketCopresenceLive] = useState(false);
+  const [ticketOtherAgentViewers, setTicketOtherAgentViewers] = useState<TicketOtherAgentViewer[]>([]);
   useEffect(() => {
-    if (!isTicketDetailPage) setTicketCopresenceLive(false);
+    if (!isTicketDetailPage) {
+      setTicketCopresenceLive(false);
+      setTicketOtherAgentViewers([]);
+    }
   }, [isTicketDetailPage, ticketDetailSlug]);
 
   const rightSidebarContextValue = useMemo(
@@ -547,6 +555,8 @@ function DashboardLayoutContent({
             setOpen: setQueueTicketPropertiesOpenSafe,
             ticketCopresenceLive,
             setTicketCopresenceLive,
+            ticketOtherAgentViewers,
+            setTicketOtherAgentViewers,
             ticketRightSidebarPanel,
             setTicketRightSidebarPanel,
             ticketSettingsSection,
@@ -558,6 +568,8 @@ function DashboardLayoutContent({
             setOpen: setRightSidebarOpen,
             ticketCopresenceLive,
             setTicketCopresenceLive,
+            ticketOtherAgentViewers,
+            setTicketOtherAgentViewers,
             ticketRightSidebarPanel,
             setTicketRightSidebarPanel,
             ticketSettingsSection,
@@ -572,6 +584,9 @@ function DashboardLayoutContent({
       handleRightSidebarToggle,
       setRightSidebarOpen,
       ticketCopresenceLive,
+      setTicketCopresenceLive,
+      ticketOtherAgentViewers,
+      setTicketOtherAgentViewers,
       ticketRightSidebarPanel,
       setTicketRightSidebarPanel,
       ticketSettingsSection,

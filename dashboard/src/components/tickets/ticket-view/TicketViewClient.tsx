@@ -193,18 +193,28 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     });
   }, [authUser?.id, authUser?.email]);
 
-  const { syncState: ticketRoomSyncState, copresenceLive } = useTicketRoomRealtime({
+  const { copresenceLive, otherAgentViewers } = useTicketRoomRealtime({
     ticketNumericId,
     ticketCacheId,
     presence: agentPresenceIdentity,
   });
 
   useEffect(() => {
-    const set = rightSidebar?.setTicketCopresenceLive;
-    if (!set) return;
-    set(copresenceLive);
-    return () => set(false);
-  }, [copresenceLive, rightSidebar?.setTicketCopresenceLive]);
+    const setLive = rightSidebar?.setTicketCopresenceLive;
+    const setViewers = rightSidebar?.setTicketOtherAgentViewers;
+    if (!setLive && !setViewers) return;
+    setLive?.(copresenceLive);
+    setViewers?.(otherAgentViewers);
+    return () => {
+      setLive?.(false);
+      setViewers?.([]);
+    };
+  }, [
+    copresenceLive,
+    otherAgentViewers,
+    rightSidebar?.setTicketCopresenceLive,
+    rightSidebar?.setTicketOtherAgentViewers,
+  ]);
 
   const onMessageSent = useCallback(
     (payload?: TicketMessageSentPayload) => {
@@ -471,15 +481,6 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
       <div className="ml-0 mr-0 mt-0 flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-lg rounded-bl-lg border border-gray-200 bg-white">
         {/* Sticky: action bar + ticket heading inside one unified surface */}
         <div className="sticky top-0 z-10 shrink-0 bg-white px-2.5 pt-1 pb-1.5 sm:px-3">
-          {ticketNumericId != null && ticketRoomSyncState !== "idle" ? (
-            <div className="mb-1 flex flex-wrap items-center justify-end gap-2">
-              {ticketRoomSyncState === "connecting" ? (
-                <span className="text-[10px] font-medium text-slate-400">Connecting…</span>
-              ) : ticketRoomSyncState === "polling" ? (
-                <span className="text-[10px] font-medium text-amber-800">Sync · 12s</span>
-              ) : null}
-            </div>
-          ) : null}
           <TicketActionBar
             ticketId={ticket.id}
             ticketNumber={ticket.ticketNumber || String(ticket.id)}

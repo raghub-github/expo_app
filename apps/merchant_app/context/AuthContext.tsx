@@ -10,6 +10,7 @@ import { resetSessionRevokedFlag } from "@/services/sessionEvents";
 
 const TOKEN_KEY = "gatimitra_merchant_access_token";
 const PARTNER_KEY = "gatimitra_merchant_partner";
+const SUPABASE_USER_ID_KEY = "gatimitra_merchant_supabase_user_id";
 
 export type PartnerParent = {
   id: number;
@@ -42,9 +43,11 @@ export type PartnerData = {
 type AuthContextValue = {
   token: string | null;
   partner: PartnerData | null;
+  /** Supabase Auth user id (UUID) — presence / ticket room identity; from login exchange. */
+  supabaseUserId: string | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  setTokenAndPartner: (token: string, partner: PartnerData) => Promise<void>;
+  setTokenAndPartner: (token: string, partner: PartnerData, supabaseUserId?: string | null) => Promise<void>;
   signOut: () => Promise<void>;
   refreshPartner: () => Promise<void>;
 };
@@ -69,16 +72,44 @@ async function getStoredPartner(): Promise<PartnerData | null> {
   }
 }
 
+async function getStoredSupabaseUserId(): Promise<string | null> {
+  try {
+    const raw = await SecureStore.getItemAsync(SUPABASE_USER_ID_KEY);
+    return raw && raw.trim() ? raw.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setTokenState] = useState<string | null>(null);
   const [partner, setPartnerState] = useState<PartnerData | null>(null);
+  const [supabaseUserId, setSupabaseUserIdState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const setTokenAndPartner = useCallback(async (newToken: string, newPartner: PartnerData) => {
+  const setTokenAndPartner = useCallback(
+    async (newToken: string, newPartner: PartnerData, newSupabaseUserId?: string | null) => {
     // New login/session – allow future session_revoked events to fire again.
     resetSessionRevokedFlag();
     await SecureStore.setItemAsync(TOKEN_KEY, newToken);
     setTokenState(newToken);
+    if (newSupabaseUserId !== undefined) {
+      const sb =
+        typeof newSupabaseUserId === "string" && newSupabaseUserId.trim()
+          ? newSupabaseUserId.trim()
+          : null;
+      if (sb) {
+        await SecureStore.setItemAsync(SUPABASE_USER_ID_KEY, sb);
+        setSupabaseUserIdState(sb);
+      } else {
+        try {
+          await SecureStore.deleteItemAsync(SUPABASE_USER_ID_KEY);
+        } catch {
+          /* ignore */
+        }
+        setSupabaseUserIdState(null);
+      }
+    }
 
     // Prefer fresh data from /me (ensures activeDevices and latest child stores).
     try {
@@ -103,13 +134,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     await SecureStore.setItemAsync(PARTNER_KEY, JSON.stringify(newPartner));
     setPartnerState(newPartner);
-  }, []);
+  },
+  []
+);
 
   const signOut = useCallback(async () => {
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await SecureStore.deleteItemAsync(PARTNER_KEY);
+    try {
+      await SecureStore.deleteItemAsync(SUPABASE_USER_ID_KEY);
+    } catch {
+      /* ignore */
+    }
     setTokenState(null);
     setPartnerState(null);
+    setSupabaseUserIdState(null);
   }, []);
 
   const refreshPartner = useCallback(async () => {
@@ -143,8 +182,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (t) {
         setTokenState(t);
         const p = await getStoredPartner();
+        const sbId = await getStoredSupabaseUserId();
         if (cancelled) return;
         setPartnerState(p);
+        setSupabaseUserIdState(sbId);
         // Refresh partner from API in the background so the app can render
         // immediately using cached data instead of blocking on the network.
         const { apiBaseUrl } = getConfig();
@@ -178,13 +219,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       token,
       partner,
+      supabaseUserId,
       isLoading,
       isAuthenticated: !!token,
       setTokenAndPartner,
       signOut,
       refreshPartner,
     }),
-    [token, partner, isLoading, setTokenAndPartner, signOut, refreshPartner]
+    [token, partner, supabaseUserId, isLoading, setTokenAndPartner, signOut, refreshPartner]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

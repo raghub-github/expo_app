@@ -9,7 +9,12 @@ module.exports = ({ config }) => ({
   ...config,
   expo: {
     ...config?.expo,
-    // Used by Expo Linking / deep links (e.g. gatimitra-merchant://)
+    android: {
+      ...config?.expo?.android,
+      /** `pan` works better with bottom tabs / floating tab bar than `resize` (avoids IME covering fixed composers). */
+      softwareKeyboardLayoutMode: "pan",
+    },
+    // Used for Expo Linking / deep links (e.g. gatimitra-merchant://)
     scheme: config?.expo?.scheme || "gatimitra-merchant",
     extra: {
       ...config?.expo?.extra,

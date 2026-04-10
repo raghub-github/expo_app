@@ -48,6 +48,12 @@ export function useTicketCopresence(options: {
     channel.on("presence", { event: "sync" }, () => {
       refreshRef.current(channel);
     });
+    channel.on("presence", { event: "join" }, () => {
+      refreshRef.current(channel);
+    });
+    channel.on("presence", { event: "leave" }, () => {
+      refreshRef.current(channel);
+    });
 
     channel.subscribe(async (status) => {
       if (status === "SUBSCRIBED") {
