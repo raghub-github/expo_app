@@ -34,8 +34,11 @@ const nextConfig: NextConfig = {
   webpack: (config, { dev }) => {
     if (dev) {
       // Disk pack cache + OneDrive / Windows file locking causes ENOENT on manifests and
-      // "rename ... 0.pack.gz_" webpack cache errors. Memory-only avoids corrupt .next/dev.
-      config.cache = false;
+      // "rename ... 0.pack.gz_" webpack cache errors. Fully disabling cache (`false`) can
+      // leave webpack resolving chunks before they exist → "Cannot read properties of undefined
+      // (reading 'call')" and recoverable SSR failures. In-memory cache avoids disk locks
+      // without that race.
+      config.cache = { type: "memory" };
     }
     return config;
   },

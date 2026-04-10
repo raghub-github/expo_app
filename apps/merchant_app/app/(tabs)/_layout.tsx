@@ -37,6 +37,8 @@ export default function TabsLayout() {
       <Tabs
         tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
+        /** Custom FloatingTabBar honors this — hides bar while typing so inputs stay above the keyboard. */
+        tabBarHideOnKeyboard: true,
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
         tabBarLabelStyle: {

@@ -167,7 +167,7 @@ export default function LoginScreen() {
         deviceId,
       });
       if (__DEV__) console.log("[OTP DEBUG] Supabase verifyOtp success, setting token and partner");
-      await setTokenAndPartner(session.accessToken, session.partner as any);
+      await setTokenAndPartner(session.accessToken, session.partner as any, session.userId);
       router.replace("/(auth)/partner-home");
     } catch (e) {
       if (__DEV__) console.log("[OTP DEBUG] Supabase verifyOtp caught error:", e instanceof Error ? e.message : e);
@@ -248,7 +248,7 @@ export default function LoginScreen() {
 
       const deviceId = getDeviceId();
       const session = await merchantAuthService.exchangeSupabaseOAuth({ accessToken, deviceId });
-      await setTokenAndPartner(session.accessToken, session.partner as any);
+      await setTokenAndPartner(session.accessToken, session.partner as any, session.userId);
       if (__DEV__) console.log("[Google OAuth] success, navigating to partner-home");
       router.replace("/(auth)/partner-home");
     } catch (e) {
