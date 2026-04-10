@@ -23,7 +23,7 @@ import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
-import { CurrentRouteProvider } from "@/context/CurrentRouteContext";
+import { CurrentRouteProvider, useCurrentRoute } from "@/context/CurrentRouteContext";
 import {
   isTicketsAppDetailPath,
   isTicketsQueueLayoutExperience,
@@ -446,6 +446,7 @@ function DashboardLayoutContent({
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentRouteCtx = useCurrentRoute();
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
@@ -455,7 +456,7 @@ function DashboardLayoutContent({
   );
   const isTicketsHubGreyPage =
     cleanPathname === "/dashboard/tickets/agent-activity" ||
-    cleanPathname === "/dashboard/tickets/dashboard";
+    cleanPathname === "/dashboard/tickets/dashboard_snapshot";
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
   const [ticketRightSidebarPanel, setTicketRightSidebarPanel] = useState<TicketRightSidebarPanel>("properties");
@@ -532,6 +533,11 @@ function DashboardLayoutContent({
     }
   }, [isRightSidebarOpen, setRightSidebarOpen]);
 
+  const [ticketCopresenceLive, setTicketCopresenceLive] = useState(false);
+  useEffect(() => {
+    if (!isTicketDetailPage) setTicketCopresenceLive(false);
+  }, [isTicketDetailPage, ticketDetailSlug]);
+
   const rightSidebarContextValue = useMemo(
     () =>
       queueTicketDetailPage
@@ -539,6 +545,8 @@ function DashboardLayoutContent({
             isOpen: queueTicketPropertiesOpen,
             onToggle: toggleQueueTicketProperties,
             setOpen: setQueueTicketPropertiesOpenSafe,
+            ticketCopresenceLive,
+            setTicketCopresenceLive,
             ticketRightSidebarPanel,
             setTicketRightSidebarPanel,
             ticketSettingsSection,
@@ -548,6 +556,8 @@ function DashboardLayoutContent({
             isOpen: isRightSidebarOpen,
             onToggle: handleRightSidebarToggle,
             setOpen: setRightSidebarOpen,
+            ticketCopresenceLive,
+            setTicketCopresenceLive,
             ticketRightSidebarPanel,
             setTicketRightSidebarPanel,
             ticketSettingsSection,
@@ -561,6 +571,7 @@ function DashboardLayoutContent({
       isRightSidebarOpen,
       handleRightSidebarToggle,
       setRightSidebarOpen,
+      ticketCopresenceLive,
       ticketRightSidebarPanel,
       setTicketRightSidebarPanel,
       ticketSettingsSection,
@@ -669,6 +680,7 @@ function DashboardLayoutContent({
                 return;
               }
               setPendingNavHref(cleanTarget);
+              currentRouteCtx?.setCurrentRoute(cleanTarget);
             }}
           />
         )}

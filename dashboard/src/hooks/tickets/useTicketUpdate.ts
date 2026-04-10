@@ -7,7 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 function statusLeavesTypicalActiveList(status: string | undefined): boolean {
   if (status == null) return false;
   const s = String(status).toLowerCase().replace(/-/g, "_");
-  return ["resolved", "closed", "rejected", "cancelled", "provisionally_resolved"].includes(s);
+  return ["resolved", "closed", "rejected", "cancelled", "provisionally_resolved", "snoozed"].includes(s);
 }
 
 export function useTicketUpdate() {
@@ -174,6 +174,10 @@ export function useTicketUpdate() {
       // Must refetch *active* list queries — the queue/table is usually mounted; "inactive" left stale rows after resolve.
       queryClient.invalidateQueries({
         predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+        refetchType: "active",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.tickets.helpdeskDashboard(),
         refetchType: "active",
       });
       if (variables.ticketId) {

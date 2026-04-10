@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -23,6 +24,9 @@ import {
   Star,
   Ban,
   AlertTriangle,
+  AlarmClock,
+  Play,
+  Loader2,
 } from "lucide-react";
 import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useToast } from "@/context/ToastContext";
@@ -33,6 +37,7 @@ import {
   buildTicketsListHrefPreservingFilters,
   ticketDetailHasQueueContext,
 } from "@/lib/tickets/ticket-path-utils";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface TicketActionBarProps {
   ticketId: number;
@@ -50,6 +55,8 @@ interface TicketActionBarProps {
   onMergeSuccess?: () => void;
   /** When true, ticket was marked as spam (persists if status changes). */
   ticketIsSpam?: boolean;
+  ticketStatus?: string | null;
+  snoozedUntil?: string | null;
 }
 
 export function TicketActionBar({
@@ -67,6 +74,8 @@ export function TicketActionBar({
   onAddNoteClick,
   onMergeSuccess,
   ticketIsSpam = false,
+  ticketStatus = null,
+  snoozedUntil = null,
 }: TicketActionBarProps) {
   const [addNoteOpen, setAddNoteOpen] = useState(false);
   const [selectedNoteVisibility, setSelectedNoteVisibility] = useState<"private" | "public">("private");
@@ -84,8 +93,16 @@ export function TicketActionBar({
   const [mergeSubmitting, setMergeSubmitting] = useState(false);
   const [spamConfirmOpen, setSpamConfirmOpen] = useState(false);
   const [isNavLoading, setIsNavLoading] = useState<"prev" | "next" | null>(null);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [snoozeCustomOpen, setSnoozeCustomOpen] = useState(false);
+  const [snoozeReason, setSnoozeReason] = useState("");
+  const [snoozeAt, setSnoozeAt] = useState("");
+  const [snoozeSubmitting, setSnoozeSubmitting] = useState(false);
+  /** Which snooze control is awaiting the API (duration label, or "custom" for datetime confirm). */
+  const [snoozePendingKey, setSnoozePendingKey] = useState<string | null>(null);
   const addNoteRef = useRef<HTMLDivElement>(null);
   const mergeRef = useRef<HTMLDivElement>(null);
+  const snoozeRef = useRef<HTMLDivElement>(null);
   const rightSidebar = useRightSidebar();
   const router = useRouter();
   const locationSearch = useTicketLocationSearch();
@@ -99,6 +116,7 @@ export function TicketActionBar({
   };
   const { toast } = useToast();
   const markSpamMutation = useTicketUpdate();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -107,6 +125,9 @@ export function TicketActionBar({
       }
       if (mergeRef.current && !mergeRef.current.contains(e.target as Node)) {
         setMergeLinkedOpen(false);
+      }
+      if (snoozeRef.current && !snoozeRef.current.contains(e.target as Node)) {
+        setSnoozeOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -236,6 +257,13 @@ export function TicketActionBar({
   const spamMarked = ticketIsSpam === true;
   const spamDisabled =
     composeLocked || spamMarked || mergedIntoTicketId != null || markSpamMutation.isPending;
+  const normalizedStatus = String(ticketStatus ?? "").toLowerCase();
+  const isSnoozed = normalizedStatus === "snoozed";
+  /** Starting a snooze is invalid for terminal states (matches API / product rules). */
+  const snoozeStartBlocked =
+    normalizedStatus === "resolved" ||
+    normalizedStatus === "closed" ||
+    normalizedStatus === "provisionally_resolved";
 
   const openSpamWarning = () => {
     if (spamDisabled) return;
@@ -263,8 +291,99 @@ export function TicketActionBar({
       setAddNoteOpen(false);
       setMergeLinkedOpen(false);
       setSpamConfirmOpen(false);
+      setSnoozeOpen(false);
+      setSnoozeCustomOpen(false);
     }
   }, [composeLocked]);
+
+  useEffect(() => {
+    if (snoozeStartBlocked) {
+      setSnoozeOpen(false);
+      setSnoozeCustomOpen(false);
+    }
+  }, [snoozeStartBlocked]);
+
+  const snoozeDurations = useMemo(
+    () => [
+      { label: "2 min", minutes: 2 },
+      { label: "5 min", minutes: 5 },
+      { label: "10 min", minutes: 10 },
+      { label: "15 min", minutes: 15 },
+      { label: "25 min", minutes: 25 },
+      { label: "30 min", minutes: 30 },
+      { label: "45 min", minutes: 45 },
+      { label: "1 hour", minutes: 60 },
+      { label: "4 hours", minutes: 240 },
+      { label: "Tomorrow", minutes: null },
+    ],
+    []
+  );
+
+  const submitSnooze = async (durationOrDate: number | string, loadingKey?: string | null) => {
+    if (snoozeSubmitting) return;
+    setSnoozeSubmitting(true);
+    if (loadingKey != null) setSnoozePendingKey(loadingKey);
+    try {
+      const payload: Record<string, unknown> = {
+        reason: snoozeReason.trim() || undefined,
+      };
+      if (typeof durationOrDate === "number") payload.duration = durationOrDate;
+      else payload.datetime = durationOrDate;
+      const res = await fetch(`/api/tickets/${ticketId}/snooze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        toast(data?.error ?? "Failed to snooze ticket", "error");
+        return;
+      }
+      setSnoozeOpen(false);
+      setSnoozeCustomOpen(false);
+      setSnoozeAt("");
+      toast("Ticket snoozed");
+      void queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+      onMergeSuccess?.();
+    } catch {
+      toast("Failed to snooze ticket", "error");
+    } finally {
+      setSnoozeSubmitting(false);
+      setSnoozePendingKey(null);
+    }
+  };
+
+  const submitUnsnooze = async () => {
+    if (snoozeSubmitting) return;
+    setSnoozeSubmitting(true);
+    try {
+      const res = await fetch(`/api/tickets/${ticketId}/unsnooze`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        toast(data?.error ?? "Failed to resume ticket", "error");
+        return;
+      }
+      toast("Ticket resumed");
+      void queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketId) });
+      onMergeSuccess?.();
+    } catch {
+      toast("Failed to resume ticket", "error");
+    } finally {
+      setSnoozeSubmitting(false);
+    }
+  };
 
   const handleMergeSubmit = async () => {
     if (parsedDuplicateIds.length < 1) {
@@ -542,6 +661,121 @@ export function TicketActionBar({
         <Ban className="h-3.5 w-3.5" />
         {markSpamMutation.isPending ? "Marking…" : spamMarked ? "Spammed." : "Mark as spam"}
       </button>
+      {isSnoozed ? (
+        <button
+          type="button"
+          onClick={() => void submitUnsnooze()}
+          disabled={snoozeSubmitting}
+          className="inline-flex h-7.5 items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 text-[12px] font-medium text-emerald-800 hover:bg-emerald-100 disabled:opacity-60"
+          title={snoozedUntil ? `Snoozed until ${new Date(snoozedUntil).toLocaleString()}` : "Snoozed"}
+        >
+          <Play className="h-3.5 w-3.5" />
+          {snoozeSubmitting ? "Resuming..." : "Resume"}
+        </button>
+      ) : (
+        <div className="relative" ref={snoozeRef}>
+          <button
+            type="button"
+            onClick={() => {
+              if (snoozeStartBlocked) return;
+              setSnoozeOpen((v) => !v);
+            }}
+            disabled={composeLocked || snoozeSubmitting || snoozeStartBlocked}
+            title={
+              snoozeStartBlocked
+                ? "Snooze is not available for resolved or closed tickets"
+                : undefined
+            }
+            className={`inline-flex h-7.5 items-center gap-1 rounded-md border px-2.5 text-[12px] font-medium ${
+              snoozeStartBlocked
+                ? "cursor-not-allowed border-gray-200 bg-gray-50 text-gray-400"
+                : "cursor-pointer border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+            } disabled:opacity-60`}
+            aria-disabled={composeLocked || snoozeSubmitting || snoozeStartBlocked}
+          >
+            <AlarmClock className="h-3.5 w-3.5" />
+            Snooze
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+          {snoozeOpen && (
+            <div className="absolute left-0 top-[calc(100%+4px)] z-20 w-64 rounded-md border border-gray-200 bg-white p-2 shadow-lg">
+              <div className="mb-2">
+                <input
+                  type="text"
+                  value={snoozeReason}
+                  onChange={(e) => setSnoozeReason(e.target.value)}
+                  placeholder="Reason (optional)"
+                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs"
+                />
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                <div className="grid grid-cols-4 gap-1.5">
+                {snoozeDurations.map((opt) => {
+                  const pendingHere = snoozeSubmitting && snoozePendingKey === opt.label;
+                  return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    disabled={snoozeSubmitting}
+                    className={`flex min-h-10 items-center justify-center rounded-md border px-1.5 py-1.5 text-center text-[11px] font-medium ${
+                      pendingHere
+                        ? "cursor-wait border-blue-200 bg-blue-50 text-blue-800"
+                        : "cursor-pointer border-gray-200 bg-gray-50 text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                    } disabled:cursor-not-allowed disabled:opacity-60`}
+                    onClick={() => {
+                      if (opt.minutes == null) {
+                        const t = new Date();
+                        t.setDate(t.getDate() + 1);
+                        t.setHours(9, 0, 0, 0);
+                        void submitSnooze(t.toISOString(), opt.label);
+                      } else {
+                        void submitSnooze(opt.minutes, opt.label);
+                      }
+                    }}
+                  >
+                    <span className="inline-flex items-center justify-center gap-1 leading-tight">
+                      {pendingHere ? (
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-600" aria-hidden />
+                      ) : null}
+                      {opt.label}
+                    </span>
+                  </button>
+                  );
+                })}
+                </div>
+                <button
+                  type="button"
+                  className="mt-2 w-full cursor-pointer rounded border border-gray-200 px-2 py-1.5 text-left text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  onClick={() => setSnoozeCustomOpen((v) => !v)}
+                >
+                  Custom datetime
+                </button>
+              </div>
+              {snoozeCustomOpen && (
+                <div className="mt-2 space-y-2 border-t border-gray-100 pt-2">
+                  <input
+                    type="datetime-local"
+                    value={snoozeAt}
+                    onChange={(e) => setSnoozeAt(e.target.value)}
+                    className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs"
+                  />
+                  <button
+                    type="button"
+                    disabled={!snoozeAt || snoozeSubmitting}
+                    onClick={() => void submitSnooze(new Date(snoozeAt).toISOString(), "custom")}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded bg-blue-600 px-2 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {snoozeSubmitting && snoozePendingKey === "custom" ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                    ) : null}
+                    Confirm snooze
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex-1" />
 
       <button
@@ -581,10 +815,11 @@ export function TicketActionBar({
       <Link
         href={allTicketsHref}
         scroll={false}
-        className="inline-flex h-7.5 cursor-pointer items-center rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+        className="inline-flex h-7.5 max-w-[76px] cursor-pointer items-center rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50 sm:max-w-none"
         aria-label={fromQueue ? "Back to queue" : "Back to ticket list"}
+        title={fromQueue ? "Queue" : "All Tickets"}
       >
-        {fromQueue ? "Queue" : "All Tickets"}
+        <span className="block truncate">{fromQueue ? "Queue" : "All Tickets"}</span>
       </Link>
       <button
         type="button"

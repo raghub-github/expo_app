@@ -42,6 +42,7 @@ import {
 import { ticketMessageFromPostApi, type TicketMessage, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
 import { useTicketComposeAutomationQuery } from "@/hooks/tickets/useTicketComposeAutomationQuery";
 import { useSignedAttachmentUrl } from "@/hooks/tickets/useSignedAttachmentUrl";
+import { useTicketResponseTemplatesQuery } from "@/hooks/tickets/useTicketResponseTemplatesQuery";
 import { isImageUrl } from "./AttachmentModal";
 import { useAuth } from "@/providers/AuthProvider";
 import { useToast } from "@/context/ToastContext";
@@ -58,14 +59,14 @@ const CONVERSATION_FIRST = 10;
 const CONVERSATION_LAST = 5;
 const CONVERSATION_EXPAND_STEP = 10;
 
-const QUICK_REPLY_TEMPLATES = [
+const DEFAULT_QUICK_REPLY_TEMPLATES = [
   "Thank you for contacting us. We will get back to you shortly.",
   "We have received your request and are looking into it.",
   "Could you please provide more details?",
   "This has been resolved. Let us know if you need anything else.",
 ];
 
-const KNOWLEDGE_BASE_SNIPPETS = [
+const DEFAULT_KNOWLEDGE_BASE_SNIPPETS = [
   "Typical resolution time for requests like yours is 24–48 business hours. We will update you as soon as we have progress.",
   "To help us resolve this faster, please share your order ID and, if possible, a screenshot of the invoice or the issue you are seeing.",
   "You can check live order status anytime in the GatiMitra app under Orders → Active.",
@@ -125,11 +126,205 @@ function avatarBgClass(senderType: string, isPrivate: boolean): string {
   return "bg-gray-200 text-gray-700";
 }
 
-function isImageAttachment(attachment: { name?: string; mimeType?: string }): boolean {
+/** Reply / Add note / Forward — always on last message or when the thread is empty. */
+function ThreadQuickActionBar({
+  avatarLetter,
+  avatarClassName,
+  onReplyAction,
+  onAddNoteAction,
+  onForwardAction,
+}: {
+  avatarLetter: string;
+  avatarClassName: string;
+  onReplyAction: () => void;
+  onAddNoteAction: (visibility: "private" | "public") => void;
+  onForwardAction: () => void;
+}) {
+  const [noteMenuOpen, setNoteMenuOpen] = useState(false);
+  const noteMenuRef = useRef<HTMLDivElement>(null);
+  const [selectedNoteVisibility, setSelectedNoteVisibility] = useState<"private" | "public">("private");
+  useEffect(() => {
+    function handleOutsideClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (!noteMenuRef.current?.contains(target)) {
+        setNoteMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+  return (
+    <div className="mt-2 flex items-center gap-2 pl-1">
+      <div
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${avatarClassName}`}
+      >
+        {avatarLetter}
+      </div>
+      <button
+        type="button"
+        onClick={onReplyAction}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+      >
+        <Reply className="h-3.5 w-3.5" />
+        Reply
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          onAddNoteAction(selectedNoteVisibility);
+          setNoteMenuOpen(false);
+        }}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+      >
+        <StickyNote className="h-3.5 w-3.5" />
+        Add note
+      </button>
+      <div className="relative" ref={noteMenuRef}>
+        <button
+          type="button"
+          onClick={() => setNoteMenuOpen((v) => !v)}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
+          aria-label="Select note visibility"
+          title="Select note visibility"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+        </button>
+        {noteMenuOpen && (
+          <div className="absolute bottom-[calc(100%+4px)] left-0 z-20 w-52 rounded-md border border-gray-200 bg-white p-1.5 shadow-[0_6px_24px_rgba(15,23,42,0.12)]">
+            <p className="px-2 pb-1 text-[12px] font-medium text-gray-500">Mark note as</p>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedNoteVisibility("public");
+                setNoteMenuOpen(false);
+              }}
+              className={`flex w-full items-start justify-between rounded-md px-2 py-1.5 text-left ${
+                selectedNoteVisibility === "public" ? "bg-[#eaf3ff] text-[#1d4ed8]" : "text-gray-700 hover:bg-gray-50"
+              }`}
+            >
+              <span className="flex items-start gap-2">
+                <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  <span className="block text-[12px] font-medium leading-4">Public</span>
+                  <span className="mt-0.5 block text-[11px] leading-3.5 text-gray-500">Visible to contact</span>
+                </span>
+              </span>
+              {selectedNoteVisibility === "public" ? <Check className="mt-0.5 h-3.5 w-3.5" /> : null}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedNoteVisibility("private");
+                setNoteMenuOpen(false);
+              }}
+              className={`mt-1 flex w-full items-start justify-between rounded-md px-2 py-1.5 text-left ${
+                selectedNoteVisibility === "private" ? "bg-[#eaf3ff] text-[#1d4ed8]" : "text-gray-700 hover:bg-gray-50"
+              }`}
+            >
+              <span className="flex items-start gap-2">
+                <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  <span className="block text-[12px] font-medium leading-4">Private</span>
+                  <span className="mt-0.5 block text-[11px] leading-3.5 text-gray-500">Private</span>
+                </span>
+              </span>
+              {selectedNoteVisibility === "private" ? <Check className="mt-0.5 h-3.5 w-3.5" /> : null}
+            </button>
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onForwardAction}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
+      >
+        <Forward className="h-3.5 w-3.5" />
+        Forward
+      </button>
+    </div>
+  );
+}
+
+function isImageAttachment(attachment: { name?: string; mimeType?: string; url?: string; storageKey?: string }): boolean {
   const mime = (attachment.mimeType ?? "").toLowerCase();
   if (mime.startsWith("image/")) return true;
   const name = (attachment.name ?? "").toLowerCase();
-  return /\.(jpe?g|png|gif|webp|bmp|svg)(\?.*)?$/i.test(name);
+  if (/\.(jpe?g|png|gif|webp|bmp|svg|heic|heif)(\?.*)?$/i.test(name)) return true;
+  const url = (attachment.url ?? "").toLowerCase();
+  if (url.includes("/attachments/proxy?key=")) return true;
+  if (url.includes("tickets/images/") || url.includes("tickets%2fimages%2f")) return true;
+  const storageKey = (attachment.storageKey ?? "").toLowerCase();
+  if (storageKey.includes("tickets/images/")) return true;
+  return false;
+}
+
+function normalizeConversationAttachment(raw: unknown): {
+  url?: string;
+  storageKey?: string;
+  name?: string;
+  mimeType?: string;
+} {
+  const fromObject = (obj: {
+    url?: unknown;
+    storageKey?: unknown;
+    name?: unknown;
+    mimeType?: unknown;
+    mime_type?: unknown;
+  }) => {
+    const url = typeof obj.url === "string" ? obj.url.trim() : "";
+    const storageKey = typeof obj.storageKey === "string" ? obj.storageKey.trim() : "";
+    const name = typeof obj.name === "string" ? obj.name.trim() : "";
+    const mimeType =
+      typeof obj.mimeType === "string"
+        ? obj.mimeType.trim()
+        : typeof obj.mime_type === "string"
+          ? obj.mime_type.trim()
+          : "";
+    return {
+      url: url || undefined,
+      storageKey: storageKey || undefined,
+      name: name || undefined,
+      mimeType: mimeType || undefined,
+    };
+  };
+
+  if (raw && typeof raw === "object") return fromObject(raw as any);
+  if (typeof raw !== "string") return {};
+  const text = raw.trim();
+  if (!text) return {};
+
+  if (text.startsWith("tickets/images/")) {
+    return {
+      storageKey: text,
+      url: `/api/attachments/proxy?key=${encodeURIComponent(text)}`,
+      name: "Attachment",
+    };
+  }
+  if (/^https?:\/\//i.test(text) || text.startsWith("/")) {
+    return { url: text, name: "Attachment" };
+  }
+  if (text.startsWith("{") || text.startsWith("\"{")) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (typeof parsed === "string") {
+        const parsedInner = JSON.parse(parsed) as Record<string, unknown>;
+        return fromObject(parsedInner as any);
+      }
+      if (parsed && typeof parsed === "object") return fromObject(parsed as any);
+    } catch {
+      // fallback below
+    }
+  }
+  const urlMatch = /"url"\s*:\s*"([^"]+)"/i.exec(text);
+  const keyMatch = /"storageKey"\s*:\s*"([^"]+)"/i.exec(text);
+  if (urlMatch?.[1] || keyMatch?.[1]) {
+    return {
+      url: urlMatch?.[1] ? urlMatch[1] : keyMatch?.[1] ? `/api/attachments/proxy?key=${encodeURIComponent(keyMatch[1])}` : undefined,
+      storageKey: keyMatch?.[1] || undefined,
+      name: "Attachment",
+    };
+  }
+  return {};
 }
 
 function MessageAttachment({
@@ -288,19 +483,6 @@ function MessageBlock({
   onAddNoteAction: (visibility: "private" | "public") => void;
   onForwardAction: () => void;
 }) {
-  const [noteMenuOpen, setNoteMenuOpen] = useState(false);
-  const noteMenuRef = useRef<HTMLDivElement>(null);
-  const [selectedNoteVisibility, setSelectedNoteVisibility] = useState<"private" | "public">("private");
-  useEffect(() => {
-    function handleOutsideClick(e: MouseEvent) {
-      const target = e.target as Node;
-      if (!(noteMenuRef.current?.contains(target))) {
-        setNoteMenuOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => document.removeEventListener("mousedown", handleOutsideClick);
-  }, []);
   const normalizedMessageType = String(msg.messageType || "").toLowerCase();
   const isPrivate =
     Boolean(msg.isInternalNote) ||
@@ -456,100 +638,22 @@ function MessageBlock({
           )}
           {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-2">
-              {msg.attachments.map((a: { name?: string; url?: string; storageKey?: string; mimeType?: string }, i: number) => (
-                <MessageAttachment key={i} attachment={a} downloadNamePrefix={downloadNamePrefix} />
-              ))}
+              {msg.attachments.map((a: unknown, i: number) => {
+                const normalized = normalizeConversationAttachment(a);
+                return <MessageAttachment key={i} attachment={normalized} downloadNamePrefix={downloadNamePrefix} />;
+              })}
             </div>
           )}
         </div>
       </div>
-      {showBottomActions && fromAgent && (
-        <div className="mt-2 flex items-center gap-2 pl-1">
-          <div className={`h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold ${avatarBgClass(msg.senderType, false)}`}>
-            {initial(displayName)}
-          </div>
-          <button
-            type="button"
-            onClick={onReplyAction}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <Reply className="h-3.5 w-3.5" />
-            Reply
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onAddNoteAction(selectedNoteVisibility);
-              setNoteMenuOpen(false);
-            }}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <StickyNote className="h-3.5 w-3.5" />
-            Add note
-          </button>
-          <div className="relative" ref={noteMenuRef}>
-            <button
-              type="button"
-              onClick={() => setNoteMenuOpen((v) => !v)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 bg-white text-gray-600 hover:bg-gray-50"
-              aria-label="Select note visibility"
-              title="Select note visibility"
-            >
-              <ChevronDown className="h-3.5 w-3.5" />
-            </button>
-            {noteMenuOpen && (
-              <div className="absolute bottom-[calc(100%+4px)] left-0 z-20 w-52 rounded-md border border-gray-200 bg-white p-1.5 shadow-[0_6px_24px_rgba(15,23,42,0.12)]">
-                <p className="px-2 pb-1 text-[12px] font-medium text-gray-500">Mark note as</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedNoteVisibility("public");
-                    setNoteMenuOpen(false);
-                  }}
-                  className={`flex w-full items-start justify-between rounded-md px-2 py-1.5 text-left ${
-                    selectedNoteVisibility === "public" ? "bg-[#eaf3ff] text-[#1d4ed8]" : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  <span className="flex items-start gap-2">
-                    <Globe className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span>
-                      <span className="block text-[12px] font-medium leading-4">Public</span>
-                      <span className="mt-0.5 block text-[11px] leading-3.5 text-gray-500">Visible to contact</span>
-                    </span>
-                  </span>
-                  {selectedNoteVisibility === "public" ? <Check className="mt-0.5 h-3.5 w-3.5" /> : null}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedNoteVisibility("private");
-                    setNoteMenuOpen(false);
-                  }}
-                  className={`mt-1 flex w-full items-start justify-between rounded-md px-2 py-1.5 text-left ${
-                    selectedNoteVisibility === "private" ? "bg-[#eaf3ff] text-[#1d4ed8]" : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  <span className="flex items-start gap-2">
-                    <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span>
-                      <span className="block text-[12px] font-medium leading-4">Private</span>
-                      <span className="mt-0.5 block text-[11px] leading-3.5 text-gray-500">Private</span>
-                    </span>
-                  </span>
-                  {selectedNoteVisibility === "private" ? <Check className="mt-0.5 h-3.5 w-3.5" /> : null}
-                </button>
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onForwardAction}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 text-[12px] font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <Forward className="h-3.5 w-3.5" />
-            Forward
-          </button>
-        </div>
+      {showBottomActions && (
+        <ThreadQuickActionBar
+          avatarLetter={initial(displayName)}
+          avatarClassName={avatarBgClass(msg.senderType, false)}
+          onReplyAction={onReplyAction}
+          onAddNoteAction={onAddNoteAction}
+          onForwardAction={onForwardAction}
+        />
       )}
     </div>
   );
@@ -563,6 +667,8 @@ interface ConversationPanelProps {
   messages: TicketMessage[];
   /** Email of the user who raised the ticket (for "To:" in each reply block). */
   recipientEmail?: string | null;
+  /** When set (e.g. System/Other corporate enquiry), reply composer "To" defaults to this instead of automation. */
+  defaultReplyToOverride?: string | null;
   onMessageSent?: (payload?: TicketMessageSentPayload) => void;
   /** When false, reply editor is hidden; shown when user clicks Reply in action bar. */
   replyVisible?: boolean;
@@ -599,6 +705,7 @@ export function ConversationPanel({
   ticketSubject = null,
   messages,
   recipientEmail = null,
+  defaultReplyToOverride = null,
   onMessageSent,
   replyVisible = false,
   onCloseReply,
@@ -651,13 +758,21 @@ export function ConversationPanel({
   useEffect(() => {
     if (!replyVisible || composeAsInternalNote) return;
     if (composeMode === "forward") return;
-    if (!composeAutoReady && !composeAutoError) return;
+    const override = (defaultReplyToOverride ?? "").trim();
+    if (!composeAutoReady && !composeAutoError) {
+      if (override) {
+        setToRecipientsInput(override);
+        setShowToInput(true);
+      }
+      return;
+    }
     if (composeAuto) {
       const ccRaw = composeAuto.defaultCc;
       setCcRecipientsInput(ccRaw);
       setShowCcInput(Boolean(ccRaw.trim()));
-      const t = composeAuto.defaultTo.trim();
-      setToRecipientsInput(composeAuto.defaultTo);
+      const toLine = override || composeAuto.defaultTo;
+      const t = toLine.trim();
+      setToRecipientsInput(toLine);
       setShowToInput(Boolean(t));
       const b = composeAuto.defaultBcc.trim();
       setBccRecipientsInput(composeAuto.defaultBcc);
@@ -665,12 +780,25 @@ export function ConversationPanel({
     } else if (composeAutoError) {
       setCcRecipientsInput("");
       setShowCcInput(false);
-      setToRecipientsInput("");
-      setShowToInput(false);
+      if (override) {
+        setToRecipientsInput(override);
+        setShowToInput(true);
+      } else {
+        setToRecipientsInput("");
+        setShowToInput(false);
+      }
       setBccRecipientsInput("");
       setShowBccInput(false);
     }
-  }, [replyVisible, composeAuto, composeAsInternalNote, composeMode, composeAutoReady, composeAutoError]);
+  }, [
+    replyVisible,
+    composeAuto,
+    composeAsInternalNote,
+    composeMode,
+    composeAutoReady,
+    composeAutoError,
+    defaultReplyToOverride,
+  ]);
 
   const total = messages.length;
   const maxMiddle = Math.max(0, total - CONVERSATION_FIRST - CONVERSATION_LAST);
@@ -718,6 +846,16 @@ export function ConversationPanel({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const hasComposerDraft = replyText.trim().length > 0 || attachedFiles.length > 0;
   const [templatePicker, setTemplatePicker] = useState<null | "quick" | "kb">(null);
+  const { data: responseTemplatesData } = useTicketResponseTemplatesQuery();
+  const quickReplyTemplates =
+    responseTemplatesData?.quickReplyTemplates?.length
+      ? responseTemplatesData.quickReplyTemplates
+      : DEFAULT_QUICK_REPLY_TEMPLATES;
+  const knowledgeBaseSnippets =
+    responseTemplatesData?.knowledgeBaseSnippets?.length
+      ? responseTemplatesData.knowledgeBaseSnippets
+      : DEFAULT_KNOWLEDGE_BASE_SNIPPETS;
+
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [showNoteTypeMenu, setShowNoteTypeMenu] = useState(false);
   const templatesRef = useRef<HTMLDivElement>(null);
@@ -1183,7 +1321,15 @@ export function ConversationPanel({
       }`}
     >
       <div ref={conversationScrollRef} className={noScroll ? "min-h-0 space-y-3.5 p-3.5" : "flex-1 min-h-0 overflow-y-auto space-y-3.5 p-3.5"}>
-        {messages.length === 0 ? null : (
+        {messages.length === 0 ? (
+          <ThreadQuickActionBar
+            avatarLetter={initial((recipientEmail ?? "").split("@")[0] || "Contact")}
+            avatarClassName={avatarBgClass("customer", false)}
+            onReplyAction={handleQuickReply}
+            onAddNoteAction={handleQuickAddNote}
+            onForwardAction={() => handleQuickForward({ fromToolbar: true })}
+          />
+        ) : (
           <>
             {topMessages.map((msg) => (
               <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
@@ -1536,7 +1682,7 @@ export function ConversationPanel({
                   <p className="px-2 py-1 text-[10px] font-medium text-gray-500 uppercase">
                     {templatePicker === "quick" ? "Quick reply" : "Knowledge base"}
                   </p>
-                  {(templatePicker === "quick" ? QUICK_REPLY_TEMPLATES : KNOWLEDGE_BASE_SNIPPETS).map((t, i) => (
+                  {(templatePicker === "quick" ? quickReplyTemplates : knowledgeBaseSnippets).map((t, i) => (
                     <button
                       key={i}
                       type="button"

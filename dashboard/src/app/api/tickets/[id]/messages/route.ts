@@ -50,6 +50,10 @@ function rowTimestamp(v: unknown): string {
   return String(v);
 }
 
+function normalizeMessageForIdempotency(v: string): string {
+  return v.replace(/\r\n/g, "\n").trim();
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -109,6 +113,7 @@ export async function POST(
       : isPublicNote
         ? "PUBLIC_NOTE"
         : requestedType || "TEXT";
+    const normalizedMessageText = normalizeMessageForIdempotency(messageText);
     const senderName = systemUser.fullName ?? systemUser.email ?? "Agent";
     const senderEmail = systemUser.email ?? null;
 
@@ -157,6 +162,31 @@ export async function POST(
     let messageId: number | null = null;
     let createdAt = new Date().toISOString();
     let updatedAt = createdAt;
+    let dedupedExistingMessage = false;
+
+    // Idempotency guard: prevent accidental duplicate inserts on double-click/retry.
+    const possibleDuplicate = await sqlClient`
+      SELECT id, created_at, updated_at
+      FROM public.unified_ticket_messages
+      WHERE ticket_id = ${ticketId}
+        AND sender_type = 'AGENT'
+        AND sender_id = ${systemUser.id}
+        AND COALESCE(is_internal_note, false) = ${isInternalNote}
+        AND UPPER(COALESCE(message_type, 'TEXT')) = ${messageType}
+        AND BTRIM(COALESCE(message_text, '')) = ${normalizedMessageText}
+        AND created_at >= (NOW() - INTERVAL '20 seconds')
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    const duplicateRow = possibleDuplicate?.[0] as { id?: number; created_at?: unknown; updated_at?: unknown } | undefined;
+    if (duplicateRow?.id != null) {
+      messageId = Number(duplicateRow.id);
+      createdAt = rowTimestamp(duplicateRow.created_at);
+      updatedAt = rowTimestamp(duplicateRow.updated_at ?? duplicateRow.created_at);
+      dedupedExistingMessage = true;
+    }
+
+    if (!dedupedExistingMessage) {
     try {
       if (isInternalNote) {
         const inserted = await sqlClient`
@@ -241,19 +271,20 @@ export async function POST(
         throw insErr;
       }
     }
+    }
 
     if (messageId == null) {
       return NextResponse.json({ success: false, error: "Failed to save message" }, { status: 500 });
     }
 
-    if (isFirstResponse) {
+    if (!dedupedExistingMessage && isFirstResponse) {
       await sqlClient`
         UPDATE public.unified_tickets
         SET last_response_at = NOW(), last_response_by_type = 'AGENT', last_response_by_id = ${systemUser.id},
             first_response_at = NOW(), updated_at = NOW()
         WHERE id = ${ticketId}
       `;
-    } else {
+    } else if (!dedupedExistingMessage) {
       await sqlClient`
         UPDATE public.unified_tickets
         SET last_response_at = NOW(), last_response_by_type = 'AGENT', last_response_by_id = ${systemUser.id},
@@ -262,22 +293,24 @@ export async function POST(
       `;
     }
 
-    await insertTicketActivityAudit(sqlClient, {      ticket_id: ticketId,
-      activity_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "response",
-      activity_category: (isInternalNote || isPublicNote) ? "note" : "response",
-      activity_description: isInternalNote ? "Private note added" : isPublicNote ? "Public note added" : (isFirstResponse ? "First response sent" : "Response sent"),
-      actor_user_id: systemUser.id,
-      actor_name: senderName,
-      actor_email: systemUser.email ?? null,
-      actor_type: "AGENT",
-      response_message_id: messageId ?? undefined,
-      response_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "public",
-      is_first_response: isInternalNote ? undefined : isFirstResponse,
-    });
+    if (!dedupedExistingMessage) {
+      await insertTicketActivityAudit(sqlClient, {      ticket_id: ticketId,
+        activity_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "response",
+        activity_category: (isInternalNote || isPublicNote) ? "note" : "response",
+        activity_description: isInternalNote ? "Private note added" : isPublicNote ? "Public note added" : (isFirstResponse ? "First response sent" : "Response sent"),
+        actor_user_id: systemUser.id,
+        actor_name: senderName,
+        actor_email: systemUser.email ?? null,
+        actor_type: "AGENT",
+        response_message_id: messageId ?? undefined,
+        response_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "public",
+        is_first_response: isInternalNote ? undefined : isFirstResponse,
+      });
+    }
 
     let emailDispatch: { ok: true } | { ok: false; code: string } | undefined;
     const shouldEmailCustomer = !isInternalNote && messageType === "TEXT";
-    if (shouldEmailCustomer) {
+    if (shouldEmailCustomer && !dedupedExistingMessage) {
       const ticketRow = ticketCheck[0] as {
         subject?: unknown;
         ticket_id?: unknown;
@@ -382,7 +415,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      data: { sent: true, isFirstResponse, message: messagePayload, emailDispatch },
+      data: { sent: true, isFirstResponse: dedupedExistingMessage ? false : isFirstResponse, message: messagePayload, emailDispatch, dedupedExistingMessage },
     });
   } catch (error) {
     console.error("[POST /api/tickets/[id]/messages] Error:", error);

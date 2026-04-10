@@ -223,7 +223,7 @@ export default function CustomerAppCategoriesPage() {
         return;
       }
       setInfo(`“${row.name}” was removed.`);
-      setItems((prev) => prev.filter((i) => i.id !== row.id));
+      await load({ silent: true });
     } catch {
       setError("Could not remove");
     } finally {
@@ -346,8 +346,6 @@ export default function CustomerAppCategoriesPage() {
         setItems((prev) =>
           prev.map((i) => (i.id === row.id ? { ...i, image_url: newUrl } : i))
         );
-      } else {
-        await load({ silent: true });
       }
     } catch {
       setError("Upload failed");
@@ -637,26 +635,30 @@ export default function CustomerAppCategoriesPage() {
                     }`}
                   >
                     <td className="pl-3 pr-3 py-2.5 align-middle text-center border-b border-gray-100">
+                      <input
+                        id={`uac-thumb-${row.id}`}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        className="sr-only"
+                        disabled={imgBusy || busy}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          const f = e.target.files?.[0] ?? null;
+                          void quickImageForRow(row, f);
+                          e.target.value = "";
+                        }}
+                      />
                       <label
+                        htmlFor={`uac-thumb-${row.id}`}
                         className={`relative inline-flex mx-auto cursor-pointer rounded-full ${
                           imgBusy ? "pointer-events-none opacity-60" : ""
                         }`}
                       >
-                        <input
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp,image/gif"
-                          className="sr-only"
-                          disabled={imgBusy || busy}
-                          onChange={(e) => {
-                            const f = e.target.files?.[0] ?? null;
-                            void quickImageForRow(row, f);
-                            e.target.value = "";
-                          }}
-                        />
                         {row.image_url ? (
                           <span className="relative inline-block">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
+                              key={`${row.id}-${row.image_url}`}
                               src={row.image_url}
                               alt=""
                               className={`h-8 w-8 rounded-full object-cover bg-transparent border border-gray-200/60 group-hover:border-cyan-400/70 ${

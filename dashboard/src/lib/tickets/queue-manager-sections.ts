@@ -4,7 +4,8 @@ export type QueueManagerSection =
   | "assignment-sound"
   | "email-assigned"
   | "email-reopened"
-  | "workflow-rules";
+  | "workflow-rules"
+  | "response-templates";
 
 const ALLOWED = new Set<QueueManagerSection>([
   "max-open",
@@ -13,6 +14,7 @@ const ALLOWED = new Set<QueueManagerSection>([
   "email-assigned",
   "email-reopened",
   "workflow-rules",
+  "response-templates",
 ]);
 
 /** Legacy `?section=compose` (default reply recipients) merged into max-open. */

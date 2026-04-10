@@ -312,6 +312,41 @@ export async function GET(request: NextRequest) {
       GROUP BY 1
     `;
 
+    const reassignedFromAgentCounts = await sqlClient`
+      SELECT
+        previous_assignee_user_id::bigint AS user_id,
+        COUNT(*)::int AS tickets_reassigned_from_agent
+      FROM public.unified_ticket_activity_audit
+      WHERE previous_assignee_user_id IS NOT NULL
+        AND created_at >= ${startTs}::timestamptz
+        AND created_at <= ${endTs}::timestamptz
+      GROUP BY 1
+    `;
+
+    const messagesByAgent = await sqlClient`
+      SELECT
+        sender_id::bigint AS user_id,
+        COUNT(*) FILTER (WHERE COALESCE(is_internal_note, false) = true)::int AS private_notes,
+        COUNT(*) FILTER (WHERE COALESCE(is_internal_note, false) = false)::int AS responses
+      FROM public.unified_ticket_messages
+      WHERE sender_id IS NOT NULL
+        AND created_at >= ${startTs}::timestamptz
+        AND created_at <= ${endTs}::timestamptz
+      GROUP BY 1
+    `;
+
+    const snoozedByAgent = await sqlClient`
+      SELECT
+        actor_user_id::bigint AS user_id,
+        COUNT(*)::int AS tickets_snoozed
+      FROM public.unified_ticket_activity_audit
+      WHERE actor_user_id IS NOT NULL
+        AND LOWER(COALESCE(activity_type, '')) = 'snoozed'
+        AND created_at >= ${startTs}::timestamptz
+        AND created_at <= ${endTs}::timestamptz
+      GROUP BY 1
+    `;
+
     const ticketsByAgent = new Map<number, { assigned: number; resolved: number; closed: number; reopened: number; updated: number }>(
       (unifiedTicketCountsByAgent as any[]).map((r) => [
         Number(r.user_id),
@@ -324,10 +359,28 @@ export async function GET(request: NextRequest) {
         },
       ])
     );
+    const reassignedByAgent = new Map<number, number>(
+      (reassignedFromAgentCounts as any[]).map((r) => [Number(r.user_id), Number(r.tickets_reassigned_from_agent) || 0])
+    );
+    const messagesCountByAgent = new Map<number, { privateNotes: number; responses: number }>(
+      (messagesByAgent as any[]).map((r) => [
+        Number(r.user_id),
+        {
+          privateNotes: Number(r.private_notes) || 0,
+          responses: Number(r.responses) || 0,
+        },
+      ])
+    );
+    const snoozedCountByAgent = new Map<number, number>(
+      (snoozedByAgent as any[]).map((r) => [Number(r.user_id), Number(r.tickets_snoozed) || 0])
+    );
 
     const allAgents = allAgentsActivityResult.map((row: Record<string, unknown>) => {
       const id = Number(row.user_id);
       const t = ticketsByAgent.get(id);
+      const reassigned = reassignedByAgent.get(id) ?? 0;
+      const messages = messagesCountByAgent.get(id) ?? { privateNotes: 0, responses: 0 };
+      const snoozed = snoozedCountByAgent.get(id) ?? 0;
       return {
         userId: id,
         name: row.full_name || row.email || `User ${row.user_id}`,
@@ -341,6 +394,10 @@ export async function GET(request: NextRequest) {
         ticketsAssigned: t?.assigned ?? 0,
         ticketsUpdated: t?.updated ?? 0,
         ticketsReopened: t?.reopened ?? 0,
+        ticketsReassignedFromAgent: reassigned,
+        ticketsSnoozed: snoozed,
+        privateNotes: messages.privateNotes,
+        responses: messages.responses,
       };
     });
 

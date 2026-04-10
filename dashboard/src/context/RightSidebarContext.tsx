@@ -12,6 +12,9 @@ interface RightSidebarContextValue {
   onToggle: () => void;
   /** Set open state directly (e.g. close when left sidebar opens on mobile) */
   setOpen?: (open: boolean) => void;
+  /** Ticket detail: agent + merchant/rider viewing same ticket (Supabase Presence). */
+  ticketCopresenceLive?: boolean;
+  setTicketCopresenceLive?: (live: boolean) => void;
   /** Ticket detail view only: properties editor vs gear (settings) panel */
   ticketRightSidebarPanel?: TicketRightSidebarPanel;
   setTicketRightSidebarPanel?: (panel: TicketRightSidebarPanel) => void;

@@ -105,6 +105,15 @@ await app.register(swaggerUi, {
   routePrefix: "/docs",
 });
 
+// GET / — browsers and health probes often hit the origin; JSON API is under /v1.
+app.get("/", async () => ({
+  ok: true,
+  service: "gatimitra-api",
+  v1: "/v1",
+  health: "/v1/health",
+  docs: "/docs",
+}));
+
 await app.register(healthRoutes, { prefix: "/v1" });
 await app.register(attachmentsRoutes, { prefix: "/v1" });
 

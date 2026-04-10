@@ -107,6 +107,7 @@ export function AgentStatusToggle() {
       queryClient.invalidateQueries({ queryKey: ["agentStatus"] });
       void queryClient.invalidateQueries({ queryKey: ["tickets", "agents"] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
       setIsMenuOpen(false);
       setShowOfflineWarning(false);
     },

@@ -59,19 +59,11 @@ function numPk(v: unknown): number {
 }
 
 /**
- * Search semantics (customer_id, full_name, primary_mobile, email):
- * - `GM` + digits only → **exact** `customer_id` (case-insensitive). Avoids `GM100001` matching `GM1000010`.
- * - Phone-only input (digits + common separators) → **exact** normalized mobile match (no substring).
- * - Otherwise → fuzzy `ILIKE` on customer_id, full_name, primary_mobile, email.
+ * Order list / shared mobile search: digit-normalized match (10–15 digits), same as customer dashboard.
  */
-function customerSearchSql(trim: string): SQL {
-  const raw = trim.trim();
+export function sqlCustomerPrimaryMobileOrderSearch(searchRaw: string): SQL {
+  const raw = searchRaw.trim();
   const compact = raw.replace(/\s/g, "");
-
-  if (/^GM\d+$/i.test(compact)) {
-    return sql`LOWER(TRIM(${customers.customerId})) = LOWER(${compact})`;
-  }
-
   const digitsOnly = compact.replace(/\D/g, "");
   const phoneCharsOnly = /^[+\d\s\-().]*$/.test(raw.trim());
   if (
@@ -97,6 +89,36 @@ function customerSearchSql(trim: string): SQL {
       orParts.push(eq(customers.primaryMobileNormalized, last10));
     }
     return or(...orParts)!;
+  }
+  const term = `%${raw}%`;
+  return or(
+    ilike(customers.primaryMobile, term),
+    ilike(customers.primaryMobileNormalized, term)
+  )!;
+}
+
+/**
+ * Search semantics (customer_id, full_name, primary_mobile, email):
+ * - `GM` + digits only → **exact** `customer_id` (case-insensitive). Avoids `GM100001` matching `GM1000010`.
+ * - Phone-only input (digits + common separators) → **exact** normalized mobile match (no substring).
+ * - Otherwise → fuzzy `ILIKE` on customer_id, full_name, primary_mobile, email.
+ */
+function customerSearchSql(trim: string): SQL {
+  const raw = trim.trim();
+  const compact = raw.replace(/\s/g, "");
+
+  if (/^GM\d+$/i.test(compact)) {
+    return sql`LOWER(TRIM(${customers.customerId})) = LOWER(${compact})`;
+  }
+
+  const digitsOnly = compact.replace(/\D/g, "");
+  const phoneCharsOnly = /^[+\d\s\-().]*$/.test(raw.trim());
+  if (
+    phoneCharsOnly &&
+    digitsOnly.length >= 10 &&
+    digitsOnly.length <= 15
+  ) {
+    return sqlCustomerPrimaryMobileOrderSearch(trim);
   }
 
   const searchTerm = `%${raw}%`;

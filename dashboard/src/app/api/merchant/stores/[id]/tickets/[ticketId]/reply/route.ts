@@ -12,6 +12,10 @@ import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
+function normalizeMessageForIdempotency(v: string): string {
+  return v.replace(/\r\n/g, "\n").trim();
+}
+
 async function assertStoreAccess(storeId: number) {
   const supabase = await createServerSupabaseClient();
   const { data: { user }, error } = await supabase.auth.getUser();
@@ -70,11 +74,30 @@ export async function POST(
     }
 
     const messageText = message + (images.length > 0 ? "\n[IMAGES:" + JSON.stringify(images) + "]" : "");
+    const normalizedMessageText = normalizeMessageForIdempotency(messageText);
     const senderName = access.store.store_display_name || access.store.store_name || "Store";
 
     const attachmentsForDb = images.map((urlOrKey: string) =>
       JSON.stringify({ storageKey: urlOrKey, name: "image", mimeType: "image/jpeg" })
     );
+
+    const possibleDuplicate = await sqlClient`
+      SELECT id
+      FROM public.unified_ticket_messages
+      WHERE ticket_id = ${ticketId}
+        AND sender_type = 'MERCHANT'
+        AND sender_id = ${storeId}
+        AND COALESCE(is_internal_note, false) = false
+        AND UPPER(COALESCE(message_type, 'TEXT')) = 'TEXT'
+        AND BTRIM(COALESCE(message_text, '')) = ${normalizedMessageText}
+        AND created_at >= (NOW() - INTERVAL '20 seconds')
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    const duplicateId = possibleDuplicate?.[0] != null ? (possibleDuplicate[0] as { id?: number }).id ?? null : null;
+    if (duplicateId != null) {
+      return NextResponse.json({ success: true, messageId: duplicateId, dedupedExistingMessage: true });
+    }
 
     try {
       const inserted = await sqlClient`
@@ -88,6 +111,9 @@ export async function POST(
       await sqlClient`
         UPDATE public.unified_tickets
         SET last_response_at = NOW(), last_response_by_type = 'MERCHANT', last_response_by_id = ${storeId},
+            status = CASE WHEN status = 'SNOOZED' THEN 'OPEN' ELSE status END,
+            snoozed_until = CASE WHEN status = 'SNOOZED' THEN NULL ELSE snoozed_until END,
+            snooze_reason = CASE WHEN status = 'SNOOZED' THEN NULL ELSE snooze_reason END,
             updated_at = NOW()
         WHERE id = ${ticketId}
       `;
@@ -104,6 +130,9 @@ export async function POST(
         await sqlClient`
           UPDATE public.unified_tickets
           SET last_response_at = NOW(), last_response_by_type = 'MERCHANT', last_response_by_id = ${storeId},
+              status = CASE WHEN status = 'SNOOZED' THEN 'OPEN' ELSE status END,
+              snoozed_until = CASE WHEN status = 'SNOOZED' THEN NULL ELSE snoozed_until END,
+              snooze_reason = CASE WHEN status = 'SNOOZED' THEN NULL ELSE snooze_reason END,
               updated_at = NOW()
           WHERE id = ${ticketId}
         `;

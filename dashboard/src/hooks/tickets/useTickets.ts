@@ -46,6 +46,10 @@ export interface TicketFilters {
   offset?: number;
   /** When true, GET /api/tickets applies queue home rules (session assignee + active statuses only). */
   queueScope?: boolean;
+  /** Include snoozed tickets in results (default list excludes them). */
+  includeSnoozed?: boolean;
+  /** Return only snoozed tickets. */
+  snoozedOnly?: boolean;
 }
 
 /** Extra columns loaded when `forExport=1` (joins customers / stores / parents). */
@@ -127,6 +131,8 @@ export interface Ticket {
   assignedAt?: string | null;
   /** CSAT / satisfaction score when collected (list API). */
   satisfactionRating?: number | null;
+  snoozedUntil?: string | null;
+  snoozeReason?: string | null;
   /** Populated only when listing with `forExport=1`. */
   exportMeta?: TicketExportMeta;
 }
@@ -171,6 +177,8 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   if (filters.createdAfter?.trim()) params.set("createdAfter", filters.createdAfter.trim());
   if (filters.activityAfter?.trim()) params.set("activityAfter", filters.activityAfter.trim());
   if (filters.queueScope) params.set("queueScope", "1");
+  if (filters.includeSnoozed) params.set("includeSnoozed", "1");
+  if (filters.snoozedOnly) params.set("snoozedOnly", "1");
   params.set("limit", String(filters.limit || 50));
   params.set("offset", String(filters.offset || 0));
 

@@ -8,6 +8,7 @@ import { QueueAutoAssignCapSection } from "@/components/tickets/queue/QueueAutoA
 import { AgentCapacitySection } from "@/components/tickets/queue/AgentCapacitySection";
 import { TicketWorkflowRulesSection } from "@/components/tickets/queue/TicketWorkflowRulesSection";
 import { QueueAssignmentSoundSection } from "@/components/tickets/queue/QueueAssignmentSoundSection";
+import { QueueResponseTemplatesSection } from "@/components/tickets/queue/QueueResponseTemplatesSection";
 import {
   normalizeQueueManagerSection,
   type QueueManagerSection,
@@ -42,6 +43,10 @@ const SECTION_HEADING: Record<
     description:
       "Create IF/THEN rules for assignment, status, priority, tags, and notifications. Runs on ticket create/update, when agents go online, and when they go fully offline (not break or busy).",
   },
+  "response-templates": {
+    title: "Response library",
+    description: "Manage quick replies and knowledge base snippets shown in the conversation composer.",
+  },
 };
 
 export function QueueManagerClient() {
@@ -55,24 +60,25 @@ export function QueueManagerClient() {
   const isWorkflowRules = section === "workflow-rules";
   const isMaxOpen = section === "max-open";
   const isAgentCapacity = section === "agent-capacity";
+  const isResponseTemplates = section === "response-templates";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-gradient-to-b from-slate-50/80 to-gray-50/90">
+    <div className={`flex min-h-0 flex-1 flex-col ${isResponseTemplates ? "bg-white" : "bg-gradient-to-b from-slate-50/80 to-gray-50/90"}`}>
       <main
           className={
-            isWorkflowRules
+            isWorkflowRules || isResponseTemplates
               ? "min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-1 sm:px-4 sm:pb-5 sm:pt-2"
               : "min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 lg:py-6"
           }
         >
           <div
             className={
-              isWorkflowRules
+              isWorkflowRules || isResponseTemplates
                 ? "w-full"
                 : `mx-auto ${isMaxOpen || isAgentCapacity ? "max-w-5xl" : "max-w-3xl"}`
             }
           >
-            {!isWorkflowRules && !isMaxOpen && !isAgentCapacity ? (
+            {!isWorkflowRules && !isMaxOpen && !isAgentCapacity && !isResponseTemplates ? (
             <header className="mb-5">
               <h2 className="text-base font-semibold text-gray-900">{heading.title}</h2>
               {heading.description ? <p className="mt-1 text-sm text-gray-600">{heading.description}</p> : null}
@@ -116,6 +122,7 @@ export function QueueManagerClient() {
           ) : null}
 
           {section === "workflow-rules" ? <TicketWorkflowRulesSection embedded /> : null}
+          {section === "response-templates" ? <QueueResponseTemplatesSection /> : null}
         </div>
       </main>
     </div>
