@@ -371,6 +371,15 @@ export const riskLevelEnum = pgEnum("risk_level", [
   "CRITICAL",
 ]);
 
+export const customerTrustTierEnum = pgEnum("customer_trust_tier", [
+  "PREMIUM",
+  "VERY_GOOD",
+  "GOOD",
+  "BAD",
+  "VERY_BAD",
+  "FRAUD",
+]);
+
 export const walletTransactionTypeEnum = pgEnum("wallet_transaction_type", [
   "CREDIT",
   "DEBIT",
@@ -675,6 +684,33 @@ export const stores = pgTable(
 );
 
 /**
+ * Singleton row (id = 1): merchant store registration "Commission plan" step — fees, copy, and feature bullets.
+ * Editable from Super Admin → Store onboarding fee.
+ */
+export const storeOnboardingCommissionConfig = pgTable(
+  "store_onboarding_commission_config",
+  {
+    id: smallint("id").primaryKey().default(1),
+    planName: text("plan_name").notNull(),
+    showRecommendedBadge: boolean("show_recommended_badge").notNull().default(true),
+    standardOnboardingFee: numeric("standard_onboarding_fee", { precision: 12, scale: 2 }).notNull(),
+    discountedOnboardingFee: numeric("discounted_onboarding_fee", { precision: 12, scale: 2 }).notNull(),
+    discountPercent: numeric("discount_percent", { precision: 6, scale: 2 }).notNull(),
+    baseServiceFeePercent: numeric("base_service_fee_percent", { precision: 6, scale: 2 }).notNull(),
+    discountPeriodLabel: text("discount_period_label").notNull().default("for limited time"),
+    baseServiceFeePeriodLabel: text("base_service_fee_period_label").notNull().default("for initial period"),
+    features: jsonb("features").notNull().default([]),
+    alertNotice: text("alert_notice").notNull(),
+    footerNote: text("footer_note").notNull(),
+    supportContact: text("support_contact").notNull(),
+    payButtonText: text("pay_button_text"),
+    gstPercent: numeric("gst_percent", { precision: 6, scale: 2 }).notNull().default("18"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
+/**
  * Dashboard Access table - Stores which dashboards a user can access
  */
 export const dashboardAccess = pgTable(
@@ -767,9 +803,9 @@ export const dashboardAccessPoints = pgTable(
     isActiveIdx: index("dashboard_access_points_is_active_idx").on(
       table.isActive
     ),
-    uniqueUserDashboardGroup: uniqueIndex(
-      "dashboard_access_points_user_dashboard_group_unique"
-    ).on(table.systemUserId, table.dashboardType, table.accessPointGroup),
+    uniqueUserDashboardGroupOrderType: uniqueIndex(
+      "dashboard_access_points_unique_idx"
+    ).on(table.systemUserId, table.dashboardType, table.accessPointGroup, table.orderType),
   })
 );
 
@@ -903,6 +939,9 @@ export type AccessPointGroup =
   | "TICKET_ACTIONS_FOOD"
   | "TICKET_ACTIONS_PARCEL"
   | "TICKET_ACTIONS_PERSON_RIDE"
+  | "TICKET_AGENT_STATUS_TOGGLE"
+  | "TICKET_QUEUE_SUPERVISOR"
+  | "TICKET_QUEUE_MANAGER"
   | "OFFER_RIDER"
   | "OFFER_CUSTOMER"
   | "OFFER_MERCHANT"
@@ -2230,8 +2269,6 @@ export const customers = pgTable(
     id: bigserial("id", { mode: "number" }).primaryKey(),
     customerId: text("customer_id").notNull().unique(),
     fullName: text("full_name").notNull(),
-    firstName: text("first_name"),
-    lastName: text("last_name"),
     email: text("email").unique(),
     emailVerified: boolean("email_verified").default(false),
     primaryMobile: text("primary_mobile").notNull().unique(),
@@ -2252,12 +2289,15 @@ export const customers = pgTable(
     statusReason: text("status_reason"),
     riskFlag: riskLevelEnum("risk_flag").default("LOW"),
     trustScore: numeric("trust_score", { precision: 5, scale: 2 }).default("100.0"),
+    trustTier: customerTrustTierEnum("trust_tier"),
     fraudScore: numeric("fraud_score", { precision: 5, scale: 2 }).default("0.0"),
     walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.0"),
     walletLockedAmount: numeric("wallet_locked_amount", { precision: 12, scale: 2 }).default("0.0"),
     isIdentityVerified: boolean("is_identity_verified").default(false),
     isEmailVerified: boolean("is_email_verified").default(false),
     isMobileVerified: boolean("is_mobile_verified").default(true),
+    smsPermission: boolean("sms_permission").default(false),
+    gmitraPlusActive: boolean("gmitra_plus_active").notNull().default(false),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     lastOrderAt: timestamp("last_order_at", { withTimezone: true }),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
@@ -2272,6 +2312,31 @@ export const customers = pgTable(
       .defaultNow(),
     createdVia: text("created_via").default("app"),
     updatedBy: text("updated_by"),
+    ageGroup: text("age_group"),
+    profileCompleted: boolean("profile_completed").default(false),
+    locationPermission: boolean("location_permission").default(false),
+    contactsPermission: boolean("contacts_permission").default(false),
+    sessionsInvalidBefore: timestamp("sessions_invalid_before", { withTimezone: true }),
+    addressLine1: text("address_line1"),
+    addressLine2: text("address_line2"),
+    city: text("city"),
+    state: text("state"),
+    pincode: text("pincode"),
+    country: text("country"),
+    latitude: numeric("latitude", { precision: 10, scale: 7 }),
+    longitude: numeric("longitude", { precision: 10, scale: 7 }),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    customerUuid: uuid("customer_uuid"),
+    isGlobalActive: boolean("is_global_active").notNull().default(true),
+    workPhone: text("work_phone"),
+    facebookId: text("facebook_id"),
+    twitterId: text("twitter_id"),
+    timeZone: text("time_zone"),
+    contactTags: text("contact_tags").array(),
+    jobTitle: text("job_title"),
+    uniqueExternalId: text("unique_external_id"),
+    twitterVerified: boolean("twitter_verified").default(false),
+    twitterFollowerCount: integer("twitter_follower_count"),
   },
   (table) => ({
     customerIdIdx: index("customers_customer_id_idx").on(table.customerId),

@@ -11,7 +11,7 @@ function parsePanel(search: string): TicketUrlPanel {
   return "conversation";
 }
 
-let locationSearchListeners = new Set<() => void>();
+const locationSearchListeners = new Set<() => void>();
 let historyPatched = false;
 /** Pending macrotask so we coalesce multiple push/replace in one frame. */
 let notifyTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -78,6 +78,11 @@ function subscribeSearch(onStoreChange: () => void) {
 export function useTicketUrlPanel(): TicketUrlPanel {
   const search = useSyncExternalStore(subscribeSearch, getSearchSnapshot, getServerSearchSnapshot);
   return useMemo(() => parsePanel(search), [search]);
+}
+
+/** Raw `window.location.search` (including `?`) for building links without `useSearchParams()`. */
+export function useTicketLocationSearch(): string {
+  return useSyncExternalStore(subscribeSearch, getSearchSnapshot, getServerSearchSnapshot);
 }
 
 export function useTicketPanelNavigation(pathname: string | null, router: { replace: (href: string, opts?: { scroll?: boolean }) => void }) {

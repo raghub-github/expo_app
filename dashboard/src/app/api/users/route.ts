@@ -13,7 +13,7 @@ import { logUserCreation } from "@/lib/audit/audit-logger";
 import { logActionByAuth, getIpAddress, getUserAgent } from "@/lib/audit/logger";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccess, dashboardAccessPoints, areaManagers, type DashboardType } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = 'nodejs';
@@ -196,6 +196,7 @@ export async function POST(request: NextRequest) {
 
     if (primary_role === "SUPER_ADMIN") {
       const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
+      const allAccessPointDefs = Object.values(DASHBOARD_DEFINITIONS).flatMap((d) => d.accessPoints);
       const dashboards = Object.keys(DASHBOARD_DEFINITIONS);
 
       dashboardAccessData = dashboards.map((dashboardType) => ({
@@ -365,14 +366,32 @@ export async function POST(request: NextRequest) {
         let context: Record<string, any> = {};
 
         const dashType = accessPoint.dashboardType as DashboardType;
-        if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
-          const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
-            (ap: any) => ap.group === accessPoint.accessPointGroup          );
-          if (def) {
-            accessPointName = def.label;
-            accessPointDescription = def.description;
-            allowedActions = def.allowedActions;
-          }
+        const dashboardScopedDef =
+          DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]
+            ? DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
+                (ap: any) => ap.group === accessPoint.accessPointGroup
+              )
+            : undefined;
+        const fallbackDef = allAccessPointDefs.find(
+          (ap: any) => ap.group === accessPoint.accessPointGroup
+        );
+        const def = dashboardScopedDef ?? fallbackDef;
+        if (def) {
+          accessPointName = def.label;
+          accessPointDescription = def.description;
+          allowedActions = Array.isArray(def.allowedActions) ? def.allowedActions : [];
+        }
+        if (allowedActions.length === 0 && Array.isArray(accessPoint.allowedActions)) {
+          allowedActions = accessPoint.allowedActions;
+        }
+        const groupUpper = String(accessPoint.accessPointGroup).trim().toUpperCase();
+        if (allowedActions.length === 0 && groupUpper === "TICKET_AGENT_STATUS_TOGGLE") {
+          allowedActions = ["UPDATE"];
+        } else if (
+          allowedActions.length === 0 &&
+          (groupUpper === "TICKET_QUEUE_SUPERVISOR" || groupUpper === "TICKET_QUEUE_MANAGER")
+        ) {
+          allowedActions = ["VIEW"];
         }
 
         // Add context for ticket access points
@@ -408,6 +427,24 @@ export async function POST(request: NextRequest) {
           grantedByName: systemUser.fullName,
         });
       }
+      // Debug summary for create flow as well.
+      const createdActivePoints = await db
+        .select({
+          dashboardType: dashboardAccessPoints.dashboardType,
+          accessPointGroup: dashboardAccessPoints.accessPointGroup,
+          allowedActions: dashboardAccessPoints.allowedActions,
+        })
+        .from(dashboardAccessPoints)
+        .where(and(eq(dashboardAccessPoints.systemUserId, newUser.id), eq(dashboardAccessPoints.isActive, true)));
+      console.info("[POST /api/users] access points persisted summary", {
+        userId: newUser.id,
+        activeAccessPointsCount: createdActivePoints.length,
+        hasTicketAgentStatusToggle: createdActivePoints.some(
+          (p) =>
+            String(p.dashboardType).trim().toUpperCase() === "TICKET" &&
+            String(p.accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE"
+        ),
+      });
     }
 
     // Log user creation action to audit log

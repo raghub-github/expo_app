@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { User, ChevronDown, X, Search, Copy } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
+import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 
 // Reference card: Ticket ID = purple-blue pill (white text), Status = light blue, Priority = light green,
@@ -37,6 +40,24 @@ const priorityDotColors: Record<string, string> = {
 
 // Model/category tags: light purple background, purple text (RIDER, magicfleet_OMS style)
 const modelTagClass = "bg-purple-100 text-purple-800";
+
+function formatSnoozeCountdownShort(
+  snoozedUntil: string,
+  nowMs: number
+): { label: string; tone: "violet" | "amber" | "red" } | null {
+  const endMs = new Date(snoozedUntil).getTime();
+  if (!Number.isFinite(endMs)) return null;
+  const diff = endMs - nowMs;
+  if (diff <= 0) return { label: "Resuming now", tone: "red" };
+  const totalSeconds = Math.floor(diff / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const tone: "violet" | "amber" | "red" = totalSeconds < 60 ? "red" : totalSeconds < 300 ? "amber" : "violet";
+  if (hours > 0) return { label: `${hours}h ${minutes}m ${seconds}s`, tone };
+  if (minutes > 0) return { label: `${minutes}m ${seconds}s`, tone };
+  return { label: `${seconds}s`, tone };
+}
 
 function formatTimeAgo(dateStr: string): string {
   const date = new Date(dateStr);
@@ -90,6 +111,7 @@ export interface TicketGridCardProps {
   agentOptions: Array<{ value: string; label: string }>;
   statusOptions: Option[];
   currentUserId?: number;
+  detailHref?: string;
 }
 
 export function TicketGridCard({
@@ -105,7 +127,9 @@ export function TicketGridCard({
   agentOptions,
   statusOptions,
   currentUserId,
+  detailHref,
 }: TicketGridCardProps) {
+  const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -113,6 +137,10 @@ export function TicketGridCard({
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const prefetchThisTicket = useCallback(() => {
+    prefetchTicketDetail(queryClient, ticket.id);
+  }, [queryClient, ticket.id]);
 
   useLayoutEffect(() => {
     if (groupAgentOpen && triggerRef.current) {
@@ -165,6 +193,16 @@ export function TicketGridCard({
   const filteredAgentOptions = searchAgent.trim()
     ? agentOptions.filter((o) => o.label.toLowerCase().includes(searchAgent.toLowerCase()))
     : agentOptions;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (ticket.status !== "snoozed" || !ticket.snoozedUntil) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [ticket.status, ticket.snoozedUntil]);
+  const snoozeCountdown =
+    ticket.status === "snoozed" && ticket.snoozedUntil
+      ? formatSnoozeCountdownShort(ticket.snoozedUntil, nowMs)
+      : null;
 
   const sourceLabel = ticket.sourceRole ? ticket.sourceRole.replace(/_/g, " ").toUpperCase() : "";
   const ticketTypeLabel = ticket.ticketCategory?.toLowerCase() === "other"
@@ -258,6 +296,7 @@ export function TicketGridCard({
     <div
       className="rounded-lg border border-gray-200 bg-white shadow-sm transition-all flex flex-col min-h-0 overflow-visible"
       style={{ isolation: "isolate" }}
+      onPointerEnter={prefetchThisTicket}
     >
       <div
         className="h-1 rounded-t-lg shrink-0"
@@ -285,6 +324,21 @@ export function TicketGridCard({
           </div>
         </div>
         {/* Row 2: Status, Priority, Overdue */}
+        {snoozeCountdown ? (
+          <div className="flex justify-end">
+            <span
+              className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                snoozeCountdown.tone === "red"
+                  ? "bg-red-50 text-red-700"
+                  : snoozeCountdown.tone === "amber"
+                    ? "bg-amber-50 text-amber-700"
+                    : "bg-violet-50 text-violet-700"
+              }`}
+            >
+              Resumes in {snoozeCountdown.label}
+            </span>
+          </div>
+        ) : null}
         <div className="flex items-center gap-1 flex-wrap">
           {showOverdue && (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-800">
@@ -305,7 +359,11 @@ export function TicketGridCard({
         </div>
 
         {/* Title */}
-        <Link href={`/dashboard/tickets/${ticket.id}`} className="font-bold text-gray-900 text-[13px] line-clamp-2 leading-tight hover:text-blue-600 hover:underline -mx-0.5 px-0.5">
+        <Link
+          href={detailLink}
+          scroll={false}
+          className="font-bold text-gray-900 text-[13px] line-clamp-2 leading-tight hover:text-blue-600 hover:underline -mx-0.5 px-0.5"
+        >
           {ticket.subject || "No subject"}
         </Link>
 

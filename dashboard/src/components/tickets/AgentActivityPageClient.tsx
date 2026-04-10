@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useRouter, useSearchParams } from "next/navigation";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Calendar } from "lucide-react";
-import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
-import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { AgentActivityAgentSearch } from "@/components/tickets/AgentActivityAgentSearch";
+import { AGENT_ACTIVITY_PATH } from "@/lib/tickets/ticket-path-utils";
 
 type Period = "today" | "week" | "month" | "custom";
 
 interface ActivitySummary {
   onlineTimeMinutes: number;
   breakTimeMinutes: number;
+  busyTimeMinutes: number;
   activeTimeMinutes: number;
   ticketsAssigned: number;
   ticketsResolved: number;
@@ -30,11 +31,17 @@ interface AgentActivityRow {
   email: string;
   onlineTimeMinutes: number;
   breakTimeMinutes: number;
+  busyTimeMinutes?: number;
+  workingTimeMinutes?: number;
   ticketsResolved: number;
   ticketsClosed: number;
   ticketsAssigned: number;
   ticketsUpdated: number;
   ticketsReopened: number;
+  ticketsReassignedFromAgent?: number;
+  ticketsSnoozed?: number;
+  privateNotes?: number;
+  responses?: number;
 }
 
 type AgentActivityApiResponse = {
@@ -46,11 +53,20 @@ type AgentActivityApiResponse = {
     summary: ActivitySummary;
     profile: unknown;
     dailyBreakdown: unknown[];
+    statusSegments?: unknown[];
+    dailyTransitions?: unknown[];
     allAgents?: AgentActivityRow[];
   };
 };
 
 const AGENT_ACTIVITY_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function formatLocalDateInput(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 export type AgentActivityEmbed = "ticketSettingsActivity";
 
@@ -67,12 +83,17 @@ function StatMetricCard({
 }) {
   return (
     <div
-      className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
-        compact ? "p-4" : "p-5"
+      className={`rounded-md border border-gray-200 bg-white ${
+        compact ? "p-3.5" : "p-4"
       }`}
     >
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
-      <p className={`mt-2 font-bold tabular-nums text-gray-900 ${compact ? "text-2xl" : "text-3xl"}`}>{value}</p>
+      <p className="text-xs font-medium text-gray-600">{label}</p>
+      <p
+        className={`mt-2 font-semibold tabular-nums text-slate-800 ${compact ? "text-2xl" : "text-[34px]"}`}
+        suppressHydrationWarning
+      >
+        {value}
+      </p>
       {sub ? <p className="mt-1 text-xs text-gray-500">{sub}</p> : null}
     </div>
   );
@@ -93,7 +114,7 @@ function WidgetShell({
 }) {
   return (
     <div
-      className={`flex min-h-[200px] flex-col rounded-lg border border-gray-200 bg-white shadow-sm ${
+      className={`flex min-h-[200px] flex-col rounded-md border border-gray-200 bg-white ${
         compact ? "" : "min-h-[240px]"
       }`}
     >
@@ -103,12 +124,12 @@ function WidgetShell({
         }`}
       >
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          <h2 className="text-base font-semibold text-gray-900">{title}</h2>
           {subtitle ? <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p> : null}
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
       </div>
-      <div className={`min-h-0 flex-1 ${compact ? "px-4 py-3" : "px-5 py-4"}`}>{children}</div>
+      <div className={`${compact ? "px-4 py-3" : "px-5 py-4"}`}>{children}</div>
     </div>
   );
 }
@@ -125,49 +146,107 @@ function MetricTableRow({ label, value, valueClassName }: { label: string; value
 }
 
 export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed }) {
+  const queryClient = useQueryClient();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const sectionFromUrl = searchParams.get("section") === "automation" ? "automation" : "activity";
-  const section = embed === "ticketSettingsActivity" ? "activity" : sectionFromUrl;
+  const activityQueryEnabled = embed === "ticketSettingsActivity" || sectionFromUrl !== "automation";
 
   const [period, setPeriod] = useState<Period>("today");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  /** Avoid SSR vs client mismatch for blocks that depend on client-only query/snapshot data. */
+  const [activityUiMounted, setActivityUiMounted] = useState(false);
+  useEffect(() => {
+    setActivityUiMounted(true);
+  }, []);
+
+  const selectedAgentUserIdRaw = searchParams.get("agentUserId");
+  const parsedSelectedAgentUserId = selectedAgentUserIdRaw ? Number(selectedAgentUserIdRaw) : NaN;
+  const selectedAgentUserId =
+    Number.isFinite(parsedSelectedAgentUserId) && parsedSelectedAgentUserId > 0 ? parsedSelectedAgentUserId : null;
+  const selectedAgentSuffix = selectedAgentUserId != null ? String(selectedAgentUserId) : "all";
+
+  useEffect(() => {
+    if (embed === "ticketSettingsActivity") return;
+    if (sectionFromUrl !== "activity") return;
+    if (!searchParams.get("agentUserId")) return;
+    // Always land on "All agents" by default when opening Activity.
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("section", "activity");
+    next.delete("agentUserId");
+    router.replace(`${AGENT_ACTIVITY_PATH}?${next.toString()}`, { scroll: false });
+  }, [embed, sectionFromUrl, searchParams, router]);
 
   const activitySnapshotKey = useMemo(() => {
     const suffix = period === "custom" ? `${startDate}|${endDate}` : period;
-    return `dashboard_snapshot:agentActivity:v1:${suffix}`;
-  }, [period, startDate, endDate]);
+    return `dashboard_snapshot:agentActivity:v1:${selectedAgentSuffix}:${suffix}`;
+  }, [period, startDate, endDate, selectedAgentSuffix]);
 
-  const initialActivitySnapshot = useMemo(() => {
-    const raw = loadClientSnapshot<AgentActivityApiResponse>(activitySnapshotKey, AGENT_ACTIVITY_SNAPSHOT_TTL_MS);
-    if (!raw?.success || !raw.data?.summary) return undefined;
-    return raw;
-  }, [activitySnapshotKey]);
+  const activityQueryKey = useMemo(
+    () => ["agentActivity", period, startDate, endDate, selectedAgentSuffix] as const,
+    [period, startDate, endDate, selectedAgentSuffix]
+  );
+
+  const customRangeReady = period !== "custom" || (Boolean(startDate) && Boolean(endDate));
+  const activityFetchEnabled = activityQueryEnabled && customRangeReady;
 
   const { data, error, isFetching, refetch } = useQuery<AgentActivityApiResponse>({
-    queryKey: ["agentActivity", period, startDate, endDate],
-    enabled: section === "activity",
+    queryKey: activityQueryKey,
+    enabled: activityFetchEnabled,
     queryFn: async () => {
       const params = new URLSearchParams();
       params.set("period", period);
+      if (selectedAgentUserId != null && Number.isFinite(selectedAgentUserId) && selectedAgentUserId > 0) {
+        params.set("agentUserId", String(selectedAgentUserId));
+      }
       if (period === "custom" && startDate && endDate) {
         params.set("startDate", startDate);
         params.set("endDate", endDate);
       }
-      const res = await fetch(`/api/agents/activity?${params.toString()}`);
+      const res = await fetch(`/api/agents/activity?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch activity");
       return res.json();
     },
     staleTime: 60_000,
     gcTime: 24 * 60 * 60_000,
-    initialData: initialActivitySnapshot,
-    initialDataUpdatedAt: initialActivitySnapshot != null ? 0 : undefined,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
   });
+
+  /** localStorage is unavailable on the server — never use snapshot as initialData or SSR and first paint diverge. */
+  useEffect(() => {
+    if (!activityUiMounted) return;
+    const snap = loadClientSnapshot<AgentActivityApiResponse>(activitySnapshotKey, AGENT_ACTIVITY_SNAPSHOT_TTL_MS);
+    if (!snap?.success || !snap.data?.summary) return;
+    const existing = queryClient.getQueryData<AgentActivityApiResponse>(activityQueryKey);
+    if (existing === undefined) {
+      queryClient.setQueryData(activityQueryKey, snap);
+    }
+  }, [activityUiMounted, activitySnapshotKey, activityQueryKey, queryClient]);
 
   useEffect(() => {
     if (!data?.success || !data.data) return;
     saveClientSnapshot(activitySnapshotKey, data);
   }, [data, activitySnapshotKey]);
+
+  useEffect(() => {
+    if (embed === "ticketSettingsActivity") return;
+    if (sectionFromUrl === "automation") {
+      router.replace("/dashboard/tickets/queue/manager");
+    }
+  }, [embed, router, sectionFromUrl]);
+
+  const applyPeriod = (p: Period) => {
+    setPeriod(p);
+    if (p === "custom") {
+      const end = new Date();
+      const start = new Date();
+      start.setMonth(start.getMonth() - 1);
+      setEndDate(formatLocalDateInput(end));
+      setStartDate(formatLocalDateInput(start));
+    }
+  };
 
   const formatMinutes = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
@@ -178,9 +257,32 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
     return `${mins}m`;
   };
 
+  const formatStatusLabel = (s: string) =>
+    s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "—";
+
+  type TransitionTotals = { toOnline: number; toOffline: number; toBreak: number; toBusy: number };
+
+  const transitionTotals = useMemo((): TransitionTotals => {
+    const rows = (data?.data?.dailyTransitions as Array<Record<string, unknown>> | undefined) ?? [];
+    const init: TransitionTotals = { toOnline: 0, toOffline: 0, toBreak: 0, toBusy: 0 };
+    return rows.reduce<TransitionTotals>(
+      (acc, row) => ({
+        toOnline: acc.toOnline + (Number(row.to_online) || 0),
+        toOffline: acc.toOffline + (Number(row.to_offline) || 0),
+        toBreak: acc.toBreak + (Number(row.to_break) || 0),
+        toBusy: acc.toBusy + (Number(row.to_busy) || 0),
+      }),
+      init
+    );
+  }, [data?.data?.dailyTransitions]);
+
+  const dailyTransitionsRows = data?.data?.dailyTransitions as Array<Record<string, unknown>> | undefined;
+  const statusSegmentsRows = data?.data?.statusSegments as Array<Record<string, unknown>> | undefined;
+
   const summary = data?.data?.summary || {
     onlineTimeMinutes: 0,
     breakTimeMinutes: 0,
+    busyTimeMinutes: 0,
     activeTimeMinutes: 0,
     ticketsAssigned: 0,
     ticketsResolved: 0,
@@ -195,46 +297,22 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
   const isEmbeddedActivity = embed === "ticketSettingsActivity";
   const compact = isEmbeddedActivity;
 
-  const rootClass = isEmbeddedActivity ? "min-w-0 space-y-4 py-2" : "min-w-0 space-y-5";
+  const rootClass = isEmbeddedActivity ? "min-w-0 space-y-4 py-2" : "min-w-0 space-y-4 rounded-md bg-[#f5f6f8] p-3";
+
+  if (sectionFromUrl === "automation" && embed !== "ticketSettingsActivity") {
+    return (
+      <div className="flex min-h-[200px] items-center justify-center text-sm text-gray-500">
+        Opening Manager…
+      </div>
+    );
+  }
 
   return (
     <div className={rootClass}>
-      {!isEmbeddedActivity && (
-        <header className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-gray-900">
-              {section === "automation" ? "Automation & settings" : "Agent Activity"}
-            </h1>
-            <p className="mt-1 text-sm text-gray-500">
-              {section === "automation"
-                ? "Global reply composer defaults (super admins) and per-account notification rules."
-                : "Performance metrics, CSAT, and time tracking for the selected period."}
-            </p>
-          </div>
-          {section === "activity" && (
-            <span className="text-xs font-medium text-blue-600">Summary</span>
-          )}
-        </header>
-      )}
-
-      {section === "automation" ? (
-        <div className={isEmbeddedActivity ? "space-y-4" : "space-y-5"}>
-          <div
-            className={`rounded-lg border border-gray-200 bg-white shadow-sm ${isEmbeddedActivity ? "p-4" : "p-6"}`}
-          >
-            <TicketComposeAutomationSection variant="plain" />
-          </div>
-          <div
-            className={`rounded-lg border border-gray-200 bg-white shadow-sm ${isEmbeddedActivity ? "p-4" : "p-6"}`}
-          >
-            <TicketNotificationAutomationSection variant="plain" />
-          </div>
-        </div>
-      ) : (
-        <>
+      <>
           {/* Period toolbar — Freshdesk-style white bar */}
           <div
-            className={`flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white shadow-sm ${
+            className={`flex flex-wrap items-center gap-3 rounded-md border border-gray-200 bg-white ${
               compact ? "px-3 py-2.5" : "px-4 py-3"
             }`}
           >
@@ -247,7 +325,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 <button
                   key={p}
                   type="button"
-                  onClick={() => setPeriod(p)}
+                  onClick={() => applyPeriod(p)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                     period === p
                       ? "bg-blue-600 text-white shadow-sm"
@@ -259,25 +337,37 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               ))}
             </div>
             {period === "custom" && (
-              <div className="flex flex-wrap items-center gap-2 border-l border-gray-200 pl-3">
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
-                />
-                <span className="text-xs text-gray-400">to</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
-                />
+              <div className="flex flex-col gap-1 border-l border-gray-200 pl-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="date"
+                    value={startDate}
+                    max={endDate || undefined}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
+                  />
+                  <span className="text-xs text-gray-400">to</span>
+                  <input
+                    type="date"
+                    value={endDate}
+                    min={startDate || undefined}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 shadow-sm"
+                  />
+                </div>
+                {!customRangeReady ? (
+                  <p className="text-[11px] text-amber-800">Select both dates to load metrics.</p>
+                ) : null}
               </div>
             )}
+            {!isEmbeddedActivity ? (
+              <div className="ml-auto w-full sm:w-[320px]">
+                <AgentActivityAgentSearch />
+              </div>
+            ) : null}
           </div>
 
-          {section === "activity" && error && !data ? (
+          {error && !data ? (
             <div
               className={`rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 ${
                 compact ? "" : ""
@@ -293,12 +383,14 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               </button>
             </div>
           ) : null}
-          {section === "activity" && isFetching ? (
-            <p className={`text-xs text-gray-400 ${compact ? "px-0.5" : ""}`}>Updating metrics…</p>
-          ) : null}
 
+          <div
+            className={`space-y-4 transition-opacity duration-200 ease-out ${
+              isFetching && data?.success ? "opacity-[0.88]" : "opacity-100"
+            }`}
+          >
           {/* Row 1 — four KPI cards */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <StatMetricCard
                   compact={compact}
                   label="Online time"
@@ -315,19 +407,11 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
               </div>
 
               {/* Row 2 — three widgets */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <WidgetShell
                   compact={compact}
                   title="Ticket metrics"
                   subtitle="Across the selected period"
-                  action={
-                    <a
-                      href="#agent-activity-daily"
-                      className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline"
-                    >
-                      View details
-                    </a>
-                  }
                 >
                   <table className="w-full border-collapse text-sm">
                     <thead>
@@ -366,13 +450,18 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                         valueClassName="text-amber-700"
                       />
                       <MetricTableRow
+                        label="Busy"
+                        value={formatMinutes(summary.busyTimeMinutes ?? 0)}
+                        valueClassName="text-purple-700"
+                      />
+                      <MetricTableRow
                         label="Active"
                         value={formatMinutes(summary.activeTimeMinutes)}
                         valueClassName="text-green-700"
                       />
                       <MetricTableRow
-                        label="Net work time"
-                        value={formatMinutes(Math.max(0, summary.onlineTimeMinutes - summary.breakTimeMinutes))}
+                        label="Working presence (online + busy)"
+                        value={formatMinutes(summary.onlineTimeMinutes + (summary.busyTimeMinutes ?? 0))}
                       />
                     </tbody>
                   </table>
@@ -396,9 +485,12 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 </WidgetShell>
               </div>
 
-              {data?.data?.allAgents && data.data.allAgents.length > 0 && (
+              {activityUiMounted &&
+                selectedAgentUserId == null &&
+                data?.data?.allAgents &&
+                data.data.allAgents.length > 0 && (
                 <section
-                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                  className={`rounded-md border border-gray-200 bg-white ${
                     compact ? "p-4" : "p-5"
                   }`}
                 >
@@ -408,37 +500,41 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                       <p className="mt-0.5 text-xs text-gray-500">Activity for everyone in the selected period.</p>
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[640px] text-sm">
+                  <div className="overflow-x-auto rounded-md border border-gray-200">
+                    <table className="w-full min-w-[860px] text-sm">
                       <thead>
-                        <tr className="border-b border-gray-200">
-                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Agent</th>
-                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Email</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Assigned</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Closed</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Updated</th>
-                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Reopened</th>
+                        <tr className="bg-gray-50">
+                          <th className="border border-gray-200 px-3 py-2 text-left text-xs font-medium text-gray-500">Agent name</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Online</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Busy</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Working</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets assigned to agent</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets resolved</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets reopened</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets reassigned from agent</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Tickets snoozed</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Private notes</th>
+                          <th className="border border-gray-200 px-3 py-2 text-right text-xs font-medium text-gray-500">Responses</th>
                         </tr>
                       </thead>
                       <tbody>
                         {data.data.allAgents.map((agent) => (
-                          <tr key={agent.userId} className="border-b border-gray-100 hover:bg-gray-50/80">
-                            <td className="px-2 py-2.5 font-medium text-gray-900">{agent.name}</td>
-                            <td className="px-2 py-2.5 text-gray-600">{agent.email}</td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">
-                              {formatMinutes(agent.onlineTimeMinutes)}
+                          <tr key={agent.userId} className="hover:bg-gray-50/80">
+                            <td className="border border-gray-200 px-3 py-2.5 font-medium text-gray-900">{agent.name}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{formatMinutes(agent.onlineTimeMinutes)}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{formatMinutes(agent.breakTimeMinutes)}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{formatMinutes(agent.busyTimeMinutes ?? 0)}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">
+                              {formatMinutes(agent.workingTimeMinutes ?? (agent.onlineTimeMinutes + (agent.busyTimeMinutes ?? 0)))}
                             </td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">
-                              {formatMinutes(agent.breakTimeMinutes)}
-                            </td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsAssigned}</td>
-                            <td className="px-2 py-2.5 text-right font-medium text-green-700">{agent.ticketsResolved}</td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsClosed}</td>
-                            <td className="px-2 py-2.5 text-right text-gray-700">{agent.ticketsUpdated}</td>
-                            <td className="px-2 py-2.5 text-right text-orange-700">{agent.ticketsReopened}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsAssigned}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsResolved}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsReopened}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsReassignedFromAgent ?? 0}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.ticketsSnoozed ?? 0}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.privateNotes ?? 0}</td>
+                            <td className="border border-gray-200 px-3 py-2.5 text-right text-gray-700">{agent.responses ?? 0}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -447,7 +543,9 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                 </section>
               )}
 
-              {data?.data?.dailyBreakdown && data.data.dailyBreakdown.length > 0 && (
+              {selectedAgentUserId != null &&
+                data?.data?.dailyBreakdown &&
+                data.data.dailyBreakdown.length > 0 && (
                 <section
                   id="agent-activity-daily"
                   className={`scroll-mt-4 rounded-lg border border-gray-200 bg-white shadow-sm ${
@@ -467,6 +565,7 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                           <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Date</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Online</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Busy</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Resolved</th>
                           <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">CSAT</th>
                         </tr>
@@ -483,6 +582,9 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                             <td className="px-2 py-2.5 text-right text-gray-700">
                               {formatMinutes(Number(day.break_time_minutes) || 0)}
                             </td>
+                            <td className="px-2 py-2.5 text-right text-gray-700">
+                              {formatMinutes(Number(day.busy_time_minutes) || 0)}
+                            </td>
                             <td className="px-2 py-2.5 text-right text-gray-700">{Number(day.tickets_resolved) || 0}</td>
                             <td className="px-2 py-2.5 text-right text-gray-700">
                               {day.csat_score != null && typeof day.csat_score === "number"
@@ -496,8 +598,132 @@ export function AgentActivityPageClient({ embed }: { embed?: AgentActivityEmbed 
                   </div>
                 </section>
               )}
+
+              {selectedAgentUserId != null && dailyTransitionsRows && dailyTransitionsRows.length > 0 ? (
+                <section
+                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                    compact ? "p-4" : "p-5"
+                  }`}
+                >
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-gray-100 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-gray-900">Status transitions</h2>
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        How often you switched state (from availability logs), per UTC day. Period totals: Online{" "}
+                        <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toOnline}</span>
+                        , Offline{" "}
+                        <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toOffline}</span>
+                        , Break <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toBreak}</span>
+                        , Busy{" "}
+                        <span className="font-semibold tabular-nums text-gray-800">{transitionTotals.toBusy}</span>.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Date (UTC)</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Online</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Offline</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Break</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">→ Busy</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dailyTransitionsRows.map((row, idx: number) => (
+                          <tr key={idx} className="border-b border-gray-100">
+                            <td className="px-2 py-2.5 text-gray-900">
+                              {row.day != null ? String(row.day) : "—"}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_online) || 0}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_offline) || 0}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_break) || 0}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {Number(row.to_busy) || 0}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
+              {selectedAgentUserId != null && statusSegmentsRows && statusSegmentsRows.length > 0 ? (
+                <section
+                  className={`rounded-lg border border-gray-200 bg-white shadow-sm ${
+                    compact ? "p-4" : "p-5"
+                  }`}
+                >
+                  <div className="mb-4 flex flex-wrap items-end justify-between gap-2 border-b border-gray-100 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-gray-900">Completed status intervals</h2>
+                      <p className="mt-0.5 text-xs text-gray-500">
+                        Each row is a finished period in one state (start → end). Up to 500 intervals in this range.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[840px] text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Status</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Started</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Ended</th>
+                          <th className="px-2 py-2 text-right text-xs font-medium text-gray-500">Duration</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Source</th>
+                          <th className="px-2 py-2 text-left text-xs font-medium text-gray-500">Note</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {statusSegmentsRows.map((row, idx: number) => (
+                          <tr key={idx} className="border-b border-gray-100">
+                            <td className="px-2 py-2.5 font-medium text-gray-900">
+                              {formatStatusLabel(String(row.status ?? ""))}
+                            </td>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {row.started_at != null
+                                ? new Date(String(row.started_at)).toLocaleString(undefined, {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })
+                                : "—"}
+                            </td>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {row.ended_at != null
+                                ? new Date(String(row.ended_at)).toLocaleString(undefined, {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })
+                                : "—"}
+                            </td>
+                            <td className="px-2 py-2.5 text-right tabular-nums text-gray-700">
+                              {formatMinutes(Number(row.duration_minutes) || 0)}
+                            </td>
+                            <td className="px-2 py-2.5 text-gray-600">
+                              {row.change_source != null && String(row.change_source).length > 0
+                                ? formatStatusLabel(String(row.change_source))
+                                : "—"}
+                            </td>
+                            <td className="max-w-[200px] truncate px-2 py-2.5 text-gray-600" title={row.reason != null ? String(row.reason) : undefined}>
+                              {row.reason != null && String(row.reason).length > 0 ? String(row.reason) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+          </div>
         </>
-      )}
     </div>
   );
 }

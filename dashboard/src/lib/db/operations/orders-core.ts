@@ -5,7 +5,23 @@
 
 import { getDb } from "../client";
 import { ordersCore, orderManualStatusHistory, orderTimelines, ordersFood, customers, riders, orderCancellationReasons } from "../schema";
-import { eq, and, or, ilike, sql, desc, asc, inArray, lte } from "drizzle-orm";
+import {
+  eq,
+  and,
+  or,
+  ilike,
+  sql,
+  desc,
+  asc,
+  inArray,
+  lte,
+  ne,
+  isNotNull,
+  type SQL,
+} from "drizzle-orm";
+import type { CustomerTrustTier } from "@/lib/customers/trust-tier";
+import { TRUST_TIER_LABEL } from "@/lib/customers/trust-tier";
+import { sqlCustomerPrimaryMobileOrderSearch } from "./customers";
 
 export type OrderStatusFilter =
   | "PAYMENT DONE"
@@ -32,12 +48,45 @@ export interface ListOrdersCoreFilters {
   page?: number;
   limit?: number;
   id?: number;
+  /** Filter by `orders_core.customer_id` (internal `customers.id`). */
+  customerDbId?: number;
   search?: string;
   searchType?: OrderSearchType;
   statusFilter?: OrderStatusFilter;
   orderType?: "food" | "parcel" | "person_ride";
   sortBy?: "created_at" | "updated_at" | "placed_at";
   sortOrder?: "asc" | "desc";
+  /** UI labels matching `TRUST_TIER_LABEL` values (Premium, Very Good, …). */
+  userTypeLabels?: string[];
+  /** Delivery rail: GatiMitra = internal, Merchant = non-internal order source. */
+  deliveryFilters?: ("GatiMitra" | "Merchant")[];
+  /** Food orders panel: categories map to `merchant_stores.store_type`; pickup / overdue use orders_food / orders_core. */
+  foodPanelFilters?: {
+    pickUp?: boolean;
+    food?: boolean;
+    fashion?: boolean;
+    grocery?: boolean;
+    pharma?: boolean;
+    overview?: boolean;
+  };
+}
+
+/** Restaurant / meal vertical store types (not grocery/pharma/fashion). Matches merchant onboarding `store_type`. */
+const STORE_TYPES_FOOD_VERTICAL = [
+  "RESTAURANT",
+  "CAFE",
+  "BAKERY",
+  "CLOUD_KITCHEN",
+  "STATIONERY",
+  "ELECTRONICS_ECOMMERCE",
+  "OTHERS",
+] as const;
+
+function userTypeLabelsToDbTiers(labels: string[]): CustomerTrustTier[] {
+  const entries = Object.entries(TRUST_TIER_LABEL) as [CustomerTrustTier, string][];
+  return labels
+    .map((label) => entries.find(([, l]) => l === label)?.[0])
+    .filter((x): x is CustomerTrustTier => x != null);
 }
 
 export interface OrdersCoreRow {
@@ -102,18 +151,28 @@ export interface OrdersCoreRow {
   etaBreachedTimelineId?: number | null;
 }
 
+/**
+ * Food orders status tabs → `orders_core.status` values (order_status_type enum).
+ * Each tab shows only orders whose current `status` is in that list (no payment_status shortcut).
+ */
 const STATUS_FILTER_TO_DB = {
   "PAYMENT DONE": {
-    paymentStatus: "completed" as const,
+    status: ["assigned", "payment_done"] as const,
   },
   ACCEPTED: {
     status: ["accepted"] as const,
   },
   "DESPATCH READY": {
-    status: ["reached_store", "picked_up"] as const,
+    status: [
+      "reached_store",
+      "bill_ready",
+      "payment_initiated_at",
+      "pymt_assign_rx",
+      "created",
+    ] as const,
   },
   DESPATCHED: {
-    status: ["in_transit", "delivered"] as const,
+    status: ["picked_up", "in_transit", "dispatched"] as const,
   },
   BULK: {
     isBulkOrder: true,
@@ -141,6 +200,10 @@ export async function listOrdersCore(
     conditions.push(eq(ordersCore.id, filters.id));
   }
 
+  if (filters.customerDbId != null && Number.isFinite(filters.customerDbId)) {
+    conditions.push(eq(ordersCore.customerId, filters.customerDbId));
+  }
+
   // Status filter
   const statusFilter = filters.statusFilter ?? null;
   if (statusFilter && statusFilter in STATUS_FILTER_TO_DB) {
@@ -152,6 +215,65 @@ export async function listOrdersCore(
     } else if ("isBulkOrder" in mapping) {
       conditions.push(eq(ordersCore.isBulkOrder, true));
     }
+  }
+
+  const trustTierDb = userTypeLabelsToDbTiers(filters.userTypeLabels ?? []);
+  if (trustTierDb.length) {
+    conditions.push(inArray(customers.trustTier, trustTierDb));
+  }
+
+  const deliveryFilters = filters.deliveryFilters ?? [];
+  if (deliveryFilters.length > 0) {
+    const parts = [];
+    if (deliveryFilters.includes("GatiMitra")) parts.push(eq(ordersCore.orderSource, "internal"));
+    if (deliveryFilters.includes("Merchant")) parts.push(ne(ordersCore.orderSource, "internal"));
+    if (parts.length === 1) conditions.push(parts[0]);
+    else if (parts.length > 1) conditions.push(or(...parts)!);
+  }
+
+  const panel = filters.foodPanelFilters;
+  if (panel?.overview) {
+    conditions.push(isNotNull(ordersCore.etaBreachedAt));
+  }
+  if (panel?.pickUp) {
+    conditions.push(
+      sql`EXISTS (
+        SELECT 1 FROM orders_food of
+        WHERE of.order_id = ${ordersCore.id}
+        AND (
+          COALESCE(of.delivery_instructions, '') ILIKE ${"%pickup%"}
+          OR COALESCE(of.delivery_instructions, '') ILIKE ${"%self collect%"}
+          OR COALESCE(of.delivery_instructions, '') ILIKE ${"%self-collect%"}
+        )
+      )`
+    );
+  }
+  if (panel && (panel.food || panel.fashion || panel.grocery || panel.pharma)) {
+    const orParts: SQL[] = [];
+    if (panel.pharma) {
+      orParts.push(sql`upper(trim(COALESCE(ms.store_type::text, ''))) = 'PHARMA'`);
+    }
+    if (panel.grocery) {
+      orParts.push(sql`upper(trim(COALESCE(ms.store_type::text, ''))) = 'GROCERY'`);
+    }
+    if (panel.fashion) {
+      orParts.push(sql`upper(trim(COALESCE(ms.store_type::text, ''))) = 'FASHION'`);
+    }
+    if (panel.food) {
+      orParts.push(
+        sql`COALESCE(NULLIF(upper(trim(ms.store_type::text)), ''), 'RESTAURANT') IN (${sql.join(
+          STORE_TYPES_FOOD_VERTICAL.map((t) => sql`${t}`),
+          sql`, `
+        )})`
+      );
+    }
+    conditions.push(
+      sql`EXISTS (
+        SELECT 1 FROM merchant_stores ms
+        WHERE ms.id = ${ordersCore.merchantStoreId}
+        AND (${sql.join(orParts, sql` OR `)})
+      )`
+    );
   }
 
   // Search
@@ -234,13 +356,13 @@ export async function listOrdersCore(
         ? asc(ordersCore.createdAt)
         : desc(ordersCore.createdAt);
 
-  // Build query with optional joins for search by customer/rider/name
+  // Build query with optional joins for search by customer/rider/name (or trust-tier-only filter).
   const needsCustomerJoin =
-    search && (searchType === "Customer Mobile" || searchType === "Client Name");
+    (Boolean(search) && (searchType === "Customer Mobile" || searchType === "Client Name")) ||
+    trustTierDb.length > 0;
   const needsRiderJoin = search && searchType === "Rider Mobile";
 
   if (needsCustomerJoin) {
-    const customerTerm = `%${search}%`;
     const baseQuery = db
       .select({
         id: ordersCore.id,
@@ -315,16 +437,11 @@ export async function listOrdersCore(
       .where(
         and(
           ...conditions,
-          searchType === "Customer Mobile"
-            ? or(
-                ilike(customers.primaryMobile, customerTerm),
-                ilike(customers.primaryMobileNormalized, customerTerm)
-              )!
-            : or(
-                ilike(customers.fullName, customerTerm),
-                ilike(customers.firstName, customerTerm),
-                ilike(customers.lastName, customerTerm)
-              )!
+          search && searchType === "Customer Mobile"
+            ? sqlCustomerPrimaryMobileOrderSearch(search)
+            : search && searchType === "Client Name"
+              ? ilike(customers.fullName, `%${search}%`)!
+              : sql`true`
         )
       )
       .orderBy(orderBy)
@@ -338,25 +455,12 @@ export async function listOrdersCore(
       .leftJoin(customers, eq(ordersCore.customerId, customers.id))
       .where(
         and(
-          eq(ordersCore.orderType, orderType),
-          statusFilter && statusFilter in STATUS_FILTER_TO_DB
-            ? (() => {
-                const m = STATUS_FILTER_TO_DB[statusFilter as keyof typeof STATUS_FILTER_TO_DB];
-                if ("status" in m) return inArray(ordersCore.status, [...m.status]);
-                if ("paymentStatus" in m) return eq(ordersCore.paymentStatus, m.paymentStatus);
-                return eq(ordersCore.isBulkOrder, true);
-              })()
-            : undefined,
-          searchType === "Customer Mobile"
-            ? or(
-                ilike(customers.primaryMobile, `%${search}%`),
-                ilike(customers.primaryMobileNormalized, `%${search}%`)
-              )!
-            : or(
-                ilike(customers.fullName, `%${search}%`),
-                ilike(customers.firstName, `%${search}%`),
-                ilike(customers.lastName, `%${search}%`)
-              )!
+          ...conditions,
+          search && searchType === "Customer Mobile"
+            ? sqlCustomerPrimaryMobileOrderSearch(search)
+            : search && searchType === "Client Name"
+              ? ilike(customers.fullName, `%${search}%`)!
+              : sql`true`
         )
       );
 
@@ -458,21 +562,14 @@ export async function listOrdersCore(
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(ordersCore)
+      .leftJoin(customers, eq(ordersCore.customerId, customers.id))
       .leftJoin(riders, eq(ordersCore.riderId, riders.id))
       .where(
         and(
-          eq(ordersCore.orderType, orderType),
-          statusFilter && statusFilter in STATUS_FILTER_TO_DB
-            ? (() => {
-                const m = STATUS_FILTER_TO_DB[statusFilter as keyof typeof STATUS_FILTER_TO_DB];
-                if ("status" in m) return inArray(ordersCore.status, [...m.status]);
-                if ("paymentStatus" in m) return eq(ordersCore.paymentStatus, m.paymentStatus);
-                return eq(ordersCore.isBulkOrder, true);
-              })()
-            : undefined,
+          ...conditions,
           or(
-            ilike(riders.mobile, `%${search}%`),
-            ilike(riders.name, `%${search}%`)
+            ilike(riders.mobile, riderTerm),
+            ilike(riders.name, riderTerm)
           )!
         )
       );
@@ -567,6 +664,8 @@ export async function listOrdersCore(
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(ordersCore)
+    .leftJoin(customers, eq(ordersCore.customerId, customers.id))
+    .leftJoin(riders, eq(ordersCore.riderId, riders.id))
     .where(and(...conditions));
 
   return {
@@ -852,6 +951,35 @@ export async function getOrderTimelineEntries(
     .where(eq(orderTimelines.orderId, orderId))
     .orderBy(asc(orderTimelines.occurredAt));
   return rows;
+}
+
+/**
+ * Timeline entries for order detail / API: same as GET /api/orders/[id]/timeline (synthetic "Created" when empty).
+ */
+export async function getOrderTimelineEntriesWithFallback(
+  orderId: number
+): Promise<OrderTimelineEntry[]> {
+  let entries = await getOrderTimelineEntries(orderId);
+  if (entries.length === 0) {
+    const createdAt = await getOrderCreatedAt(orderId);
+    if (createdAt) {
+      entries = [
+        {
+          id: 0,
+          orderId,
+          status: "Created",
+          previousStatus: null,
+          actorType: "system",
+          actorId: null,
+          actorName: null,
+          statusMessage: null,
+          occurredAt: createdAt,
+          expectedByAt: null,
+        },
+      ];
+    }
+  }
+  return entries;
 }
 
 /**

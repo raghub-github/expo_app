@@ -9,12 +9,14 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   getUserPermissions,
   getUserDashboardAccess,
-  getUserAccessPoints,
 } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { toPermissionKeys } from "@/lib/permissions/constants";
 import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { getRedisClient } from "@/lib/redis";
+import { getDb } from "@/lib/db/client";
+import { dashboardAccessPoints } from "@/lib/db/schema";
+import { and, eq } from "drizzle-orm";
 
 export const runtime = "nodejs";
 
@@ -170,20 +172,27 @@ export async function GET(request: NextRequest) {
       accessPoints = [];
     } else {
       const dashboardRows = await getUserDashboardAccess(systemUser.id);
-      const accessPointsArrays = await Promise.all(
-        dashboardRows.map((d) => getUserAccessPoints(systemUser.id, d.dashboardType as "RIDER" | "MERCHANT" | "TICKET" | "ORDER_FOOD" | "ORDER_PARCEL" | "ORDER_PERSON_RIDE" | "OFFER" | "AREA_MANAGER" | "CUSTOMER" | "PAYMENT" | "SYSTEM" | "ANALYTICS"))
-      );
       dashboards = dashboardRows.map((d) => ({
         dashboardType: d.dashboardType,
         accessLevel: d.accessLevel,
         isActive: d.isActive,
       }));
-      accessPoints = accessPointsArrays.flat().map((ap) => ({
+      const db = getDb();
+      const accessPointRows = await db
+        .select()
+        .from(dashboardAccessPoints)
+        .where(
+          and(
+            eq(dashboardAccessPoints.systemUserId, systemUser.id),
+            eq(dashboardAccessPoints.isActive, true)
+          )
+        );
+      accessPoints = accessPointRows.map((ap) => ({
         dashboardType: ap.dashboardType,
         accessPointGroup: ap.accessPointGroup,
         accessPointName: ap.accessPointName,
-        allowedActions: ap.allowedActions,
-        isActive: ap.isActive,
+        allowedActions: (ap.allowedActions as string[]) ?? [],
+        isActive: ap.isActive === true,
       }));
     }
 

@@ -1,21 +1,36 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { supabase } from "@/lib/supabase/client";
+import { useQueryClient } from "@tanstack/react-query";
 import { fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
+import { queryKeys } from "@/lib/queryKeys";
 
-const POLL_INTERVAL_MS = 18_000;
-const REALTIME_DEBOUNCE_MS = 800;
+/** List view: no global postgres subscription (avoids load on every unified_tickets change). */
+const POLL_INTERVAL_MS = 12_000;
+
+async function drainTicketAutomationJobs(): Promise<void> {
+  try {
+    await fetch("/api/tickets/automation/process-jobs", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 25 }),
+    });
+  } catch {
+    // non-fatal; GET /api/tickets also drains jobs
+  }
+}
 
 export type TicketsPollFilters = Omit<TicketFilters, "limit" | "offset">;
 
 /**
- * “N new tickets” badge: count tickets that match the **current list filters** and were
- * created after the user’s last acknowledged time (load list, Apply filters, or click refresh).
+ * “N new tickets” badge: count tickets that match the current list filters and were
+ * newly created in DB after the last acknowledged time (load list, filter change, or click refresh).
  *
- * Not a global DB event counter — avoids dummy totals matching full ticket count.
+ * IMPORTANT: This must NOT increase for status changes/priority updates on existing tickets.
  */
 export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: boolean) {
+  const queryClient = useQueryClient();
   const [newTicketsCount, setNewTicketsCount] = useState(0);
   const ackTimeIsoRef = useRef<string | null>(null);
   const pollBaseKeyRef = useRef<string>("");
@@ -57,43 +72,19 @@ export function useTicketsRealtime(pollBase: TicketsPollFilters, listReady: bool
     ackTimeIsoRef.current = new Date().toISOString();
   }, []);
 
+  /** Poll new-ticket badge + lightly refresh list/dashboard caches (no global Realtime). */
   useEffect(() => {
     if (!listReady) return;
     const id = window.setInterval(() => {
-      void runPoll();
+      void (async () => {
+        await drainTicketAutomationJobs();
+        void runPoll();
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      })();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [listReady, runPoll]);
-
-  useEffect(() => {
-    if (!listReady) return;
-    let debounce: number | null = null;
-    const channel = supabase
-      .channel(`tickets_activity_${Math.random().toString(36).slice(2)}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "unified_tickets" },
-        () => {
-          if (debounce) window.clearTimeout(debounce);
-          debounce = window.setTimeout(() => {
-            debounce = null;
-            void runPoll();
-          }, REALTIME_DEBOUNCE_MS);
-        }
-      )
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR") {
-          console.warn(
-            "[useTicketsRealtime] Realtime error — polling still runs. Enable Replication for public.unified_tickets if you want faster updates."
-          );
-        }
-      });
-
-    return () => {
-      if (debounce) window.clearTimeout(debounce);
-      supabase.removeChannel(channel);
-    };
-  }, [listReady, runPoll]);
+  }, [listReady, runPoll, queryClient]);
 
   return {
     hasNewTickets: newTicketsCount > 0,

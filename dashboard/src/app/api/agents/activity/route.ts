@@ -7,7 +7,7 @@ import { canPerformActionByAuth } from "@/lib/permissions/actions";
 /**
  * GET /api/agents/activity
  * Get agent activity stats (tickets handled, CSAT/DSAT, time online, etc.)
- * Query params: startDate, endDate, period (today, week, month, custom)
+ * Query params: startDate, endDate, period (today, week, month, custom), agentUserId (optional)
  */
 export async function GET(request: NextRequest) {
   try {
@@ -47,6 +47,15 @@ export async function GET(request: NextRequest) {
     const period = searchParams.get("period") || "today";
     const startDateParam = searchParams.get("startDate");
     const endDateParam = searchParams.get("endDate");
+    const agentUserIdParam = searchParams.get("agentUserId");
+
+    // When provided, show activity for a specific agent. When missing, default to ALL agents.
+    const targetAgentUserId = (() => {
+      if (!agentUserIdParam) return null;
+      const n = Number(agentUserIdParam);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      return n;
+    })();
 
     const sqlClient = getSql();
     let startDate: Date;
@@ -65,7 +74,13 @@ export async function GET(request: NextRequest) {
       startDate = new Date();
       startDate.setMonth(startDate.getMonth() - 1);
       startDate.setHours(0, 0, 0, 0);
-    } else if (period === "custom" && startDateParam && endDateParam) {
+    } else if (period === "custom") {
+      if (!startDateParam || !endDateParam) {
+        return NextResponse.json(
+          { success: false, error: "Custom period requires startDate and endDate (YYYY-MM-DD)" },
+          { status: 400 }
+        );
+      }
       startDate = new Date(startDateParam);
       startDate.setHours(0, 0, 0, 0);
       endDate = new Date(endDateParam);
@@ -75,12 +90,20 @@ export async function GET(request: NextRequest) {
       startDate.setHours(0, 0, 0, 0);
     }
 
-    // Get activity logs for the date range
-    const activityLogsResult = await sqlClient`
+    const startDateStr = startDate.toISOString().split("T")[0];
+    const endDateStr = endDate.toISOString().split("T")[0];
+    const startTs = startDate.toISOString();
+    const endTs = endDate.toISOString();
+
+    // For ALL agents mode we only need totals (no per-agent breakdown tables).
+    const activityLogsResult =
+      targetAgentUserId != null
+        ? await sqlClient`
       SELECT 
         activity_date,
         online_time_minutes,
         break_time_minutes,
+        busy_time_minutes,
         active_time_minutes,
         tickets_assigned,
         tickets_resolved,
@@ -95,14 +118,56 @@ export async function GET(request: NextRequest) {
         csat_count,
         service_breakdown
       FROM agent_activity_logs
-      WHERE agent_user_id = ${systemUser.id}
-        AND activity_date >= ${startDate.toISOString().split('T')[0]}
-        AND activity_date <= ${endDate.toISOString().split('T')[0]}
+      WHERE agent_user_id = ${targetAgentUserId}
+        AND activity_date >= ${startDateStr}
+        AND activity_date <= ${endDateStr}
       ORDER BY activity_date DESC
-    `;
+    `
+        : [];
 
-    // Get current profile stats
-    const profileResult = await sqlClient`
+    const statusSegmentsResult =
+      targetAgentUserId != null
+        ? await sqlClient`
+      SELECT
+        id,
+        status,
+        started_at,
+        ended_at,
+        duration_minutes,
+        reason,
+        change_source,
+        changed_by_user_id
+      FROM agent_status_segments
+      WHERE agent_user_id = ${targetAgentUserId}
+        AND ended_at >= ${startTs}::timestamptz
+        AND started_at <= ${endTs}::timestamptz
+      ORDER BY started_at DESC
+      LIMIT 500
+    `
+        : [];
+
+    const dailyTransitionsResult =
+      targetAgentUserId != null
+        ? await sqlClient`
+      SELECT
+        (timezone('UTC', changed_at))::date AS day,
+        COUNT(*) FILTER (WHERE status = 'online')::int AS to_online,
+        COUNT(*) FILTER (WHERE status = 'offline')::int AS to_offline,
+        COUNT(*) FILTER (WHERE status = 'break')::int AS to_break,
+        COUNT(*) FILTER (WHERE status = 'busy')::int AS to_busy
+      FROM agent_availability_logs
+      WHERE agent_user_id = ${targetAgentUserId}
+        AND changed_at >= ${startTs}::timestamptz
+        AND changed_at <= ${endTs}::timestamptz
+      GROUP BY 1
+      ORDER BY 1 DESC
+    `
+        : [];
+
+    // Get current profile stats (agent mode only; all-agents mode returns null)
+    const profileResult =
+      targetAgentUserId != null
+        ? await sqlClient`
       SELECT 
         total_online_time_minutes,
         total_break_time_minutes,
@@ -111,74 +176,105 @@ export async function GET(request: NextRequest) {
         avg_resolution_time_minutes,
         avg_first_response_time_minutes
       FROM agent_profiles
-      WHERE user_id = ${systemUser.id}
+      WHERE user_id = ${targetAgentUserId}
       LIMIT 1
-    `;
+    `
+        : [];
 
-    const startStr = startDate.toISOString();
-    const endStr = endDate.toISOString();
-
-    // Get ticket counts for the period (use ISO strings for timestamp comparison)
+    // Ticket metrics from unified_tickets (per-agent or all-agents totals)
     const ticketStatsResult = await sqlClient`
       SELECT 
-        COUNT(*) FILTER (WHERE current_assignee_user_id = ${systemUser.id}) as total_assigned,
-        COUNT(*) FILTER (WHERE current_assignee_user_id = ${systemUser.id} AND status::text = 'resolved') as resolved,
-        COUNT(*) FILTER (WHERE current_assignee_user_id = ${systemUser.id} AND status::text = 'closed') as closed,
-        COUNT(*) FILTER (WHERE current_assignee_user_id = ${systemUser.id} AND status::text = 'reopened') as reopened,
-        COUNT(*) FILTER (WHERE current_assignee_user_id = ${systemUser.id} AND updated_at >= ${startStr}::timestamptz AND updated_at <= ${endStr}::timestamptz) as updated
-      FROM tickets
-      WHERE (current_assignee_user_id = ${systemUser.id} AND created_at >= ${startStr}::timestamptz AND created_at <= ${endStr}::timestamptz)
-         OR (current_assignee_user_id = ${systemUser.id} AND updated_at >= ${startStr}::timestamptz AND updated_at <= ${endStr}::timestamptz)
+        COUNT(*) FILTER (WHERE assigned_at IS NOT NULL AND assigned_at >= ${startTs}::timestamptz AND assigned_at <= ${endTs}::timestamptz)::int as total_assigned,
+        COUNT(*) FILTER (WHERE resolved_at IS NOT NULL AND resolved_at >= ${startTs}::timestamptz AND resolved_at <= ${endTs}::timestamptz)::int as resolved,
+        COUNT(*) FILTER (WHERE closed_at IS NOT NULL AND closed_at >= ${startTs}::timestamptz AND closed_at <= ${endTs}::timestamptz)::int as closed,
+        COUNT(*) FILTER (WHERE reopened_at IS NOT NULL AND reopened_at >= ${startTs}::timestamptz AND reopened_at <= ${endTs}::timestamptz)::int as reopened,
+        COUNT(*) FILTER (WHERE updated_at >= ${startTs}::timestamptz AND updated_at <= ${endTs}::timestamptz)::int as updated
+      FROM public.unified_tickets ut
+      WHERE
+        ut.assigned_to_agent_id IS NOT NULL
+        AND (${targetAgentUserId}::int IS NULL OR ut.assigned_to_agent_id = ${targetAgentUserId})
     `;
 
-    // Get CSAT/DSAT ratings for tickets resolved/closed by this agent
     const ratingsResult = await sqlClient`
       SELECT 
-        COUNT(*) FILTER (WHERE rating_value >= 4) as csat_count,
-        COUNT(*) FILTER (WHERE rating_value <= 2) as dsat_count,
-        AVG(rating_value) FILTER (WHERE rating_value IS NOT NULL) as avg_rating
-      FROM ticket_ratings tr
-      JOIN tickets t ON tr.ticket_id = t.id
-      WHERE t.current_assignee_user_id = ${systemUser.id}
-        AND t.status::text IN ('resolved', 'closed')
-        AND t.resolved_at >= ${startStr}::timestamptz
-        AND t.resolved_at <= ${endStr}::timestamptz
+        COUNT(*) FILTER (WHERE satisfaction_rating >= 4)::int as csat_count,
+        COUNT(*) FILTER (WHERE satisfaction_rating <= 2)::int as dsat_count,
+        AVG(satisfaction_rating)::numeric as avg_rating
+      FROM public.unified_tickets ut
+      WHERE
+        ut.satisfaction_rating IS NOT NULL
+        AND ut.satisfaction_collected_at IS NOT NULL
+        AND ut.satisfaction_collected_at >= ${startTs}::timestamptz
+        AND ut.satisfaction_collected_at <= ${endTs}::timestamptz
+        AND (${targetAgentUserId}::int IS NULL OR ut.assigned_to_agent_id = ${targetAgentUserId})
     `;
 
-    // Aggregate activity logs
-    const aggregated = activityLogsResult.reduce((acc, log) => {
-      acc.onlineTimeMinutes += log.online_time_minutes || 0;
-      acc.breakTimeMinutes += log.break_time_minutes || 0;
-      acc.activeTimeMinutes += log.active_time_minutes || 0;
-      acc.ticketsAssigned += log.tickets_assigned || 0;
-      acc.ticketsResolved += log.tickets_resolved || 0;
-      acc.ticketsClosed += log.tickets_closed || 0;
-      acc.ticketsReopened += log.tickets_reopened || 0;
-      acc.ticketsUpdated += log.tickets_updated || 0;
-      acc.ticketsReplied += log.tickets_replied || 0;
-      acc.dsatCount += log.dsat_count || 0;
-      acc.csatCount += log.csat_count || 0;
-      return acc;
-    }, {
-      onlineTimeMinutes: 0,
-      breakTimeMinutes: 0,
-      activeTimeMinutes: 0,
-      ticketsAssigned: 0,
-      ticketsResolved: 0,
-      ticketsClosed: 0,
-      ticketsReopened: 0,
-      ticketsUpdated: 0,
-      ticketsReplied: 0,
-      dsatCount: 0,
-      csatCount: 0,
-    });
+    const aggregatedFromLogs = (rows: any[]) =>
+      rows.reduce(
+        (acc, log) => {
+          acc.onlineTimeMinutes += Number(log.online_time_minutes) || 0;
+          acc.breakTimeMinutes += Number(log.break_time_minutes) || 0;
+          acc.busyTimeMinutes += Number(log.busy_time_minutes) || 0;
+          acc.activeTimeMinutes += Number(log.active_time_minutes) || 0;
+          return acc;
+        },
+        {
+          onlineTimeMinutes: 0,
+          breakTimeMinutes: 0,
+          busyTimeMinutes: 0,
+          activeTimeMinutes: 0,
+        }
+      );
+
+    const aggregated =
+      targetAgentUserId != null
+        ? aggregatedFromLogs(activityLogsResult as any[])
+        : ((await sqlClient`
+      SELECT
+        COALESCE(SUM(online_time_minutes), 0)::int as online_time_minutes,
+        COALESCE(SUM(break_time_minutes), 0)::int as break_time_minutes,
+        COALESCE(SUM(busy_time_minutes), 0)::int as busy_time_minutes,
+        COALESCE(SUM(active_time_minutes), 0)::int as active_time_minutes
+      FROM public.agent_activity_logs
+      WHERE activity_date >= ${startDateStr}::date AND activity_date <= ${endDateStr}::date
+    `)[0] ?? {
+            online_time_minutes: 0,
+            break_time_minutes: 0,
+            busy_time_minutes: 0,
+            active_time_minutes: 0,
+          });
+
+    const profilesAgg =
+      targetAgentUserId != null
+        ? await sqlClient`
+      SELECT
+        COALESCE(MAX(total_online_time_minutes), 0)::int as total_online_time_minutes,
+        COALESCE(MAX(total_break_time_minutes), 0)::int as total_break_time_minutes,
+        COALESCE(MAX(total_busy_time_minutes), 0)::int as total_busy_time_minutes
+      FROM public.agent_profiles
+      WHERE user_id = ${targetAgentUserId}
+    `
+        : await sqlClient`
+      SELECT
+        COALESCE(SUM(total_online_time_minutes), 0)::int as total_online_time_minutes,
+        COALESCE(SUM(total_break_time_minutes), 0)::int as total_break_time_minutes,
+        COALESCE(SUM(total_busy_time_minutes), 0)::int as total_busy_time_minutes
+      FROM public.agent_profiles
+    `;
+
+    const profilesAggRow = (profilesAgg as any[])[0] ?? {
+      total_online_time_minutes: 0,
+      total_break_time_minutes: 0,
+      total_busy_time_minutes: 0,
+    };
+    const timeFallbackOnline = Number(profilesAggRow.total_online_time_minutes) || 0;
+    const timeFallbackBreak = Number(profilesAggRow.total_break_time_minutes) || 0;
+    const timeFallbackBusy = Number(profilesAggRow.total_busy_time_minutes) || 0;
 
     const ticketStats = ticketStatsResult[0] || {};
     const ratings = ratingsResult[0] || {};
 
     // All agents' activity for the period (same permission: anyone with ticket access can see)
-    const startDateStr = startDate.toISOString().split("T")[0];
-    const endDateStr = endDate.toISOString().split("T")[0];
     const allAgentsActivityResult = await sqlClient`
       SELECT 
         ap.user_id,
@@ -186,11 +282,13 @@ export async function GET(request: NextRequest) {
         su.email,
         COALESCE(SUM(aal.online_time_minutes), 0)::int as online_time_minutes,
         COALESCE(SUM(aal.break_time_minutes), 0)::int as break_time_minutes,
-        COALESCE(SUM(aal.tickets_resolved), 0)::int as tickets_resolved,
-        COALESCE(SUM(aal.tickets_closed), 0)::int as tickets_closed,
-        COALESCE(SUM(aal.tickets_assigned), 0)::int as tickets_assigned,
-        COALESCE(SUM(aal.tickets_updated), 0)::int as tickets_updated,
-        COALESCE(SUM(aal.tickets_reopened), 0)::int as tickets_reopened
+        COALESCE(SUM(aal.busy_time_minutes), 0)::int as busy_time_minutes,
+        (COALESCE(SUM(aal.online_time_minutes), 0) + COALESCE(SUM(aal.busy_time_minutes), 0))::int as working_time_minutes,
+        0::int as tickets_resolved,
+        0::int as tickets_closed,
+        0::int as tickets_assigned,
+        0::int as tickets_updated,
+        0::int as tickets_reopened
       FROM agent_profiles ap
       JOIN system_users su ON su.id = ap.user_id
       LEFT JOIN agent_activity_logs aal ON aal.agent_user_id = ap.user_id
@@ -200,18 +298,108 @@ export async function GET(request: NextRequest) {
       ORDER BY online_time_minutes DESC, tickets_resolved DESC
     `;
 
-    const allAgents = allAgentsActivityResult.map((row: Record<string, unknown>) => ({
-      userId: row.user_id,
-      name: row.full_name || row.email || `User ${row.user_id}`,
-      email: row.email || "",
-      onlineTimeMinutes: Number(row.online_time_minutes) || 0,
-      breakTimeMinutes: Number(row.break_time_minutes) || 0,
-      ticketsResolved: Number(row.tickets_resolved) || 0,
-      ticketsClosed: Number(row.tickets_closed) || 0,
-      ticketsAssigned: Number(row.tickets_assigned) || 0,
-      ticketsUpdated: Number(row.tickets_updated) || 0,
-      ticketsReopened: Number(row.tickets_reopened) || 0,
-    }));
+    const unifiedTicketCountsByAgent = await sqlClient`
+      SELECT
+        ut.assigned_to_agent_id::bigint as user_id,
+        COUNT(*) FILTER (WHERE ut.assigned_at IS NOT NULL AND ut.assigned_at >= ${startTs}::timestamptz AND ut.assigned_at <= ${endTs}::timestamptz)::int as tickets_assigned,
+        COUNT(*) FILTER (WHERE ut.resolved_at IS NOT NULL AND ut.resolved_at >= ${startTs}::timestamptz AND ut.resolved_at <= ${endTs}::timestamptz)::int as tickets_resolved,
+        COUNT(*) FILTER (WHERE ut.closed_at IS NOT NULL AND ut.closed_at >= ${startTs}::timestamptz AND ut.closed_at <= ${endTs}::timestamptz)::int as tickets_closed,
+        COUNT(*) FILTER (WHERE ut.reopened_at IS NOT NULL AND ut.reopened_at >= ${startTs}::timestamptz AND ut.reopened_at <= ${endTs}::timestamptz)::int as tickets_reopened,
+        COUNT(*) FILTER (WHERE ut.updated_at >= ${startTs}::timestamptz AND ut.updated_at <= ${endTs}::timestamptz)::int as tickets_updated
+      FROM public.unified_tickets ut
+      WHERE
+        ut.assigned_to_agent_id IS NOT NULL
+      GROUP BY 1
+    `;
+
+    const reassignedFromAgentCounts = await sqlClient`
+      SELECT
+        previous_assignee_user_id::bigint AS user_id,
+        COUNT(*)::int AS tickets_reassigned_from_agent
+      FROM public.unified_ticket_activity_audit
+      WHERE previous_assignee_user_id IS NOT NULL
+        AND created_at >= ${startTs}::timestamptz
+        AND created_at <= ${endTs}::timestamptz
+      GROUP BY 1
+    `;
+
+    const messagesByAgent = await sqlClient`
+      SELECT
+        sender_id::bigint AS user_id,
+        COUNT(*) FILTER (WHERE COALESCE(is_internal_note, false) = true)::int AS private_notes,
+        COUNT(*) FILTER (WHERE COALESCE(is_internal_note, false) = false)::int AS responses
+      FROM public.unified_ticket_messages
+      WHERE sender_id IS NOT NULL
+        AND created_at >= ${startTs}::timestamptz
+        AND created_at <= ${endTs}::timestamptz
+      GROUP BY 1
+    `;
+
+    const snoozedByAgent = await sqlClient`
+      SELECT
+        actor_user_id::bigint AS user_id,
+        COUNT(*)::int AS tickets_snoozed
+      FROM public.unified_ticket_activity_audit
+      WHERE actor_user_id IS NOT NULL
+        AND LOWER(COALESCE(activity_type, '')) = 'snoozed'
+        AND created_at >= ${startTs}::timestamptz
+        AND created_at <= ${endTs}::timestamptz
+      GROUP BY 1
+    `;
+
+    const ticketsByAgent = new Map<number, { assigned: number; resolved: number; closed: number; reopened: number; updated: number }>(
+      (unifiedTicketCountsByAgent as any[]).map((r) => [
+        Number(r.user_id),
+        {
+          assigned: Number(r.tickets_assigned) || 0,
+          resolved: Number(r.tickets_resolved) || 0,
+          closed: Number(r.tickets_closed) || 0,
+          reopened: Number(r.tickets_reopened) || 0,
+          updated: Number(r.tickets_updated) || 0,
+        },
+      ])
+    );
+    const reassignedByAgent = new Map<number, number>(
+      (reassignedFromAgentCounts as any[]).map((r) => [Number(r.user_id), Number(r.tickets_reassigned_from_agent) || 0])
+    );
+    const messagesCountByAgent = new Map<number, { privateNotes: number; responses: number }>(
+      (messagesByAgent as any[]).map((r) => [
+        Number(r.user_id),
+        {
+          privateNotes: Number(r.private_notes) || 0,
+          responses: Number(r.responses) || 0,
+        },
+      ])
+    );
+    const snoozedCountByAgent = new Map<number, number>(
+      (snoozedByAgent as any[]).map((r) => [Number(r.user_id), Number(r.tickets_snoozed) || 0])
+    );
+
+    const allAgents = allAgentsActivityResult.map((row: Record<string, unknown>) => {
+      const id = Number(row.user_id);
+      const t = ticketsByAgent.get(id);
+      const reassigned = reassignedByAgent.get(id) ?? 0;
+      const messages = messagesCountByAgent.get(id) ?? { privateNotes: 0, responses: 0 };
+      const snoozed = snoozedCountByAgent.get(id) ?? 0;
+      return {
+        userId: id,
+        name: row.full_name || row.email || `User ${row.user_id}`,
+        email: row.email || "",
+        onlineTimeMinutes: Number(row.online_time_minutes) || 0,
+        breakTimeMinutes: Number(row.break_time_minutes) || 0,
+        busyTimeMinutes: Number(row.busy_time_minutes) || 0,
+        workingTimeMinutes: Number(row.working_time_minutes) || 0,
+        ticketsResolved: t?.resolved ?? 0,
+        ticketsClosed: t?.closed ?? 0,
+        ticketsAssigned: t?.assigned ?? 0,
+        ticketsUpdated: t?.updated ?? 0,
+        ticketsReopened: t?.reopened ?? 0,
+        ticketsReassignedFromAgent: reassigned,
+        ticketsSnoozed: snoozed,
+        privateNotes: messages.privateNotes,
+        responses: messages.responses,
+      };
+    });
 
     return NextResponse.json({
       success: true,
@@ -220,9 +408,14 @@ export async function GET(request: NextRequest) {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
         summary: {
-          onlineTimeMinutes: aggregated.onlineTimeMinutes,
-          breakTimeMinutes: aggregated.breakTimeMinutes,
-          activeTimeMinutes: aggregated.activeTimeMinutes,
+          onlineTimeMinutes:
+            Number((aggregated as any).onlineTimeMinutes ?? (aggregated as any).online_time_minutes) || timeFallbackOnline,
+          breakTimeMinutes:
+            Number((aggregated as any).breakTimeMinutes ?? (aggregated as any).break_time_minutes) || timeFallbackBreak,
+          busyTimeMinutes:
+            Number((aggregated as any).busyTimeMinutes ?? (aggregated as any).busy_time_minutes) || timeFallbackBusy,
+          activeTimeMinutes:
+            Number((aggregated as any).activeTimeMinutes ?? (aggregated as any).active_time_minutes) || (timeFallbackOnline + timeFallbackBusy),
           ticketsAssigned: Number(ticketStats.total_assigned) || 0,
           ticketsResolved: Number(ticketStats.resolved) || 0,
           ticketsClosed: Number(ticketStats.closed) || 0,
@@ -230,10 +423,12 @@ export async function GET(request: NextRequest) {
           ticketsUpdated: Number(ticketStats.updated) || 0,
           csatCount: Number(ratings.csat_count) || 0,
           dsatCount: Number(ratings.dsat_count) || 0,
-          avgRating: ratings.avg_rating ? Number(ratings.avg_rating) : null,
+          avgRating: ratings.avg_rating != null ? Number(ratings.avg_rating) : null,
         },
         profile: profileResult[0] || null,
         dailyBreakdown: activityLogsResult,
+        statusSegments: statusSegmentsResult,
+        dailyTransitions: dailyTransitionsResult,
         allAgents,
       },
     });

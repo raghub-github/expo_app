@@ -14,6 +14,26 @@ import { fetchWithTimeout } from "@/lib/supabase/fetch-timeout";
 
 export const runtime = "nodejs";
 
+function normalizeSupabaseCookieOptions(options: any) {
+  // Supabase sets `secure` based on request context; in Next dev this can end up true,
+  // causing browsers to not send cookies over plain `http://`.
+  // Force `secure: false` outside production so Edge middleware/server can read cookies.
+  const isProd = process.env.NODE_ENV === "production";
+  const secure = isProd ? options?.secure : false;
+
+  const sameSiteRaw = options?.sameSite;
+  const sameSite =
+    sameSiteRaw === "lax" || sameSiteRaw === "strict" || sameSiteRaw === "none" ? sameSiteRaw : undefined;
+
+  return {
+    ...options,
+    secure,
+    sameSite,
+    // Ensure a safe default so cookies are sent to all routes.
+    path: options?.path ?? "/",
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     // ✅ SAFE BODY PARSING (fixes 502 issue)
@@ -69,8 +89,9 @@ export async function POST(request: NextRequest) {
         },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options);
-            response.cookies.set(name, value, options);
+            const normalized = normalizeSupabaseCookieOptions(options);
+            cookieStore.set(name, value, normalized);
+            response.cookies.set(name, value, normalized);
           });
         },
       },

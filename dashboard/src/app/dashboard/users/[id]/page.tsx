@@ -105,9 +105,9 @@ export default function UserDetailsPage() {
     }
   }, [userId, isSuperAdmin, permissionsLoading]);
 
-  const fetchUser = async () => {
+  const fetchUser = async (opts?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!opts?.silent) setLoading(true);
       setError(null);
       
       if (isNaN(userId) || userId <= 0) {
@@ -143,13 +143,13 @@ export default function UserDetailsPage() {
       console.error("Error fetching user:", err);
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   };
 
-  const fetchAccess = async () => {
+  const fetchAccess = async (opts?: { silent?: boolean }) => {
     try {
-      setAccessLoading(true);
+      if (!opts?.silent) setAccessLoading(true);
       setAccessError(null);
 
       const response = await fetch(`/api/users/${userId}/access`);
@@ -176,7 +176,7 @@ export default function UserDetailsPage() {
       console.error("Error fetching access:", err);
       setAccessError(err instanceof Error ? err.message : "Unknown error");
     } finally {
-      setAccessLoading(false);
+      if (!opts?.silent) setAccessLoading(false);
     }
   };
 
@@ -246,13 +246,13 @@ export default function UserDetailsPage() {
             isSuperAdmin={isSuperAdmin}
             currentUserId={systemUserId}
             onSuccess={async () => {
-              setEditMode(false);
               // Refetch user data to show updated information
-              await fetchUser();
+                await fetchUser({ silent: true });
               // Also refetch access data if super admin
               if (isSuperAdmin) {
-                await fetchAccess();
+                  await fetchAccess({ silent: true });
               }
+                setEditMode(false);
             }}
             onCancel={() => setEditMode(false)}
           />

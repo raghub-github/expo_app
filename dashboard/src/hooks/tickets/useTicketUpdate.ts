@@ -3,6 +3,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 
+/** Status transitions that usually drop a row from active / open-queue filters (instant list prune). */
+function statusLeavesTypicalActiveList(status: string | undefined): boolean {
+  if (status == null) return false;
+  const s = String(status).toLowerCase().replace(/-/g, "_");
+  return ["resolved", "closed", "rejected", "cancelled", "provisionally_resolved", "snoozed"].includes(s);
+}
+
 export function useTicketUpdate() {
   const queryClient = useQueryClient();
 
@@ -141,8 +148,19 @@ export function useTicketUpdate() {
         return next;
       };
 
+      const pruneResolvedRow = statusLeavesTypicalActiveList(variables.status);
+
       queryClient.setQueriesData({ queryKey: queryKeys.tickets.all() }, (old: any) => {
         if (!old || !Array.isArray(old.tickets)) return old;
+        if (pruneResolvedRow && variables.ticketId != null) {
+          const had = old.tickets.some((t: any) => t.id === variables.ticketId);
+          if (!had) return old;
+          return {
+            ...old,
+            tickets: old.tickets.filter((t: any) => t.id !== variables.ticketId),
+            total: Math.max(0, Number(old.total ?? 0) - 1),
+          };
+        }
         return { ...old, tickets: old.tickets.map((t: any) => patchTicket(t)) };
       });
 
@@ -153,12 +171,19 @@ export function useTicketUpdate() {
       }
     },
     onSuccess: (_, variables) => {
+      // Must refetch *active* list queries — the queue/table is usually mounted; "inactive" left stale rows after resolve.
       queryClient.invalidateQueries({
         predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
-        refetchType: "inactive",
+        refetchType: "active",
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.tickets.helpdeskDashboard(),
+        refetchType: "active",
       });
       if (variables.ticketId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(variables.ticketId), refetchType: "inactive" });
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(variables.ticketId), refetchType: "active" });
+        // Status / assignee / etc. write activity rows server-side; timeline must refetch or it stays stale until staleTime.
+        queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(variables.ticketId) });
       }
     },
   });

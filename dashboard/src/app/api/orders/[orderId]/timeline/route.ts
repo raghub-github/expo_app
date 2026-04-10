@@ -7,8 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import {
-  getOrderTimelineEntries,
-  getOrderCreatedAt,
+  getOrderTimelineEntriesWithFallback,
   type OrderTimelineEntry,
 } from "@/lib/db/operations/orders-core";
 
@@ -61,26 +60,7 @@ export async function GET(
       );
     }
 
-    let entries: OrderTimelineEntry[] = await getOrderTimelineEntries(orderId);
-    if (entries.length === 0) {
-      const createdAt = await getOrderCreatedAt(orderId);
-      if (createdAt) {
-        entries = [
-          {
-            id: 0,
-            orderId,
-            status: "Created",
-            previousStatus: null,
-            actorType: "system",
-            actorId: null,
-            actorName: null,
-            statusMessage: null,
-            occurredAt: createdAt,
-            expectedByAt: null,
-          },
-        ];
-      }
-    }
+    const entries: OrderTimelineEntry[] = await getOrderTimelineEntriesWithFallback(orderId);
 
     return NextResponse.json({
       success: true,

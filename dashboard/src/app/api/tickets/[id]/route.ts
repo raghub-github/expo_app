@@ -12,6 +12,8 @@ import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { queueTicketAssignedNotification, queueTicketReopenedNotification } from "@/lib/tickets/ticket-notification-send";
+import { validateAssigneeForTicket } from "@/lib/tickets/assignee-eligibility";
+import { pickRoundRobinAssigneeForGroup } from "@/lib/tickets/round-robin-auto-assign";
 
 export const runtime = "nodejs";
 
@@ -64,6 +66,128 @@ export async function GET(
     const numericTicketId = /^\d+$/.test(rawIdentifier) ? parseInt(rawIdentifier, 10) : null;
 
     const sqlClient = getSql();
+    // If snooze is already expired, wake immediately on read.
+    try {
+      const sqlAudit = sqlClient as import("@/lib/db/operations/ticket-activity-audit").TicketAuditSqlClient;
+      if (numericTicketId != null) {
+        const wokeRows = await sqlClient`
+          UPDATE public.unified_tickets
+          SET status = 'OPEN',
+              snoozed_until = NULL,
+              snooze_reason = NULL,
+              updated_at = NOW()
+          WHERE id = ${numericTicketId}
+            AND status = 'SNOOZED'
+            AND snoozed_until IS NOT NULL
+            AND snoozed_until <= NOW()
+          RETURNING id
+        ` as Record<string, unknown>[];
+        for (const row of wokeRows) {
+          const id = Number(row.id);
+          if (!Number.isFinite(id)) continue;
+          await insertTicketActivityAudit(sqlAudit, {
+            ticket_id: id,
+            activity_type: "auto_unsnoozed",
+            activity_category: "status_change",
+            activity_description: "Ticket auto-resumed after snooze expiry",
+            actor_user_id: null,
+            actor_name: "System",
+            actor_email: null,
+            actor_type: "SYSTEM",
+            old_status: "SNOOZED",
+            new_status: "OPEN",
+          });
+        }
+      } else {
+        const wokeRows = await sqlClient`
+          UPDATE public.unified_tickets
+          SET status = 'OPEN',
+              snoozed_until = NULL,
+              snooze_reason = NULL,
+              updated_at = NOW()
+          WHERE ticket_id = ${rawIdentifier}
+            AND status = 'SNOOZED'
+            AND snoozed_until IS NOT NULL
+            AND snoozed_until <= NOW()
+          RETURNING id
+        ` as Record<string, unknown>[];
+        for (const row of wokeRows) {
+          const id = Number(row.id);
+          if (!Number.isFinite(id)) continue;
+          await insertTicketActivityAudit(sqlAudit, {
+            ticket_id: id,
+            activity_type: "auto_unsnoozed",
+            activity_category: "status_change",
+            activity_description: "Ticket auto-resumed after snooze expiry",
+            actor_user_id: null,
+            actor_name: "System",
+            actor_email: null,
+            actor_type: "SYSTEM",
+            old_status: "SNOOZED",
+            new_status: "OPEN",
+          });
+        }
+      }
+    } catch (wakeErr) {
+      console.warn("[GET /api/tickets/[id]] opportunistic snooze wake skipped:", wakeErr);
+    }
+    try {
+      if (numericTicketId != null) {
+        await sqlClient`
+          WITH cfg AS (
+            SELECT
+              COALESCE(sla_minutes_low, 30) AS low_mins,
+              COALESCE(sla_minutes_medium, 25) AS medium_mins,
+              COALESCE(sla_minutes_high, 20) AS high_mins,
+              COALESCE(sla_minutes_urgent, 15) AS urgent_mins,
+              COALESCE(sla_minutes_critical, 10) AS critical_mins
+            FROM public.ticket_queue_auto_assign_settings
+            WHERE id = 1
+            LIMIT 1
+          )
+          UPDATE public.unified_tickets ut
+          SET
+            sla_due_at = COALESCE(
+              ut.sla_due_at,
+              ut.created_at + make_interval(mins => (
+                CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
+                  WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
+                  WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
+                  WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
+                  WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
+                  ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
+                END
+              ))
+            ),
+            tags = CASE
+              WHEN ut.status::text IN ('RESOLVED', 'CLOSED')
+                THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+              WHEN COALESCE(
+                ut.sla_due_at,
+                ut.created_at + make_interval(mins => (
+                  CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
+                    WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
+                    WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
+                    WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
+                    WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
+                    ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
+                  END
+                ))
+              ) <= NOW()
+                THEN CASE
+                  WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                    THEN COALESCE(ut.tags, ARRAY[]::text[])
+                  ELSE array_append(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+                END
+              ELSE array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+            END,
+            updated_at = NOW()
+          WHERE ut.id = ${numericTicketId}
+        `;
+      }
+    } catch (slaSyncErr) {
+      console.warn("[GET /api/tickets/[id]] SLA sync skipped:", slaSyncErr);
+    }
 
     // Get ticket by either primary key id or external ticket_id; include group/tags/store joins.
     type TicketRow = Record<string, unknown> & {
@@ -92,6 +216,7 @@ export async function GET(
           su.email AS assigned_to_agent_email,
           ut.first_response_at, ut.first_response_time_minutes,
           ut.resolved_at, ut.closed_at, ut.created_at, ut.updated_at,
+          ut.snoozed_until, ut.snooze_reason,
           ut.sla_due_at,
           ut.group_id,
           tg.group_code, tg.group_name,
@@ -136,6 +261,7 @@ export async function GET(
             su.email AS assigned_to_agent_email,
             ut.first_response_at, ut.first_response_time_minutes,
             ut.resolved_at, ut.closed_at, ut.created_at, ut.updated_at,
+            ut.snoozed_until, ut.snooze_reason,
             ut.sla_due_at,
             ut.group_id,
             tg.group_code, tg.group_name,
@@ -170,6 +296,7 @@ export async function GET(
               assigned_to_agent_id, assigned_to_agent_name,
               first_response_at, first_response_time_minutes,
               resolved_at, closed_at, created_at, updated_at,
+              snoozed_until, snooze_reason,
               sla_due_at, metadata,
               buyer_np_name, seller_np_name, logistics_np_name,
               igm_action_triggered, igm_short_resolution, igm_long_resolution, igm_refund_amount, gro_details
@@ -207,7 +334,8 @@ export async function GET(
               satisfaction_rating, satisfaction_feedback, satisfaction_collected_at,
               assigned_to_agent_id, assigned_to_agent_name,
               first_response_at, first_response_time_minutes,
-              resolved_at, closed_at, created_at, updated_at
+              resolved_at, closed_at, created_at, updated_at,
+              snoozed_until, snooze_reason
             FROM public.unified_tickets
             WHERE ${numericTicketId != null ? sqlClient`id = ${numericTicketId}` : sqlClient`ticket_id = ${rawIdentifier}`}
           `;
@@ -286,6 +414,13 @@ export async function GET(
           }
         : null;
 
+    const normalizedTicketDescription =
+      typeof row.description === "string"
+        ? row.description.trim()
+        : row.description != null
+          ? String(row.description).trim()
+          : "";
+
     let messages: Record<string, unknown>[] = [];
     try {
       let msgResult: Record<string, unknown>[] = [];
@@ -363,6 +498,27 @@ export async function GET(
           email_recipient_bcc: m.email_recipient_bcc != null && String(m.email_recipient_bcc).trim() !== "" ? String(m.email_recipient_bcc).trim() : null,
         };
       });
+
+      // Historical safeguard: some merchant-created tickets had the same text in both
+      // unified_tickets.description and the first merchant message. Hide that duplicate in detail view.
+      if (normalizedTicketDescription.length > 0) {
+        let droppedFirstDuplicate = false;
+        const normalizedDescription = normalizedTicketDescription.replace(/\r\n/g, "\n");
+        messages = messages.filter((m) => {
+          if (droppedFirstDuplicate) return true;
+          const senderType = String(m.sender_type ?? "").toUpperCase();
+          const body =
+            typeof m.message === "string"
+              ? m.message
+              : typeof m.message_text === "string"
+                ? m.message_text
+                : "";
+          if (senderType !== "MERCHANT") return true;
+          if (body.replace(/\r\n/g, "\n").trim() !== normalizedDescription) return true;
+          droppedFirstDuplicate = true;
+          return false;
+        });
+      }
     } catch {
       // unified_ticket_messages may not exist
     }
@@ -486,12 +642,42 @@ export async function GET(
 
     const subjectValue =
       typeof row.subject === "string" ? row.subject.trim() : row.subject != null ? String(row.subject).trim() : "";
-    const descriptionValue =
-      typeof row.description === "string"
-        ? row.description.trim()
-        : row.description != null
-          ? String(row.description).trim()
-          : "";
+    const descriptionValue = normalizedTicketDescription;
+
+    let automation_last_run: {
+      rule_id: number;
+      rule_name: string;
+      rule_code: string;
+      trigger_event: string;
+      completed_at: string | null;
+    } | null = null;
+    try {
+      const autoRows = await sqlClient`
+        SELECT e.rule_id,
+               e.trigger_event::text AS trigger_event,
+               e.completed_at,
+               r.rule_name,
+               r.rule_code
+        FROM public.ticket_automation_executions e
+        LEFT JOIN public.ticket_automation_rules r ON r.id = e.rule_id
+        WHERE e.ticket_id = ${resolvedTicketId}
+          AND e.execution_status = 'completed'
+        ORDER BY e.completed_at DESC NULLS LAST, e.id DESC
+        LIMIT 1
+      `;
+      const ar = autoRows?.[0] as Record<string, unknown> | undefined;
+      if (ar && ar.rule_id != null) {
+        automation_last_run = {
+          rule_id: Number(ar.rule_id),
+          rule_name: ar.rule_name != null ? String(ar.rule_name) : "",
+          rule_code: ar.rule_code != null ? String(ar.rule_code) : "",
+          trigger_event: ar.trigger_event != null ? String(ar.trigger_event) : "",
+          completed_at: ar.completed_at != null ? String(ar.completed_at) : null,
+        };
+      }
+    } catch {
+      // automation tables optional in some environments
+    }
 
     let ticketRatingRows: Array<{
       rating_value: number;
@@ -554,6 +740,11 @@ export async function GET(
       title: null,
       resolved_at: row.resolved_at,
       closed_at: row.closed_at,
+      snoozed_until: row.snoozed_until ?? null,
+      snooze_reason:
+        row.snooze_reason != null && String(row.snooze_reason).trim() !== ""
+          ? String(row.snooze_reason).trim()
+          : null,
       created_at: row.created_at,
       updated_at: row.updated_at,
       first_response_at: row.first_response_at ?? null,
@@ -593,6 +784,7 @@ export async function GET(
           : null,
       satisfaction_collected_at: row.satisfaction_collected_at != null ? String(row.satisfaction_collected_at) : null,
       ticket_ratings: ticketRatingRows,
+      automation_last_run,
     };
 
     return NextResponse.json({
@@ -658,25 +850,112 @@ export async function PATCH(
       return NextResponse.json({ success: false, error: "Ticket not found" }, { status: 404 });
     }
 
+    const existingRow0 = existingResult[0] as {
+      status?: unknown;
+      assigned_to_agent_id?: unknown;
+      group_id?: unknown;
+    };
+    const existingStatusUpper = String(existingRow0.status ?? "OPEN")
+      .toUpperCase()
+      .replace(/-/g, "_");
+
+    if (body.autoAssignRoundRobin === true) {
+      if (body.currentAssigneeUserId !== undefined) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Cannot combine autoAssignRoundRobin with currentAssigneeUserId",
+          },
+          { status: 400 }
+        );
+      }
+      const curAssign = normalizeTicketAssigneeId(existingRow0.assigned_to_agent_id);
+      if (curAssign != null) {
+        return NextResponse.json({ success: false, error: "Ticket already assigned" }, { status: 400 });
+      }
+      const gid = existingRow0.group_id != null ? Number(existingRow0.group_id) : NaN;
+      if (!Number.isFinite(gid)) {
+        return NextResponse.json(
+          { success: false, error: "Ticket has no group for auto-assign" },
+          { status: 400 }
+        );
+      }
+      const picked = await pickRoundRobinAssigneeForGroup(sqlClient, gid);
+      if (picked == null) {
+        return NextResponse.json(
+          { success: false, error: "No eligible agent for auto-assign" },
+          { status: 400 }
+        );
+      }
+      body.currentAssigneeUserId = picked;
+    }
+
     const updateFields: string[] = [];
     const updateValues: unknown[] = [];
+    let shouldClearSnoozeAfterUpdate = false;
 
     if (body.status !== undefined) {
-      const statusValue = String(body.status).toUpperCase();
+      const statusValue = String(body.status).toUpperCase().replace(/-/g, "_");
+      const terminalPrev = ["RESOLVED", "CLOSED"].includes(existingStatusUpper);
+      if (terminalPrev && ["OPEN", "REOPENED"].includes(statusValue)) {
+        updateFields.push(`reopen_count = COALESCE(reopen_count, 0) + 1`);
+      }
       updateFields.push(`status = $${updateValues.length + 1}`);
       updateValues.push(statusValue);
+      if (statusValue !== "SNOOZED") shouldClearSnoozeAfterUpdate = true;
+      if (statusValue === "RESOLVED") {
+        updateFields.push(`resolved_at = COALESCE(resolved_at, NOW())`);
+        updateFields.push(`resolved_by = $${updateValues.length + 1}`);
+        updateValues.push(systemUser.id);
+        updateFields.push(`resolved_by_name = $${updateValues.length + 1}`);
+        updateValues.push(systemUser.fullName ?? systemUser.email ?? "Agent");
+      } else if (statusValue === "CLOSED") {
+        updateFields.push(`closed_at = COALESCE(closed_at, NOW())`);
+        updateFields.push(`resolved_at = COALESCE(resolved_at, NOW())`);
+        updateFields.push(`resolved_by = COALESCE(resolved_by, $${updateValues.length + 1})`);
+        updateValues.push(systemUser.id);
+        updateFields.push(`resolved_by_name = COALESCE(resolved_by_name, $${updateValues.length + 1})`);
+        updateValues.push(systemUser.fullName ?? systemUser.email ?? "Agent");
+      } else {
+        updateFields.push(`resolved_at = NULL`);
+        updateFields.push(`resolved_by = NULL`);
+        updateFields.push(`resolved_by_name = NULL`);
+        updateFields.push(`closed_at = NULL`);
+      }
     }
     if (body.priority !== undefined) {
       updateFields.push(`priority = $${updateValues.length + 1}`);
       updateValues.push(String(body.priority).toUpperCase());
     }
     if (body.currentAssigneeUserId !== undefined) {
-      const assigneeId = body.currentAssigneeUserId ?? null;
+      const rawAssignee = body.currentAssigneeUserId;
+      const assigneeId =
+        rawAssignee == null
+          ? null
+          : typeof rawAssignee === "number"
+            ? rawAssignee
+            : Number(rawAssignee);
+      const assigneeNum = assigneeId != null && Number.isFinite(assigneeId) ? assigneeId : null;
+
+      if (assigneeNum != null) {
+        const ticketGid = existingRow0.group_id != null ? Number(existingRow0.group_id) : null;
+        const ticketGroupId = ticketGid != null && Number.isFinite(ticketGid) ? ticketGid : null;
+        const check = await validateAssigneeForTicket(sqlClient, assigneeNum, ticketGroupId, {
+          enforceAvailability: false,
+        });
+        if (!check.ok) {
+          return NextResponse.json(
+            { success: false, error: check.message, code: check.code },
+            { status: 400 }
+          );
+        }
+      }
+
       updateFields.push(`assigned_to_agent_id = $${updateValues.length + 1}`);
-      updateValues.push(assigneeId);
+      updateValues.push(assigneeNum);
       let assigneeName: string | null = null;
-      if (assigneeId != null && typeof assigneeId === "number") {
-        const assigneeUser = await getSystemUserById(assigneeId);
+      if (assigneeNum != null) {
+        const assigneeUser = await getSystemUserById(assigneeNum);
         assigneeName = assigneeUser?.fullName ?? assigneeUser?.email ?? null;
       }
       updateFields.push(`assigned_to_agent_name = $${updateValues.length + 1}`);
@@ -801,6 +1080,92 @@ export async function PATCH(
       }
     }
     const updated = Array.isArray(updatedRows) ? updatedRows[0] : null;
+    if (shouldClearSnoozeAfterUpdate) {
+      try {
+        await sqlClient`
+          UPDATE public.unified_tickets
+          SET snoozed_until = NULL,
+              snooze_reason = NULL
+          WHERE id = ${ticketId}
+            AND status::text <> 'SNOOZED'
+        `;
+      } catch (snoozeClrErr) {
+        console.warn("[PATCH /api/tickets/[id]] clear snooze columns skipped:", snoozeClrErr);
+      }
+    }
+
+    // Keep SLA due/tag consistent whenever status/priority/edit happens.
+    try {
+      await sqlClient`
+        WITH cfg AS (
+          SELECT
+            COALESCE(sla_minutes_low, 30) AS low_mins,
+            COALESCE(sla_minutes_medium, 25) AS medium_mins,
+            COALESCE(sla_minutes_high, 20) AS high_mins,
+            COALESCE(sla_minutes_urgent, 15) AS urgent_mins,
+            COALESCE(sla_minutes_critical, 10) AS critical_mins
+          FROM public.ticket_queue_auto_assign_settings
+          WHERE id = 1
+          LIMIT 1
+        )
+        UPDATE public.unified_tickets ut
+        SET
+          sla_due_at = COALESCE(
+            ut.sla_due_at,
+            ut.created_at + make_interval(mins => (
+              CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
+                WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
+                WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
+                WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
+                WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
+                ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
+              END
+            ))
+          ),
+          tags = CASE
+            WHEN ut.status::text IN ('RESOLVED', 'CLOSED')
+              THEN array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+            WHEN COALESCE(
+              ut.sla_due_at,
+              ut.created_at + make_interval(mins => (
+                CASE upper(COALESCE(ut.priority::text, 'MEDIUM'))
+                  WHEN 'CRITICAL' THEN COALESCE((SELECT critical_mins FROM cfg), 10)
+                  WHEN 'URGENT' THEN COALESCE((SELECT urgent_mins FROM cfg), 15)
+                  WHEN 'HIGH' THEN COALESCE((SELECT high_mins FROM cfg), 20)
+                  WHEN 'LOW' THEN COALESCE((SELECT low_mins FROM cfg), 30)
+                  ELSE COALESCE((SELECT medium_mins FROM cfg), 25)
+                END
+              ))
+            ) <= NOW()
+              THEN CASE
+                WHEN COALESCE(ut.tags, ARRAY[]::text[]) @> ARRAY['SLA_BREACHED']::text[]
+                  THEN COALESCE(ut.tags, ARRAY[]::text[])
+                ELSE array_append(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+              END
+            ELSE array_remove(COALESCE(ut.tags, ARRAY[]::text[]), 'SLA_BREACHED')
+          END,
+          updated_at = NOW()
+        WHERE ut.id = ${ticketId}
+      `;
+    } catch (slaSyncErr) {
+      console.warn("[PATCH /api/tickets/[id]] SLA sync skipped:", slaSyncErr);
+    }
+
+    if (body.autoAssignRoundRobin === true && updated) {
+      const u = updated as { assigned_to_agent_id?: number | null };
+      const aid = u.assigned_to_agent_id;
+      if (aid != null && Number.isFinite(Number(aid))) {
+        try {
+          await sqlClient`
+            INSERT INTO public.ticket_assignment_history (
+              ticket_id, agent_user_id, assignment_type, actor_user_id
+            ) VALUES (${ticketId}, ${Number(aid)}, 'round_robin', ${systemUser.id})
+          `;
+        } catch (histErr) {
+          console.warn("[PATCH /api/tickets/[id]] ticket_assignment_history:", histErr);
+        }
+      }
+    }
     const existing = existingResult[0] as { status?: string; priority?: string; assigned_to_agent_id?: number | null; assigned_to_agent_name?: string | null; group_id?: number | null };
     const updatedRecord = updated as {
       status?: string;
@@ -975,6 +1340,48 @@ export async function PATCH(
         actor_email: actorEmail,
         actor_type: "AGENT",
       });
+    }
+
+    try {
+      const { processPendingAutomationJobs } = await import("@/lib/tickets/ticket-automation/job-processor");
+      const { runTicketAutomation } = await import("@/lib/tickets/ticket-automation/engine");
+      await processPendingAutomationJobs(sqlClient, {
+        limit: 15,
+        workerId: `api-patch-ticket-${ticketId}`,
+      });
+      const newStatusForAutomation = String(updatedRecord?.status ?? "")
+        .toUpperCase()
+        .replace(/-/g, "_");
+      const terminalPriorAutomationReopen = new Set([
+        "RESOLVED",
+        "CLOSED",
+        "PROVISIONALLY_RESOLVED",
+        "REJECTED",
+        "CANCELLED",
+      ]);
+      const activeStatusAutomationReopenTargets = new Set([
+        "OPEN",
+        "REOPENED",
+        "IN_PROGRESS",
+        "PENDING",
+        "WAITING_FOR_USER",
+        "WAITING_FOR_MERCHANT",
+        "WAITING_FOR_RIDER",
+        "ESCALATED",
+      ]);
+      const fromTerminalForReopen = terminalPriorAutomationReopen.has(existingStatusUpper);
+      const isReopenAutomation =
+        !!updatedRecord &&
+        body.status !== undefined &&
+        fromTerminalForReopen &&
+        activeStatusAutomationReopenTargets.has(newStatusForAutomation);
+      const autoWorker = `api-patch-ticket-${ticketId}`;
+      if (isReopenAutomation) {
+        await runTicketAutomation(sqlClient, "ticket_reopened", ticketId, { workerLabel: autoWorker });
+      }
+      await runTicketAutomation(sqlClient, "ticket_updated", ticketId, { workerLabel: autoWorker });
+    } catch (autoErr) {
+      console.error("[PATCH /api/tickets/[id]] workflow automation:", autoErr);
     }
 
     return NextResponse.json({

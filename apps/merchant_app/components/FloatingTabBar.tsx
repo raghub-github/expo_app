@@ -4,8 +4,16 @@
  * Inactive: neutral grey, no background. No floating gap; respects safe area.
  */
 
-import React, { useRef } from "react";
-import { View, Text, Pressable, StyleSheet, Platform, LayoutAnimation } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Platform,
+  LayoutAnimation,
+  Keyboard,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
@@ -26,6 +34,27 @@ const INACTIVE_COLOR = "#6B7280";
 const TOP_DIVIDER = "#E5E7EB";
 const PROFILE_PRESS_DEBOUNCE_MS = 600;
 
+/** Mirrors @react-navigation/bottom-tabs default tab bar — custom bar must hide itself when this is true. */
+function useIsKeyboardShown(): boolean {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const show = () => setShown(true);
+    const hide = () => setShown(false);
+    const subs =
+      Platform.OS === "ios"
+        ? [
+            Keyboard.addListener("keyboardWillShow", show),
+            Keyboard.addListener("keyboardWillHide", hide),
+          ]
+        : [
+            Keyboard.addListener("keyboardDidShow", show),
+            Keyboard.addListener("keyboardDidHide", hide),
+          ];
+    return () => subs.forEach((s) => s.remove());
+  }, []);
+  return shown;
+}
+
 export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -33,9 +62,20 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const { setOpenProfileRootOnNextFocus } = useProfileNav();
   const bottomInset = insets.bottom;
   const lastProfilePressAt = useRef(0);
+  const keyboardShown = useIsKeyboardShown();
+  const focusedOptions = descriptors[state.routes[state.index].key].options;
+  const hideTabBarOnKeyboard = focusedOptions.tabBarHideOnKeyboard === true;
+  const tabBarHidden = hideTabBarOnKeyboard && keyboardShown;
 
   return (
-    <View style={[styles.wrapper, { paddingBottom: bottomInset }]}>
+    <View
+      style={[
+        styles.wrapper,
+        { paddingBottom: bottomInset },
+        tabBarHidden && styles.wrapperHidden,
+      ]}
+      pointerEvents={tabBarHidden ? "none" : "auto"}
+    >
       <View style={styles.bar}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key];
@@ -121,6 +161,14 @@ const styles = StyleSheet.create({
     borderTopColor: TOP_DIVIDER,
     borderTopLeftRadius: TOP_RADIUS,
     borderTopRightRadius: TOP_RADIUS,
+  },
+  /** Collapse layout so the screen can use full height above the keyboard (see tabBarHideOnKeyboard). */
+  wrapperHidden: {
+    height: 0,
+    opacity: 0,
+    overflow: "hidden",
+    paddingBottom: 0,
+    borderTopWidth: 0,
   },
   bar: {
     flexDirection: "row",

@@ -853,6 +853,7 @@ export async function authRoutes(app: FastifyInstance) {
             expiresAt: z.number(),
             role: z.string(),
             userId: z.string(),
+            supabaseUserId: z.string(),
             partner: z.object({
               parent: z.any(),
               childStores: z.array(z.any()),
@@ -1053,6 +1054,7 @@ export async function authRoutes(app: FastifyInstance) {
           expiresAt,
           role: "merchant",
           userId: parentMerchantId,
+          supabaseUserId: userData.user.id,
           partner: { parent, childStores },
         });
       } catch (err: any) {

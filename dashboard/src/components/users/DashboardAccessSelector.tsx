@@ -266,6 +266,24 @@ export const DASHBOARD_DEFINITIONS: Record<
         description: "Perform actions on person ride tickets: resolve, close, reply, assign",
         allowedActions: ["ASSIGN", "UPDATE", "APPROVE", "REJECT"],
       },
+      {
+        group: "TICKET_AGENT_STATUS_TOGGLE",
+        label: "Agent Status Toggle",
+        description: "Allow agent to switch Online/Offline/Break/Busy status from queue header",
+        allowedActions: ["UPDATE"],
+      },
+      {
+        group: "TICKET_QUEUE_SUPERVISOR",
+        label: "Queue Supervisor",
+        description: "Access Queue Supervisor view and its sections",
+        allowedActions: ["VIEW"],
+      },
+      {
+        group: "TICKET_QUEUE_MANAGER",
+        label: "Queue Manager",
+        description: "Access Queue Manager view and its sections",
+        allowedActions: ["VIEW"],
+      },
     ],
   },
   TICKET_FOOD: {

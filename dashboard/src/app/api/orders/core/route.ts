@@ -12,6 +12,7 @@ import {
   getFoodDeliveryInstructions,
   recordEtaBreachIfNeeded,
   ensureOrderEtaWhenAccepted,
+  getOrderTimelineEntriesWithFallback,
   type OrderSearchType,
   type OrderStatusFilter,
   type OrdersCoreRow,
@@ -112,6 +113,61 @@ export async function GET(request: NextRequest) {
       Math.max(1, parseInt(searchParams.get("limit") || "20", 10))
     );
 
+    let userTypeLabels: string[] = [];
+    let deliveryFilters: ("GatiMitra" | "Merchant")[] = [];
+    let foodPanelFilters:
+      | {
+          pickUp?: boolean;
+          food?: boolean;
+          fashion?: boolean;
+          grocery?: boolean;
+          pharma?: boolean;
+          overview?: boolean;
+        }
+      | undefined;
+    const rawFoodFilters = searchParams.get("foodFilters");
+    if (rawFoodFilters) {
+      try {
+        const parsed = JSON.parse(decodeURIComponent(rawFoodFilters)) as {
+          userType?: unknown;
+          delivery?: unknown;
+          pickUp?: unknown;
+          food?: unknown;
+          fashion?: unknown;
+          grocery?: unknown;
+          pharma?: unknown;
+          overview?: unknown;
+        };
+        if (Array.isArray(parsed.userType)) {
+          userTypeLabels = parsed.userType.filter((x): x is string => typeof x === "string");
+        }
+        if (Array.isArray(parsed.delivery)) {
+          deliveryFilters = parsed.delivery.filter(
+            (x): x is "GatiMitra" | "Merchant" => x === "GatiMitra" || x === "Merchant"
+          );
+        }
+        const hasPanel =
+          Boolean(parsed.pickUp) ||
+          Boolean(parsed.food) ||
+          Boolean(parsed.fashion) ||
+          Boolean(parsed.grocery) ||
+          Boolean(parsed.pharma) ||
+          Boolean(parsed.overview);
+        if (hasPanel) {
+          foodPanelFilters = {
+            pickUp: Boolean(parsed.pickUp),
+            food: Boolean(parsed.food),
+            fashion: Boolean(parsed.fashion),
+            grocery: Boolean(parsed.grocery),
+            pharma: Boolean(parsed.pharma),
+            overview: Boolean(parsed.overview),
+          };
+        }
+      } catch {
+        /* ignore malformed */
+      }
+    }
+
     const listParams = {
       page,
       limit,
@@ -122,13 +178,18 @@ export async function GET(request: NextRequest) {
       orderType,
       sortBy: "created_at" as const,
       sortOrder: "desc" as const,
+      userTypeLabels: userTypeLabels.length ? userTypeLabels : undefined,
+      deliveryFilters: deliveryFilters.length ? deliveryFilters : undefined,
+      foodPanelFilters,
     };
+
+    const skipCache = searchParams.get("skipCache") === "1";
 
     const redis = getRedisClient();
     const cacheKey = user?.id ? `orders_core:${user.id}:${JSON.stringify(listParams)}` : null;
     const MEMORY_TTL_MS = 10_000; // 10s in-memory fallback
 
-    if (cacheKey) {
+    if (cacheKey && !skipCache) {
       const cached = getCached<Awaited<ReturnType<typeof listOrdersCore>>>(cacheKey);
       if (cached) {
         const storeIds = await getStoreIdsByInternalIds(
@@ -155,7 +216,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (redis && cacheKey) {
+    if (redis && cacheKey && !skipCache) {
       try {
         const cached = await redis.get(cacheKey);
         if (cached) {
@@ -208,6 +269,7 @@ export async function GET(request: NextRequest) {
     let remarksCount: number | undefined;
     let reconsCount: number | undefined;
     let statusHistory: Awaited<ReturnType<typeof getOrderManualStatusHistory>> | undefined;
+    let timeline: Awaited<ReturnType<typeof getOrderTimelineEntriesWithFallback>> | undefined;
     if (result.orders.length === 1) {
       const first = data[0] as {
         id?: number;
@@ -220,16 +282,19 @@ export async function GET(request: NextRequest) {
         merchantSummary = await getMerchantStoreSummaryByStoreId(storeId);
       }
       if (orderId != null && Number.isFinite(orderId)) {
-        const [remarks, recons, history, deliveryInstructions, etaSet, etaBreach] = await Promise.all([
-          getOrderRemarksCount(orderId),
-          getOrderReconsCount(orderId),
-          getOrderManualStatusHistory(orderId),
-          first?.orderType === "food"
-            ? getFoodDeliveryInstructions(orderId)
-            : Promise.resolve(null),
-          ensureOrderEtaWhenAccepted(orderId),
-          recordEtaBreachIfNeeded(orderId),
-        ]);
+        const [remarks, recons, history, deliveryInstructions, etaSet, etaBreach, timelineEntries] =
+          await Promise.all([
+            getOrderRemarksCount(orderId),
+            getOrderReconsCount(orderId),
+            getOrderManualStatusHistory(orderId),
+            first?.orderType === "food"
+              ? getFoodDeliveryInstructions(orderId)
+              : Promise.resolve(null),
+            ensureOrderEtaWhenAccepted(orderId),
+            recordEtaBreachIfNeeded(orderId),
+            getOrderTimelineEntriesWithFallback(orderId),
+          ]);
+        timeline = timelineEntries;
         remarksCount = remarks;
         reconsCount = recons;
         statusHistory = history;
@@ -275,6 +340,7 @@ export async function GET(request: NextRequest) {
       ...(remarksCount !== undefined && { remarksCount }),
       ...(reconsCount !== undefined && { reconsCount }),
       ...(statusHistory !== undefined && { statusHistory }),
+      ...(timeline !== undefined && { timeline }),
     });
   } catch (error) {
     console.error("[GET /api/orders/core] Error:", error);

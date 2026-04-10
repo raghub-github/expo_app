@@ -90,8 +90,16 @@ export const queryKeys = {
     details: () => ["tickets", "detail"] as const,
     detail: (id: number | string) => ["tickets", "detail", id] as const,
     activities: (id: number | string) => ["tickets", "activities", id] as const,
-    agents: () => ["tickets", "agents"] as const,
+    agents: (includePresence?: boolean, accessApprovedOnly?: boolean) =>
+      [
+        "tickets",
+        "agents",
+        includePresence ? "presence" : "basic",
+        accessApprovedOnly ? "dashboardAccessOnly" : "all",
+      ] as const,
     referenceData: () => ["tickets", "reference-data"] as const,
+    /** Prefix-matches all `["tickets","helpdesk-dashboard", ...]` metric queries. */
+    helpdeskDashboard: () => ["tickets", "helpdesk-dashboard"] as const,
   },
 
   // Unified tickets (public.unified_tickets)

@@ -6,6 +6,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { usePathname } from "next/navigation";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
 
 export interface TicketFilters {
   serviceTypes?: string[];
@@ -39,8 +40,51 @@ export interface TicketFilters {
   updatedAfter?: string;
   /** Count/list only rows created strictly after this ISO timestamp (new-ticket badge). */
   createdAfter?: string;
+  /** Count/list rows with created_at OR updated_at strictly after this (queue/main “new or updated” poll). */
+  activityAfter?: string;
   limit?: number;
   offset?: number;
+  /** When true, GET /api/tickets applies queue home rules (session assignee + active statuses only). */
+  queueScope?: boolean;
+  /** Include snoozed tickets in results (default list excludes them). */
+  includeSnoozed?: boolean;
+  /** Return only snoozed tickets. */
+  snoozedOnly?: boolean;
+}
+
+/** Extra columns loaded when `forExport=1` (joins customers / stores / parents). */
+export interface TicketExportMeta {
+  tags: string;
+  resolutionText: string;
+  internalNotes: string;
+  /** From unified_tickets.association_type, else UI derives from type/source. */
+  associationType: string;
+  agentInteractionCount: string;
+  customerInteractionCount: string;
+  contactFullName: string;
+  contactExternalId: string;
+  contactEmail: string;
+  contactMobile: string;
+  contactAlternateMobile: string;
+  contactLanguage: string;
+  contactWorkPhone: string;
+  contactFacebookId: string;
+  contactTwitterId: string;
+  contactTimeZone: string;
+  contactTags: string;
+  contactJobTitle: string;
+  contactUniqueExternalId: string;
+  contactTwitterVerified: string;
+  contactTwitterFollowerCount: string;
+  /** Assigned agent profile (system_users.full_name, email, mobile). */
+  agentExportFullName: string;
+  agentExportEmail: string;
+  agentExportMobile: string;
+  agentExportAlternateMobile: string;
+  /** Company / merchant (parent or store). */
+  companyName: string;
+  companyDisplayName: string;
+  companyDomains: string;
 }
 
 export interface Ticket {
@@ -83,6 +127,14 @@ export interface Ticket {
   closedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Current assignment time from `unified_tickets.assigned_at` (list API). */
+  assignedAt?: string | null;
+  /** CSAT / satisfaction score when collected (list API). */
+  satisfactionRating?: number | null;
+  snoozedUntil?: string | null;
+  snoozeReason?: string | null;
+  /** Populated only when listing with `forExport=1`. */
+  exportMeta?: TicketExportMeta;
 }
 
 export interface TicketsResponse {
@@ -123,6 +175,10 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   if (filters.sortOrder) params.set("sortOrder", filters.sortOrder);
   if (filters.updatedAfter?.trim()) params.set("updatedAfter", filters.updatedAfter.trim());
   if (filters.createdAfter?.trim()) params.set("createdAfter", filters.createdAfter.trim());
+  if (filters.activityAfter?.trim()) params.set("activityAfter", filters.activityAfter.trim());
+  if (filters.queueScope) params.set("queueScope", "1");
+  if (filters.includeSnoozed) params.set("includeSnoozed", "1");
+  if (filters.snoozedOnly) params.set("snoozedOnly", "1");
   params.set("limit", String(filters.limit || 50));
   params.set("offset", String(filters.offset || 0));
 
@@ -166,7 +222,10 @@ export async function fetchTickets(filters: TicketFilters = {}, signal?: AbortSi
   }
 }
 
-export function useTickets(filters: TicketFilters = {}) {
+export function useTickets(
+  filters: TicketFilters = {},
+  options?: { enabled?: boolean }
+) {
   const auth = useAuthOptional();
   const sessionUser = auth?.user;
   const permissions = auth?.permissions;
@@ -174,12 +233,18 @@ export function useTickets(filters: TicketFilters = {}) {
   const isAllowed = Boolean(authReady && sessionUser && permissions);
   const pathname = usePathname();
   const isOnTicketsRoute = pathname.startsWith("/dashboard/tickets");
+  const extraEnabled = options?.enabled ?? true;
+  const cleanPath = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
+  /** On `/tickets/:id`, use the same snapshot bucket as the main list so returning from detail does not miss cache. */
+  const snapshotPathKey = useMemo(() => {
+    return ticketsPathTicketId(cleanPath) != null ? "/dashboard/tickets" : cleanPath;
+  }, [cleanPath]);
 
   const SNAPSHOT_TTL_MS = 10_000;
   const snapshotKey = useMemo(() => {
     if (!isAllowed || !isOnTicketsRoute) return null;
-    return `dashboard_snapshot:tickets:${pathname}:${JSON.stringify(filters)}`;
-  }, [isAllowed, isOnTicketsRoute, pathname, filters]);
+    return `dashboard_snapshot:tickets:${snapshotPathKey}:${JSON.stringify(filters)}`;
+  }, [isAllowed, isOnTicketsRoute, snapshotPathKey, filters]);
   const initialSnapshot = useMemo(() => {
     if (!snapshotKey) return null;
     return loadClientSnapshot<TicketsResponse>(snapshotKey, SNAPSHOT_TTL_MS);
@@ -188,13 +253,13 @@ export function useTickets(filters: TicketFilters = {}) {
   const query = useQuery<TicketsResponse>({
     queryKey: queryKeys.tickets.list(filters as unknown as Record<string, unknown>),
     queryFn: ({ signal }) => fetchTickets(filters, signal),
-    enabled: isAllowed && isOnTicketsRoute,
+    enabled: isAllowed && isOnTicketsRoute && extraEnabled,
     ...(initialSnapshot != null ? { initialData: initialSnapshot } : {}),
     // Cached list with stale-while-revalidate for smooth pagination/filtering.
-    staleTime: 60 * 1000,
+    staleTime: 90 * 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
-    refetchOnMount: true,
+    /** Inherit global refetchOnMount: false so returning from ticket detail keeps the list cache without a forced refetch. */
   });
 
   useEffect(() => {

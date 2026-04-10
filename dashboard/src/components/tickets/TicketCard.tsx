@@ -1,8 +1,11 @@
 "use client";
 
+import { useCallback } from "react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { Clock, User, AlertCircle, CheckCircle, XCircle, Circle } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
+import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
 import type { TicketViewMode } from "./TicketList";
 // Format date helper
 function formatDistanceToNow(date: Date, options?: { addSuffix?: boolean }): string {
@@ -51,6 +54,11 @@ const serviceTypeLabels: Record<string, string> = {
 };
 
 export function TicketCard({ ticket, variant = "list" }: TicketCardProps) {
+  const queryClient = useQueryClient();
+  const prefetchThisTicket = useCallback(() => {
+    prefetchTicketDetail(queryClient, ticket.id);
+  }, [queryClient, ticket.id]);
+
   const isSlaBreached =
     ticket.slaDueAt &&
     new Date(ticket.slaDueAt) < new Date() &&
@@ -61,6 +69,8 @@ export function TicketCard({ ticket, variant = "list" }: TicketCardProps) {
   return (
     <Link
       href={`/dashboard/tickets/${ticket.id}`}
+      scroll={false}
+      onPointerEnter={prefetchThisTicket}
       className={`block transition-colors ${
         isGrid
           ? "rounded-lg border border-gray-200 bg-white p-4 shadow-sm hover:border-gray-300 hover:shadow-md"

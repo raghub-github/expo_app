@@ -57,7 +57,7 @@ cd dashboard
 export DATABASE_URL="postgresql://user:password@host:port/database"
 
 # Run migration script
-npx tsx scripts/run-migration.ts
+npm run migrate
 ```
 
 ### Option 4: Verify Migration
@@ -65,7 +65,7 @@ npx tsx scripts/run-migration.ts
 After running the migration, verify it worked:
 
 ```bash
-npx tsx scripts/verify-migration.ts
+npm run verify-migration
 ```
 
 ## What This Migration Creates

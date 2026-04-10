@@ -27,7 +27,7 @@ const emptyRefData: TicketReferenceData = {
   sources: [],
 };
 
-async function fetchTicketsReferenceData(): Promise<TicketReferenceData> {
+export async function fetchTicketsReferenceData(): Promise<TicketReferenceData> {
   const r = await fetch("/api/tickets/reference-data", { credentials: "include" });
   const d = r.ok ? await r.json().catch(() => ({ success: false })) : { success: false };
   if (!d.success || !d.data) return emptyRefData;

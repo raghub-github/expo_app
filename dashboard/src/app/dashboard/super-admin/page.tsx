@@ -14,68 +14,57 @@ interface AdminOption {
   Icon: React.ComponentType<{ className?: string }>;
 }
 
-// Icons are dynamically imported so they don't block the main Super Admin chunk.
+// Icons (dynamic imports)
 const UsersIcon = dynamic(async () => {
   const { Users } = await import("lucide-react");
-  return function UsersIcon(props: { className?: string }) {
-    return <Users {...props} />;
-  };
+  return (props: { className?: string }) => <Users {...props} />;
 });
 
 const PaymentsIcon = dynamic(async () => {
   const { CreditCard } = await import("lucide-react");
-  return function PaymentsIcon(props: { className?: string }) {
-    return <CreditCard {...props} />;
-  };
+  return (props: { className?: string }) => <CreditCard {...props} />;
 });
 
 const OffersIcon = dynamic(async () => {
   const { Gift } = await import("lucide-react");
-  return function OffersIcon(props: { className?: string }) {
-    return <Gift {...props} />;
-  };
+  return (props: { className?: string }) => <Gift {...props} />;
 });
 
 const AgentsIcon = dynamic(async () => {
   const { UserCog } = await import("lucide-react");
-  return function AgentsIcon(props: { className?: string }) {
-    return <UserCog {...props} />;
-  };
+  return (props: { className?: string }) => <UserCog {...props} />;
 });
 
 const TicketSettingsIcon = dynamic(async () => {
   const { FolderGit2 } = await import("lucide-react");
-  return function TicketSettingsIcon(props: { className?: string }) {
-    return <FolderGit2 {...props} />;
-  };
+  return (props: { className?: string }) => <FolderGit2 {...props} />;
 });
 
 const CategoriesIcon = dynamic(async () => {
   const { LayoutGrid } = await import("lucide-react");
-  return function CategoriesIcon(props: { className?: string }) {
-    return <LayoutGrid {...props} />;
-  };
+  return (props: { className?: string }) => <LayoutGrid {...props} />;
 });
 
+// ✅ Your features
 const BillingIcon = dynamic(async () => {
   const { Calculator } = await import("lucide-react");
-  return function BillingIcon(props: { className?: string }) {
-    return <Calculator {...props} />;
-  };
+  return (props: { className?: string }) => <Calculator {...props} />;
 });
 
 const DeliveryIcon = dynamic(async () => {
   const { Truck } = await import("lucide-react");
-  return function DeliveryIcon(props: { className?: string }) {
-    return <Truck {...props} />;
-  };
+  return (props: { className?: string }) => <Truck {...props} />;
 });
 
 const GeoIcon = dynamic(async () => {
   const { MapPin } = await import("lucide-react");
-  return function GeoIcon(props: { className?: string }) {
-    return <MapPin {...props} />;
-  };
+  return (props: { className?: string }) => <MapPin {...props} />;
+});
+
+// ✅ Incoming feature
+const StoreOnboardingIcon = dynamic(async () => {
+  const { IndianRupee } = await import("lucide-react");
+  return (props: { className?: string }) => <IndianRupee {...props} />;
 });
 
 const adminOptions: AdminOption[] = [
@@ -115,7 +104,7 @@ const adminOptions: AdminOption[] = [
     name: "Ticket settings",
     href: "/dashboard/super-admin/ticket-settings",
     Icon: TicketSettingsIcon,
-    description: "Manage ticket groups, tags, and reference data for the ticket dashboard",
+    description: "Manage ticket groups, tags, and reference data",
     color: "text-indigo-600",
     bgColor: "bg-indigo-50 hover:bg-indigo-100",
   },
@@ -123,15 +112,17 @@ const adminOptions: AdminOption[] = [
     name: "Categories",
     href: "/dashboard/super-admin/customer-app-categories",
     Icon: CategoriesIcon,
-    description: "Manage home and browse categories shown in the customer app",
+    description: "Manage customer app categories",
     color: "text-cyan-600",
     bgColor: "bg-cyan-50 hover:bg-cyan-100",
   },
+
+  // ✅ YOUR MODULES
   {
     name: "Billing rules",
     href: "/dashboard/super-admin/billing",
     Icon: BillingIcon,
-    description: "Rule-based pricing, conditions, priorities, and billing simulator",
+    description: "Rule-based pricing & billing simulator",
     color: "text-amber-700",
     bgColor: "bg-amber-50 hover:bg-amber-100",
   },
@@ -139,7 +130,7 @@ const adminOptions: AdminOption[] = [
     name: "Delivery rate cards",
     href: "/dashboard/super-admin/delivery-rate-cards",
     Icon: DeliveryIcon,
-    description: "Location/time/demand-aware delivery pricing engine (used by billing + all apps)",
+    description: "Delivery pricing engine",
     color: "text-rose-700",
     bgColor: "bg-rose-50 hover:bg-rose-100",
   },
@@ -147,7 +138,7 @@ const adminOptions: AdminOption[] = [
     name: "Offers & coupons",
     href: "/dashboard/super-admin/offers-coupons",
     Icon: OffersIcon,
-    description: "Manage GatiMitra offers and coupon codes in one dedicated module",
+    description: "Manage offers and coupon codes",
     color: "text-fuchsia-700",
     bgColor: "bg-fuchsia-50 hover:bg-fuchsia-100",
   },
@@ -155,9 +146,19 @@ const adminOptions: AdminOption[] = [
     name: "Geo & pincodes",
     href: "/dashboard/super-admin/geo",
     Icon: GeoIcon,
-    description: "Hierarchy tree, service coverage toggles, search, and geo pricing rules",
+    description: "Geo hierarchy & pricing rules",
     color: "text-teal-700",
     bgColor: "bg-teal-50 hover:bg-teal-100",
+  },
+
+  // ✅ INCOMING MODULE (merged)
+  {
+    name: "Store onboarding fee",
+    href: "/dashboard/super-admin/store-onboarding-fee",
+    Icon: StoreOnboardingIcon,
+    description: "Onboarding fee & commission config",
+    color: "text-violet-600",
+    bgColor: "bg-violet-50 hover:bg-violet-100",
   },
 ];
 
@@ -206,7 +207,6 @@ const AdminGrid = React.memo(function AdminGrid() {
 });
 
 export default function SuperAdminPage() {
-  // Static-first navigation hub: no API calls, no effects, just instant UI.
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <AdminGrid />

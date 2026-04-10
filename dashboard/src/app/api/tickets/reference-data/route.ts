@@ -20,6 +20,7 @@ const STATUS_OPTIONS = [
   { value: "open", label: "Open" },
   { value: "open_frt", label: "Open FRT" },
   { value: "in_progress", label: "In Progress" },
+  { value: "snoozed", label: "Snoozed" },
   { value: "resolved", label: "Resolved" },
   { value: "closed", label: "Closed" },
   { value: "rejected", label: "Rejected" },

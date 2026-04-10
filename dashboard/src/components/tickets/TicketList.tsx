@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { FixedSizeList as List, ListChildComponentProps } from "react-window";
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
-import { useTickets } from "@/hooks/tickets/useTickets";
+import { useTickets, fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
-import { useQueryClient } from "@tanstack/react-query";
-import { TicketCard } from "./TicketCard";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { playQueueAssignmentSound } from "@/lib/tickets/play-queue-assignment-sound";
 import { TicketListRow } from "./TicketListRow";
 import { TicketGridCard } from "./TicketGridCard";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
@@ -19,8 +20,11 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import type { Option } from "./InlineSearchableSelect";
 import { BulkUpdateModal } from "./BulkUpdateModal";
+import { ExportTicketsModal } from "./ExportTicketsModal";
+import { buildTicketDetailHref, TICKET_FROM_QUEUE_PARAM } from "@/lib/tickets/ticket-path-utils";
 
 export type TicketViewMode = "list" | "grid";
+type TicketScopeTab = "active" | "snoozed";
 
 const PAGE_SIZE_OPTIONS = [30, 50, 100] as const;
 
@@ -54,7 +58,21 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export function TicketList() {
+export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportAndSidebarToggle?: boolean } = {}) {
+  const pathname = usePathname();
+  const isQueueHome = pathname === "/dashboard/tickets/queue/home";
+  const searchParams = useSearchParams();
+  const detailHrefForTicket = useCallback(
+    (ticketId: number) => {
+      if (isQueueHome) {
+        const p = new URLSearchParams(searchParams.toString());
+        p.set(TICKET_FROM_QUEUE_PARAM, "1");
+        return buildTicketDetailHref(ticketId, p);
+      }
+      return buildTicketDetailHref(ticketId, searchParams);
+    },
+    [searchParams, isQueueHome]
+  );
   const { filters, appliedFilters, appliedTicketFilterCount, updateFilter, applySort } = useTicketFilters();
   const rightSidebar = useRightSidebar();
   const { toast } = useToast();
@@ -81,12 +99,48 @@ export function TicketList() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [assignDropdownOpen, setAssignDropdownOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [scopeTab, setScopeTab] = useState<TicketScopeTab>("active");
   const autoSelectAllAfterPageSizeChangeRef = useRef(false);
   const pageSizeDropdownRef = useRef<HTMLDivElement>(null);
   const sortDropdownRef = useRef<HTMLDivElement>(null);
   const assignDropdownRef = useRef<HTMLDivElement>(null);
   const updateTicket = useTicketUpdate();
   const queryClient = useQueryClient();
+
+  /** Shared cache with header AgentStatusToggle — used for queue-home empty state when offline. */
+  const { data: agentStatusRes, isFetched: agentStatusFetched } = useQuery<{
+    success: boolean;
+    data?: { currentStatus?: string; isOnline?: boolean };
+  }>({
+    queryKey: ["agentStatus"],
+    queryFn: async () => {
+      const res = await fetch("/api/agents/status");
+      if (!res.ok) throw new Error("Failed to fetch status");
+      return res.json();
+    },
+    staleTime: 10_000,
+  });
+  // Match AgentStatusToggle: default missing status to offline so list chrome and queue body stay in sync.
+  const queueResolvedAgentStatus = agentStatusRes?.data?.currentStatus || "offline";
+  const queueHomeAgentOffline =
+    isQueueHome && agentStatusFetched && queueResolvedAgentStatus === "offline";
+  const [queueGateTimedOut, setQueueGateTimedOut] = useState(false);
+
+  // Fast fallback: if agent-status API is slow on hard reload,
+  // don't block queue list forever behind the status gate.
+  useEffect(() => {
+    if (!isQueueHome) {
+      setQueueGateTimedOut(false);
+      return;
+    }
+    if (agentStatusFetched) {
+      setQueueGateTimedOut(false);
+      return;
+    }
+    const id = window.setTimeout(() => setQueueGateTimedOut(true), 1200);
+    return () => window.clearTimeout(id);
+  }, [isQueueHome, agentStatusFetched]);
 
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
@@ -135,15 +189,23 @@ export function TicketList() {
 
   const debouncedSearchQuery = useDebouncedValue(appliedFilters.searchQuery, 400);
 
-  const queryFilters = useMemo(() => {
+  const queryFilters = useMemo((): TicketFilters => {
     const f = appliedFilters;
-    const base = {
+    const queueLocked = isQueueHome && currentUser != null;
+    const assignedToIds = queueLocked
+      ? [String(currentUser.id)]
+      : f.assignedToIds.length
+        ? f.assignedToIds
+        : undefined;
+    const statuses = queueLocked ? undefined : f.statuses.length ? f.statuses : undefined;
+
+    return {
       serviceTypes: f.serviceTypes.length ? f.serviceTypes : undefined,
       ticketSection: f.ticketSection !== "all" ? f.ticketSection : undefined,
-      statuses: f.statuses.length ? f.statuses : undefined,
+      statuses,
       priorities: f.priorities.length ? f.priorities : undefined,
       ticketCategory: f.ticketCategory !== "all" ? f.ticketCategory : undefined,
-      assignedToIds: f.assignedToIds.length ? f.assignedToIds : undefined,
+      assignedToIds,
       sourceRoles: f.sourceRoles.length ? f.sourceRoles : undefined,
       groupIds: f.groupIds.length ? f.groupIds : undefined,
       skill: f.skill.trim() ? f.skill : undefined,
@@ -162,20 +224,142 @@ export function TicketList() {
       slaBreach: f.slaBreach === "true" ? "true" : undefined,
       sortBy: f.sortBy || undefined,
       sortOrder: f.sortOrder || undefined,
+      limit,
+      offset,
+      includeSnoozed: scopeTab === "snoozed",
+      snoozedOnly: scopeTab === "snoozed",
+      ...(queueLocked ? { queueScope: true } : {}),
     };
-    return { ...base, limit, offset };
-  }, [appliedFilters, debouncedSearchQuery, limit, offset]);
+  }, [appliedFilters, debouncedSearchQuery, limit, offset, isQueueHome, currentUser?.id, scopeTab]);
 
   const updatesPollBase = useMemo(() => {
     const { limit: _l, offset: _o, ...rest } = queryFilters;
     return rest;
   }, [queryFilters]);
 
-  const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters);
+  const queueListReady = !isQueueHome || Boolean(currentUser);
+  /** Queue home: wait for agent status before fetching tickets so we never show a stale "online" list after going offline. */
+  const queueHomeTicketsEnabled =
+    !isQueueHome || ((agentStatusFetched || queueGateTimedOut) && !queueHomeAgentOffline);
+  const { data, isLoading, isPending, error, refetch } = useTickets(queryFilters, {
+    enabled: queueListReady && queueHomeTicketsEnabled,
+  });
+  const activeCountFilters = useMemo<TicketFilters>(() => {
+    const { limit: _l, offset: _o, includeSnoozed: _is, snoozedOnly: _so, ...base } = queryFilters;
+    return {
+      ...base,
+      includeSnoozed: false,
+      snoozedOnly: false,
+      limit: 1,
+      offset: 0,
+    };
+  }, [queryFilters]);
+  const snoozedCountFilters = useMemo<TicketFilters>(() => {
+    const { limit: _l, offset: _o, includeSnoozed: _is, snoozedOnly: _so, ...base } = queryFilters;
+    return {
+      ...base,
+      includeSnoozed: true,
+      snoozedOnly: true,
+      limit: 1,
+      offset: 0,
+    };
+  }, [queryFilters]);
+  const { data: activeCountData } = useQuery({
+    queryKey: [...queryKeys.tickets.list(activeCountFilters as unknown as Record<string, unknown>), "countOnly"],
+    queryFn: ({ signal }) => fetchTickets(activeCountFilters, signal),
+    enabled: queueListReady && queueHomeTicketsEnabled,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
+  });
+  const { data: snoozedCountData } = useQuery({
+    queryKey: [...queryKeys.tickets.list(snoozedCountFilters as unknown as Record<string, unknown>), "countOnly"],
+    queryFn: ({ signal }) => fetchTickets(snoozedCountFilters, signal),
+    enabled: queueListReady && queueHomeTicketsEnabled,
+    staleTime: 3_000,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
+  });
   const [loadingMessageSlow, setLoadingMessageSlow] = useState(false);
   const currentTotal = data?.total ?? 0;
-  const listReadyForUpdates = Boolean(data) && !isLoading && !isPending;
+  const activeCountDisplay = Number(activeCountData?.total ?? 0);
+  const snoozedCountDisplay = Number(snoozedCountData?.total ?? 0);
+  const listReadyForUpdates =
+    Boolean(data) && !isLoading && !isPending && queueHomeTicketsEnabled;
   const { hasNewTickets, newTicketsCount, clearNewTickets } = useTicketsRealtime(updatesPollBase, listReadyForUpdates);
+
+  const { data: queueSoundCfg } = useQuery({
+    queryKey: ["queueAssignmentSound"],
+    queryFn: async (): Promise<{ enabled: boolean; soundUrl: string }> => {
+      const res = await fetch("/api/tickets/queue-assignment-sound", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const j = (await res.json()) as {
+        success?: boolean;
+        data?: { enabled?: boolean; soundUrl?: string };
+      };
+      if (!res.ok || !j.success) {
+        return { enabled: true, soundUrl: "/notification.wav" };
+      }
+      return {
+        enabled: j.data?.enabled !== false,
+        soundUrl: String(j.data?.soundUrl ?? "/notification.wav"),
+      };
+    },
+    staleTime: 60_000,
+  });
+
+  const queueSoundListKey = useMemo(
+    () =>
+      isQueueHome && currentUser
+        ? `${page}-${pageSize}-${appliedTicketFilterCount}-${JSON.stringify(queryFilters)}`
+        : "",
+    [isQueueHome, currentUser, page, pageSize, appliedTicketFilterCount, queryFilters]
+  );
+
+  const queueSoundSeenRef = useRef<{ key: string; ids: Set<number> } | null>(null);
+  /** Plays buzzer when activity badge count rises (assignments may not be on the current page). */
+  const queueSoundLastBadgeCountRef = useRef(0);
+
+  useEffect(() => {
+    if (!isQueueHome || !queueSoundCfg?.enabled) {
+      return;
+    }
+    const url = queueSoundCfg.soundUrl;
+    if (!url?.startsWith("/")) return;
+    const prev = queueSoundLastBadgeCountRef.current;
+    if (newTicketsCount > prev) {
+      playQueueAssignmentSound(url);
+    }
+    queueSoundLastBadgeCountRef.current = newTicketsCount;
+  }, [isQueueHome, queueSoundCfg?.enabled, queueSoundCfg?.soundUrl, newTicketsCount]);
+
+  useEffect(() => {
+    if (!isQueueHome || !currentUser?.id || !queueSoundCfg?.enabled || data?.tickets == null) {
+      return;
+    }
+    const url = queueSoundCfg.soundUrl;
+    if (!url?.startsWith("/")) return;
+    const key = queueSoundListKey;
+    if (!key) return;
+
+    const seenBag = queueSoundSeenRef.current;
+    const currentIds = data.tickets.map((t) => t.id);
+
+    if (!seenBag || seenBag.key !== key) {
+      queueSoundSeenRef.current = { key, ids: new Set(currentIds) };
+      return;
+    }
+
+    const { ids: seen } = seenBag;
+    for (const id of currentIds) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        playQueueAssignmentSound(url);
+      }
+    }
+  }, [data?.tickets, isQueueHome, currentUser?.id, queueSoundCfg?.enabled, queueSoundCfg?.soundUrl, queueSoundListKey]);
 
   useEffect(() => {
     if (!autoSelectAllAfterPageSizeChangeRef.current) return;
@@ -183,6 +367,37 @@ export function TicketList() {
     setSelectedIds(new Set(data.tickets.map((t) => t.id)));
     autoSelectAllAfterPageSizeChangeRef.current = false;
   }, [data]);
+
+  // Keep page within valid range when total shrinks after bulk actions.
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [data?.total, page, pageSize]);
+
+  // Expiry-driven refresh: as soon as the next visible snoozed ticket reaches snoozed_until,
+  // refetch lists/counts so Active/Snoozed counts and rows move without waiting for poll cycle.
+  useEffect(() => {
+    if (!data || !Array.isArray(data.tickets) || data.tickets.length === 0) return;
+    const now = Date.now();
+    let minDelayMs: number | null = null;
+    for (const t of data.tickets) {
+      if (String(t.status).toLowerCase() !== "snoozed" || !t.snoozedUntil) continue;
+      const endMs = new Date(t.snoozedUntil).getTime();
+      if (!Number.isFinite(endMs)) continue;
+      const delay = Math.max(0, endMs - now + 450);
+      minDelayMs = minDelayMs == null ? delay : Math.min(minDelayMs, delay);
+    }
+    if (minDelayMs == null) return;
+    const timer = window.setTimeout(() => {
+      void queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+    }, minDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [data, queryClient]);
 
   useEffect(() => {
     const waiting = isLoading || (isPending && data == null);
@@ -209,6 +424,14 @@ export function TicketList() {
     () => [
       { value: "", label: "Unassigned" },
       ...(currentUser ? [{ value: "me", label: currentUser.name }] : []),
+      ...agents.map((a) => ({ value: String(a.id), label: a.name || a.email || `Agent ${a.id}` })),
+    ],
+    [agents, currentUser]
+  );
+  /** Numeric agent ids for export step (API expects assignedToIds, not "me"). */
+  const exportAgentOptions = useMemo(
+    () => [
+      ...(currentUser ? [{ value: String(currentUser.id), label: `${currentUser.name} (Me)` }] : []),
       ...agents.map((a) => ({ value: String(a.id), label: a.name || a.email || `Agent ${a.id}` })),
     ],
     [agents, currentUser]
@@ -291,7 +514,7 @@ export function TicketList() {
     [updateTicket, groupOptions, toast, ticketNumberById]
   );
   const handleUpdateAssignee = useCallback(
-    (ticketId: number, userId: number | null, assigneeLabel?: string) => {
+    async (ticketId: number, userId: number | null, assigneeLabel?: string) => {
       const resolvedLabel =
         userId == null
           ? "Unassigned"
@@ -299,13 +522,25 @@ export function TicketList() {
             (currentUser && userId === currentUser.id ? currentUser.name : agents.find((a) => a.id === userId)?.name) ||
             `Agent ${userId}`;
       const ticketNumber = ticketNumberById.get(ticketId) ?? String(ticketId);
-      toast(
-        `#${ticketNumber} Agent set as - ${resolvedLabel}`,
-        userId == null ? "error" : "success"
-      );
-      updateTicket.mutate(
-        { ticketId, currentAssigneeUserId: userId, currentAssigneeName: resolvedLabel }
-      );
+      if (userId == null) {
+        toast(`#${ticketNumber} Agent set as - ${resolvedLabel}`, "success");
+        updateTicket.mutate({
+          ticketId,
+          currentAssigneeUserId: null,
+          currentAssigneeName: resolvedLabel,
+        });
+        return;
+      }
+      try {
+        await updateTicket.mutateAsync({
+          ticketId,
+          currentAssigneeUserId: userId,
+          currentAssigneeName: resolvedLabel,
+        });
+        toast(`#${ticketNumber} Agent set as - ${resolvedLabel}`, "success");
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "Assignment failed", "error");
+      }
     },
     [updateTicket, currentUser, agents, toast, ticketNumberById]
   );
@@ -358,7 +593,10 @@ export function TicketList() {
       );
       const failed = results.filter((r) => r.status === "rejected").length;
       if (failed > 0) {
-        toast(`${failed} ticket${failed === 1 ? "" : "s"} failed to assign. Refreshing list.`, "error");
+        const firstRej = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+        const reason =
+          firstRej?.reason instanceof Error ? firstRej.reason.message : `${failed} ticket(s) failed to assign`;
+        toast(reason, "error");
         await refetch();
       }
     },
@@ -505,6 +743,7 @@ export function TicketList() {
       await queryClient.invalidateQueries({
         predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
       });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
       await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(targetTicketId) });
       await refetch();
     } catch {
@@ -514,25 +753,43 @@ export function TicketList() {
     }
   }, [selectedIds, mergeTargetId, mergeReason, toast, ticketNumberById, queryClient, refetch]);
   const handleBulkUpdateApply = useCallback(
-    (updates: {
+    async (updates: {
       priority?: string;
       status?: string;
       groupId?: number | null;
       assigneeId?: number | null;
     }) => {
-      selectedIds.forEach((id) => {
+      const ids = Array.from(selectedIds);
+      if (ids.length === 0) return;
+
+      const results = await Promise.allSettled(ids.map(async (id) => {
         const payload: Parameters<(typeof updateTicket)["mutate"]>[0] = { ticketId: id };
         if (updates.priority !== undefined) payload.priority = updates.priority;
         if (updates.status !== undefined) payload.status = updates.status;
         if (updates.groupId !== undefined) payload.groupId = updates.groupId;
         if (updates.assigneeId !== undefined)
           payload.currentAssigneeUserId = updates.assigneeId ?? null;
-        updateTicket.mutate(payload);
+        await updateTicket.mutateAsync(payload);
+      }));
+
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) {
+        toast(`${failed} ticket${failed === 1 ? "" : "s"} failed during bulk update.`, "error");
+      } else {
+        toast(`${ids.length} ticket${ids.length === 1 ? "" : "s"} updated successfully.`, "success");
+      }
+
+      await queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
       });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      setPage(1);
+      await refetch();
+
       setBulkUpdateOpen(false);
       setSelectedIds(new Set());
     },
-    [selectedIds, updateTicket]
+    [selectedIds, updateTicket, toast, queryClient, refetch]
   );
   const handleExportSelected = useCallback(() => {
     const selected = tickets.filter((t) => selectedIds.has(t.id));
@@ -569,7 +826,6 @@ export function TicketList() {
       return (
         <div style={style}>
           <TicketListRow
-            key={ticket.id}
             ticket={ticket}
             selected={selectedIds.has(ticket.id)}
             onSelect={(checked) => onSelect(ticket.id, checked)}
@@ -582,6 +838,7 @@ export function TicketList() {
             agentOptions={agentOptions}
             statusOptions={statusOptions}
             currentUserId={currentUser?.id}
+            detailHref={detailHrefForTicket(ticket.id)}
           />
         </div>
       );
@@ -599,11 +856,14 @@ export function TicketList() {
       agentOptions,
       statusOptions,
       currentUser?.id,
+      detailHrefForTicket,
     ]
   );
 
   // isLoading is false while the query is disabled (e.g. auth not ready); isPending stays true with no data — show spinner, not empty state.
-  const awaitingTickets = isLoading || (isPending && data == null);
+  // When queue home is offline we intentionally disable the tickets query — never spin forever on a disabled query with no data.
+  const awaitingTickets =
+    !(isQueueHome && queueHomeAgentOffline) && (isLoading || (isPending && data == null));
   if (awaitingTickets) {
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 bg-white px-4 text-center">
@@ -640,7 +900,34 @@ export function TicketList() {
 
   const showInlineError = Boolean(error && hasCachedData);
 
-  if (!data || data.tickets.length === 0) {
+  if (queueHomeAgentOffline) {
+    return (
+      <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-white">
+        {showInlineError && (
+          <div className="shrink-0 border-b border-red-100 bg-red-50 px-4 py-3">
+            <p className="text-sm font-medium text-red-700">Failed to refresh tickets</p>
+            <p className="text-xs text-red-600 mt-1">{inlineErrorMessage}</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-4 py-12 text-center">
+          <div className="max-w-md text-gray-800">
+            <p className="text-base font-semibold text-gray-900">
+              Hit online to start receiving and viewing tickets from the queue.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) {
     const emptyBecauseOfFilters = appliedTicketFilterCount > 0;
     return (
       <div className="flex h-full min-h-0 w-full flex-1 flex-col bg-white">
@@ -658,10 +945,16 @@ export function TicketList() {
           </div>
         )}
         <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-4 py-12 text-center">
-          {emptyBecauseOfFilters ? (
+          {queueHomeAgentOffline ? (
             <div className="max-w-md text-gray-800">
-              <p className="text-lg font-semibold tracking-tight">😒 Ohh Nooo......</p>
-              <p className="mt-3 text-base font-normal text-gray-600">You took a wrong turn!</p>
+              <p className="text-base font-semibold text-gray-900">
+                Hit online to start receiving and viewing tickets from the queue.
+              </p>
+            </div>
+          ) : emptyBecauseOfFilters ? (
+            <div className="max-w-md text-gray-800">
+              <p className="text-lg font-semibold tracking-tight">😒 Ohh Nooo there's nothing here......</p>
+              <p className="mt-3 text-base font-normal text-gray-600">Cool - We’re preparing your queue. Tickets will appear shortly.</p>
             </div>
           ) : (
             <p className="text-sm text-gray-500">No tickets to display.</p>
@@ -699,87 +992,108 @@ export function TicketList() {
       )}
       {/* Toolbar: fixed 3-column layout so Sort by position never changes */}
       <div className="sticky top-0 z-30 flex-shrink-0 flex items-center gap-2 border-b border-gray-200/90 bg-white px-3 py-2">
-        {/* Left: Sort by - fixed position */}
-        <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600 shrink-0" ref={sortDropdownRef}>
+        {/* Left: Sort by + scope tabs */}
+        <div className="flex items-center gap-2 shrink-0">
           <span className="hidden sm:inline font-medium text-gray-700">Sort by:</span>
-          <button
-            type="button"
-            onClick={() => setSortDropdownOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
-            aria-expanded={sortDropdownOpen}
-            aria-haspopup="listbox"
-            aria-label="Sort options"
-          >
-            {appliedFilters.sortBy === "created_at" && "Date created"}
-            {appliedFilters.sortBy === "updated_at" && "Last modified"}
-            {appliedFilters.sortBy === "sla_due_at" && "Due by"}
-            {appliedFilters.sortBy === "priority" && "Priority"}
-            {appliedFilters.sortBy === "status" && "Status"}
-            <span className="text-gray-400">·</span>
-            {appliedFilters.sortOrder === "asc" ? "Ascending" : "Descending"}
-            <ChevronDown className={`h-3.5 w-3.5 text-gray-500 transition-transform ${sortDropdownOpen ? "rotate-180" : ""}`} />
-          </button>
-          {sortDropdownOpen && (
-            <div
-              className="absolute left-0 top-full z-50 mt-1 min-w-[184px] rounded-lg border border-gray-200 bg-white py-0.5 shadow-lg sm:left-auto sm:right-0"
-              role="listbox"
+          <div className="relative flex items-center gap-1.5 text-xs sm:text-sm text-gray-600 shrink-0" ref={sortDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setSortDropdownOpen((o) => !o)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50/80 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors"
+              aria-expanded={sortDropdownOpen}
+              aria-haspopup="listbox"
+              aria-label="Sort options"
             >
-              <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                Sort by
+              {appliedFilters.sortBy === "created_at" && "Date created"}
+              {appliedFilters.sortBy === "updated_at" && "Last modified"}
+              {appliedFilters.sortBy === "sla_due_at" && "Due by"}
+              {appliedFilters.sortBy === "priority" && "Priority"}
+              {appliedFilters.sortBy === "status" && "Status"}
+              <span className="text-gray-400">·</span>
+              {appliedFilters.sortOrder === "asc" ? "Ascending" : "Descending"}
+              <ChevronDown className={`h-3.5 w-3.5 text-gray-500 transition-transform ${sortDropdownOpen ? "rotate-180" : ""}`} />
+            </button>
+            {sortDropdownOpen && (
+              <div
+                className="absolute left-0 top-full z-50 mt-1 min-w-[184px] rounded-lg border border-gray-200 bg-white py-0.5 shadow-lg sm:left-auto sm:right-0"
+                role="listbox"
+              >
+                <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Sort by
+                </div>
+                {[
+                  { value: "created_at", label: "Date created" },
+                  { value: "updated_at", label: "Last modified" },
+                  { value: "sla_due_at", label: "Due by" },
+                  { value: "priority", label: "Priority" },
+                  { value: "status", label: "Status" },
+                ].map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="option"
+                    aria-selected={appliedFilters.sortBy === opt.value}
+                    onClick={() => {
+                      setSortDropdownOpen(false);
+                      const order = opt.value === "created_at" ? "desc" : appliedFilters.sortOrder;
+                      applySort(opt.value, order);
+                    }}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
+                      appliedFilters.sortBy === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className={appliedFilters.sortBy === opt.value ? "font-medium" : ""}>{opt.label}</span>
+                    {appliedFilters.sortBy === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                  </button>
+                ))}
+                <div className="my-0.5 border-t border-gray-200" />
+                <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                  Order
+                </div>
+                {[
+                  { value: "asc", label: "Ascending" },
+                  { value: "desc", label: "Descending" },
+                ].map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="option"
+                    aria-selected={appliedFilters.sortOrder === opt.value}
+                    onClick={() => {
+                      setSortDropdownOpen(false);
+                      applySort(appliedFilters.sortBy, opt.value);
+                    }}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
+                      appliedFilters.sortOrder === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    <span className={appliedFilters.sortOrder === opt.value ? "font-medium" : ""}>{opt.label}</span>
+                    {appliedFilters.sortOrder === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                  </button>
+                ))}
               </div>
-              {[
-                { value: "created_at", label: "Date created" },
-                { value: "updated_at", label: "Last modified" },
-                { value: "sla_due_at", label: "Due by" },
-                { value: "priority", label: "Priority" },
-                { value: "status", label: "Status" },
-              ].map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  role="option"
-                  aria-selected={appliedFilters.sortBy === opt.value}
-                  onClick={() => {
-                    setSortDropdownOpen(false);
-                    // Date created: default to Descending so latest tickets show first
-                    const order = opt.value === "created_at" ? "desc" : appliedFilters.sortOrder;
-                    applySort(opt.value, order);
-                  }}
-                  className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
-                    appliedFilters.sortBy === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  <span className={appliedFilters.sortBy === opt.value ? "font-medium" : ""}>{opt.label}</span>
-                  {appliedFilters.sortBy === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
-                </button>
-              ))}
-              <div className="my-0.5 border-t border-gray-200" />
-              <div className="px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                Order
-              </div>
-              {[
-                { value: "asc", label: "Ascending" },
-                { value: "desc", label: "Descending" },
-              ].map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  role="option"
-                  aria-selected={appliedFilters.sortOrder === opt.value}
-                  onClick={() => {
-                    setSortDropdownOpen(false);
-                    applySort(appliedFilters.sortBy, opt.value);
-                  }}
-                  className={`flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[13px] ${
-                    appliedFilters.sortOrder === opt.value ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  <span className={appliedFilters.sortOrder === opt.value ? "font-medium" : ""}>{opt.label}</span>
-                  {appliedFilters.sortOrder === opt.value && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
-                </button>
-              ))}
-            </div>
-          )}
+            )}
+          </div>
+          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50/80 p-0.5">
+            <button
+              type="button"
+              onClick={() => setScopeTab("active")}
+              className={`cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                scopeTab === "active" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-800"
+              }`}
+            >
+              Active ({activeCountDisplay})
+            </button>
+            <button
+              type="button"
+              onClick={() => setScopeTab("snoozed")}
+              className={`cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                scopeTab === "snoozed" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-800"
+              }`}
+            >
+              Snoozed ({snoozedCountDisplay})
+            </button>
+          </div>
         </div>
 
         {/* Center: New Updated button (Freshdesk style) - only when there are new/updated tickets */}
@@ -789,10 +1103,22 @@ export function TicketList() {
               type="button"
               onClick={handleLoadNewTickets}
               className="inline-flex items-center gap-2 rounded-full border border-blue-400 bg-gray-100 px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-gray-200 hover:border-blue-500 transition-colors shrink-0 shadow-sm"
-              aria-label={`Load ${newTicketsCount} new ticket${newTicketsCount !== 1 ? "s" : ""}`}
+              aria-label={
+                isQueueHome
+                  ? `Load ${newTicketsCount} new or updated ticket${newTicketsCount !== 1 ? "s" : ""}`
+                  : `Load ${newTicketsCount} new ticket${newTicketsCount !== 1 ? "s" : ""}`
+              }
             >
               <RefreshCw className="h-4 w-4 text-blue-600" />
-              {newTicketsCount} new ticket{newTicketsCount !== 1 ? "s" : ""}
+              {isQueueHome ? (
+                <>
+                  {newTicketsCount} New updated
+                </>
+              ) : (
+                <>
+                  {newTicketsCount} new ticket{newTicketsCount !== 1 ? "s" : ""}
+                </>
+              )}
             </button>
           )}
         </div>
@@ -801,6 +1127,14 @@ export function TicketList() {
         <div className="flex items-center gap-2 text-sm text-gray-600 shrink-0">
           <span className="text-xs text-gray-600 tabular-nums whitespace-nowrap" aria-live="polite">
             Page {page} of {Math.max(1, Math.ceil(currentTotal / pageSize) || 1)}
+            {isQueueHome && hasNewTickets ? (
+              <>
+                {" "}
+                <span className="font-medium text-blue-600">
+                  · {newTicketsCount} New updated
+                </span>
+              </>
+            ) : null}
             {" · "}
             Showing {currentTotal === 0 ? "0" : `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, currentTotal)}`} of {currentTotal}
           </span>
@@ -824,33 +1158,38 @@ export function TicketList() {
               <LayoutGrid className="h-4 w-4" />
             </button>
           </div>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Export
-          </button>
-          {/* Right sidebar toggle */}
-          {rightSidebar && (
-            <button
-              type="button"
-              onClick={rightSidebar.onToggle}
-              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
-              title={rightSidebar.isOpen ? "Hide filters" : "Open filters"}
-            >
-              {rightSidebar.isOpen ? (
-                <>
-                  <PanelRightClose className="h-3 w-3" />
-                  <span>Hide</span>
-                </>
-              ) : (
-                <>
-                  <PanelRightOpen className="h-3 w-3" />
-                  <span>Open</span>
-                </>
+          {!hideExportAndSidebarToggle && (
+            <>
+              <button
+                type="button"
+                onClick={() => setExportModalOpen(true)}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export
+              </button>
+              {/* Right sidebar toggle */}
+              {rightSidebar && (
+                <button
+                  type="button"
+                  onClick={rightSidebar.onToggle}
+                  className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+                  title={rightSidebar.isOpen ? "Hide filters" : "Open filters"}
+                >
+                  {rightSidebar.isOpen ? (
+                    <>
+                      <PanelRightClose className="h-3 w-3" />
+                      <span>Hide</span>
+                    </>
+                  ) : (
+                    <>
+                      <PanelRightOpen className="h-3 w-3" />
+                      <span>Open</span>
+                    </>
+                  )}
+                </button>
               )}
-            </button>
+            </>
           )}
         </div>
       </div>
@@ -973,14 +1312,16 @@ export function TicketList() {
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            onClick={handleExportSelected}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Export
-          </button>
+          {!hideExportAndSidebarToggle && (
+            <button
+              type="button"
+              onClick={handleExportSelected}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSelectedIds(new Set())}
@@ -990,6 +1331,14 @@ export function TicketList() {
           </button>
         </div>
       )}
+
+      <ExportTicketsModal
+        isOpen={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        appliedFilters={appliedFilters}
+        exportAgentOptions={exportAgentOptions}
+        groupOptions={groupOptions}
+      />
 
       {/* Bulk update modal */}
       <BulkUpdateModal
@@ -1125,7 +1474,12 @@ export function TicketList() {
       <div
         className={`flex-1 min-h-0 overflow-y-auto overflow-x-visible ${viewMode === "grid" ? "p-4" : ""}`}
       >
-        {viewMode === "list" ? (
+        {tickets.length === 0 ? (
+          <div className="flex h-full min-h-0 w-full flex-col items-center justify-center px-4 py-12 text-center">
+            <p className="text-base font-semibold text-gray-900">Whoa, relax 😄 no stress at all!</p>
+            <p className="mt-2 text-sm text-gray-600">Seems like there’s no ticket to worry about.</p>
+          </div>
+        ) : viewMode === "list" ? (
           <div className="w-full relative" style={{ overflow: "visible" }}>
             {/* List header row - compact, single line */}
             <div className="flex items-center gap-2.5 border-b border-gray-200 bg-slate-50/90 pl-2 pr-1 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
@@ -1193,6 +1547,7 @@ export function TicketList() {
                   agentOptions={agentOptions}
                   statusOptions={statusOptions}
                   currentUserId={currentUser?.id}
+                  detailHref={detailHrefForTicket(ticket.id)}
                 />
               ))}
             </div>

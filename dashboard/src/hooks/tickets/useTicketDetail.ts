@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -56,6 +56,8 @@ export interface TicketDetail {
   slaDueAt: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
+  snoozedUntil: string | null;
+  snoozeReason: string | null;
   createdAt: string;
   updatedAt: string;
   firstResponseAt: string | null;
@@ -104,6 +106,14 @@ export interface TicketDetail {
     ratedByType: string;
     createdAt: string;
   }>;
+  /** Most recent completed workflow automation run for this ticket (routing / assignment). */
+  automationLastRun: {
+    ruleId: number;
+    ruleName: string;
+    ruleCode: string;
+    triggerEvent: string;
+    completedAt: string | null;
+  } | null;
 }
 
 export interface TicketMessage {
@@ -256,6 +266,8 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
     slaDueAt: (raw.sla_due_at ?? null) as string | null,
     resolvedAt: (raw.resolved_at ?? null) as string | null,
     closedAt: (raw.closed_at ?? null) as string | null,
+    snoozedUntil: (raw.snoozed_until ?? null) as string | null,
+    snoozeReason: (raw.snooze_reason ?? null) as string | null,
     createdAt: (raw.created_at ?? "") as string,
     updatedAt: (raw.updated_at ?? "") as string,
     firstResponseAt: (raw.first_response_at ?? null) as string | null,
@@ -320,6 +332,19 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
           }))
           .filter((tr) => Number.isFinite(tr.ratingValue) && tr.ratingValue >= 1 && tr.ratingValue <= 5)
       : [],
+    automationLastRun: (() => {
+      const a = raw.automation_last_run as Record<string, unknown> | null | undefined;
+      if (!a || a.rule_id == null) return null;
+      const rid = Number(a.rule_id);
+      if (!Number.isFinite(rid)) return null;
+      return {
+        ruleId: rid,
+        ruleName: a.rule_name != null ? String(a.rule_name) : "",
+        ruleCode: a.rule_code != null ? String(a.rule_code) : "",
+        triggerEvent: a.trigger_event != null ? String(a.trigger_event) : "",
+        completedAt: a.completed_at != null ? String(a.completed_at) : null,
+      };
+    })(),
     messages: ms.map((m) => ({
       id: m.id as number,
       ticketId: (m.ticket_id ?? m.ticketId) as number,
@@ -366,44 +391,58 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
   };
 }
 
+/** Shared fetch for `useTicketDetail`, hover prefetch, and nav warm-up (same cache key). */
+export async function fetchTicketDetailById(ticketId: string): Promise<TicketDetail> {
+  const id = String(ticketId).trim();
+  if (!id) throw new Error("Ticket ID is required");
+  if (ticketDetailConfirmedNotFound.has(id)) {
+    throwCachedNotFound();
+  }
+  const response = await fetch(`/api/tickets/${encodeURIComponent(id)}`, { credentials: "include" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 404) {
+      ticketDetailConfirmedNotFound.add(id);
+      const err = new Error("") as Error & { httpStatus?: number };
+      err.httpStatus = 404;
+      throw err;
+    }
+    const msg = typeof data?.error === "string" ? data.error : "Failed to fetch ticket detail";
+    const err = new Error(msg) as Error & { httpStatus?: number };
+    err.httpStatus = response.status;
+    throw err;
+  }
+  const raw = data.data?.ticket;
+  if (!raw) {
+    const err = new Error(typeof data?.error === "string" ? data.error : "Invalid response") as Error & {
+      httpStatus?: number;
+    };
+    err.httpStatus = response.status;
+    throw err;
+  }
+  ticketDetailConfirmedNotFound.delete(id);
+  return normalizeTicket(raw);
+}
+
+export function prefetchTicketDetail(queryClient: QueryClient, ticketId: number | string): void {
+  const id = String(ticketId).trim();
+  if (!id) return;
+  void queryClient.prefetchQuery({
+    queryKey: queryKeys.tickets.detail(id),
+    queryFn: () => fetchTicketDetailById(id),
+    staleTime: 60 * 1000,
+  });
+}
+
 export function useTicketDetail(ticketId: number | string | null) {
   const id =
     ticketId == null || String(ticketId).trim() === "" ? null : String(ticketId).trim();
 
   return useQuery<TicketDetail>({
     queryKey: queryKeys.tickets.detail(id ?? ""),
-    queryFn: async () => {
-      if (!id) throw new Error("Ticket ID is required");
-      if (ticketDetailConfirmedNotFound.has(id)) {
-        throwCachedNotFound();
-      }
-      const response = await fetch(`/api/tickets/${encodeURIComponent(id)}`, { credentials: "include" });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        if (response.status === 404) {
-          ticketDetailConfirmedNotFound.add(id);
-          const err = new Error("") as Error & { httpStatus?: number };
-          err.httpStatus = 404;
-          throw err;
-        }
-        const msg = typeof data?.error === "string" ? data.error : "Failed to fetch ticket detail";
-        const err = new Error(msg) as Error & { httpStatus?: number };
-        err.httpStatus = response.status;
-        throw err;
-      }
-      const raw = data.data?.ticket;
-      if (!raw) {
-        const err = new Error(typeof data?.error === "string" ? data.error : "Invalid response") as Error & {
-          httpStatus?: number;
-        };
-        err.httpStatus = response.status;
-        throw err;
-      }
-      ticketDetailConfirmedNotFound.delete(id);
-      return normalizeTicket(raw);
-    },
+    queryFn: () => fetchTicketDetailById(id!),
     enabled: id != null,
-    staleTime: 10000, // 10 seconds
+    staleTime: 60 * 1000,
     /**
      * One HTTP call per cache entry unless something explicitly invalidates.
      * Global default retry:1 + refetchOnMount callbacks were still hammering 404s.

@@ -421,9 +421,9 @@ export function MerchantsSearchClient() {
 
   /** When merchant portal has an active list search, show skeleton until API completes. Never show "Not Found" before loading finishes. */
   const hasActiveListSearch = hasEffectiveSearchParams || (hasCategory && effectiveFilter === "child");
-  /** Show skeleton as soon as Search is clicked (triggeredSearch) or while API is in flight (loading || !hasSearched). Avoids showing tagline/empty state during search. */
+  /** While list search is active: skeleton until first response (loading || !hasSearched). Do not key off triggeredSearch here — it stays set until URL syncs after fetch, which would hide results behind a skeleton. */
   const showSkeleton = Boolean(
-    portal === "merchant" && (triggeredSearch != null || (hasActiveListSearch && (loading || !hasSearched)))
+    portal === "merchant" && hasActiveListSearch && (loading || !hasSearched)
   );
 
   const setPortal = (value: "admin" | "merchant") => {
@@ -471,6 +471,14 @@ export function MerchantsSearchClient() {
       filter,
     });
   }, [portal, hasActiveListSearch, loading, hasSearched, filter, childItems, merchantsSearch?.setMerchantsSearchState]);
+
+  /** router.push from the header runs after triggerMerchantSearch; clearing triggeredSearch in fetch.finally used to run before the URL updated, making shouldFetchList false and wiping results (flash of "not found"). Clear only once ?search= and child/parent match the triggered query. */
+  useEffect(() => {
+    if (!triggeredSearch) return;
+    if (searchQuery.trim() !== triggeredSearch.value.trim()) return;
+    if (filter !== triggeredSearch.filter) return;
+    clearTriggeredSearch();
+  }, [triggeredSearch, searchQuery, filter, clearTriggeredSearch]);
 
   useEffect(() => {
     if (!shouldFetchList) {
@@ -543,11 +551,10 @@ export function MerchantsSearchClient() {
           setLoading(false);
           setHasSearched(true);
         }
-        if (triggeredSearch) clearTriggeredSearch();
       });
 
     return () => ac.abort();
-  }, [effectiveFilter, effectiveSearch, shouldFetchList, hasCategory, category, fromDate, toDate, storeTypeFilter, portal, returnTo, router, lastSearchTrigger, triggeredSearch, clearTriggeredSearch]);
+  }, [effectiveFilter, effectiveSearch, shouldFetchList, hasCategory, category, fromDate, toDate, storeTypeFilter, portal, returnTo, router, lastSearchTrigger]);
 
   const handleCategoryClick = (key: CategoryKey) => {
     const next = new URLSearchParams(searchParams.toString());

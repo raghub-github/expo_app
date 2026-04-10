@@ -4,7 +4,7 @@
  * This script tests the database connection and queries the system_users table
  * to verify connectivity and table structure.
  * 
- * Usage: npx tsx scripts/test-db-connection.ts
+ * Usage: npm run test:db (from dashboard/)
  */
 
 // Load environment variables from .env.local

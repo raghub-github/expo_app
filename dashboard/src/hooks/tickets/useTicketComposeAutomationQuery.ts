@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 
 export type TicketComposeAutomationDto = {
   defaultTo: string;
@@ -20,9 +20,33 @@ const QUERY_KEY = ["ticketComposeAutomation"] as const;
 
 const SNAPSHOT_KEY = "dashboard_snapshot:ticketComposeAutomation";
 
+function composePlaceholderFromSnapshot(): TicketComposeAutomationDto | undefined {
+  const snap = loadClientSnapshot<{
+    defaultTo?: string;
+    defaultCc?: string;
+    defaultBcc?: string;
+    updatedAt?: string | null;
+    updatedBySystemUserId?: number | null;
+    updatedByEmail?: string | null;
+    updatedByFullName?: string | null;
+  }>(SNAPSHOT_KEY, 24 * 60 * 60 * 1000);
+  if (!snap) return undefined;
+  return {
+    defaultTo: typeof snap.defaultTo === "string" ? snap.defaultTo : "",
+    defaultCc: typeof snap.defaultCc === "string" ? snap.defaultCc : "",
+    defaultBcc: typeof snap.defaultBcc === "string" ? snap.defaultBcc : "",
+    updatedAt: snap.updatedAt ?? null,
+    updatedBySystemUserId: typeof snap.updatedBySystemUserId === "number" ? snap.updatedBySystemUserId : null,
+    updatedByEmail: typeof snap.updatedByEmail === "string" ? snap.updatedByEmail : null,
+    updatedByFullName: typeof snap.updatedByFullName === "string" ? snap.updatedByFullName : null,
+    canManage: false,
+  };
+}
+
 export function useTicketComposeAutomationQuery() {
   const query = useQuery({
     queryKey: QUERY_KEY,
+    placeholderData: () => composePlaceholderFromSnapshot(),
     queryFn: async (): Promise<TicketComposeAutomationDto> => {
       const res = await fetch("/api/tickets/compose-automation", { credentials: "include" });
       const json = await res.json().catch(() => ({}));

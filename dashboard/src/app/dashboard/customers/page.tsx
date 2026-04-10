@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense, useRef } from "react";
 import dynamic from "next/dynamic";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
 import { SummaryCards } from "@/components/customers/SummaryCards";
 import { UserCategoryCards } from "@/components/customers/UserCategoryCards";
@@ -10,7 +10,7 @@ import { HorizontalFilters } from "@/components/customers/HorizontalFilters";
 import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { useCustomerDashboardStats, DashboardStatsFilters } from "@/hooks/queries/useCustomerDashboardStats";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
-import { Search, AlertCircle } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 
 // Lazily load heavy chart components so they don't block initial paint.
 const AnalyticsCharts = dynamic(
@@ -69,7 +69,6 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 
 function CustomersPageContent() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const { isSuperAdmin, loading: permissionsLoading } = usePermissions();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -96,16 +95,6 @@ function CustomersPageContent() {
       window.removeEventListener("customerFiltersUpdated", handleFilterUpdate as EventListener);
     };
   }, []);
-
-  // Helper function to detect if search is Customer ID or mobile number
-  const isCustomerIdOrMobile = (searchTerm: string): boolean => {
-    const trimmed = searchTerm.trim();
-    // Check if it's a Customer ID (GM followed by numbers, case insensitive)
-    const isCustomerId = /^GM\d+$/i.test(trimmed);
-    // Check if it's a mobile number (10+ digits, optionally with +91 or 91 prefix)
-    const isMobile = /^(\+?91)?\d{10,}$/.test(trimmed);
-    return isCustomerId || isMobile;
-  };
 
   // Sync search with URL search params (for main search bar)
   useEffect(() => {
@@ -134,20 +123,6 @@ function CustomersPageContent() {
   } = useCustomerDashboardStats(shouldFetchStats ? dashboardFilters : {}, {
     enabled: shouldFetchStats,
   });
-  // Handle redirect to detail page if search returns single customer (ID/mobile search)
-  useEffect(() => {
-    if (
-      debouncedSearch &&
-      isCustomerIdOrMobile(debouncedSearch) &&
-      data?.customers &&
-      data.customers.length === 1 &&
-      !isLoading
-    ) {
-      const customer = data.customers[0];
-      router.replace(`/dashboard/customers/${customer.id}`);
-    }
-  }, [debouncedSearch, data, isLoading, router]);
-
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
@@ -165,23 +140,20 @@ function CustomersPageContent() {
     );
   }
 
-  // Show search prompt for non-super-admins when no search query
+  // Non–super-admin: same empty state as rider dashboard until user searches
   if (!isSuperAdmin && !search) {
     return (
-      <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <div className="flex flex-col items-center justify-center py-12 space-y-4">
-            <div className="rounded-full bg-blue-100 p-4">
-              <Search className="h-8 w-8 text-blue-600" />
-            </div>
-            <div className="text-center space-y-2">
-              <h2 className="text-xl font-semibold text-gray-900">Search for Customer</h2>
-              <p className="text-sm text-gray-600 max-w-md">
-                Please use the search bar in the header to search for a customer by ID, name, or phone number.
-                Customer details will be displayed after you search.
-              </p>
-            </div>
-          </div>
+      <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
+        <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+          <p className="text-lg text-gray-700 font-medium">
+            One search. Complete customer context —{" "}
+            <span className="font-bold bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">
+              powered by GatiMitra
+            </span>
+          </p>
+          <p className="mt-2 text-sm text-gray-500">
+            Enter a Customer ID (e.g. GM100001), mobile number, or name to search
+          </p>
         </div>
       </div>
     );
@@ -310,6 +282,7 @@ function CustomersPageContent() {
               customers={data?.customers || []}
               loading={isLoading}
               pageType="all"
+              searchQuery={search}
               onPageChange={handlePageChange}
               currentPage={data?.pagination?.page || 1}
               totalPages={data?.pagination?.totalPages || 1}
