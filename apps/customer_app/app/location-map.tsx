@@ -17,6 +17,7 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import MapView, { Circle, Region } from "react-native-maps";
+import { customerMapProps } from "@/lib/mapViewProps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueryClient } from "@tanstack/react-query";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
@@ -175,6 +176,7 @@ export default function LocationMapScreen() {
       <View style={styles.mapWrap}>
         <MapView
           style={styles.map}
+          {...customerMapProps()}
           initialRegion={initialRegion}
           onRegionChange={handleRegionChange}
           onRegionChangeComplete={handleRegionChangeComplete}

@@ -12,14 +12,22 @@ export type RouteResult = {
   durationSeconds: number;
   distanceKm: number;
   etaMinutes: number;
-  /** Encoded polyline (e.g. OSRM format) for map display; optional */
+  /** Encoded polyline for map display; optional */
   geometry?: string;
-  /** Whether result is from routing engine (true) or Haversine fallback (false) */
+  polyline?: string;
+  /** Which provider produced the route. */
+  source: "mapbox" | "osrm" | "haversine";
+  /** true when result came from cache */
+  cached: boolean;
+  /** true when response is a fallback approximation */
+  approximate: boolean;
+  /** Backward-compat field: true when provider is not haversine fallback */
   fromRoutingEngine: boolean;
 };
 
 export type DistanceRouteRequest = {
   origin: LatLng;
   destination: LatLng;
+  waypoints?: LatLng[];
   profile?: RoutingProfile;
 };

@@ -1,6 +1,6 @@
 import { getSupabase } from "../../lib/supabase.js";
 import { getEnv } from "../../config/env.js";
-import { haversineDistanceKm } from "../distance/distance.service.js";
+import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import type {
   MerchantMenuItemRow,
@@ -109,43 +109,21 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function fetchMapboxDrivingDistanceKm(
+async function fetchDrivingDistanceKm(
   userLat: number,
   userLng: number,
   storeLat: number,
   storeLng: number
 ): Promise<{ distanceKm: number; durationMin: number | null }> {
   const env = getEnv();
-  const token = (env.MAPBOX_ACCESS_TOKEN ?? "").trim();
-  if (!token) {
-    throw new Error("MAPBOX_ACCESS_TOKEN not configured");
-  }
-
-  const url = new URL(
-    `https://api.mapbox.com/directions/v5/mapbox/driving/${userLng},${userLat};${storeLng},${storeLat}`
-  );
-  url.searchParams.set("access_token", token);
-  url.searchParams.set("alternatives", "false");
-  url.searchParams.set("overview", "false");
-  url.searchParams.set("steps", "false");
-
-  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) {
-    throw new Error(`Mapbox API error: ${res.status}`);
-  }
-
-  const data = (await res.json()) as {
-    routes?: Array<{ distance?: number; duration?: number }>;
-  };
-  const route = data.routes?.[0];
-  if (!route || typeof route.distance !== "number") {
-    throw new Error("Mapbox route missing");
-  }
-
-  const distanceKm = Math.round((route.distance / 1000) * 100) / 100;
-  const durationMin =
-    typeof route.duration === "number" ? Math.max(1, Math.round(route.duration / 60)) : null;
-  return { distanceKm, durationMin };
+  const route = await getRoute({
+    origin: { lat: userLat, lng: userLng },
+    destination: { lat: storeLat, lng: storeLng },
+    profile: "driving",
+    mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
+    osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
+  });
+  return { distanceKm: route.distanceKm, durationMin: route.etaMinutes };
 }
 
 export async function listNearbyStoresByRoadDistance(params: {
@@ -208,7 +186,7 @@ export async function listNearbyStoresByRoadDistance(params: {
     }
 
     try {
-      const route = await fetchMapboxDrivingDistanceKm(
+      const route = await fetchDrivingDistanceKm(
         user.lat,
         user.lng,
         candidate.lat,
@@ -402,6 +380,29 @@ export async function getStoreByStoreId(storeId: string): Promise<MerchantStoreR
 }
 
 /** For order creation: fetch parent_id, address, coordinates, and accepting status by numeric store id. Never trust frontend for these. */
+/** Packaging + per-km delivery rates for billing engine (Supabase source of truth). */
+export async function getStoreBillingRates(
+  merchantStoreId: number
+): Promise<{ packagingChargeAmount: number; deliveryChargePerKm: number } | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("merchant_stores")
+    .select("packaging_charge_amount, delivery_charge_per_km")
+    .eq("id", merchantStoreId)
+    .single();
+  if (error || !data) return null;
+  const row = data as {
+    packaging_charge_amount?: number | string | null;
+    delivery_charge_per_km?: number | string | null;
+  };
+  const pkg = row.packaging_charge_amount != null ? Number(row.packaging_charge_amount) : 0;
+  const perKm = row.delivery_charge_per_km != null ? Number(row.delivery_charge_per_km) : 0;
+  return {
+    packagingChargeAmount: Number.isFinite(pkg) && pkg > 0 ? pkg : 0,
+    deliveryChargePerKm: Number.isFinite(perKm) && perKm > 0 ? perKm : 0,
+  };
+}
+
 export async function getStoreByIdForOrder(
   merchantStoreId: number
 ): Promise<{ parentId: number | null; fullAddress: string | null; latitude: number | null; longitude: number | null; is_accepting_orders: boolean } | null> {

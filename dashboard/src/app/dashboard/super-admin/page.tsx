@@ -57,6 +57,27 @@ const CategoriesIcon = dynamic(async () => {
   };
 });
 
+const BillingIcon = dynamic(async () => {
+  const { Calculator } = await import("lucide-react");
+  return function BillingIcon(props: { className?: string }) {
+    return <Calculator {...props} />;
+  };
+});
+
+const DeliveryIcon = dynamic(async () => {
+  const { Truck } = await import("lucide-react");
+  return function DeliveryIcon(props: { className?: string }) {
+    return <Truck {...props} />;
+  };
+});
+
+const GeoIcon = dynamic(async () => {
+  const { MapPin } = await import("lucide-react");
+  return function GeoIcon(props: { className?: string }) {
+    return <MapPin {...props} />;
+  };
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -105,6 +126,38 @@ const adminOptions: AdminOption[] = [
     description: "Manage home and browse categories shown in the customer app",
     color: "text-cyan-600",
     bgColor: "bg-cyan-50 hover:bg-cyan-100",
+  },
+  {
+    name: "Billing rules",
+    href: "/dashboard/super-admin/billing",
+    Icon: BillingIcon,
+    description: "Rule-based pricing, conditions, priorities, and billing simulator",
+    color: "text-amber-700",
+    bgColor: "bg-amber-50 hover:bg-amber-100",
+  },
+  {
+    name: "Delivery rate cards",
+    href: "/dashboard/super-admin/delivery-rate-cards",
+    Icon: DeliveryIcon,
+    description: "Location/time/demand-aware delivery pricing engine (used by billing + all apps)",
+    color: "text-rose-700",
+    bgColor: "bg-rose-50 hover:bg-rose-100",
+  },
+  {
+    name: "Offers & coupons",
+    href: "/dashboard/super-admin/offers-coupons",
+    Icon: OffersIcon,
+    description: "Manage GatiMitra offers and coupon codes in one dedicated module",
+    color: "text-fuchsia-700",
+    bgColor: "bg-fuchsia-50 hover:bg-fuchsia-100",
+  },
+  {
+    name: "Geo & pincodes",
+    href: "/dashboard/super-admin/geo",
+    Icon: GeoIcon,
+    description: "Hierarchy tree, service coverage toggles, search, and geo pricing rules",
+    color: "text-teal-700",
+    bgColor: "bg-teal-50 hover:bg-teal-100",
   },
 ];
 

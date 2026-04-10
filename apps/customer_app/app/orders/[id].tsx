@@ -19,6 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import MapView, { Marker, Polyline, Region } from "react-native-maps";
+import { customerMapProps } from "@/lib/mapViewProps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { orderService } from "@/services/order.service";
 import { getRouteCoordinates } from "@/services/directions.service";
@@ -238,6 +239,7 @@ export default function OrderTrackingScreen() {
             <MapView
               ref={mapRef}
               style={styles.map}
+              {...customerMapProps()}
               initialRegion={mapRegion}
               scrollEnabled
               zoomEnabled

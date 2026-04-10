@@ -60,6 +60,33 @@ const EnvSchema = z.object({
   OSRM_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
+
+  /** When true, createPendingOrder uses rule engine + persists billing_snapshot. */
+  BILLING_RULES_ENABLED: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+
+  /** Optional: dashboard billing simulator calls POST /v1/billing/calculate without a customer JWT. */
+  BILLING_SIM_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
+
+  /** Shadow-write OMS v2 snapshot/billing/ledger tables during finalize flow. */
+  OMS_LEDGER_SHADOW_WRITE: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(true),
+
+  /** Enable rider assignment v2 enforcement (active-assignment validation + assignment event API). */
+  OMS_RIDER_ASSIGNMENT_V2: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(true),
+
+  /** Read-path cutover marker for services that need v2 canonical reads. */
+  OMS_READ_CANONICAL_V2: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

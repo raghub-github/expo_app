@@ -1,0 +1,54 @@
+{
+  "description": "Reference ruleset for tests/docs: item ₹100 + addon → 10% discount → delivery slab → platform % → GST on configured bases.",
+  "rules": [
+    {
+      "name": "Cart 10% off",
+      "type": "DISCOUNT",
+      "calculation_type": "PERCENTAGE",
+      "value_numeric": 10,
+      "priority": 10,
+      "stackable": true,
+      "applies_to": "ORDER",
+      "conditions": []
+    },
+    {
+      "name": "Delivery slab",
+      "type": "DELIVERY",
+      "calculation_type": "FORMULA_KEY",
+      "value_json": { "key": "DELIVERY_SLAB" },
+      "priority": 20,
+      "stackable": true,
+      "applies_to": "ORDER",
+      "conditions": []
+    },
+    {
+      "name": "Platform 3%",
+      "type": "PLATFORM_FEE",
+      "calculation_type": "PERCENTAGE",
+      "value_numeric": 3,
+      "priority": 30,
+      "stackable": true,
+      "applies_to": "ORDER",
+      "conditions": []
+    }
+  ],
+  "delivery_slabs": [
+    {
+      "name": "0-5 km",
+      "min_km": 0,
+      "max_km": 5,
+      "fee_fixed": 25,
+      "fee_per_km": 5,
+      "scope_type": "global",
+      "priority": 0
+    }
+  ],
+  "tax_configs": [
+    {
+      "name": "GST 5%",
+      "rate": 0.05,
+      "applicable_base": "GRAND_BEFORE_TAX",
+      "priority": 0
+    }
+  ]
+}

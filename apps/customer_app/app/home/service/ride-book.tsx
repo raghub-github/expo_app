@@ -11,14 +11,14 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
-  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
-import MapView, { PROVIDER_GOOGLE, Polyline, Marker } from "react-native-maps";
+import MapView, { Polyline, Marker } from "react-native-maps";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { customerMapProps } from "@/lib/mapViewProps";
 
 const { width, height: WINDOW_HEIGHT } = Dimensions.get("window");
 const PAD = 14;
@@ -124,10 +124,11 @@ export default function RideBookScreen() {
       <View style={[styles.mapWrap, { height: MAP_HEIGHT }]}>
         <MapView
           style={StyleSheet.absoluteFill}
-          provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
+          {...customerMapProps()}
           initialRegion={DEFAULT_REGION}
           region={routeCoordinates.length >= 2 ? mapRegion : undefined}
           showsUserLocation
+          loadingIndicatorColor={GatiMitraColors.emerald}
         >
           {routeCoordinates.length >= 2 && (
             <>

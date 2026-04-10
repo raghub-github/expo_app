@@ -54,6 +54,7 @@ export type CreateOrderItem = {
   variantId?: string | null;
   variantName?: string | null;
   addons?: CreateOrderItemAddon[];
+  itemSnapshot?: Record<string, unknown> | null;
 };
 
 export type CreateOrderPayload = {
@@ -70,6 +71,8 @@ export type CreateOrderPayload = {
   pickupAddressRaw?: string;
   pickupLat?: number;
   pickupLon?: number;
+  couponCode?: string | null;
+  subscriptionOptIn?: boolean;
 };
 
 /** Payment-first: create pending order (lock cart). Returns pendingId + amount in paise for Razorpay. */

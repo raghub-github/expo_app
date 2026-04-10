@@ -13,7 +13,7 @@ export function isNetworkError(err: unknown): boolean {
 }
 
 const DEV_HOST_HINT =
-  "On a physical device, set EXPO_PUBLIC_DEV_HOST to your PC's IP (e.g. 192.168.1.5) in .env and restart the app. Ensure the backend is running (npm run dev in backend/).";
+  "Use the same port as backend (default 3000). On a phone, set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP in .env, run `npx expo start --clear`, and rebuild the Android app after native config changes. Backend: npm run dev in backend/.";
 
 export function getNetworkErrorMessage(err: unknown): string {
   const e = err as { code?: string; message?: string };

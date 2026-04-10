@@ -622,7 +622,7 @@ export const userProfiles = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Customers table (public.customers) – customer app auth & profile
+// Customers table (public.customers) â€“ customer app auth & profile
 // Enums and table match DDL; use this for customer OTP verify and /me/profile
 // ---------------------------------------------------------------------------
 export const customerGenderEnum = pgEnum("customer_gender", ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"]);
@@ -672,7 +672,7 @@ export const customers = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     createdVia: text("created_via").default("app"),
     updatedBy: text("updated_by"),
-    // App profile/onboarding (add via migration 0065 if your DDL doesn’t have these)
+    // App profile/onboarding (add via migration 0065 if your DDL doesnâ€™t have these)
     ageGroup: text("age_group"),
     profileCompleted: boolean("profile_completed").default(false),
     smsPermission: boolean("sms_permission").default(false),
@@ -758,7 +758,7 @@ export const customerActiveLocation = pgTable("customer_active_location", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
-/** Self-learning delivery locations (orders + manual); powers local search fallback and city→area suggestions. */
+/** Self-learning delivery locations (orders + manual); powers local search fallback and cityâ†’area suggestions. */
 export const popularLocations = pgTable(
   "popular_locations",
   {
@@ -1444,6 +1444,333 @@ export const ordersCorePayments = pgTable(
 );
 
 // ============================================================================
+// BILLING (rule engine: pricing rules, tax, coupons, merchant overrides)
+// ============================================================================
+
+export const billingRuleTypeEnum = pgEnum("billing_rule_type", [
+  "DISCOUNT",
+  "OFFER",
+  "DELIVERY",
+  "PLATFORM_FEE",
+  "TAX",
+  "PACKAGING",
+  "SURGE",
+  "FEE",
+  "SUBSCRIPTION",
+  "DONATION",
+  /** Customer rider tip from checkout; amount from `tipAmount`, not rule value. */
+  "RIDER_TIP",
+  "OTHER",
+  "SMALL_ORDER_FEE",
+  "CONVENIENCE_FEE",
+]);
+
+export const billingOfferOwnerEnum = pgEnum("billing_offer_owner", [
+  "GATIMITRA",
+  "MERCHANT",
+  "OTHER",
+]);
+
+export const billingCalculationTypeEnum = pgEnum("billing_calculation_type", [
+  "FIXED",
+  "PERCENTAGE",
+  "FORMULA_KEY",
+]);
+
+export const billingAppliesToEnum = pgEnum("billing_applies_to", ["ORDER", "ITEM", "DELIVERY"]);
+
+export const billingConditionTypeEnum = pgEnum("billing_condition_type", [
+  "ORDER_VALUE",
+  "DISTANCE_KM",
+  "TIME_WINDOW",
+  "MERCHANT_ID",
+  "MERCHANT_STORE_ID",
+  "ITEM_CATEGORY",
+  "USER_TYPE",
+]);
+
+export const billingConditionOperatorEnum = pgEnum("billing_condition_operator", [
+  "GT",
+  "GTE",
+  "LT",
+  "LTE",
+  "EQ",
+  "NEQ",
+  "BETWEEN",
+]);
+
+export const billingTaxApplicableBaseEnum = pgEnum("billing_tax_applicable_base", [
+  "ITEM_SUBTOTAL",
+  "AFTER_DISCOUNTS",
+  "ITEM_AFTER_DISCOUNT",
+  "DELIVERY_FEE",
+  "PLATFORM_FEE",
+  "PACKAGING_FEE",
+  "SURGE_FEE",
+  "SMALL_ORDER_FEE",
+  "CONVENIENCE_FEE",
+  "GRAND_BEFORE_TAX",
+]);
+
+export const billingDiscountAppliesOnEnum = pgEnum("billing_discount_applies_on", [
+  "ITEMS_TOTAL",
+  "SUBTOTAL",
+  "DELIVERY_FEE",
+  "PLATFORM_FEE",
+  "PACKAGING_FEE",
+]);
+
+export const billingTaxGroupEnum = pgEnum("billing_tax_group", [
+  "item",
+  "delivery",
+  "platform",
+  "packaging",
+  "surge",
+  "fee",
+  "other",
+]);
+
+export const billingDiscountTypeEnum = pgEnum("billing_discount_type", ["FIXED", "PERCENTAGE"]);
+
+export const billingRulesetVersion = pgTable("billing_ruleset_version", {
+  id: integer("id").primaryKey(),
+  version: integer("version").notNull().default(1),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const billingPricingRules = pgTable(
+  "billing_pricing_rules",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name"),
+    type: billingRuleTypeEnum("type").notNull(),
+    calculationType: billingCalculationTypeEnum("calculation_type").notNull(),
+    valueNumeric: numeric("value_numeric", { precision: 14, scale: 4 }),
+    valueJson: jsonb("value_json"),
+    priority: integer("priority").notNull().default(100),
+    /** Global execution order (rules + TAX slabs). Engine sorts by this, not unique `priority`. */
+    chargeOrderKey: bigint("charge_order_key", { mode: "number" }).notNull().default(100000),
+    isActive: boolean("is_active").notNull().default(true),
+    stackable: boolean("stackable").notNull().default(true),
+    appliesTo: billingAppliesToEnum("applies_to").notNull().default("ORDER"),
+    offerOwner: billingOfferOwnerEnum("offer_owner").notNull().default("GATIMITRA"),
+    isHidden: boolean("is_hidden").notNull().default(false),
+    metadata: jsonb("metadata"),
+    serviceType: text("service_type").notNull().default("FOOD"),
+    /** For DISCOUNT/OFFER: which base is reduced (charges applied before discounts). */
+    discountAppliesOn: billingDiscountAppliesOnEnum("discount_applies_on").notNull().default("ITEMS_TOTAL"),
+    chargeSubtype: text("charge_subtype"),
+    /** When type=TAX, points at billing_tax_configs (formula). Slab priority/active/hidden live on this row. */
+    taxConfigId: bigint("tax_config_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    chargeOrderKeyIdx: index("billing_pricing_rules_charge_order_key_idx").on(table.chargeOrderKey),
+    activePriorityIdx: index("billing_pricing_rules_active_priority_idx").on(table.isActive, table.priority),
+    typeActiveIdx: index("billing_pricing_rules_type_active_idx").on(table.type, table.isActive),
+    serviceActiveIdx: index("billing_pricing_rules_service_active_idx").on(table.serviceType, table.isActive),
+    taxConfigIdIdx: index("billing_pricing_rules_tax_config_id_idx").on(table.taxConfigId),
+  })
+);
+
+export const billingPricingRuleConditions = pgTable(
+  "billing_pricing_rule_conditions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    ruleId: bigint("rule_id", { mode: "number" })
+      .notNull()
+      .references(() => billingPricingRules.id, { onDelete: "cascade" }),
+    conditionType: billingConditionTypeEnum("condition_type").notNull(),
+    operator: billingConditionOperatorEnum("operator").notNull(),
+    valueMin: numeric("value_min", { precision: 14, scale: 4 }),
+    valueMax: numeric("value_max", { precision: 14, scale: 4 }),
+    valueText: text("value_text"),
+    valueJson: jsonb("value_json"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    ruleIdIdx: index("billing_pricing_rule_conditions_rule_id_idx").on(table.ruleId),
+  })
+);
+
+export const billingDeliverySlabs = pgTable(
+  "billing_delivery_slabs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name"),
+    minKm: numeric("min_km", { precision: 10, scale: 2 }),
+    maxKm: numeric("max_km", { precision: 10, scale: 2 }),
+    feeFixed: numeric("fee_fixed", { precision: 14, scale: 4 }).notNull().default("0"),
+    feePerKm: numeric("fee_per_km", { precision: 14, scale: 4 }).notNull().default("0"),
+    scopeType: text("scope_type").notNull().default("global"),
+    scopeId: bigint("scope_id", { mode: "number" }),
+    metadata: jsonb("metadata"),
+    priority: integer("priority").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    scopeActivePriorityIdx: index("billing_delivery_slabs_scope_active_priority_idx").on(
+      table.scopeType,
+      table.scopeId,
+      table.isActive,
+      table.priority
+    ),
+  })
+);
+
+export const billingPackagingSlabs = pgTable(
+  "billing_packaging_slabs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name"),
+    minCart: numeric("min_cart", { precision: 14, scale: 4 }),
+    maxCart: numeric("max_cart", { precision: 14, scale: 4 }),
+    feeFixed: numeric("fee_fixed", { precision: 14, scale: 4 }).notNull().default("0"),
+    feePerAddonQty: numeric("fee_per_addon_qty", { precision: 14, scale: 4 }).notNull().default("0"),
+    scopeType: text("scope_type").notNull().default("global"),
+    scopeId: bigint("scope_id", { mode: "number" }),
+    metadata: jsonb("metadata"),
+    priority: integer("priority").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    scopeActivePriorityIdx: index("billing_packaging_slabs_scope_active_priority_idx").on(
+      table.scopeType,
+      table.scopeId,
+      table.isActive,
+      table.priority
+    ),
+  })
+);
+
+export const billingTaxConfigs = pgTable(
+  "billing_tax_configs",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name").notNull(),
+    rate: numeric("rate", { precision: 10, scale: 6 }).notNull(),
+    applicableBase: billingTaxApplicableBaseEnum("applicable_base").notNull(),
+    taxGroup: billingTaxGroupEnum("tax_group"),
+    metadata: jsonb("metadata"),
+    serviceType: text("service_type").notNull().default("FOOD"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  () => ({})
+);
+
+export const billingDiscounts = pgTable("billing_discounts", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  code: text("code").notNull(),
+  discountType: billingDiscountTypeEnum("discount_type").notNull(),
+  valueNumeric: numeric("value_numeric", { precision: 14, scale: 4 }),
+  maxDiscountCap: numeric("max_discount_cap", { precision: 14, scale: 4 }),
+  usageLimit: integer("usage_limit"),
+  usedCount: integer("used_count").notNull().default(0),
+  validFrom: timestamp("valid_from", { withTimezone: true }),
+  validUntil: timestamp("valid_until", { withTimezone: true }),
+  pricingRuleId: bigint("pricing_rule_id", { mode: "number" }).references(() => billingPricingRules.id, {
+    onDelete: "set null",
+  }),
+  metadata: jsonb("metadata"),
+  isActive: boolean("is_active").notNull().default(true),
+  isHidden: boolean("is_hidden").notNull().default(false),
+  serviceType: text("service_type").notNull().default("FOOD"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const billingDeliveryRateCards = pgTable(
+  "billing_delivery_rate_cards",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name"),
+    serviceType: text("service_type").notNull().default("FOOD"),
+    cityName: text("city_name"),
+    timeSlot: text("time_slot"),
+    baseFare: numeric("base_fare", { precision: 14, scale: 4 }).notNull().default("0"),
+    perKmRate: numeric("per_km_rate", { precision: 14, scale: 4 }).notNull().default("0"),
+    surgeMultiplier: numeric("surge_multiplier", { precision: 10, scale: 4 }).notNull().default("1"),
+    minKm: numeric("min_km", { precision: 10, scale: 2 }),
+    maxKm: numeric("max_km", { precision: 10, scale: 2 }),
+    freeDeliveryAbove: numeric("free_delivery_above", { precision: 14, scale: 4 }),
+    scopeType: text("scope_type").notNull().default("global"),
+    scopeId: bigint("scope_id", { mode: "number" }),
+    priority: integer("priority").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    lookupIdx: index("billing_delivery_rate_cards_lookup_idx").on(table.serviceType, table.isActive, table.priority),
+  })
+);
+
+export const billingPlatformOffers = pgTable(
+  "billing_platform_offers",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    name: text("name"),
+    serviceType: text("service_type").notNull().default("FOOD"),
+    discountType: text("discount_type").notNull().default("PERCENTAGE"),
+    valueNumeric: numeric("value_numeric", { precision: 14, scale: 4 }),
+    deliveryDiscountType: text("delivery_discount_type"),
+    deliveryDiscountValue: numeric("delivery_discount_value", { precision: 14, scale: 4 }),
+    offerKind: text("offer_kind").notNull().default("DISCOUNT"),
+    fundingMode: text("funding_mode").notNull().default("PLATFORM_ONLY"),
+    platformSharePct: numeric("platform_share_pct", { precision: 5, scale: 2 }).notNull().default("100"),
+    merchantSharePct: numeric("merchant_share_pct", { precision: 5, scale: 2 }).notNull().default("0"),
+    maxPlatformContribution: numeric("max_platform_contribution", { precision: 14, scale: 4 }),
+    maxMerchantContribution: numeric("max_merchant_contribution", { precision: 14, scale: 4 }),
+    targetScope: text("target_scope").notNull().default("GLOBAL"),
+    geoLevel: text("geo_level"),
+    geoIds: jsonb("geo_ids").notNull().default([]),
+    merchantIds: jsonb("merchant_ids").notNull().default([]),
+    customerSegment: text("customer_segment").notNull().default("ALL"),
+    minOrderAmount: numeric("min_order_amount", { precision: 14, scale: 4 }),
+    maxDiscountAmount: numeric("max_discount_amount", { precision: 14, scale: 4 }),
+    buyQty: integer("buy_qty"),
+    getQty: integer("get_qty"),
+    isStackable: boolean("is_stackable").notNull().default(false),
+    exclusionGroup: text("exclusion_group"),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    budgetTotal: numeric("budget_total", { precision: 14, scale: 4 }),
+    budgetUsed: numeric("budget_used", { precision: 14, scale: 4 }).notNull().default("0"),
+    priority: integer("priority").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    isHidden: boolean("is_hidden").notNull().default(false),
+    conditions: jsonb("conditions").notNull().default({}),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    serviceActiveIdx: index("billing_platform_offers_service_active_idx").on(
+      table.serviceType,
+      table.isActive,
+      table.priority
+    ),
+  })
+);
+
+export const merchantBillingOverrides = pgTable(
+  "merchant_billing_overrides",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    merchantStoreId: bigint("merchant_store_id", { mode: "number" }).notNull().unique(),
+    overrides: jsonb("overrides").notNull().default({}),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
+// ============================================================================
 // PENDING ORDERS (payment-first: lock cart until payment success)
 // ============================================================================
 
@@ -1471,6 +1798,9 @@ export const pendingOrders = pgTable(
     pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
     pickupLon: numeric("pickup_lon", { precision: 9, scale: 6 }),
     distanceKm: numeric("distance_km", { precision: 8, scale: 2 }),
+    billingSnapshot: jsonb("billing_snapshot"),
+    billingRulesetVersion: integer("billing_ruleset_version"),
+    couponCode: text("coupon_code"),
     razorpayOrderId: text("razorpay_order_id"),
     finalizedOrderId: text("finalized_order_id"),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
@@ -3563,3 +3893,4 @@ export const agentBreakLogsRelations = relations(agentBreakLogs, ({ one }) => ({
     references: [systemUsers.id],
   }),
 }));
+

@@ -35,6 +35,7 @@ import { useOrderStore } from "@/store/orderStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { orderService } from "@/services/order.service";
+import { billingService } from "@/services/billing.service";
 import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
@@ -48,6 +49,7 @@ import {
   type BillSummary,
 } from "@/lib/billSummary";
 import { reverseGeocode } from "@/services/location.service";
+import { getRoute } from "@/services/distance.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
 
@@ -85,8 +87,9 @@ export default function CheckoutScreen() {
   const [tipAmount, setTipAmount] = useState<TipPreset>(0);
   const [customTip, setCustomTip] = useState("");
   const [donationEnabled, setDonationEnabled] = useState(false);
+  const [subscriptionOptIn, setSubscriptionOptIn] = useState(false);
   const [donationAmount, setDonationAmount] = useState("");
-  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [appliedCouponCode, setAppliedCouponCode] = useState<string | null>(null);
   const [appliedCouponLabel, setAppliedCouponLabel] = useState<string | null>(null);
   const [leaveAtDoor, setLeaveAtDoor] = useState(false);
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
@@ -207,44 +210,168 @@ export default function CheckoutScreen() {
 
   const storeFullAddress = merchantAbout?.full_address ?? merchant?.address ?? merchant?.city ?? merchantName;
 
+  const routeDistanceQuery = useQuery({
+    queryKey: [
+      "checkout-route-distance",
+      merchant?.id ?? merchantId,
+      selectedAddress?.id,
+      merchant?.latitude,
+      merchant?.longitude,
+      selectedAddress?.latitude,
+      selectedAddress?.longitude,
+    ],
+    queryFn: () =>
+      getRoute({
+        origin: { lat: Number(merchant!.latitude), lng: Number(merchant!.longitude) },
+        destination: { lat: selectedAddress!.latitude, lng: selectedAddress!.longitude },
+        profile: "driving",
+      }),
+    enabled:
+      !!selectedAddress &&
+      merchant?.latitude != null &&
+      merchant?.longitude != null,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const deliveryDistanceKm = useMemo(() => {
-    if (!selectedAddress || !merchant?.latitude || !merchant?.longitude) return null;
+    if (routeDistanceQuery.data?.distanceKm != null) return routeDistanceQuery.data.distanceKm;
+    if (!selectedAddress || merchant?.latitude == null || merchant?.longitude == null) return null;
     return haversineKm(
       selectedAddress.latitude,
       selectedAddress.longitude,
       Number(merchant.latitude),
       Number(merchant.longitude)
     );
-  }, [selectedAddress, merchant]);
+  }, [routeDistanceQuery.data?.distanceKm, selectedAddress, merchant?.latitude, merchant?.longitude]);
+
+  const currentVsSelectedDistanceKm = useMemo(() => {
+    if (!selectedAddress || !currentLocationCoords) return null;
+    return haversineKm(
+      selectedAddress.latitude,
+      selectedAddress.longitude,
+      currentLocationCoords.latitude,
+      currentLocationCoords.longitude
+    );
+  }, [selectedAddress, currentLocationCoords]);
 
   const itemTotal = useMemo(
     () => items.reduce((s, i) => s + i.price * i.quantity, 0),
     [items]
   );
 
-  const bill: BillSummary = useMemo(
-    () =>
-      computeBillSummary({
-        itemTotal,
-        deliveryDistanceKm,
-        couponDiscount,
-      }),
-    [itemTotal, deliveryDistanceKm, couponDiscount]
-  );
-
   const tipValue = tipAmount === "custom" ? parseFloat(customTip) || 0 : (tipAmount as number);
   const donationValue = donationEnabled
     ? (donationPreset !== "custom" && donationPreset != null ? Number(donationPreset) : parseFloat(donationAmount) || 0)
     : 0;
-  const toPay = bill.finalTotal + tipValue + donationValue;
+
+  const itemsWithSnapshots = useMemo(() => {
+    const baseId = (menuItemId: string) =>
+      menuItemId.includes("_") ? menuItemId.split("_")[0]! : menuItemId;
+    return items.map((i) => {
+      const bid = baseId(i.menuItemId);
+      const menuItem = merchant?.menu?.find((m) => m.id === bid);
+      const categoryName =
+        (menuItem as { categoryName?: string } | undefined)?.categoryName ??
+        (menuItem as { category_name?: string } | undefined)?.category_name;
+      const rawPack =
+        (menuItem as { packaging_charges?: number; packagingCharges?: number } | undefined)
+          ?.packaging_charges ??
+        (menuItem as { packagingCharges?: number } | undefined)?.packagingCharges;
+      const packNum = rawPack != null ? Number(rawPack) : NaN;
+      const snap: Record<string, unknown> = {};
+      if (categoryName) snap.category_name = categoryName;
+      if (Number.isFinite(packNum) && packNum > 0) {
+        snap.packaging_enabled = true;
+        snap.packaging_charges = packNum;
+      }
+      return {
+        menuItemId: bid,
+        itemName: i.name,
+        quantity: i.quantity,
+        basePrice: i.basePrice ?? i.price,
+        variantId: i.variantId ?? null,
+        variantName: i.variantName ?? null,
+        addons: (i.addons ?? []).map((a) => ({
+          addonId: a.addonId,
+          addonName: a.addonName,
+          addonPrice: a.addonPrice,
+          quantity: a.quantity,
+        })),
+        itemSnapshot: Object.keys(snap).length ? snap : undefined,
+      };
+    });
+  }, [items, merchant?.menu]);
+
+  const rangeBill: BillSummary = useMemo(
+    () =>
+      computeBillSummary({
+        itemTotal,
+        deliveryDistanceKm,
+        couponDiscount: 0,
+      }),
+    [itemTotal, deliveryDistanceKm]
+  );
+
+  const billingQuery = useQuery({
+    queryKey: [
+      "billing-calculate",
+      merchantId,
+      selectedAddress?.id,
+      itemsWithSnapshots,
+      tipValue,
+      donationValue,
+      appliedCouponCode,
+      subscriptionOptIn,
+    ],
+    queryFn: () =>
+      billingService.calculateBill({
+        merchantId: merchantId!,
+        addressId: String(selectedAddress!.id),
+        items: itemsWithSnapshots,
+        tipAmount: tipValue,
+        donationAmount: donationValue,
+        couponCode: appliedCouponCode ?? undefined,
+        serviceType: "FOOD",
+        subscriptionOptIn,
+        ...(selectedAddress?.city != null && String(selectedAddress.city).trim() !== ""
+          ? { cityName: String(selectedAddress.city).trim() }
+          : {}),
+        ...(merchant?.latitude != null &&
+          merchant?.longitude != null && {
+            pickupLat: Number(merchant.latitude),
+            pickupLon: Number(merchant.longitude),
+          }),
+      }),
+    enabled: !!merchantId && !!selectedAddress && items.length > 0 && !merchantLoading,
+    retry: 2,
+  });
+
+  const serverBill = billingQuery.data ?? null;
+  const visibleCharges = useMemo(
+    () => (serverBill?.charges ?? []).filter((c) => !c.hidden),
+    [serverBill?.charges]
+  );
+  const visibleDiscounts = useMemo(
+    () => (serverBill?.discounts ?? []).filter((c) => !c.hidden),
+    [serverBill?.discounts]
+  );
+  const visibleTaxes = useMemo(
+    () => (serverBill?.taxes ?? []).filter((c) => !c.hidden),
+    [serverBill?.taxes]
+  );
+  const toPay =
+    serverBill != null
+      ? serverBill.finalAmount
+      : rangeBill.finalTotal + tipValue + donationValue;
   const hasValidPayment = paymentMethod !== "cod" && ["upi", "card", "wallet"].includes(paymentMethod);
   const canPlaceOrder =
     !isStoreClosed &&
     items.length > 0 &&
     !!selectedAddress &&
-    !bill.isOutOfRange &&
     !!merchantId &&
-    hasValidPayment;
+    hasValidPayment &&
+    billingQuery.isSuccess &&
+    serverBill != null;
 
   const baseOrderPayload = useMemo(() => {
     if (!merchantId || !selectedAddress) return null;
@@ -259,31 +386,30 @@ export default function CheckoutScreen() {
             pickupLon: Number(merchant.longitude),
           }
         : {};
-    const baseId = (menuItemId: string) =>
-      menuItemId.includes("_") ? menuItemId.split("_")[0]! : menuItemId;
     return {
       merchantId,
-      items: items.map((i) => ({
-        menuItemId: baseId(i.menuItemId),
-        itemName: i.name,
-        quantity: i.quantity,
-        basePrice: i.basePrice ?? i.price,
-        variantId: i.variantId ?? null,
-        variantName: i.variantName ?? null,
-        addons: (i.addons ?? []).map((a) => ({
-          addonId: a.addonId,
-          addonName: a.addonName,
-          addonPrice: a.addonPrice,
-          quantity: a.quantity,
-        })),
-      })),
+      items: itemsWithSnapshots,
       addressId: String(selectedAddress.id),
       paymentMethod,
       ...(tipValue > 0 && { tipAmount: tipValue }),
       ...(donationValue > 0 && { donationAmount: donationValue }),
+      ...(appliedCouponCode && { couponCode: appliedCouponCode }),
+      ...(subscriptionOptIn && { subscriptionOptIn: true }),
       ...pickup,
     };
-  }, [merchantId, items, selectedAddress, paymentMethod, tipValue, donationValue, merchant, storeFullAddress, merchantName]);
+  }, [
+    merchantId,
+    itemsWithSnapshots,
+    selectedAddress,
+    paymentMethod,
+    tipValue,
+    donationValue,
+    appliedCouponCode,
+    subscriptionOptIn,
+    merchant,
+    storeFullAddress,
+    merchantName,
+  ]);
 
   const placeOrder = useMutation({
     mutationFn: (razorpay?: RazorpayPaymentResult) => {
@@ -586,7 +712,8 @@ export default function CheckoutScreen() {
     );
   }
 
-  const showBillSkeleton = merchantLoading || (addressesLoading && addresses.length === 0);
+  const showBillSkeleton =
+    merchantLoading || (addressesLoading && addresses.length === 0) || billingQuery.isLoading;
 
   return (
     <View style={styles.container}>
@@ -601,14 +728,14 @@ export default function CheckoutScreen() {
               {storeFullAddress}
             </Text>
             {deliveryDistanceKm != null && (
-              <View style={[styles.headerDistanceTag, bill.isOutOfRange && styles.headerDistanceTagFar]}>
+              <View style={[styles.headerDistanceTag, rangeBill.isOutOfRange && styles.headerDistanceTagFar]}>
                 <Ionicons
                   name="navigate"
                   size={12}
-                  color={bill.isOutOfRange ? GatiMitraColors.warningAmber : GatiMitraColors.emerald}
+                  color={rangeBill.isOutOfRange ? GatiMitraColors.warningAmber : GatiMitraColors.emerald}
                   style={styles.headerDistanceTagIcon}
                 />
-                <Text style={[styles.headerDistanceTagText, bill.isOutOfRange && styles.headerDistanceTagTextFar]}>
+                <Text style={[styles.headerDistanceTagText, rangeBill.isOutOfRange && styles.headerDistanceTagTextFar]}>
                   {deliveryDistanceKm.toFixed(1)} km away
                 </Text>
               </View>
@@ -625,11 +752,20 @@ export default function CheckoutScreen() {
         </View>
       </View>
 
-      {bill.isOutOfRange && (
+      {rangeBill.isOutOfRange && (
         <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBanner}>
           <Ionicons name="warning" size={20} color={GatiMitraColors.warningAmber} />
           <Text style={styles.distanceBannerText}>
-            Selected address is {deliveryDistanceKm?.toFixed(1)} km away. Out of delivery range.
+            Selected address is {deliveryDistanceKm?.toFixed(1)} km away. Delivery charges may be higher.
+          </Text>
+        </Animated.View>
+      )}
+      {currentVsSelectedDistanceKm != null && currentVsSelectedDistanceKm > 1.5 && (
+        <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBanner}>
+          <Ionicons name="information-circle" size={20} color={GatiMitraColors.warningAmber} />
+          <Text style={styles.distanceBannerText}>
+            You are currently {currentVsSelectedDistanceKm.toFixed(1)} km away from the selected delivery address.
+            Order will be delivered to the selected address.
           </Text>
         </Animated.View>
       )}
@@ -711,10 +847,13 @@ export default function CheckoutScreen() {
             onPress={() => setCouponSheetVisible(true)}
           >
             <Ionicons name="pricetag-outline" size={22} color={GatiMitraColors.emerald} />
-            {couponDiscount > 0 ? (
+            {appliedCouponCode || (serverBill && serverBill.discountTotal > 0) ? (
               <View style={styles.appliedCouponWrap}>
                 <Text style={styles.appliedCouponText}>
-                  {appliedCouponLabel ?? "Coupon applied"} • -₹{couponDiscount.toFixed(2)}
+                  {appliedCouponLabel ?? appliedCouponCode ?? "Coupon applied"}
+                  {serverBill && serverBill.discountTotal > 0
+                    ? ` • -₹${serverBill.discountTotal.toFixed(2)}`
+                    : ""}
                 </Text>
               </View>
             ) : (
@@ -879,24 +1018,78 @@ export default function CheckoutScreen() {
               </View>
             ) : billSummaryExpanded ? (
               <View style={styles.billSummaryExpanded}>
-                <BillRow label="Item total" value={`₹${bill.itemTotal.toFixed(2)}`} />
-                <BillRow
-                  label={`Delivery partner fee${deliveryDistanceKm != null ? ` (${deliveryDistanceKm.toFixed(1)} km)` : ""}`}
-                  value={`₹${bill.deliveryFee.toFixed(2)}`}
-                />
-                <BillRow label="Platform fee" value={`₹${bill.platformFee.toFixed(2)}`} />
-                <BillRow label="GST (govt. taxes)" value={`₹${bill.gst.toFixed(2)}`} />
-                {bill.discount > 0 && (
-                  <BillRow label="Discount" value={`-₹${bill.discount.toFixed(2)}`} green />
+                {serverBill ? (
+                  <>
+                    <BillRow label="Item total" value={`₹${serverBill.itemTotal.toFixed(2)}`} />
+                    {serverBill.addonTotal > 0 && (
+                      <BillRow label="Add-ons" value={`₹${serverBill.addonTotal.toFixed(2)}`} />
+                    )}
+                    {visibleCharges.map((c, idx) => (
+                      <BillRow key={`chg-${idx}`} label={c.label} value={`₹${c.amount.toFixed(2)}`} />
+                    ))}
+                    {visibleDiscounts.map((c, idx) => (
+                      <BillRow key={`dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
+                    ))}
+                    {visibleTaxes.map((c, idx) => (
+                      <BillRow key={`tax-${idx}`} label={c.label} value={`₹${c.amount.toFixed(2)}`} />
+                    ))}
+                    <View style={styles.billDivider} />
+                    <BillRow
+                      label="Subtotal"
+                      value={`₹${(serverBill.finalAmount - serverBill.tipAmount - serverBill.donationAmount).toFixed(2)}`}
+                    />
+                    {serverBill.tipAmount > 0 && (
+                      <BillRow label="Delivery partner tip" value={`₹${serverBill.tipAmount.toFixed(2)}`} />
+                    )}
+                    {serverBill.donationAmount > 0 && (
+                      <BillRow label="Feeding India donation" value={`₹${serverBill.donationAmount.toFixed(2)}`} />
+                    )}
+                    <View style={styles.billDivider} />
+                    <BillRow label="Total payable" value={`₹${serverBill.finalAmount.toFixed(2)}`} bold />
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ fontSize: 13, color: GatiMitraColors.textSecondary, marginBottom: 8 }}>
+                      Showing estimate — connect to refresh bill from server.
+                    </Text>
+                    <BillRow label="Item total" value={`₹${rangeBill.itemTotal.toFixed(2)}`} />
+                    <BillRow
+                      label={`Delivery partner fee${deliveryDistanceKm != null ? ` (${deliveryDistanceKm.toFixed(1)} km)` : ""}`}
+                      value={`₹${rangeBill.deliveryFee.toFixed(2)}`}
+                    />
+                    <BillRow label="Platform fee" value={`₹${rangeBill.platformFee.toFixed(2)}`} />
+                    <BillRow label="GST (govt. taxes)" value={`₹${rangeBill.gst.toFixed(2)}`} />
+                    <View style={styles.billDivider} />
+                    <BillRow label="Subtotal" value={`₹${rangeBill.finalTotal.toFixed(2)}`} />
+                    {tipValue > 0 && <BillRow label="Delivery partner tip" value={`₹${tipValue.toFixed(2)}`} />}
+                    {donationValue > 0 && <BillRow label="Feeding India donation" value={`₹${donationValue.toFixed(2)}`} />}
+                    <View style={styles.billDivider} />
+                    <BillRow label="Total payable" value={`₹${toPay.toFixed(2)}`} bold />
+                  </>
                 )}
-                <View style={styles.billDivider} />
-                <BillRow label="Subtotal" value={`₹${bill.finalTotal.toFixed(2)}`} />
-                {tipValue > 0 && <BillRow label="Delivery partner tip" value={`₹${tipValue.toFixed(2)}`} />}
-                {donationValue > 0 && <BillRow label="Feeding India donation" value={`₹${donationValue.toFixed(2)}`} />}
-                <View style={styles.billDivider} />
-                <BillRow label="Total payable" value={`₹${toPay.toFixed(2)}`} bold />
               </View>
             ) : null}
+          </View>
+        </Animated.View>
+
+        {/* Optional platform subscription (SUBSCRIPTION billing rule) */}
+        <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(95)} style={styles.sectionContrib}>
+          <View style={styles.donationCard}>
+            <View style={styles.donationCardHeader}>
+              <View style={styles.donationIconWrap}>
+                <Ionicons name="shield-checkmark" size={22} color={GatiMitraColors.emerald} />
+              </View>
+              <View style={styles.donationCardTitleWrap}>
+                <Text style={styles.donationCardTitle}>GatiMitra+ add-on</Text>
+                <Text style={styles.donationCardSub}>Optional subscription charge if enabled in billing rules.</Text>
+              </View>
+              <Switch
+                value={subscriptionOptIn}
+                onValueChange={setSubscriptionOptIn}
+                trackColor={{ false: GatiMitraColors.border, true: GatiMitraColors.mintHighlight }}
+                thumbColor="#fff"
+              />
+            </View>
           </View>
         </Animated.View>
 
@@ -1072,8 +1265,8 @@ export default function CheckoutScreen() {
                   const code = couponCodeInput.trim();
                   if (!code) { setCouponApplyError("Enter a coupon code"); return; }
                   setCouponApplyError(null);
+                  setAppliedCouponCode(code);
                   setAppliedCouponLabel(code);
-                  setCouponDiscount(50);
                   setCouponSheetVisible(false);
                   setCouponCodeInput("");
                 }}
@@ -1162,7 +1355,15 @@ export default function CheckoutScreen() {
             <View style={styles.footerCtaSlotDisabled}>
               <Text style={styles.ctaDisabledLabel}>Place Order • ₹{toPay.toFixed(2)}</Text>
               <Text style={styles.ctaDisabledHint}>
-                {!selectedAddress ? "Check your address before proceeding" : bill.isOutOfRange ? "Address out of range" : "Select payment"}
+                {!selectedAddress
+                  ? "Check your address before proceeding"
+                  : billingQuery.isError
+                      ? "Could not load bill — retry"
+                      : billingQuery.isLoading
+                        ? "Loading bill…"
+                        : !serverBill
+                          ? "Waiting for bill"
+                          : "Select payment"}
               </Text>
             </View>
           ) : (

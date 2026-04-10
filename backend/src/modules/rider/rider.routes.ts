@@ -6,7 +6,7 @@ import {
   RiderProfileSchema,
   type RiderLocationPing,
 } from "@gatimitra/contracts";
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, sql } from "drizzle-orm";
 import { ulid } from "ulid";
 import { auth } from "../../plugins/auth.js";
 import { getDb } from "../../db/client.js";
@@ -22,6 +22,7 @@ import {
 } from "../../db/schema.js";
 import { scoreLocationPing, type LocationPoint } from "./fraud.js";
 import { getR2SignedUrl, deleteFromR2, extractKeyFromSignedUrl } from "../../services/r2/r2Service.js";
+import { getEnv } from "../../config/env.js";
 
 export async function riderRoutes(app: FastifyInstance) {
   // All rider endpoints require rider auth (later: enforce role claim).
@@ -163,6 +164,18 @@ export async function riderRoutes(app: FastifyInstance) {
         });
 
       if (body.order_id) {
+        const useAssignmentV2 = getEnv().OMS_RIDER_ASSIGNMENT_V2;
+        if (useAssignmentV2) {
+        const active = await db.execute(sql`
+          SELECT rider_id
+          FROM order_rider_assignments_current
+          WHERE order_id = ${body.order_id}
+          LIMIT 1
+        `) as unknown as Array<{ rider_id: number }>;
+        if (!active[0] || Number(active[0].rider_id) !== riderId) {
+          return reply.status(403).send({ error: "Rider is not active on this order" });
+        }
+        }
         await db.insert(orderRiderTracking).values({
           orderId: body.order_id,
           orderSource: "orders_core",
@@ -189,6 +202,98 @@ export async function riderRoutes(app: FastifyInstance) {
 
       return { ok: true as const };
     },
+  );
+
+  if (getEnv().OMS_RIDER_ASSIGNMENT_V2) app.post(
+    "/assignments/event",
+    {
+      schema: {
+        body: z.object({
+          order_id: z.string().min(1),
+          rider_id: z.number().int().positive().nullable().optional(),
+          event_type: z.enum(["assigned", "reassigned", "accepted", "rejected", "unassigned", "completed"]),
+          idempotency_key: z.string().min(6),
+          actor_type: z.string().default("system"),
+          actor_id: z.string().optional(),
+          metadata: z.record(z.string(), z.unknown()).optional(),
+        }),
+        response: {
+          200: z.object({ ok: z.literal(true), eventId: z.string() }),
+          400: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const db = getDb();
+      const body = req.body as {
+        order_id: string;
+        rider_id?: number | null;
+        event_type: "assigned" | "reassigned" | "accepted" | "rejected" | "unassigned" | "completed";
+        idempotency_key: string;
+        actor_type?: string;
+        actor_id?: string;
+        metadata?: Record<string, unknown>;
+      };
+      const eventId = `rae_${ulid()}`;
+      const now = new Date();
+
+      try {
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`
+            INSERT INTO order_rider_assignment_events (
+              event_id, order_id, rider_id, event_type, actor_type, actor_id, idempotency_key, metadata, created_at
+            )
+            VALUES (
+              ${eventId},
+              ${body.order_id},
+              ${body.rider_id ?? null},
+              ${body.event_type},
+              ${body.actor_type ?? "system"},
+              ${body.actor_id ?? null},
+              ${body.idempotency_key},
+              ${JSON.stringify(body.metadata ?? {})}::jsonb,
+              ${now}
+            )
+            ON CONFLICT (order_id, idempotency_key) DO NOTHING
+          `);
+
+          if (body.event_type === "assigned" || body.event_type === "reassigned" || body.event_type === "accepted") {
+            if (!body.rider_id) throw new Error("rider_id is required for assignment event");
+            await tx.execute(sql`
+              INSERT INTO order_rider_assignments_current (order_id, rider_id, status, assigned_at, updated_at)
+              VALUES (${body.order_id}, ${body.rider_id}, ${body.event_type}, ${now}, ${now})
+              ON CONFLICT (order_id) DO UPDATE
+              SET rider_id = EXCLUDED.rider_id, status = EXCLUDED.status, updated_at = EXCLUDED.updated_at
+            `);
+            await tx.execute(sql`
+              UPDATE orders_core SET rider_id = ${body.rider_id}, updated_at = ${now}
+              WHERE order_id = ${body.order_id}
+            `);
+          } else if (body.event_type === "unassigned" || body.event_type === "rejected" || body.event_type === "completed") {
+            await tx.execute(sql`DELETE FROM order_rider_assignments_current WHERE order_id = ${body.order_id}`);
+            if (body.event_type === "unassigned" || body.event_type === "rejected") {
+              await tx.execute(sql`UPDATE orders_core SET rider_id = NULL, updated_at = ${now} WHERE order_id = ${body.order_id}`);
+            }
+          }
+
+          await tx.execute(sql`
+            INSERT INTO order_events (order_id, order_source, event_type, to_status, payload, actor_type, created_at)
+            VALUES (
+              ${body.order_id},
+              'orders_core',
+              ${`rider_${body.event_type}`},
+              ${body.event_type},
+              ${JSON.stringify({ rider_id: body.rider_id ?? null, assignment_event_id: eventId })}::jsonb,
+              ${body.actor_type ?? "system"},
+              ${now}
+            )
+          `);
+        });
+      } catch (e) {
+        return reply.status(400).send({ error: e instanceof Error ? e.message : "Failed to record assignment event" });
+      }
+      return { ok: true as const, eventId };
+    }
   );
 
   app.get(

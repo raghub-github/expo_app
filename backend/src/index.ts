@@ -21,9 +21,12 @@ import { merchantRoutes } from "./modules/merchants/merchant.routes.js";
 import { merchantReportRoutes } from "./modules/merchants/merchant-report.routes.js";
 import { bookmarkRoutes } from "./modules/bookmarks/bookmark.routes.js";
 import { orderRoutes } from "./modules/orders/order.routes.js";
+import { billingModule } from "./modules/billing/billing.routes.js";
 import { addressRoutes } from "./modules/addresses/address.routes.js";
 import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
 import { distanceRoutes } from "./modules/distance/distance.routes.js";
+import { geoRoutes } from "./modules/geo/geo.routes.js";
+import { deliveryRateCardModule } from "./modules/delivery-rate-card/deliveryRateCard.routes.js";
 import { plansRoutes } from "./modules/plans/plans.routes.js";
 import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
 import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
@@ -235,8 +238,11 @@ await app.register(merchantPartnerRoutes, { prefix: "/v1" });
 await app.register(merchantMenuRoutes, { prefix: "/v1" });
 await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
 await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
+await app.register(billingModule, { prefix: "/v1/billing" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
 await app.register(distanceRoutes, { prefix: "/v1/distance" });
+await app.register(geoRoutes, { prefix: "/v1" });
+await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 

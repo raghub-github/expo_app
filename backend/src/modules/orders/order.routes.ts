@@ -12,6 +12,8 @@ import { verifyRazorpaySignature } from "../../services/payment/razorpayService.
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { auth } from "../../plugins/auth.js";
 import { createPendingOrder, finalizeOrder } from "./order.placement.service.js";
+import { getEnv } from "../../config/env.js";
+import { getRoute } from "../distance/distance.service.js";
 
 /** Em dash / empty → null for DB. Never insert placeholder characters. */
 const EM_DASH = "\u2014";
@@ -24,27 +26,9 @@ function sanitizeOptional<T>(v: T): T | null {
   }
   return v;
 }
-
-/** Haversine distance in km. Server-side only; never trust frontend distance. */
-function haversineKm(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c * 100) / 100;
-}
 import { getDb } from "../../db/client.js";
+import { computeBillForOrder } from "../billing/billing.service.js";
+import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
   customers,
   customerAddresses,
@@ -111,6 +95,8 @@ const createOrderBodySchema = z.object({
   pickupAddressRaw: z.string().optional(),
   pickupLat: z.number().optional(),
   pickupLon: z.number().optional(),
+  couponCode: z.string().optional().nullable(),
+  subscriptionOptIn: z.boolean().optional(),
 });
 
 const paymentMethodToEnum = (method: string): "upi" | "card" | "wallet" | "online" | "cod" | "other" => {
@@ -219,9 +205,11 @@ export async function orderRoutes(app: FastifyInstance) {
     paymentMethod: z.string(),
     tipAmount: z.number().nonnegative().optional(),
     donationAmount: z.number().nonnegative().optional(),
+    couponCode: z.string().optional().nullable(),
     pickupAddressRaw: z.string().optional(),
     pickupLat: z.number().optional(),
     pickupLon: z.number().optional(),
+    subscriptionOptIn: z.boolean().optional(),
   });
 
   app.post(
@@ -265,9 +253,11 @@ export async function orderRoutes(app: FastifyInstance) {
         paymentMethod: body.paymentMethod,
         tipAmount: body.tipAmount,
         donationAmount: body.donationAmount,
+        couponCode: body.couponCode,
         pickupAddressRaw: body.pickupAddressRaw,
         pickupLat: body.pickupLat,
         pickupLon: body.pickupLon,
+        subscriptionOptIn: body.subscriptionOptIn,
       });
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });
@@ -506,6 +496,8 @@ export async function orderRoutes(app: FastifyInstance) {
         pickupAddressRaw,
         pickupLat,
         pickupLon,
+        couponCode,
+        subscriptionOptIn,
       } = body;
 
       const sub = req.auth?.sub;
@@ -556,6 +548,38 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: "Address not found" });
       }
 
+      const normOrder = normalizeOrderItems(items);
+      if (!normOrder.ok) {
+        return reply.status(400).send({ error: normOrder.code, message: normOrder.message });
+      }
+      const normItems = normOrder.items;
+
+      const itemTotal = normItems.reduce((s, i) => s + i.basePrice * i.quantity, 0);
+      const addonTotalOrder = normItems.reduce((s, i) => {
+        const lineAddon = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
+        return s + lineAddon;
+      }, 0);
+      let totalAmount = itemTotal + addonTotalOrder + (tipAmount ?? 0) + (donationAmount ?? 0);
+
+      if (getEnv().BILLING_RULES_ENABLED) {
+        const billRes = await computeBillForOrder(db, {
+          customerId: Number(customerPk),
+          merchantId,
+          items: normItems,
+          addressId: addressIdNum,
+          tipAmount: tipAmount ?? 0,
+          donationAmount: donationAmount ?? 0,
+          couponCode: couponCode?.trim() || null,
+          pickupLat,
+          pickupLon,
+          subscriptionOptIn: subscriptionOptIn === true,
+        });
+        if (!billRes.ok) {
+          return reply.status(400).send({ error: billRes.code, message: billRes.message });
+        }
+        totalAmount = billRes.billing.final_amount;
+      }
+
       const dropAddressRaw =
         [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
           .filter(Boolean)
@@ -580,13 +604,6 @@ export async function orderRoutes(app: FastifyInstance) {
         }
       }
 
-      type ItemRow = z.infer<typeof createOrderItemSchema>;
-      const itemTotal = items.reduce((s: number, i: ItemRow) => s + i.basePrice * i.quantity, 0);
-      const addonTotalOrder = items.reduce((s: number, i: ItemRow) => {
-        const lineAddon = (i.addons ?? []).reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
-        return s + lineAddon;
-      }, 0);
-      const totalAmount = itemTotal + addonTotalOrder + (tipAmount ?? 0) + (donationAmount ?? 0);
       const paymentStatus = razorpayPaymentId ? "PAID" : "PENDING";
       const paymentMethodEnum = paymentMethodToEnum(paymentMethod);
 
@@ -635,7 +652,30 @@ export async function orderRoutes(app: FastifyInstance) {
           ? JSON.stringify({ lat: dropLat, lng: dropLon })
           : null;
 
-      const distanceKm = haversineKm(pickupLatNum, pickupLonNum, dropLat, dropLon);
+      // Canonical distance: route-based between store pickup and selected drop address.
+      // Use routing engine with internal fallback to Haversine when providers fail.
+      let distanceKm = 0;
+      try {
+        const env = getEnv();
+        const route = await getRoute({
+          origin: { lat: pickupLatNum, lng: pickupLonNum },
+          destination: { lat: dropLat, lng: dropLon },
+          profile: "driving",
+          mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
+          osrmBaseUrl: env.OSRM_BASE_URL || undefined,
+        });
+        distanceKm = route.distanceKm;
+      } catch {
+        const toRad = (deg: number) => (deg * Math.PI) / 180;
+        const R = 6371;
+        const dLat = toRad(dropLat - pickupLatNum);
+        const dLon = toRad(dropLon - pickupLonNum);
+        const a =
+          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(toRad(pickupLatNum)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        distanceKm = Math.round(R * c * 100) / 100;
+      }
 
       const merchantParentId = storeForOrder?.parentId ?? null;
 
@@ -679,17 +719,17 @@ export async function orderRoutes(app: FastifyInstance) {
             paymentMethod: paymentMethodEnum,
           } as any);
 
-          const itemInserts = (items as ItemRow[]).map((i) => {
-            const addonPerUnit = (i.addons ?? []).reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
+          const itemInserts = normItems.map((i) => {
+            const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
             const lineAddonTotal = addonPerUnit * i.quantity;
             const lineTotal = i.basePrice * i.quantity + lineAddonTotal;
             return {
               orderId: idText,
-              menuItemId: Number(i.menuItemId),
+              menuItemId: i.menuItemId,
               itemName: i.itemName,
               categoryName: null,
               vegNonveg: null,
-              variantId: i.variantId != null ? Number(i.variantId) : undefined,
+              variantId: i.variantId ?? undefined,
               variantName: i.variantName ?? undefined,
               quantity: i.quantity,
               basePrice: String(i.basePrice.toFixed(2)),
@@ -702,9 +742,9 @@ export async function orderRoutes(app: FastifyInstance) {
           const insertedItems = await (tx.insert(ordersCoreItems) as any)
             .values(itemInserts as any)
             .returning({ id: ordersCoreItems.id });
-          for (let idx = 0; idx < (items as ItemRow[]).length; idx++) {
-            const row = (items as ItemRow[])[idx];
-            const addons = row.addons ?? [];
+          for (let idx = 0; idx < normItems.length; idx++) {
+            const row = normItems[idx]!;
+            const addons = row.addons;
             if (addons.length === 0) continue;
             const orderItemId = insertedItems[idx]?.id;
             if (orderItemId == null) continue;

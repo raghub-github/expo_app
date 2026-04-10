@@ -21,18 +21,26 @@ function resolveApiBaseUrl(raw: string): string {
   return trimmed;
 }
 
+/** Backend HTTP port — must match `PORT` in backend/.env (default 3000). */
+function apiDevPort(): string {
+  return asNonEmptyString(process.env.EXPO_PUBLIC_API_PORT) ?? "3000";
+}
+
 export function getConfig(): {
   apiBaseUrl: string;
   mapboxAccessToken: string | null;
+  /** Same token baked into native Maps via app.config.js (Android / iOS). */
+  googleMapsApiKey: string | null;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
 } {
-  // Physical device: set EXPO_PUBLIC_DEV_HOST to your PC's IP (from ipconfig) to reach backend
+  const port = apiDevPort();
+  // Physical device: set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP (e.g. 192.168.1.5) — same Wi‑Fi as the phone/emulator host
   const devHost = asNonEmptyString(process.env.EXPO_PUBLIC_DEV_HOST);
   let rawUrl: string;
   if (devHost) {
     const host = devHost.replace(/^https?:\/\//, "").split("/")[0].replace(/:\d+$/, "");
-    rawUrl = `http://${host}:3001`;
+    rawUrl = `http://${host}:${port}`;
   } else {
     const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
     const fromExtra =
@@ -41,10 +49,15 @@ export function getConfig(): {
     rawUrl =
       asNonEmptyString(fromEnv) ??
       asNonEmptyString(fromExtra) ??
-      "http://localhost:3001";
+      `http://localhost:${port}`;
   }
 
   const apiBaseUrl = resolveApiBaseUrl(rawUrl);
+
+  const googleMapsApiKey =
+    asNonEmptyString(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) ??
+    asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string) ??
+    null;
 
   const mapboxAccessToken =
     asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN) ??
@@ -67,6 +80,7 @@ export function getConfig(): {
   return {
     apiBaseUrl,
     mapboxAccessToken,
+    googleMapsApiKey,
     supabaseUrl,
     supabaseAnonKey,
   };

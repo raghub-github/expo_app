@@ -167,7 +167,7 @@ export default function LoginScreen() {
       setError(
         msg ||
           (isNetworkError
-            ? "Cannot reach server. Ensure backend is running (npm run dev:backend) and, on a physical device, set EXPO_PUBLIC_API_BASE_URL to your PC IP (e.g. http://192.168.1.x:3001)."
+            ? "Cannot reach server. Run backend (npm run dev in backend/, default port 3000). On a physical device set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP and use the same port as the backend (EXPO_PUBLIC_API_PORT or EXPO_PUBLIC_API_BASE_URL)."
             : "Failed to send OTP. Try again.")
       );
     } finally {

@@ -9,11 +9,11 @@ The customer app uses the **shared backend** (`backend/`) for auth, orders, addr
 ### 1. Customer app env
 
 - Copy `env.example` to `.env` or `.env.local`.
-- **Required for login:**  
-  `EXPO_PUBLIC_API_BASE_URL` = backend base URL (no trailing slash).
-  - Emulator: `http://localhost:3001` (or your backend port).
-  - Physical device: use `EXPO_PUBLIC_DEV_HOST` = your PC’s IP (e.g. `192.168.1.5`); the app will use `http://<that IP>:3001`.
-- Optional: `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`, `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY` for maps and Realtime.
+- **Required for login:** backend URL must match **`PORT` in `backend/.env` (default 3000)**.
+  - Emulator: `EXPO_PUBLIC_API_BASE_URL=http://localhost:3000` (Android rewrites `localhost` → `10.0.2.2`).
+  - Physical device: `EXPO_PUBLIC_DEV_HOST=192.168.1.x` (your PC’s LAN IP); app calls `http://<IP>:3000` unless you set `EXPO_PUBLIC_API_PORT`.
+- **Google Maps (native map tiles on Android):** `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`. After adding it or changing `app.config.js`, run **`npx expo prebuild`** (or `npx expo run:android`) so the key is embedded in the native project.
+- Optional: `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`, Supabase vars for geocoding / Realtime.
 
 ### 2. Backend env (for customer app to work)
 
@@ -24,7 +24,7 @@ In `backend/.env` (or `.env.local`):
 - **Production SMS OTP (same as partnersite – MSG91):**  
   Set `MSG91_AUTH_KEY`. Optionally: `MSG91_TEMPLATE_ID` (v5/DLT), `MSG91_SENDER_ID`, `MSG91_OTP_EXPIRY_SEC`.  
   If these are not set, backend still generates OTP and logs it to the console (dev only; no SMS).
-- Run backend on the port the app expects (e.g. `PORT=3001 npm run dev` in `backend/`).
+- Run backend: `npm run dev` in `backend/` (default **PORT=3000**, listen on `0.0.0.0`).
 
 ### 3. Partnersite / Supabase (no change for customer app)
 

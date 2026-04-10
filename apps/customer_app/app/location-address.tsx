@@ -28,6 +28,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Contacts from "expo-contacts";
 import * as Location from "expo-location";
 import MapView, { Region } from "react-native-maps";
+import { customerMapProps } from "@/lib/mapViewProps";
 import { addressService, type Address } from "@/services/address.service";
 import {
   reverseGeocode,
@@ -719,6 +720,7 @@ export default function LocationAddressScreen() {
               mapRef.current = ref;
             }}
             style={styles.inlineMap}
+            {...customerMapProps()}
             initialRegion={{
               latitude: initialLat,
               longitude: initialLon,

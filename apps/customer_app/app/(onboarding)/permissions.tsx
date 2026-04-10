@@ -25,12 +25,23 @@ import { profileService } from "@/services/profile.service";
 async function requestSmsPermission(): Promise<"granted" | "denied"> {
   if (Platform.OS !== "android") return "granted";
   try {
-    const read = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.READ_SMS);
-    const receive = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS);
-    return read === PermissionsAndroid.RESULTS.GRANTED &&
-      receive === PermissionsAndroid.RESULTS.GRANTED
-      ? "granted"
-      : "denied";
+    const read = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.READ_SMS, {
+      title: "Read SMS",
+      message: "GatiMitra can read OTP messages to verify your login. Order updates may use SMS on some devices.",
+      buttonPositive: "Allow",
+      buttonNegative: "Deny",
+    });
+    if (read !== PermissionsAndroid.RESULTS.GRANTED) {
+      return "denied";
+    }
+    await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECEIVE_SMS, {
+      title: "SMS notifications",
+      message: "Optional: receive SMS-related events. You can still use the app if you deny this.",
+      buttonPositive: "Allow",
+      buttonNegative: "Skip",
+    });
+    /** READ_SMS is what matters for OTP autofill; RECEIVE_SMS is best-effort (OEM policies vary). */
+    return "granted";
   } catch {
     return "denied";
   }
@@ -296,11 +307,8 @@ export default function OnboardingPermissionsScreen() {
         updatePermissionsRef(next);
         goNext();
       }
-    } catch {
-      const next = { ...status, [id]: "granted" as PermissionStatus };
-      setStatus(next);
-      updatePermissionsRef(next);
-      goNext();
+    } catch (err) {
+      Alert.alert("Could not save settings", getNetworkErrorMessage(err));
     } finally {
       setLoading(null);
     }

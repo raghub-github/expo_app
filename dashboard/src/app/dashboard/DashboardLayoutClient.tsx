@@ -354,7 +354,7 @@ function DashboardLayoutClient({
   if (isAddChildPage) {
     return (
       <AuthProvider authReady={bootstrapReady}>
-        <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100">
+        <div className="flex h-screen overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-gray-900">
           {children}
         </div>
       </AuthProvider>
@@ -535,7 +535,7 @@ function DashboardLayoutContent({
                 <Header />
                 <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden w-full">
                   <main
-                    className={`flex-1 overflow-y-auto transition-all duration-300 w-full flex flex-col min-h-0 relative ${
+                    className={`flex-1 overflow-y-auto transition-all duration-300 w-full flex flex-col min-h-0 relative text-gray-900 ${
                       isTicketsHubGreyPage ? "bg-[#f4f5f7] p-4 sm:p-6" : "bg-white p-3 sm:p-4"
                     }`}
                   >
