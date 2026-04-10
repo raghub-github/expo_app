@@ -1,24 +1,34 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import { useTicketUrlPanel, useTicketPanelNavigation } from "@/hooks/tickets/useTicketUrlPanel";
-import { useTicketDetail, type TicketDetail, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
+import {
+  useTicketDetail,
+  type TicketDetail,
+  type TicketMessage,
+  type TicketMessageSentPayload,
+} from "@/hooks/tickets/useTicketDetail";
 import { queryKeys } from "@/lib/queryKeys";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { isImageUrl } from "./AttachmentModal";
+import {
+  isCorporateEnquiryTicket,
+  isSystemOtherTicketGroup,
+  parseCorporateEnquiryFromDescription,
+} from "@/lib/tickets/corporate-enquiry-fields";
 import { TicketActionBar } from "./TicketActionBar";
 import { TicketHeader } from "./TicketHeader";
 import { ConversationPanel } from "./ConversationPanel";
 import { ActivityTimeline, fetchTicketActivities, TICKET_ACTIVITIES_STALE_MS } from "./ActivityTimeline";
 import { TicketCsatPanel } from "./TicketCsatPanel";
-import { TicketComposeAutomationSection } from "@/components/tickets/TicketComposeAutomationSection";
-import { TicketNotificationAutomationSection } from "@/components/tickets/TicketNotificationAutomationSection";
 import { AgentActivityPageClient } from "@/components/tickets/AgentActivityPageClient";
 import { addToRecentViewed } from "@/components/search/GlobalSearch";
 import { Check, Copy, Download, Globe, Paperclip } from "lucide-react";
 import { useRightSidebar } from "@/context/RightSidebarContext";
+import { useAuth } from "@/providers/AuthProvider";
+import { useTicketRoomRealtime, type TicketRoomPresenceIdentity } from "@/hooks/tickets/useTicketRoomRealtime";
 
 const STORAGE_KEY_PREFIX = "ticket-last-viewed-";
 
@@ -86,21 +96,57 @@ function formatCreatedLong(dateStr: string): string {
   return `${relative} (${absolute})`;
 }
 
-function getStoredLastViewed(ticketId: number): { updatedAt: string; messageCount: number } | null {
+type LastViewedStored = {
+  updatedAt: string;
+  messageCount: number;
+  /** Count of customer/merchant/rider/inbound thread rows (excludes agent + internal notes). */
+  inboundCount: number;
+};
+
+/** Inbound “user side” thread activity — not agent replies or internal notes (avoids chip on spam/status-only saves). */
+function isInboundUserSideMessage(msg: TicketMessage): boolean {
+  if (msg.isInternalNote) return false;
+  const mt = String(msg.messageType || "").toLowerCase();
+  if (mt === "internal_note") return false;
+  const t = (msg.senderType ?? "").trim().toUpperCase();
+  if (t === "AGENT") return false;
+  return true;
+}
+
+function countInboundUserMessages(messages: TicketMessage[]): number {
+  return messages.filter(isInboundUserSideMessage).length;
+}
+
+function getStoredLastViewed(ticketId: number): LastViewedStored | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY_PREFIX + ticketId);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { updatedAt?: string; messageCount?: number };
-    return parsed?.updatedAt != null ? { updatedAt: parsed.updatedAt, messageCount: parsed.messageCount ?? 0 } : null;
+    const parsed = JSON.parse(raw) as {
+      updatedAt?: string;
+      messageCount?: number;
+      inboundCount?: number;
+    };
+    if (parsed?.updatedAt == null) return null;
+    return {
+      updatedAt: parsed.updatedAt,
+      messageCount: parsed.messageCount ?? 0,
+      inboundCount: parsed.inboundCount ?? -1,
+    };
   } catch {
     return null;
   }
 }
 
-function setStoredLastViewed(ticketId: number, updatedAt: string, messageCount: number) {
+function setStoredLastViewed(ticketId: number, ticket: TicketDetail) {
   try {
-    sessionStorage.setItem(STORAGE_KEY_PREFIX + ticketId, JSON.stringify({ updatedAt, messageCount }));
+    const messages = ticket.messages ?? [];
+    const payload: LastViewedStored = {
+      updatedAt: ticket.updatedAt,
+      messageCount: messages.length,
+      inboundCount: countInboundUserMessages(messages),
+    };
+    sessionStorage.setItem(STORAGE_KEY_PREFIX + ticketId, JSON.stringify(payload));
   } catch {}
 }
 
@@ -111,6 +157,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const urlPanel = useTicketUrlPanel();
   const setTicketPanel = useTicketPanelNavigation(pathname, router);
   const rightSidebar = useRightSidebar();
+  const { user: authUser } = useAuth();
   const { data: ticket, isLoading, isError, error } = useTicketDetail(ticketId);
 
   const showActivities = urlPanel === "activities";
@@ -123,6 +170,42 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const queryClient = useQueryClient();
   /** Same string id as useTicketDetail / list caches — avoids setQueryData missing the active query. */
   const ticketCacheId = String(ticketId).trim();
+  const ticketNumericId = useMemo(() => {
+    const parsed = Number(ticketCacheId);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [ticketCacheId]);
+
+  const [agentPresenceIdentity, setAgentPresenceIdentity] = useState<TicketRoomPresenceIdentity | null>(null);
+
+  /** Bootstrap session carries Supabase user id; browser supabase.getUser() is often empty (autoRefreshToken off). */
+  useEffect(() => {
+    if (!authUser?.id) {
+      setAgentPresenceIdentity(null);
+      return;
+    }
+    const meta = authUser.user_metadata as { full_name?: unknown } | undefined;
+    const fullName = typeof meta?.full_name === "string" ? meta.full_name.trim() : "";
+    const email = typeof authUser.email === "string" ? authUser.email.trim() : "";
+    setAgentPresenceIdentity({
+      userId: authUser.id,
+      role: "agent",
+      displayName: fullName || email || undefined,
+    });
+  }, [authUser?.id, authUser?.email]);
+
+  const { syncState: ticketRoomSyncState, copresenceLive } = useTicketRoomRealtime({
+    ticketNumericId,
+    ticketCacheId,
+    presence: agentPresenceIdentity,
+  });
+
+  useEffect(() => {
+    const set = rightSidebar?.setTicketCopresenceLive;
+    if (!set) return;
+    set(copresenceLive);
+    return () => set(false);
+  }, [copresenceLive, rightSidebar?.setTicketCopresenceLive]);
+
   const onMessageSent = useCallback(
     (payload?: TicketMessageSentPayload) => {
       if (payload?.message) {
@@ -175,52 +258,84 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     }
   }, [ticket?.id, ticket?.ticketNumber, ticket?.subject]);
 
-  // Chip badge: show when there are updates since last view (stored baseline)
+  // Baseline + chip: first visit writes sessionStorage immediately; later runs only show "N update(s)" when inbound
+  // (customer / merchant / rider) messages increase — not when ticket.updatedAt changes from spam, status, agent edits, etc.
   useEffect(() => {
     if (!ticket) return;
     const stored = getStoredLastViewed(ticket.id);
-    const messages = ticket.messages ?? [];
     if (!stored) {
+      setStoredLastViewed(ticket.id, ticket);
       setNewUpdatesCount(0);
       return;
     }
-    const updatedAfter = ticket.updatedAt && stored.updatedAt ? new Date(ticket.updatedAt) > new Date(stored.updatedAt) : false;
-    const newMessages = messages.length > stored.messageCount ? messages.length - stored.messageCount : 0;
-    if (updatedAfter || newMessages > 0) {
-      setNewUpdatesCount(Math.max(1, newMessages));
-    } else {
+    if (stored.inboundCount < 0) {
+      setStoredLastViewed(ticket.id, ticket);
       setNewUpdatesCount(0);
+      return;
     }
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
+    const currentInbound = countInboundUserMessages(ticket.messages ?? []);
+    const delta = currentInbound - stored.inboundCount;
+    setNewUpdatesCount(delta > 0 ? Math.min(delta, 99) : 0);
+  }, [ticket?.id, ticket?.messages, ticket]);
 
-  // Set "last viewed" baseline on first open so future visits can show update chip
+  // Auto-refresh exactly when snooze expires so status/button/chips flip without manual reload.
   useEffect(() => {
-    if (!ticket) return;
-    if (getStoredLastViewed(ticket.id) != null) return;
-    const t = setTimeout(() => {
-      setStoredLastViewed(ticket.id, ticket.updatedAt, (ticket.messages ?? []).length);
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
-
-  // Auto-dismiss chip after 3s (mark as viewed)
-  useEffect(() => {
-    if (!ticket || newUpdatesCount === 0) return;
-    const t = setTimeout(() => {
-      setStoredLastViewed(ticket.id, ticket.updatedAt, (ticket.messages ?? []).length);
-      setNewUpdatesCount(0);
-    }, 3000);
-    return () => clearTimeout(t);
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages, newUpdatesCount]);
+    if (!ticket || ticket.status !== "snoozed" || !ticket.snoozedUntil) return;
+    const endMs = new Date(ticket.snoozedUntil).getTime();
+    if (!Number.isFinite(endMs)) return;
+    const delayMs = Math.max(0, endMs - Date.now() + 400);
+    const timeoutId = window.setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(ticketCacheId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.activities(ticketCacheId) });
+    }, delayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [ticket?.id, ticket?.status, ticket?.snoozedUntil, queryClient, ticketCacheId]);
 
   const handleDismissUpdates = useCallback(() => {
     if (!ticket) return;
-    setStoredLastViewed(ticket.id, ticket.updatedAt, (ticket.messages ?? []).length);
+    setStoredLastViewed(ticket.id, ticket);
     setNewUpdatesCount(0);
-  }, [ticket?.id, ticket?.updatedAt, ticket?.messages]);
+  }, [ticket]);
 
   /** No ticket yet and query hasn't failed — show skeleton. Do not tie to `isFetching` or background refetch flashes the full-page loader. */
   const stillLoading = !ticket && !isError && isLoading;
+  const raisedType = String(ticket?.sourceRole || ticket?.ticketSource || "").toUpperCase();
+  const contactLabel = raisedType === "RIDER" ? "Rider" : raisedType === "CUSTOMER" ? "Customer" : raisedType === "MERCHANT" ? "Merchant" : null;
+  const corporateFields = useMemo(
+    () => parseCorporateEnquiryFromDescription(ticket?.description),
+    [ticket?.description]
+  );
+  const isCorporateTicket = useMemo(
+    () =>
+      isCorporateEnquiryTicket(
+        ticket?.subject ?? "",
+        ticket?.description ?? "",
+        ticket?.title?.titleText ?? null
+      ),
+    [ticket?.subject, ticket?.description, ticket?.title?.titleText]
+  );
+  const showCorporateContact =
+    isCorporateTicket &&
+    Boolean(corporateFields.corporateEntityName?.trim() || corporateFields.corporateEntityPhone?.trim());
+  const showContactName =
+    !showCorporateContact &&
+    contactLabel != null &&
+    ticket?.raisedByName &&
+    ticket.raisedByName.trim() !== "";
+  const showContactPhone =
+    !showCorporateContact &&
+    contactLabel != null &&
+    ticket?.raisedByMobile &&
+    ticket.raisedByMobile.trim() !== "";
+  const defaultReplyToOverride = useMemo(() => {
+    if (!isSystemOtherTicketGroup(ticket?.group ?? undefined)) return null;
+    const em = corporateFields.corporateEntityEmail?.trim();
+    if (!em || !em.includes("@")) return null;
+    return em;
+  }, [ticket?.group, corporateFields.corporateEntityEmail]);
+
   useEffect(() => {
     if (!rightSidebar?.setOpen) return;
     if (stillLoading) {
@@ -271,10 +386,6 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     );
   }
 
-  const raisedType = String(ticket.sourceRole || ticket.ticketSource || "").toUpperCase();
-  const contactLabel = raisedType === "RIDER" ? "Rider" : raisedType === "CUSTOMER" ? "Customer" : raisedType === "MERCHANT" ? "Merchant" : null;
-  const showContactName = contactLabel != null && ticket.raisedByName && ticket.raisedByName.trim() !== "";
-  const showContactPhone = contactLabel != null && ticket.raisedByMobile && ticket.raisedByMobile.trim() !== "";
   const getPhoneLastTenDigits = (phone: string | null): string => {
     if (!phone) return "";
     const digits = phone.replace(/\D/g, "");
@@ -282,7 +393,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
     return digits.slice(-10);
   };
   const handleCopyPhone = async () => {
-    const value = getPhoneLastTenDigits(ticket.raisedByMobile);
+    const rawPhone = showCorporateContact ? corporateFields.corporateEntityPhone : ticket.raisedByMobile;
+    const value = getPhoneLastTenDigits(rawPhone ?? null);
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
@@ -325,7 +437,6 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   };
 
   const isTicketSettingsMain = rightSidebar?.ticketRightSidebarPanel === "settings";
-  const settingsSection = rightSidebar?.ticketSettingsSection ?? "automation";
 
   if (isTicketSettingsMain) {
     return (
@@ -336,25 +447,14 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
       >
         <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div className="mx-auto min-w-0 max-w-5xl px-4 py-5 sm:px-6">
-            {settingsSection === "activity" && (
-              <header className="border-b border-gray-200 pb-4">
-                <h1 className="text-lg font-semibold text-gray-900">Activity & reports</h1>
-                <p className="mt-1 text-sm text-gray-600">
-                  Performance metrics, CSAT/DSAT, and time tracking for the selected period.
-                </p>
-              </header>
-            )}
-            <div className={settingsSection === "activity" ? "pt-6" : "pt-2"}>
-              {settingsSection === "automation" ? (
-                <>
-                  <TicketComposeAutomationSection variant="plain" />
-                  <div className="mt-10 border-t border-gray-200 pt-8">
-                    <TicketNotificationAutomationSection variant="plain" />
-                  </div>
-                </>
-              ) : (
-                <AgentActivityPageClient embed="ticketSettingsActivity" />
-              )}
+            <header className="border-b border-gray-200 pb-4">
+              <h1 className="text-lg font-semibold text-gray-900">Activity & reports</h1>
+              <p className="mt-1 text-sm text-gray-600">
+                Performance metrics, CSAT/DSAT, and time tracking for the selected period.
+              </p>
+            </header>
+            <div className="pt-6">
+              <AgentActivityPageClient embed="ticketSettingsActivity" />
             </div>
           </div>
         </div>
@@ -371,6 +471,15 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
       <div className="ml-0 mr-0 mt-0 flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-lg rounded-bl-lg border border-gray-200 bg-white">
         {/* Sticky: action bar + ticket heading inside one unified surface */}
         <div className="sticky top-0 z-10 shrink-0 bg-white px-2.5 pt-1 pb-1.5 sm:px-3">
+          {ticketNumericId != null && ticketRoomSyncState !== "idle" ? (
+            <div className="mb-1 flex flex-wrap items-center justify-end gap-2">
+              {ticketRoomSyncState === "connecting" ? (
+                <span className="text-[10px] font-medium text-slate-400">Connecting…</span>
+              ) : ticketRoomSyncState === "polling" ? (
+                <span className="text-[10px] font-medium text-amber-800">Sync · 12s</span>
+              ) : null}
+            </div>
+          ) : null}
           <TicketActionBar
             ticketId={ticket.id}
             ticketNumber={ticket.ticketNumber || String(ticket.id)}
@@ -404,6 +513,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
             }}
             onMergeSuccess={onMessageSent}
             ticketIsSpam={ticket.isSpam === true}
+            ticketStatus={ticket.status}
+            snoozedUntil={ticket.snoozedUntil}
           />
           <div className="mt-0 border-t border-gray-200 px-0.5 pb-1.5 pt-1">
             <TicketHeader
@@ -464,6 +575,38 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                             <span className="block max-w-[920px] break-words text-[13px] leading-snug text-[#374151]">
                               {ticket.description}
                             </span>
+                            {showCorporateContact && (
+                              <>
+                                {corporateFields.corporateEntityName?.trim() ? (
+                                  <>
+                                    <span aria-hidden className="h-3.5 w-3.5" />
+                                    <p className="mt-2 text-sm font-semibold text-[#1f2937]">
+                                      Corporate Entity Name: {corporateFields.corporateEntityName.trim()}
+                                    </p>
+                                  </>
+                                ) : null}
+                                {corporateFields.corporateEntityPhone?.trim() ? (
+                                  <>
+                                    <span aria-hidden className="h-3.5 w-3.5" />
+                                    <div className="flex items-center gap-2">
+                                      <p className="text-sm font-semibold text-[#1f2937]">
+                                        Corporate Entity Phone: {corporateFields.corporateEntityPhone.trim()}
+                                      </p>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleCopyPhone()}
+                                        className="inline-flex cursor-pointer items-center gap-0.5 px-0.5 text-[10px] font-medium text-gray-700 hover:text-gray-900"
+                                        aria-label="Copy last 10 digits"
+                                        title="Copy 10-digit number"
+                                      >
+                                        {copiedPhone ? <Check className="h-2.5 w-2.5 text-green-600" /> : <Copy className="h-2.5 w-2.5" />}
+                                        {copiedPhone ? "Copied" : ""}
+                                      </button>
+                                    </div>
+                                  </>
+                                ) : null}
+                              </>
+                            )}
                             {showContactName && (
                               <>
                                 <span aria-hidden className="h-3.5 w-3.5" />
@@ -619,6 +762,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                   ticketSubject={ticket.subject}
                   messages={ticket.messages || []}
                   recipientEmail={ticket.raisedByEmail ?? undefined}
+                  defaultReplyToOverride={defaultReplyToOverride}
                   onMessageSent={onMessageSent}
                   replyVisible={showReplySection}
                   quickComposeAction={quickComposeAction}

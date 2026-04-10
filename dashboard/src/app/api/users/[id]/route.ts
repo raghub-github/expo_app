@@ -210,6 +210,18 @@ export async function PUT(
       city,
       ...updates 
     } = body;
+    console.info("[PUT /api/users/[id]] incoming access payload", {
+      userId,
+      dashboardAccessCount: Array.isArray(dashboardAccessData) ? dashboardAccessData.length : 0,
+      accessPointsCount: Array.isArray(accessPointsData) ? accessPointsData.length : 0,
+      includesStatusToggle:
+        Array.isArray(accessPointsData) &&
+        accessPointsData.some(
+          (p: any) =>
+            String(p?.dashboardType).trim().toUpperCase() === "TICKET" &&
+            String(p?.accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE"
+        ),
+    });
 
     const normalizeRoleValue = (value: string) => value.replace(/\s+/g, " ").trim();
     if (typeof updates.primary_role === "string") {
@@ -380,6 +392,13 @@ export async function PUT(
     );
 
     // Update dashboard access if provided and user is super admin
+    let accessPointsPersistedSummary:
+      | {
+          activeAccessPointsCount: number;
+          hasTicketAgentStatusToggle: boolean;
+          ticketAgentStatusToggleActions: string[];
+        }
+      | null = null;
     if (userIsSuperAdmin && (dashboardAccessData || accessPointsData)) {
       const db = getDb();
 
@@ -461,6 +480,7 @@ export async function PUT(
 
         // Get access point definitions
         const { DASHBOARD_DEFINITIONS } = await import("@/components/users/DashboardAccessSelector");
+        const allAccessPointDefs = Object.values(DASHBOARD_DEFINITIONS).flatMap((d) => d.accessPoints);
 
         // Helper function to extract orderType from access point group
         const getOrderType = (accessPoint: any): string | undefined => {
@@ -509,14 +529,44 @@ export async function PUT(
           let context: Record<string, any> = {};
 
           const dashType = accessPoint.dashboardType as DashboardType;
-          if (DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]) {
-            const def = DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
-              (ap: any) => ap.group === accessPoint.accessPointGroup            );
-            if (def) {
-              accessPointName = def.label;
-              accessPointDescription = def.description;
-              allowedActions = def.allowedActions;
-            }
+          const dashboardScopedDef =
+            DASHBOARD_DEFINITIONS && DASHBOARD_DEFINITIONS[dashType]
+              ? DASHBOARD_DEFINITIONS[dashType].accessPoints.find(
+                  (ap: any) => ap.group === accessPoint.accessPointGroup
+                )
+              : undefined;
+          const fallbackDef = allAccessPointDefs.find(
+            (ap: any) => ap.group === accessPoint.accessPointGroup
+          );
+          const def = dashboardScopedDef ?? fallbackDef;
+          if (def) {
+            accessPointName = def.label;
+            accessPointDescription = def.description;
+            allowedActions = Array.isArray(def.allowedActions) ? def.allowedActions : [];
+          }
+          if (allowedActions.length === 0 && Array.isArray(accessPoint.allowedActions)) {
+            allowedActions = accessPoint.allowedActions;
+          }
+          if (
+            allowedActions.length === 0 &&
+            String(accessPoint.accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE"
+          ) {
+            // Hard fallback so queue permission checks always receive UPDATE action.
+            allowedActions = ["UPDATE"];
+          }
+          if (
+            allowedActions.length === 0 &&
+            String(accessPoint.accessPointGroup).trim().toUpperCase() === "TICKET_QUEUE_SUPERVISOR"
+          ) {
+            // Required for queue sidebar + server page protection checks.
+            allowedActions = ["VIEW"];
+          }
+          if (
+            allowedActions.length === 0 &&
+            String(accessPoint.accessPointGroup).trim().toUpperCase() === "TICKET_QUEUE_MANAGER"
+          ) {
+            // Required for queue sidebar + server page protection checks.
+            allowedActions = ["VIEW"];
           }
 
           // Add context for ticket access points
@@ -540,13 +590,16 @@ export async function PUT(
 
           if (existing) {
             const orderType = getOrderType(accessPoint);
+            const existingAllowedActions = Array.isArray(existing.allowedActions)
+              ? (existing.allowedActions as string[])
+              : [];
             await db
               .update(dashboardAccessPoints)
               .set({
                 orderType: orderType || undefined,
                 accessPointName,
                 accessPointDescription,
-                allowedActions,
+                allowedActions: allowedActions.length > 0 ? allowedActions : existingAllowedActions,
                 context: Object.keys(context).length > 0 ? context : undefined,
                 isActive: true,
                 revokedAt: null,
@@ -573,6 +626,35 @@ export async function PUT(
           }
         }
       }
+
+      // Confirm what is actually persisted in DB (helps debug “UI shows granted but DB missing”)
+      const activePoints = await db
+        .select({
+          dashboardType: dashboardAccessPoints.dashboardType,
+          accessPointGroup: dashboardAccessPoints.accessPointGroup,
+          allowedActions: dashboardAccessPoints.allowedActions,
+          isActive: dashboardAccessPoints.isActive,
+        })
+        .from(dashboardAccessPoints)
+        .where(and(eq(dashboardAccessPoints.systemUserId, userId), eq(dashboardAccessPoints.isActive, true)));
+
+      const toggleRow = activePoints.find(
+        (p) =>
+          String(p.dashboardType).trim().toUpperCase() === "TICKET" &&
+          String(p.accessPointGroup).trim().toUpperCase() === "TICKET_AGENT_STATUS_TOGGLE"
+      );
+      const toggleActions = Array.isArray(toggleRow?.allowedActions)
+        ? (toggleRow!.allowedActions as string[])
+        : [];
+      accessPointsPersistedSummary = {
+        activeAccessPointsCount: activePoints.length,
+        hasTicketAgentStatusToggle: Boolean(toggleRow),
+        ticketAgentStatusToggleActions: toggleActions,
+      };
+      console.info("[PUT /api/users/[id]] access points persisted summary", {
+        userId,
+        ...accessPointsPersistedSummary,
+      });
     }
 
     // Audit log (action_audit_log)
@@ -599,6 +681,7 @@ export async function PUT(
     return NextResponse.json({
       success: true,
       data: refreshedUser || updatedUser,
+      accessPointsPersistedSummary,
     });
   } catch (error) {
     console.error("[PUT /api/users/[id]] Error:", error);

@@ -3,16 +3,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Power, Settings, AlertTriangle } from "lucide-react";
-import { useRouter, usePathname } from "next/navigation";
-import {
-  AGENT_ACTIVITY_PATH,
-  isTicketsAppDetailPath,
-  TICKETS_HELPDESK_DASHBOARD_PATH,
-} from "@/lib/tickets/ticket-path-utils";
-
-const TICKETS_MAIN_LIST_PATH = "/dashboard/tickets";
+import { Power, AlertTriangle } from "lucide-react";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface AgentStatus {
   isOnline: boolean;
@@ -27,13 +20,21 @@ const AGENT_STATUS_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 type AgentStatusResponse = { success: boolean; data: AgentStatus };
 
+const OFFLINE_REASON_PRESETS: { value: string; label: string }[] = [
+  { value: "tea_break", label: "Tea break" },
+  { value: "end_of_shift", label: "End of shift" },
+  { value: "meal_break", label: "Meal break" },
+  { value: "personal", label: "Personal" },
+  { value: "other", label: "Other (type below)" },
+];
+
 export function AgentStatusToggle() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showOfflineWarning, setShowOfflineWarning] = useState(false);
+  const [offlineReasonPreset, setOfflineReasonPreset] = useState("tea_break");
+  const [offlineReasonCustom, setOfflineReasonCustom] = useState("");
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const router = useRouter();
-  const pathname = usePathname();
   const queryClient = useQueryClient();
 
   /** Client-only (see Header dynamic ssr:false) — safe to read snapshot on first paint so refresh does not flash loading. */
@@ -64,11 +65,19 @@ export function AgentStatusToggle() {
 
   // Update status mutation
   const updateStatusMutation = useMutation({
-    mutationFn: async (status: "online" | "offline" | "break" | "busy") => {
+    mutationFn: async (payload: {
+      status: "online" | "offline" | "break" | "busy";
+      reason?: string;
+    }) => {
+      const { status, reason } = payload;
       const res = await fetch("/api/agents/status", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(
+          status === "offline" && reason != null && reason.trim() !== ""
+            ? { status, reason: reason.trim() }
+            : { status }
+        ),
       });
       if (!res.ok) {
         const error = await res.json();
@@ -76,8 +85,29 @@ export function AgentStatusToggle() {
       }
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (_json, variables) => {
+      const next = variables.status;
+      queryClient.setQueryData<AgentStatusResponse>(["agentStatus"], (prev) => {
+        const d = prev?.data;
+        const isOnline = next === "online" ? true : next === "offline" ? false : Boolean(d?.isOnline);
+        return {
+          success: true,
+          data: {
+            isOnline,
+            currentStatus: next,
+            breakStartedAt: d?.breakStartedAt ?? null,
+            lastOnlineAt: d?.lastOnlineAt ?? null,
+            totalOnlineTimeMinutes: d?.totalOnlineTimeMinutes ?? 0,
+            totalBreakTimeMinutes: d?.totalBreakTimeMinutes ?? 0,
+            totalBusyTimeMinutes: d?.totalBusyTimeMinutes ?? 0,
+            busyStartedAt: d?.busyStartedAt ?? null,
+          },
+        };
+      });
       queryClient.invalidateQueries({ queryKey: ["agentStatus"] });
+      void queryClient.invalidateQueries({ queryKey: ["tickets", "agents"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.lists() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.helpdeskDashboard() });
       setIsMenuOpen(false);
       setShowOfflineWarning(false);
     },
@@ -100,6 +130,16 @@ export function AgentStatusToggle() {
     }
   }, [isMenuOpen]);
 
+  const handleMainButtonClick = () => {
+    if (statusUnknown || updateStatusMutation.isPending) return;
+    if (currentStatus === "offline") {
+      setIsMenuOpen(false);
+      updateStatusMutation.mutate({ status: "online" });
+      return;
+    }
+    setIsMenuOpen((open) => !open);
+  };
+
   const handleStatusChange = (newStatus: "online" | "offline" | "break" | "busy") => (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -108,29 +148,17 @@ export function AgentStatusToggle() {
       setShowOfflineWarning(true);
       return;
     }
-    updateStatusMutation.mutate(newStatus);
+    updateStatusMutation.mutate({ status: newStatus });
   };
 
   const confirmGoOffline = () => {
-    updateStatusMutation.mutate("offline");
+    const reason =
+      offlineReasonPreset === "other"
+        ? offlineReasonCustom.trim()
+        : OFFLINE_REASON_PRESETS.find((p) => p.value === offlineReasonPreset)?.label ?? "Offline";
+    if (!reason) return;
+    updateStatusMutation.mutate({ status: "offline", reason });
   };
-
-  const cleanPathname = pathname.split("?")[0].split("#")[0] ?? "";
-
-  const handleSettingsClick = () => {
-    setIsMenuOpen(false);
-    const onHelpdeskDashboard = cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH;
-    const onAgentActivity = cleanPathname === AGENT_ACTIVITY_PATH;
-    if (onHelpdeskDashboard || onAgentActivity) {
-      router.push(TICKETS_MAIN_LIST_PATH);
-      return;
-    }
-    router.push(TICKETS_HELPDESK_DASHBOARD_PATH);
-  };
-
-  const hideSettingsGearOnTicketDetail = isTicketsAppDetailPath(cleanPathname);
-  const onTicketsHubPage =
-    cleanPathname === TICKETS_HELPDESK_DASHBOARD_PATH || cleanPathname === AGENT_ACTIVITY_PATH;
 
   const menuContent = (
     <>
@@ -195,62 +223,67 @@ export function AgentStatusToggle() {
         : isOnline
           ? "Online"
           : "Offline";
-  const statusStyles = isOnline
-    ? "bg-green-600/30 text-green-700 hover:bg-green-600/40"
-    : currentStatus === "break"
+  const statusStyles =
+    currentStatus === "break"
       ? "bg-amber-500/20 text-amber-800 hover:bg-amber-500/30"
       : currentStatus === "busy"
         ? "bg-orange-500/20 text-orange-800 hover:bg-orange-500/30"
-        : "bg-gray-300/50 text-gray-600 hover:bg-gray-300/70";
+        : isOnline
+          ? "bg-green-600/30 text-green-700 hover:bg-green-600/40"
+          : "bg-gray-300/50 text-gray-600 hover:bg-gray-300/70";
+
+  const showLiveRadar = !statusUnknown && isOnline && currentStatus === "online";
 
   return (
     <div className="flex items-center gap-2 relative flex-shrink-0">
-      {/* Online / Offline / Break / Busy toggle - always visible, same size when loading */}
+      {/* Live radar (queue header — replaces former notification slot when online) */}
+      {showLiveRadar ? (
+        <span
+          className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-emerald-600/90"
+          aria-hidden
+          title="Live — queue active"
+        >
+          <span className="absolute inline-flex h-6 w-6 rounded-full bg-emerald-500/18 animate-ping" />
+          <span className="absolute inline-flex h-4 w-4 rounded-full bg-emerald-500/12 animate-ping [animation-delay:0.45s]" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-600/85 shadow-sm ring-1 ring-white/90" />
+        </span>
+      ) : null}
       <div className="relative">
         <button
           ref={buttonRef}
           type="button"
-          onClick={() => !statusUnknown && setIsMenuOpen(!isMenuOpen)}
-          disabled={statusUnknown}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all min-w-[72px] justify-center ${
+          onClick={handleMainButtonClick}
+          disabled={statusUnknown || updateStatusMutation.isPending}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg min-w-[72px] justify-center cursor-pointer select-none transition-all duration-200 ease-out outline-none focus-visible:ring-2 focus-visible:ring-green-500/50 focus-visible:ring-offset-1 hover:brightness-[1.03] active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60 disabled:cursor-not-allowed ${
             statusUnknown ? "bg-gray-200/80 text-gray-500 animate-pulse" : statusStyles
           }`}
-          title={statusUnknown ? "Loading…" : isOnline ? "Change status" : "Go online"}
-          aria-haspopup="menu"
-          aria-expanded={isMenuOpen}
+          title={
+            statusUnknown
+              ? "Loading…"
+              : updateStatusMutation.isPending
+                ? "Updating…"
+                : currentStatus === "offline"
+                  ? "Go online"
+                  : "Change status"
+          }
+          aria-haspopup={currentStatus === "offline" ? undefined : "menu"}
+          aria-expanded={currentStatus === "offline" ? undefined : isMenuOpen}
         >
           {statusUnknown ? (
             <div className="h-3.5 w-3.5 rounded-full bg-gray-400 animate-pulse" />
           ) : (
             <Power
-              className={`h-3.5 w-3.5 ${
+              className={`h-3.5 w-3.5 transition-transform duration-200 ${
                 isOnline ? "text-green-700" : currentStatus === "break" ? "text-amber-700" : currentStatus === "busy" ? "text-orange-700" : "text-gray-600"
               }`}
             />
           )}
-          <span className="text-xs font-medium">{statusUnknown ? "…" : statusLabel}</span>
+          <span className="text-xs font-medium">{statusUnknown ? "…" : updateStatusMutation.isPending ? "…" : statusLabel}</span>
         </button>
 
         {/* Status Menu - rendered in portal so it's always on top and clickable */}
         {isMenuOpen && typeof document !== "undefined" && createPortal(menuContent, document.body)}
       </div>
-
-      {!hideSettingsGearOnTicketDetail && (
-        <button
-          type="button"
-          onClick={handleSettingsClick}
-          aria-pressed={onTicketsHubPage}
-          className={`inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md border-2 border-transparent transition-[background-color,color] duration-200 ease-out motion-reduce:transition-none ${
-            onTicketsHubPage
-              ? "bg-blue-600 text-white hover:bg-blue-700"
-              : "bg-transparent text-gray-600 hover:bg-gray-200/90 hover:text-gray-900"
-          }`}
-          title={onTicketsHubPage ? "Back to ticket list" : "Open GatiMitra Queue dashboard"}
-          aria-label={onTicketsHubPage ? "Back to ticket list" : "Open GatiMitra Queue dashboard"}
-        >
-          <Settings className="h-4 w-4 shrink-0" aria-hidden />
-        </button>
-      )}
 
       {/* Centered warning modal when going offline */}
       {showOfflineWarning && (
@@ -269,9 +302,43 @@ export function AgentStatusToggle() {
                 Go offline?
               </h2>
             </div>
-            <p id="offline-modal-desc" className="text-sm text-gray-600 mb-6">
-              You will stop receiving new ticket assignments and your status will show as offline. You can go back online anytime.
+            <p id="offline-modal-desc" className="text-sm text-gray-600 mb-3">
+              You will stop receiving new ticket assignments and your status will show as offline. Pick a reason for the
+              activity log.
             </p>
+            <label className="mb-1 block text-xs font-medium text-gray-700" htmlFor="agent-offline-reason-preset">
+              Reason
+            </label>
+            <select
+              id="agent-offline-reason-preset"
+              value={offlineReasonPreset}
+              onChange={(e) => setOfflineReasonPreset(e.target.value)}
+              className="mb-3 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+            >
+              {OFFLINE_REASON_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            {offlineReasonPreset === "other" ? (
+              <>
+                <label className="mb-1 block text-xs font-medium text-gray-700" htmlFor="agent-offline-reason-custom">
+                  Describe
+                </label>
+                <input
+                  id="agent-offline-reason-custom"
+                  type="text"
+                  value={offlineReasonCustom}
+                  onChange={(e) => setOfflineReasonCustom(e.target.value)}
+                  placeholder="Required when Other is selected"
+                  className="mb-4 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  maxLength={500}
+                />
+              </>
+            ) : (
+              <div className="mb-4" />
+            )}
             <div className="flex gap-3 justify-end">
               <button
                 type="button"
@@ -283,7 +350,10 @@ export function AgentStatusToggle() {
               <button
                 type="button"
                 onClick={confirmGoOffline}
-                disabled={updateStatusMutation.isPending}
+                disabled={
+                  updateStatusMutation.isPending ||
+                  (offlineReasonPreset === "other" && !offlineReasonCustom.trim())
+                }
                 className="px-4 py-2 text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
               >
                 {updateStatusMutation.isPending ? "Updating…" : "Go Offline"}

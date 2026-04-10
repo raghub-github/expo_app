@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, memo } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { HierarchicalSidebar } from "@/components/layout/HierarchicalSidebar";
@@ -23,8 +23,13 @@ import { fetchBootstrapAndSeedCache } from "@/hooks/queries/useBootstrapQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { GatiSpinner } from "@/components/ui/GatiSpinner";
-import { CurrentRouteProvider } from "@/context/CurrentRouteContext";
-import { isTicketsAppDetailPath, ticketsPathTicketId } from "@/lib/tickets/ticket-path-utils";
+import { CurrentRouteProvider, useCurrentRoute } from "@/context/CurrentRouteContext";
+import {
+  isTicketsAppDetailPath,
+  isTicketsQueueLayoutExperience,
+  ticketDetailHasQueueContext,
+  ticketsPathTicketId,
+} from "@/lib/tickets/ticket-path-utils";
 /** Full-page skeleton shown until bootstrap has run (or cache exists) so only one auth request is made. */
 function DashboardBootstrapSkeleton() {
   return (
@@ -183,6 +188,7 @@ function DashboardLayoutClient({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const bootstrapReady = useBootstrapGate(queryClient);
 
@@ -198,6 +204,13 @@ function DashboardLayoutClient({
     if (lastPathRef.current === pathname) return;
     const prevPath = lastPathRef.current;
     lastPathRef.current = pathname;
+
+    const cleanPrev = (prevPath ?? "").split("?")[0].split("#")[0];
+    const cleanNext = (pathname ?? "").split("?")[0].split("#")[0];
+    // Main tickets list, queue workspace, CSAT, etc.: keep list/detail caches when moving within this area.
+    if (cleanPrev.startsWith("/dashboard/tickets") && cleanNext.startsWith("/dashboard/tickets")) {
+      return;
+    }
 
     const getRouteKeyRoots = (p: string | null): string[] => {
       const clean = (p ?? "").split("?")[0].split("#")[0] ?? "";
@@ -255,13 +268,16 @@ function DashboardLayoutClient({
 
   const isRiderDashboardLayout =
     cleanPathname === "/dashboard/riders" || cleanPathname.startsWith("/dashboard/riders/");
+  const isCustomersSection = cleanPathname.startsWith("/dashboard/customers");
 
   const hasRightSidebar = useMemo(() => {
+    // Customer dashboard: use full width — no secondary (right) nav rail.
+    if (isCustomersSection) return false;
     // For rider dashboard we always allow a right sidebar; the inner layout
     // will still hide it until a rider is actually selected.
     if (isRiderDashboardLayout) return true;
     return isInSpecificDashboard && currentSubRoutes.length > 0;
-  }, [isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
+  }, [isCustomersSection, isInSpecificDashboard, currentSubRoutes.length, isRiderDashboardLayout]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -282,6 +298,28 @@ function DashboardLayoutClient({
   const isSettingsPage = useMemo(
     () => /\/settings(\/|$)/.test(cleanPathname) || /\/store-settings(\/|$)/.test(cleanPathname),
     [cleanPathname]
+  );
+
+  /** Queue ticket detail (?fromQueue=1): left queue rail collapsed; inner layout opens properties panel. */
+  const isQueueTicketDetailForShell = useMemo(
+    () =>
+      isTicketsQueueLayoutExperience(cleanPathname, searchParams) &&
+      isTicketsAppDetailPath(cleanPathname) &&
+      ticketDetailHasQueueContext(searchParams),
+    [cleanPathname, searchParams.toString()]
+  );
+
+  /** Single stable dep so effect arity never changes (avoids dev/HMR "dependency array changed size" warnings). */
+  const shellSidebarRouteKey = useMemo(
+    () =>
+      [
+        hasRightSidebar ? "1" : "0",
+        isStoreOrdersPath ? "1" : "0",
+        isSettingsPage ? "1" : "0",
+        isQueueTicketDetailForShell ? "1" : "0",
+        cleanPathname,
+      ].join("\0"),
+    [hasRightSidebar, isStoreOrdersPath, isSettingsPage, isQueueTicketDetailForShell, cleanPathname]
   );
 
   // Deterministic initial state (no localStorage) so server and client match and hydration succeeds
@@ -312,6 +350,11 @@ function DashboardLayoutClient({
       setIsRightSidebarOpen(true);
       return;
     }
+    if (isQueueTicketDetailForShell && hasRightSidebar) {
+      setIsLeftSidebarOpen(false);
+      setIsRightSidebarOpen(false);
+      return;
+    }
     if (!hasRightSidebar) {
       setIsRightSidebarOpen(false);
       setIsLeftSidebarOpen(true); // pages without right sidebar: show only left
@@ -320,7 +363,7 @@ function DashboardLayoutClient({
     // Default: pages with right sidebar → open right, close left
     setIsLeftSidebarOpen(false);
     setIsRightSidebarOpen(true);
-  }, [hasRightSidebar, isStoreOrdersPath, isSettingsPage, cleanPathname]);
+  }, [shellSidebarRouteKey]);
 
   // Enforce only one sidebar open at a time (never both expanded)
   useEffect(() => {
@@ -403,16 +446,21 @@ function DashboardLayoutContent({
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentRouteCtx = useCurrentRoute();
   const filterSidebar = useTicketFilterSidebar();
   const cleanPathname = useMemo(() => pathname.split("?")[0].split("#")[0], [pathname]);
   const isTicketDetailPage = useMemo(() => isTicketsAppDetailPath(cleanPathname), [cleanPathname]);
+  const isTicketsQueueWorkspace = useMemo(
+    () => isTicketsQueueLayoutExperience(cleanPathname, searchParams),
+    [cleanPathname, searchParams.toString()]
+  );
   const isTicketsHubGreyPage =
     cleanPathname === "/dashboard/tickets/agent-activity" ||
-    cleanPathname === "/dashboard/tickets/dashboard";
+    cleanPathname === "/dashboard/tickets/dashboard_snapshot";
   const isFilterSidebarOpen = Boolean(isTicketDetailPage && filterSidebar?.isFilterSidebarOpen);
 
   const [ticketRightSidebarPanel, setTicketRightSidebarPanel] = useState<TicketRightSidebarPanel>("properties");
-  const [ticketSettingsSection, setTicketSettingsSection] = useState<TicketSettingsSection>("automation");
+  const [ticketSettingsSection, setTicketSettingsSection] = useState<TicketSettingsSection>("activity");
 
   const ticketDetailSlug = useMemo(() => ticketsPathTicketId(cleanPathname), [cleanPathname]);
 
@@ -430,6 +478,106 @@ function DashboardLayoutContent({
     }
     prevTicketSlugRef.current = ticketDetailSlug;
   }, [ticketDetailSlug]);
+
+  /** Ticket detail opened from queue list: left rail + properties are controlled separately (mutually exclusive). */
+  const queueTicketDetailPage = useMemo(
+    () =>
+      isTicketsQueueWorkspace &&
+      isTicketDetailPage &&
+      ticketDetailHasQueueContext(searchParams),
+    [isTicketsQueueWorkspace, isTicketDetailPage, searchParams.toString()]
+  );
+  const [queueTicketPropertiesOpen, setQueueTicketPropertiesOpen] = useState(false);
+
+  /**
+   * Queue ticket detail: properties open + left queue rail collapsed by default; changing ticket resets.
+   * useLayoutEffect: avoids a frame where queue home left `isRightSidebarOpen` is still true and a plain
+   * useEffect would run after paint and race with a "close properties if rail open" rule.
+   * Mutual exclusivity when the user expands the rail is handled in `handleQueueTicketLeftRailToggle` only.
+   */
+  useLayoutEffect(() => {
+    if (!queueTicketDetailPage) {
+      setQueueTicketPropertiesOpen(false);
+      return;
+    }
+    setQueueTicketPropertiesOpen(true);
+    setRightSidebarOpen(false);
+  }, [queueTicketDetailPage, ticketDetailSlug, setRightSidebarOpen]);
+
+  const toggleQueueTicketProperties = useCallback(() => {
+    if (queueTicketPropertiesOpen) {
+      setQueueTicketPropertiesOpen(false);
+    } else {
+      setQueueTicketPropertiesOpen(true);
+      setRightSidebarOpen(false);
+    }
+  }, [queueTicketPropertiesOpen, setRightSidebarOpen]);
+
+  const setQueueTicketPropertiesOpenSafe = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setQueueTicketPropertiesOpen(true);
+        setRightSidebarOpen(false);
+      } else {
+        setQueueTicketPropertiesOpen(false);
+      }
+    },
+    [setRightSidebarOpen]
+  );
+
+  const handleQueueTicketLeftRailToggle = useCallback(() => {
+    const next = !isRightSidebarOpen;
+    setRightSidebarOpen(next);
+    if (next) {
+      setQueueTicketPropertiesOpen(false);
+    }
+  }, [isRightSidebarOpen, setRightSidebarOpen]);
+
+  const [ticketCopresenceLive, setTicketCopresenceLive] = useState(false);
+  useEffect(() => {
+    if (!isTicketDetailPage) setTicketCopresenceLive(false);
+  }, [isTicketDetailPage, ticketDetailSlug]);
+
+  const rightSidebarContextValue = useMemo(
+    () =>
+      queueTicketDetailPage
+        ? {
+            isOpen: queueTicketPropertiesOpen,
+            onToggle: toggleQueueTicketProperties,
+            setOpen: setQueueTicketPropertiesOpenSafe,
+            ticketCopresenceLive,
+            setTicketCopresenceLive,
+            ticketRightSidebarPanel,
+            setTicketRightSidebarPanel,
+            ticketSettingsSection,
+            setTicketSettingsSection,
+          }
+        : {
+            isOpen: isRightSidebarOpen,
+            onToggle: handleRightSidebarToggle,
+            setOpen: setRightSidebarOpen,
+            ticketCopresenceLive,
+            setTicketCopresenceLive,
+            ticketRightSidebarPanel,
+            setTicketRightSidebarPanel,
+            ticketSettingsSection,
+            setTicketSettingsSection,
+          },
+    [
+      queueTicketDetailPage,
+      queueTicketPropertiesOpen,
+      toggleQueueTicketProperties,
+      setQueueTicketPropertiesOpenSafe,
+      isRightSidebarOpen,
+      handleRightSidebarToggle,
+      setRightSidebarOpen,
+      ticketCopresenceLive,
+      ticketRightSidebarPanel,
+      setTicketRightSidebarPanel,
+      ticketSettingsSection,
+      setTicketSettingsSection,
+    ]
+  );
 
   // Track when a sidebar navigation has started so we can immediately
   // clear the previous page content and show a lightweight branded
@@ -482,33 +630,61 @@ function DashboardLayoutContent({
   const effectiveHasRightSidebar =
     hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && !isTicketDetailPage;
 
+  const mainLgMarginLeft = isTicketsQueueWorkspace
+    ? isRightSidebarOpen
+      ? "lg:ml-56"
+      : "lg:ml-14"
+    : isLeftSidebarOpen
+      ? "lg:ml-56"
+      : "lg:ml-16";
+
+  /** Queue workspace: ticket view applies its own `lg:pr-64` for the fixed properties rail — do not add `mr-*` here or space is doubled. */
+  const mainLgMarginRight =
+    isTicketsQueueWorkspace
+      ? ""
+      : effectiveHasRightSidebar && isRightSidebarOpen
+        ? isFilterSidebarOpen
+          ? "lg:mr-[28rem]"
+          : "lg:mr-56"
+        : effectiveHasRightSidebar && !isRightSidebarOpen
+          ? "lg:mr-16"
+          : "";
+
+  const spinnerLgLeft = isTicketsQueueWorkspace
+    ? isRightSidebarOpen
+      ? "lg:left-56"
+      : "lg:left-14"
+    : isLeftSidebarOpen
+      ? "lg:left-56"
+      : "lg:left-16";
+
   return (
     <LeftSidebarMobileProvider>
       <div className="flex h-screen overflow-hidden" style={{ backgroundColor: "#E6F6F5" }}>
-        <HierarchicalSidebar
-          isOpen={isLeftSidebarOpen}
-          onToggle={handleLeftSidebarToggle}
-          isInSpecificDashboard={isInSpecificDashboard}
-          onNavigationStart={(targetHref) => {
-            const cleanTarget = targetHref.split("?")[0].split("#")[0];
-            const isAlreadyActive =
-              cleanPathname === cleanTarget ||
-              (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
-            if (isAlreadyActive) return;
-            setPendingNavHref(cleanTarget);
-          }}
-        />
-        <RightSidebarProvider
-          value={{
-            isOpen: isRightSidebarOpen,
-            onToggle: handleRightSidebarToggle,
-            setOpen: setRightSidebarOpen,
-            ticketRightSidebarPanel,
-            setTicketRightSidebarPanel,
-            ticketSettingsSection,
-            setTicketSettingsSection,
-          }}
-        >
+        {!isTicketsQueueWorkspace && (
+          <HierarchicalSidebar
+            isOpen={isLeftSidebarOpen}
+            onToggle={handleLeftSidebarToggle}
+            isInSpecificDashboard={isInSpecificDashboard}
+            onNavigationStart={(targetHref) => {
+              const cleanTarget = targetHref.split("?")[0].split("#")[0];
+              const isAlreadyActive =
+                cleanPathname === cleanTarget ||
+                (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
+              if (isAlreadyActive) return;
+              // Tickets hub + queue share one app shell; let client routes load their own loaders instead of masking the whole main column.
+              if (
+                cleanPathname.startsWith("/dashboard/tickets") &&
+                cleanTarget.startsWith("/dashboard/tickets")
+              ) {
+                return;
+              }
+              setPendingNavHref(cleanTarget);
+              currentRouteCtx?.setCurrentRoute(cleanTarget);
+            }}
+          />
+        )}
+        <RightSidebarProvider value={rightSidebarContextValue}>
           <MerchantsSearchProvider>
             <SyncSidebarsOnMobile />
             {/*
@@ -519,17 +695,7 @@ function DashboardLayoutContent({
             <div className="flex min-w-0 flex-1">
               {/* Main content: margin-left reserves space for fixed left sidebar (w-56, same as right); margin-right for right sidebar overlay */}
               <div
-                className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${
-                  isLeftSidebarOpen ? "lg:ml-56" : "lg:ml-16"
-                } ${
-                  effectiveHasRightSidebar && isRightSidebarOpen
-                    ? isFilterSidebarOpen
-                      ? "lg:mr-[28rem]"
-                      : "lg:mr-56"
-                    : effectiveHasRightSidebar && !isRightSidebarOpen
-                      ? "lg:mr-16"
-                      : ""
-                }`}
+                className={`flex flex-1 flex-col overflow-hidden w-full min-w-0 ${mainLgMarginLeft} ${mainLgMarginRight}`}
                 style={{ transition: "margin 0.3s ease-out" }}
               >
                 <Header />
@@ -546,9 +712,7 @@ function DashboardLayoutContent({
 
                   {showNavigationSpinner && (
                     <div
-                      className={`pointer-events-auto fixed right-0 bottom-0 z-[130] flex items-center justify-center bg-[#FFFFFF] top-14 left-0 ${
-                        isLeftSidebarOpen ? "lg:left-56" : "lg:left-16"
-                      }`}
+                      className={`pointer-events-auto fixed right-0 bottom-0 z-[130] flex items-center justify-center bg-[#FFFFFF] top-14 left-0 ${spinnerLgLeft}`}
                       aria-busy
                       aria-label="Loading page"
                     >
@@ -565,11 +729,17 @@ function DashboardLayoutContent({
                   />
                 </div>
               </div>
-              {(!isRiderDashboardLayout || hasRiderSidebarContent) && (
+              {hasRightSidebar && (!isRiderDashboardLayout || hasRiderSidebarContent) && (
                 <RightSidebar
                   isOpen={isRightSidebarOpen}
-                  onToggle={handleRightSidebarToggle}
+                  onToggle={
+                    queueTicketDetailPage ? handleQueueTicketLeftRailToggle : handleRightSidebarToggle
+                  }
                   filterSidebarOpen={isFilterSidebarOpen}
+                  dockSide={isTicketsQueueWorkspace ? "left" : "right"}
+                  ticketPropertiesRailOpen={
+                    queueTicketDetailPage ? queueTicketPropertiesOpen : undefined
+                  }
                 />
               )}
               {isTicketDetailPage && (

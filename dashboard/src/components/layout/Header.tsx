@@ -4,7 +4,23 @@ import { memo, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { LogOut, Bell, Search, ChevronDown, Plus, Ticket, Mail, UserPlus, Building2, Menu, X, PanelRight, User } from "lucide-react";
+import {
+  LogOut,
+  Search,
+  ChevronDown,
+  Plus,
+  Ticket,
+  Mail,
+  UserPlus,
+  Building2,
+  Menu,
+  X,
+  PanelRight,
+  PanelLeft,
+  User,
+  ArrowLeft,
+  IndianRupee,
+} from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { Logo } from "@/components/brand/Logo";
@@ -16,7 +32,7 @@ const AgentStatusToggle = dynamic(
   () => import("@/components/tickets/AgentStatusToggle").then((m) => m.AgentStatusToggle),
   {
     ssr: false,
-    loading: () => <div className="h-7 w-[104px] shrink-0" aria-hidden />,
+    loading: () => <div className="h-10 w-40 shrink-0" aria-hidden />,
   }
 );
 import { ProfileStatusCard } from "@/components/profile/ProfileStatusCard";
@@ -25,7 +41,16 @@ import { useRightSidebar } from "@/context/RightSidebarContext";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
 import { useAuth } from "@/providers/AuthProvider";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { loadBootstrapFromStorage } from "@/lib/dashboard-bootstrap-storage";
+import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
+import {
+  isTicketsAppDetailPath,
+  isTicketsQueueLayoutExperience,
+  resolveTicketsQueueHeaderTitle,
+  ticketDetailHasQueueContext,
+  TICKETS_QUEUE_HOME_PATH,
+} from "@/lib/tickets/ticket-path-utils";
 
 const HEADER_IDENTITY_CACHE_KEY = "dashboard_header_identity_v1";
 const MERCHANTS_PORTAL_STORAGE_KEY = "dashboard_merchants_portal_v1";
@@ -189,7 +214,10 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/system": "System",
   "/dashboard/analytics": "Analytics",
   "/dashboard/super-admin": "Super Admin",
+  "/dashboard/super-admin/store-onboarding-fee": "Store onboarding fee",
 };
+
+const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
 
 function HeaderComponent() {
   const pathname = usePathname();
@@ -204,9 +232,15 @@ function HeaderComponent() {
 
   const pageName = useMemo(() => {
     const clean = effectivePathname.split("?")[0].split("#")[0];
+    if (clean.startsWith("/dashboard/tickets/queue")) {
+      return resolveTicketsQueueHeaderTitle(clean, searchParams.get("section"));
+    }
+    if (isTicketsAppDetailPath(clean) && ticketDetailHasQueueContext(searchParams)) {
+      return "Queue";
+    }
     if (ROUTE_TITLES[clean]) return ROUTE_TITLES[clean];
     return getCurrentPageName(clean);
-  }, [effectivePathname]);
+  }, [effectivePathname, searchParams]);
   const isMerchantsArea = effectivePathname.startsWith("/dashboard/merchants");
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNewDropdown, setShowNewDropdown] = useState(false);
@@ -230,10 +264,32 @@ function HeaderComponent() {
   const leftSidebarMobile = useLeftSidebarMobile();
   const rightSidebar = useRightSidebar();
   const cleanPathname = useMemo(() => effectivePathname.split("?")[0].split("#")[0], [effectivePathname]);
+  const isTicketsQueueWorkspace = useMemo(
+    () => isTicketsQueueLayoutExperience(cleanPathname, searchParams),
+    [cleanPathname, searchParams.toString()]
+  );
   const currentDashboard = useMemo(() => getCurrentDashboard(cleanPathname), [cleanPathname]);
   const currentSubRoutes = useMemo(() => getCurrentDashboardSubRoutes(cleanPathname), [cleanPathname]);
-  const hasRightSidebar = Boolean(currentDashboard && cleanPathname !== "/dashboard" && currentSubRoutes.length > 0);
-  const { canTogglePortal = false } = usePermissions();
+  const hasRightSidebar = Boolean(
+    currentDashboard &&
+      cleanPathname !== "/dashboard" &&
+      currentSubRoutes.length > 0 &&
+      !cleanPathname.startsWith("/dashboard/customers")
+  );
+  const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
+  const { data: dashboardAccessData } = useDashboardAccessQuery();
+  const canOpenQueueFromTickets = useMemo(() => {
+    if (isSuperAdmin) return true;
+    const points = dashboardAccessData?.accessPoints ?? [];
+    return points.some((ap) => {
+      if (!ap?.isActive) return false;
+      if (String(ap.accessPointGroup).trim().toUpperCase() !== "TICKET_AGENT_STATUS_TOGGLE") {
+        return false;
+      }
+      const actions = Array.isArray(ap.allowedActions) ? ap.allowedActions : [];
+      return actions.some((action) => String(action).trim().toUpperCase() === "UPDATE");
+    });
+  }, [dashboardAccessData?.accessPoints, isSuperAdmin]);
 
   const portalParam = searchParams.get("portal");
   const portalFromUrl = portalParam === "admin" || portalParam === "merchant" ? portalParam : null;
@@ -290,6 +346,12 @@ function HeaderComponent() {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
   };
+
+  useEffect(() => {
+    if (isTicketsQueueWorkspace) {
+      setShowProfileCard(false);
+    }
+  }, [isTicketsQueueWorkspace]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -451,11 +513,15 @@ function HeaderComponent() {
   };
 
   const handleLogoutConfirm = () => {
-    setShowLogoutConfirm(false);
-    logoutMutation.mutate();
+    logoutMutation.mutate(undefined, {
+      onSuccess: () => {
+        setShowLogoutConfirm(false);
+      },
+    });
   };
 
   const handleLogoutCancel = () => {
+    if (logoutMutation.isPending) return;
     setShowLogoutConfirm(false);
   };
 
@@ -464,7 +530,7 @@ function HeaderComponent() {
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
       <div className="flex items-center space-x-3 sm:space-x-4 min-w-0">
         {/* Hamburger - only on tablet/mobile (<1024px) */}
-        {leftSidebarMobile && (
+        {leftSidebarMobile && !isTicketsQueueWorkspace && (
           <button
             type="button"
             onClick={leftSidebarMobile.toggleMobileMenu}
@@ -483,11 +549,44 @@ function HeaderComponent() {
         <Link href="/dashboard" className="sm:hidden flex-shrink-0">
           <Logo variant="icon-only" size="sm" className="transition-opacity hover:opacity-80" />
         </Link>
-        <h2 className="text-base font-semibold text-gray-900 sm:text-lg truncate flex-shrink min-w-0">{pageName}</h2>
-        {/* Online/Offline/Break toggle + Settings - only on Tickets, always visible when on route */}
-        {effectivePathname.startsWith("/dashboard/tickets") && (
-          <AgentStatusToggle />
+        {cleanPathname === STORE_ONBOARDING_FEE_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <IndianRupee className="h-5 w-5 shrink-0 text-violet-600" strokeWidth={2} aria-hidden />
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : (
+          <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg flex-shrink">{pageName}</h2>
         )}
+        {/* Queue (new tab) + helpdesk gear — ticket list & related; status lives on Queue pages */}
+        {effectivePathname.startsWith("/dashboard/tickets") &&
+          !isTicketsQueueWorkspace &&
+          // Hide Queue + helpdesk gear on the ticket detail inner page.
+          !isTicketsAppDetailPath(cleanPathname) && (
+            <div className="flex flex-shrink-0 items-center gap-2">
+              {canOpenQueueFromTickets && (
+                <Link
+                  href={TICKETS_QUEUE_HOME_PATH}
+                  prefetch={false}
+                  scroll={false}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex cursor-pointer items-center rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-800 shadow-sm transition-colors hover:bg-gray-50"
+                  title="Open agent queue in a new tab"
+                  aria-label="Open agent queue in a new tab"
+                >
+                  Queue
+                </Link>
+              )}
+              <TicketsHubGearButton />
+            </div>
+          )}
       </div>
 
       {/* Center: Order Search on orders; Dashboard Search only on main list pages (hide on verification, store detail, etc.) */}
@@ -526,7 +625,7 @@ function HeaderComponent() {
           </div>
         )}
         {/* Global search and + New: only on Tickets dashboard */}
-        {effectivePathname.startsWith("/dashboard/tickets") && (
+        {effectivePathname.startsWith("/dashboard/tickets") && !isTicketsQueueWorkspace && (
           <>
             <div className="w-full min-w-0 max-w-[160px] sm:max-w-[220px] md:max-w-[280px]">
               <GlobalSearch />
@@ -606,19 +705,27 @@ function HeaderComponent() {
             aria-label={rightSidebar?.isOpen ? "Close panel" : "Open panel"}
             aria-expanded={rightSidebar?.isOpen}
           >
-            <PanelRight className="h-5 w-5" aria-hidden />
+            {isTicketsQueueWorkspace ? (
+              <PanelLeft className="h-5 w-5" aria-hidden />
+            ) : (
+              <PanelRight className="h-5 w-5" aria-hidden />
+            )}
           </button>
         )}
-        <button className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors" aria-label="Notifications">
-          <Bell className="h-5 w-5" />
-        </button>
+        {isTicketsQueueWorkspace && <AgentStatusToggle />}
 
         {/* User name + avatar + logout - hidden on mobile (moved to left sidebar) */}
         <div ref={userMenuRef} className="relative hidden lg:block">
           <button
             type="button"
-            onClick={() => setShowProfileCard(true)}
-            className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-100 min-w-0"
+            onClick={() => {
+              if (!isTicketsQueueWorkspace) {
+                setShowProfileCard(true);
+              }
+            }}
+            className={`flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-700 min-w-0 ${
+              isTicketsQueueWorkspace ? "cursor-default" : "hover:bg-gray-100"
+            }`}
           >
             <div className="flex flex-col items-start min-w-0 max-w-[200px]">
               <span suppressHydrationWarning className="text-sm font-medium text-gray-900 truncate w-full">
@@ -654,7 +761,7 @@ function HeaderComponent() {
           aria-modal="true"
           aria-labelledby="logout-dialog-title"
           aria-describedby="logout-dialog-desc"
-          onClick={handleLogoutCancel}
+          onClick={logoutMutation.isPending ? undefined : handleLogoutCancel}
         >
           <div
             className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden"
@@ -674,6 +781,7 @@ function HeaderComponent() {
                 <button
                   type="button"
                   onClick={handleLogoutCancel}
+                  disabled={logoutMutation.isPending}
                   className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors"
                 >
                   Cancel
@@ -702,9 +810,9 @@ function HeaderComponent() {
         </div>
       )}
 
-      {/* Floating profile status card */}
+      {/* Floating profile status card (hidden on Queue workspace — status is in header) */}
       <ProfileStatusCard
-        open={showProfileCard}
+        open={showProfileCard && !isTicketsQueueWorkspace}
         onClose={() => setShowProfileCard(false)}
         onSignOut={openLogoutConfirm}
       />

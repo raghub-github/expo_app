@@ -11,7 +11,8 @@ import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine
 import { getSql } from "@/lib/db/client";
 import { insertTicketActivityAudit } from "@/lib/db/operations/ticket-activity-audit";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
-import { sendEmail } from "@/lib/email/send";
+import { sendEmail, type OutboundEmailAttachment } from "@/lib/email/send";
+import { loadTicketAttachmentBuffer } from "@/lib/tickets/ticket-attachment-buffer";
 
 export const runtime = "nodejs";
 
@@ -47,6 +48,10 @@ function rowTimestamp(v: unknown): string {
   if (v == null) return new Date().toISOString();
   if (v instanceof Date) return v.toISOString();
   return String(v);
+}
+
+function normalizeMessageForIdempotency(v: string): string {
+  return v.replace(/\r\n/g, "\n").trim();
 }
 
 export async function POST(
@@ -108,6 +113,7 @@ export async function POST(
       : isPublicNote
         ? "PUBLIC_NOTE"
         : requestedType || "TEXT";
+    const normalizedMessageText = normalizeMessageForIdempotency(messageText);
     const senderName = systemUser.fullName ?? systemUser.email ?? "Agent";
     const senderEmail = systemUser.email ?? null;
 
@@ -156,6 +162,31 @@ export async function POST(
     let messageId: number | null = null;
     let createdAt = new Date().toISOString();
     let updatedAt = createdAt;
+    let dedupedExistingMessage = false;
+
+    // Idempotency guard: prevent accidental duplicate inserts on double-click/retry.
+    const possibleDuplicate = await sqlClient`
+      SELECT id, created_at, updated_at
+      FROM public.unified_ticket_messages
+      WHERE ticket_id = ${ticketId}
+        AND sender_type = 'AGENT'
+        AND sender_id = ${systemUser.id}
+        AND COALESCE(is_internal_note, false) = ${isInternalNote}
+        AND UPPER(COALESCE(message_type, 'TEXT')) = ${messageType}
+        AND BTRIM(COALESCE(message_text, '')) = ${normalizedMessageText}
+        AND created_at >= (NOW() - INTERVAL '20 seconds')
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+    const duplicateRow = possibleDuplicate?.[0] as { id?: number; created_at?: unknown; updated_at?: unknown } | undefined;
+    if (duplicateRow?.id != null) {
+      messageId = Number(duplicateRow.id);
+      createdAt = rowTimestamp(duplicateRow.created_at);
+      updatedAt = rowTimestamp(duplicateRow.updated_at ?? duplicateRow.created_at);
+      dedupedExistingMessage = true;
+    }
+
+    if (!dedupedExistingMessage) {
     try {
       if (isInternalNote) {
         const inserted = await sqlClient`
@@ -240,19 +271,20 @@ export async function POST(
         throw insErr;
       }
     }
+    }
 
     if (messageId == null) {
       return NextResponse.json({ success: false, error: "Failed to save message" }, { status: 500 });
     }
 
-    if (isFirstResponse) {
+    if (!dedupedExistingMessage && isFirstResponse) {
       await sqlClient`
         UPDATE public.unified_tickets
         SET last_response_at = NOW(), last_response_by_type = 'AGENT', last_response_by_id = ${systemUser.id},
             first_response_at = NOW(), updated_at = NOW()
         WHERE id = ${ticketId}
       `;
-    } else {
+    } else if (!dedupedExistingMessage) {
       await sqlClient`
         UPDATE public.unified_tickets
         SET last_response_at = NOW(), last_response_by_type = 'AGENT', last_response_by_id = ${systemUser.id},
@@ -261,29 +293,35 @@ export async function POST(
       `;
     }
 
-    await insertTicketActivityAudit(sqlClient, {      ticket_id: ticketId,
-      activity_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "response",
-      activity_category: (isInternalNote || isPublicNote) ? "note" : "response",
-      activity_description: isInternalNote ? "Private note added" : isPublicNote ? "Public note added" : (isFirstResponse ? "First response sent" : "Response sent"),
-      actor_user_id: systemUser.id,
-      actor_name: senderName,
-      actor_email: systemUser.email ?? null,
-      actor_type: "AGENT",
-      response_message_id: messageId ?? undefined,
-      response_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "public",
-      is_first_response: isInternalNote ? undefined : isFirstResponse,
-    });
+    if (!dedupedExistingMessage) {
+      await insertTicketActivityAudit(sqlClient, {      ticket_id: ticketId,
+        activity_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "response",
+        activity_category: (isInternalNote || isPublicNote) ? "note" : "response",
+        activity_description: isInternalNote ? "Private note added" : isPublicNote ? "Public note added" : (isFirstResponse ? "First response sent" : "Response sent"),
+        actor_user_id: systemUser.id,
+        actor_name: senderName,
+        actor_email: systemUser.email ?? null,
+        actor_type: "AGENT",
+        response_message_id: messageId ?? undefined,
+        response_type: isInternalNote ? "internal_note" : isPublicNote ? "public_note" : "public",
+        is_first_response: isInternalNote ? undefined : isFirstResponse,
+      });
+    }
 
     let emailDispatch: { ok: true } | { ok: false; code: string } | undefined;
     const shouldEmailCustomer = !isInternalNote && messageType === "TEXT";
-    if (shouldEmailCustomer) {
+    if (shouldEmailCustomer && !dedupedExistingMessage) {
       const ticketRow = ticketCheck[0] as {
         subject?: unknown;
         ticket_id?: unknown;
       };
 
-      if (toRecipientsParsed.length === 0) {
-        console.warn("[POST /api/tickets/[id]/messages] No To addresses; skipping SMTP (composer To is empty)");
+      if (
+        toRecipientsParsed.length === 0 &&
+        ccRecipientsParsed.length === 0 &&
+        bccRecipientsParsed.length === 0
+      ) {
+        console.warn("[POST /api/tickets/[id]/messages] No To/Cc/Bcc; skipping SMTP");
         emailDispatch = { ok: false, code: "NO_RECIPIENT" };
       } else {
         const ticketRef =
@@ -303,6 +341,30 @@ export async function POST(
           messageText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "(see ticket for full message)";
         const hasHtml = /<[a-z][\s\S]*>/i.test(messageText);
 
+        const outboundAttachments: OutboundEmailAttachment[] = [];
+        for (const raw of rawAttachments) {
+          if (!raw || typeof raw !== "object" || !("storageKey" in (raw as object))) continue;
+          const a = raw as { storageKey?: unknown; name?: unknown; mimeType?: unknown };
+          const key = typeof a.storageKey === "string" ? a.storageKey.trim() : "";
+          if (!key) continue;
+          const name =
+            typeof a.name === "string" && a.name.trim() ? a.name.trim() : key.split("/").pop() || "attachment";
+          const mime =
+            typeof a.mimeType === "string" && a.mimeType.trim()
+              ? a.mimeType.trim()
+              : "application/octet-stream";
+          const loaded = await loadTicketAttachmentBuffer(key, mime);
+          if (loaded) {
+            outboundAttachments.push({
+              filename: name,
+              content: loaded.buffer,
+              contentType: loaded.contentType,
+            });
+          } else {
+            console.warn("[POST /api/tickets/[id]/messages] Attachment not loaded for outbound email:", key);
+          }
+        }
+
         const outcome = await sendEmail({
           to: toRecipientsParsed.length === 1 ? toRecipientsParsed[0] : toRecipientsParsed,
           cc: ccRecipientsParsed.length ? ccRecipientsParsed : undefined,
@@ -310,6 +372,7 @@ export async function POST(
           subject,
           text: plain,
           ...(hasHtml ? { html: messageText } : {}),
+          ...(outboundAttachments.length > 0 ? { attachments: outboundAttachments } : {}),
         });
 
         emailDispatch = outcome.ok ? { ok: true } : { ok: false, code: outcome.code };
@@ -352,7 +415,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      data: { sent: true, isFirstResponse, message: messagePayload, emailDispatch },
+      data: { sent: true, isFirstResponse: dedupedExistingMessage ? false : isFirstResponse, message: messagePayload, emailDispatch, dedupedExistingMessage },
     });
   } catch (error) {
     console.error("[POST /api/tickets/[id]/messages] Error:", error);

@@ -13,7 +13,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "export:web": "expo export --platform web",
-    "serve:web": "npx serve dist -s -l 5000",
+    "serve:web": "serve dist -s -l 5000",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -59,6 +59,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "serve": "^14.2.4",
     "typescript": "~5.9.2"
   }
 }

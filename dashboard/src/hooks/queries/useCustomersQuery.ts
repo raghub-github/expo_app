@@ -53,10 +53,26 @@ export async function fetchCustomers(
   if (params.sortOrder) searchParams.set("sortOrder", params.sortOrder);
 
   const response = await fetch(`/api/customers?${searchParams.toString()}`, { signal });
-  const result: CustomersResponse = await response.json();
-
-  if (!result.success || !result.data) {
-    throw new Error(result.error || "Failed to fetch customers");
+  let result: CustomersResponse = { success: false };
+  try {
+    const text = await response.text();
+    if (text) result = JSON.parse(text) as CustomersResponse;
+  } catch {
+    throw new Error("Could not read search results. Please try again.");
+  }
+  if (!response.ok) {
+    const msg =
+      typeof result.error === "string" && result.error
+        ? result.error
+        : `Request failed (${response.status})`;
+    throw new Error(msg);
+  }
+  if (!result.success || !Array.isArray(result.data)) {
+    const msg =
+      typeof result.error === "string" && result.error
+        ? result.error
+        : "Failed to fetch customers";
+    throw new Error(msg);
   }
 
   return {
@@ -83,7 +99,7 @@ export function useCustomersQuery(params: CustomersQueryParams = {}) {
 
   const { enabled: enabledFromParams = true, ...queryParams } = params;
 
-  const isOnCustomersRoute = pathname === "/dashboard/customers";
+  const isOnCustomersRoute = pathname.startsWith("/dashboard/customers");
   const isAllowed = Boolean(authReady && sessionUser && permissions);
   const enabled = Boolean(isOnCustomersRoute && isAllowed && enabledFromParams);
   return useQuery({

@@ -7,6 +7,7 @@ import { useTicketUpdate } from "@/hooks/tickets/useTicketUpdate";
 import { useTicketsAgentsQuery } from "@/hooks/tickets/useTicketsAgentsQuery";
 import { useTicketsReferenceDataQuery } from "@/hooks/tickets/useTicketsReferenceDataQuery";
 import { useToast } from "@/context/ToastContext";
+import { useRightSidebar } from "@/context/RightSidebarContext";
 
 const PRIORITY_DOT: Record<string, string> = {
   low: "bg-gray-400",
@@ -61,10 +62,24 @@ function getReadableTextColor(bg: string): string {
   return yiq >= 140 ? "#1f2937" : "#ffffff";
 }
 
+function TicketLiveBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 ring-1 ring-emerald-200/80">
+      <span className="relative flex h-2 w-2">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+      </span>
+      Live
+    </span>
+  );
+}
+
 export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string }) {
   const { data: ticket, isLoading, error } = useTicketDetail(ticketId);
   const updateTicket = useTicketUpdate();
   const { toast } = useToast();
+  const rightSidebar = useRightSidebar();
+  const copresenceLive = Boolean(rightSidebar?.ticketCopresenceLive);
 
   const { data: agentsData } = useTicketsAgentsQuery();
   const { data: refDataRaw } = useTicketsReferenceDataQuery();
@@ -318,8 +333,17 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[#f3f5f7]">
       <div className="border-b border-gray-200 bg-gradient-to-b from-white to-[#f3f5f7] px-4 pb-3 pt-3">
-        <p className="text-[20px] font-semibold leading-tight tracking-tight text-[#1f3553]">{statusLabel}</p>
-        <p className="mt-1 text-xs font-medium text-[#4b647f]">on {formatStatusTime(statusTime)}</p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[20px] font-semibold leading-tight tracking-tight text-[#1f3553]">{statusLabel}</p>
+            <p className="mt-1 text-xs font-medium text-[#4b647f]">on {formatStatusTime(statusTime)}</p>
+          </div>
+          {copresenceLive ? (
+            <div className="shrink-0 pt-0.5">
+              <TicketLiveBadge />
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
@@ -464,6 +488,18 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
             options={groupOptions}
             onChange={setGroupId}
           />
+          {ticket.automationLastRun ? (
+            <p className="mt-1.5 text-[11px] leading-snug text-gray-500">
+              Automation:{" "}
+              <span className="font-medium text-gray-700">{ticket.automationLastRun.ruleName}</span>
+              {ticket.automationLastRun.ruleCode ? (
+                <span className="font-mono text-[10px] text-gray-400"> ({ticket.automationLastRun.ruleCode})</span>
+              ) : null}
+              {ticket.automationLastRun.triggerEvent ? (
+                <span className="text-gray-400"> · {ticket.automationLastRun.triggerEvent.replace(/_/g, " ")}</span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
 
         {/* Assigned Agent */}

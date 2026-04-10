@@ -1,10 +1,13 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, FolderGit2, ChevronDown, X, Search } from "lucide-react";
 import { Ticket } from "@/hooks/tickets/useTickets";
+import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
+import { buildTicketDetailHref } from "@/lib/tickets/ticket-path-utils";
 import { InlineSearchableSelect, type Option } from "./InlineSearchableSelect";
 
 interface TicketListRowProps {
@@ -21,6 +24,8 @@ interface TicketListRowProps {
   statusOptions: Option[];
   /** Current user id so "Me" option displays and submits correctly */
   currentUserId?: number;
+  /** Full href to ticket detail (includes list query params when provided from the list page). */
+  detailHref?: string;
 }
 
 function formatTimeAgo(dateStr: string): string {
@@ -46,6 +51,24 @@ function formatDateTime(dateStr: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatSnoozeCountdownShort(
+  snoozedUntil: string,
+  nowMs: number
+): { label: string; tone: "violet" | "amber" | "red" } | null {
+  const endMs = new Date(snoozedUntil).getTime();
+  if (!Number.isFinite(endMs)) return null;
+  const diff = endMs - nowMs;
+  if (diff <= 0) return { label: "Resuming now", tone: "red" };
+  const totalSeconds = Math.floor(diff / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const tone: "violet" | "amber" | "red" = totalSeconds < 60 ? "red" : totalSeconds < 300 ? "amber" : "violet";
+  if (hours > 0) return { label: `${hours}h ${minutes}m ${seconds}s`, tone };
+  if (minutes > 0) return { label: `${minutes}m ${seconds}s`, tone };
+  return { label: `${seconds}s`, tone };
 }
 
 function formatOverdue(slaDueAt: string): string {
@@ -110,7 +133,9 @@ export const TicketListRow = React.memo(function TicketListRow({
   agentOptions,
   statusOptions,
   currentUserId,
+  detailHref,
 }: TicketListRowProps) {
+  const detailLink = detailHref ?? buildTicketDetailHref(ticket.id, "");
   const [groupAgentOpen, setGroupAgentOpen] = useState(false);
   const [groupAgentTab, setGroupAgentTab] = useState<"group" | "agent">("group");
   const [searchGroup, setSearchGroup] = useState("");
@@ -118,6 +143,18 @@ export const TicketListRow = React.memo(function TicketListRow({
   const [groupAgentMenuPlacement, setGroupAgentMenuPlacement] = useState<{ top: number; left: number } | null>(null);
   const groupAgentRef = useRef<HTMLDivElement>(null);
   const groupAgentMenuPortalRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const prefetchThisTicket = useCallback(() => {
+    prefetchTicketDetail(queryClient, ticket.id);
+  }, [queryClient, ticket.id]);
+
+  useEffect(() => {
+    setGroupAgentOpen(false);
+    setGroupAgentTab("group");
+    setSearchGroup("");
+    setSearchAgent("");
+    setGroupAgentMenuPlacement(null);
+  }, [ticket.id]);
 
   useLayoutEffect(() => {
     if (!groupAgentOpen) {
@@ -178,6 +215,7 @@ export const TicketListRow = React.memo(function TicketListRow({
     !isResolvedOrClosed &&
     Date.now() - new Date(ticket.createdAt).getTime() > getPriorityResponseSlaMs(ticket.priority);
   const showOverdue = isSlaBreached || isOverdue15;
+  const overdueLabel = showOverdue && ticket.slaDueAt ? `Overdue ${formatOverdue(ticket.slaDueAt)}` : "Overdue";
 
   const sourceLabel = ticket.sourceRole?.trim() ? formatTicketSourceRole(ticket.sourceRole) : "";
   const typeAvatarLetter = ticketTypeAvatarLetter(ticket.sourceRole);
@@ -235,6 +273,16 @@ export const TicketListRow = React.memo(function TicketListRow({
   const filteredAgentOptions = searchAgent.trim()
     ? agentOptions.filter((o) => o.label.toLowerCase().includes(searchAgent.toLowerCase()))
     : agentOptions;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (ticket.status !== "snoozed" || !ticket.snoozedUntil) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [ticket.status, ticket.snoozedUntil]);
+  const snoozeCountdown =
+    ticket.status === "snoozed" && ticket.snoozedUntil
+      ? formatSnoozeCountdownShort(ticket.snoozedUntil, nowMs)
+      : null;
 
   const groupAgentMenuPanel =
     groupAgentOpen && groupAgentMenuPlacement != null && typeof document !== "undefined" ? (
@@ -389,6 +437,7 @@ export const TicketListRow = React.memo(function TicketListRow({
     <div
       className="flex items-center gap-2.5 border-b border-gray-200 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
       style={{ overflow: "visible" }}
+      onPointerEnter={prefetchThisTicket}
     >
       {/* Checkbox — fixed width column so text column aligns row-to-row */}
       <div className="shrink-0 w-4 flex justify-center" onClick={(e) => e.stopPropagation()}>
@@ -403,7 +452,8 @@ export const TicketListRow = React.memo(function TicketListRow({
 
       {/* Avatar: ticket source type (Merchant / Rider / Customer …), first letter only */}
       <Link
-        href={`/dashboard/tickets/${ticket.id}`}
+        href={detailLink}
+        scroll={false}
         className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-sm font-semibold leading-none tabular-nums shadow-sm hover:shadow-md hover:scale-[1.02] transition-all"
         aria-label={`Open ticket ${ticket.ticketNumber}${sourceLabel ? ` (${sourceLabel})` : ""}`}
         title={sourceLabel ? `Type: ${sourceLabel}` : undefined}
@@ -417,7 +467,7 @@ export const TicketListRow = React.memo(function TicketListRow({
           {showOverdue && (
             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
               <AlertCircle className="h-2.5 w-2.5 shrink-0" />
-              Overdue
+              {overdueLabel}
             </span>
           )}
           <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 capitalize">
@@ -451,8 +501,11 @@ export const TicketListRow = React.memo(function TicketListRow({
         </div>
 
         <Link
-          href={`/dashboard/tickets/${ticket.id}`}
-          className="block w-full min-w-0 text-left hover:underline underline-offset-2"
+          href={detailLink}
+          scroll={false}
+          // Only the subject + ticket id text should be clickable.
+          // Avoid `w-full` here because it makes the whole row width clickable (including blank space).
+          className="inline-flex w-fit max-w-full min-w-0 text-left hover:underline underline-offset-2"
           title={`${ticket.subject} · #${ticket.ticketNumber || ticket.id}`}
         >
           <span className="font-medium text-gray-900 text-xs [overflow-wrap:anywhere]">{ticket.subject}</span>
@@ -481,32 +534,65 @@ export const TicketListRow = React.memo(function TicketListRow({
               <span>SLA due {formatDateTime(ticket.slaDueAt)}</span>
             </>
           ) : null}
-          {showOverdue && ticket.slaDueAt && (
-            <>
-              <span aria-hidden className="text-gray-300">
-                ·
-              </span>
-              <span className="text-red-600 font-medium">Overdue {formatOverdue(ticket.slaDueAt)}</span>
-            </>
-          )}
         </div>
       </div>
 
-      {/* Right: Priority, Group/Agent, Status - stacked vertically; same width as header column, shifted left */}
-      <div className="flex flex-col gap-px shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
-        {/* Priority */}
-        <div className="w-full flex items-center min-h-[22px]">
-          <InlineSearchableSelect
-            value={ticket.priority}
-            options={priorityOptions}
-            onChange={(v) => onUpdatePriority(ticket.id, v)}
-            leadingIcon={
-              <span
-                className={`block w-1.5 h-1.5 rounded-full shrink-0 ${priorityDotColors[ticket.priority] ?? "bg-gray-400"}`}
-                aria-hidden
-              />
-            }
-          />
+      {/* Right: Priority + Status on one row; Group/Agent full width below */}
+      <div className="flex flex-col gap-1 shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
+        {snoozeCountdown ? (
+          <div className="w-full text-right">
+            <span
+              className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                snoozeCountdown.tone === "red"
+                  ? "bg-red-50 text-red-700"
+                  : snoozeCountdown.tone === "amber"
+                    ? "bg-amber-50 text-amber-700"
+                    : "bg-violet-50 text-violet-700"
+              }`}
+            >
+              Resumes in {snoozeCountdown.label}
+            </span>
+          </div>
+        ) : null}
+        <div className="flex w-full min-h-[22px] flex-row items-center gap-1">
+          <div className="min-w-0 flex-1">
+            <InlineSearchableSelect
+              value={ticket.priority}
+              options={priorityOptions}
+              onChange={(v) => onUpdatePriority(ticket.id, v)}
+              compact
+              resetMenusWhenChanged={ticket.id}
+              leadingIcon={
+                <span
+                  className={`block w-1.5 h-1.5 rounded-full shrink-0 ${priorityDotColors[ticket.priority] ?? "bg-gray-400"}`}
+                  aria-hidden
+                />
+              }
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <InlineSearchableSelect
+              value={ticket.status}
+              options={statusOptions}
+              onChange={(v) => onUpdateStatus(ticket.id, v)}
+              compact
+              resetMenusWhenChanged={ticket.id}
+              leadingIcon={
+                <span
+                  className={`block w-1.5 h-1.5 rounded-full shrink-0 ${
+                    ticket.status === "open" || ticket.status === "reopened"
+                      ? "bg-blue-500"
+                      : ticket.status === "snoozed"
+                        ? "bg-violet-500"
+                      : ticket.status === "resolved" || ticket.status === "closed"
+                        ? "bg-green-500"
+                        : "bg-amber-500"
+                  }`}
+                  aria-hidden
+                />
+              }
+            />
+          </div>
         </div>
         {/* Group / Agent - ONE dropdown */}
         <div
@@ -579,26 +665,6 @@ export const TicketListRow = React.memo(function TicketListRow({
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${groupAgentOpen ? "rotate-180" : ""}`} />
             </button>
           </div>
-        </div>
-        {/* Status */}
-        <div className="w-full flex items-center">
-          <InlineSearchableSelect
-            value={ticket.status}
-            options={statusOptions}
-            onChange={(v) => onUpdateStatus(ticket.id, v)}
-            leadingIcon={
-              <span
-                className={`block w-1.5 h-1.5 rounded-full shrink-0 ${
-                  ticket.status === "open" || ticket.status === "reopened"
-                    ? "bg-blue-500"
-                    : ticket.status === "resolved" || ticket.status === "closed"
-                      ? "bg-green-500"
-                      : "bg-amber-500"
-                }`}
-                aria-hidden
-              />
-            }
-          />
         </div>
       </div>
     </div>

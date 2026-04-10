@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import multipart from "@fastify/multipart";
 import { z } from "zod";
 import { getSql } from "../../db/client.js";
 import { logStoreActivity } from "../../lib/store-activity-feed.js";
@@ -174,6 +175,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
   await app.register(
     async (protectedApp) => {
       await protectedApp.register(auth, { required: true });
+      await protectedApp.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 
       protectedApp.get("/me", async (req, reply) => {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
@@ -5070,6 +5072,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     ticket_id,
                     status,
                     priority,
+                    subject,
+                    description,
                     created_at,
                     to_char(created_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon YYYY, HH24:MI') AS created_at_ist
         `;
@@ -5078,6 +5082,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           ticket_id: string;
           status: string;
           priority: string;
+          subject?: string | null;
+          description?: string | null;
           created_at: Date;
           created_at_ist?: string | null;
         };
@@ -5089,11 +5095,74 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ticket_id: row.ticket_id,
             status: row.status,
             priority: row.priority,
+            subject: row.subject ?? null,
+            description: row.description ?? null,
             created_at:
               row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
             created_at_display: row.created_at_ist ?? undefined,
           },
         });
+      });
+
+      /** GET /merchant-partner/stores/:storeId/tickets/:ticketId/messages — list conversation messages for a ticket. */
+      protectedApp.post<{
+        Params: { storeId: string; ticketId: string };
+      }>("/stores/:storeId/tickets/:ticketId/upload", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        const ticketIdNum = Number(req.params.ticketId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        if (!Number.isInteger(ticketIdNum) || ticketIdNum < 1) {
+          return reply.code(400).send({ error: "invalid_ticket_id" });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+        const ticketRows = await sql`
+          SELECT id
+          FROM unified_tickets
+          WHERE id = ${ticketIdNum}
+            AND merchant_store_id = ${storeId}
+            AND merchant_parent_id = ${parentId}
+          LIMIT 1
+        `;
+        if (ticketRows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
+
+        const filePart = await (req as any).file?.();
+        if (!filePart) return reply.code(400).send({ error: "no_file" });
+        const buffer = await filePart.toBuffer();
+        if (!buffer || buffer.length === 0) return reply.code(400).send({ error: "empty_file" });
+        if (buffer.length > 50 * 1024 * 1024) return reply.code(400).send({ error: "file_too_large" });
+
+        const originalName = String(filePart.filename || "file");
+        const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "file";
+        const mime = String(filePart.mimetype || "application/octet-stream");
+        const { randomUUID } = await import("crypto");
+        // Keep same R2 directory family as dashboard ticket reply uploads.
+        const r2Key = `tickets/images/${ticketIdNum}/${randomUUID()}-${safeName}`;
+
+        try {
+          const { uploadToR2 } = await import("../../services/r2/r2Service.js");
+          const uploaded = await uploadToR2(buffer, r2Key, mime);
+          const proxyUrl = `/v1/attachments/proxy?key=${encodeURIComponent(uploaded.key)}`;
+          return reply.code(201).send({
+            success: true,
+            attachment: {
+              storageKey: uploaded.key,
+              url: proxyUrl,
+              name: originalName,
+              mimeType: mime,
+            },
+          });
+        } catch (e: any) {
+          req.log.error(e, "ticket attachment upload failed");
+          return reply.code(500).send({ error: "upload_failed", message: e?.message || "Upload failed" });
+        }
       });
 
       /** GET /merchant-partner/stores/:storeId/tickets/:ticketId/messages — list conversation messages for a ticket. */
@@ -5115,15 +5184,38 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         const parentId = await getPartnerParentId(sql, req.auth.sub);
         if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
 
+        // Same as dashboard GET /api/tickets/[id]: resume snooze as soon as merchant loads chat after snooze end.
+        try {
+          await sql`
+            UPDATE unified_tickets
+            SET status = 'OPEN'::unified_ticket_status,
+                snoozed_until = NULL,
+                snooze_reason = NULL,
+                updated_at = NOW()
+            WHERE id = ${ticketIdNum}
+              AND merchant_store_id = ${storeId}
+              AND merchant_parent_id = ${parentId}
+              AND status = 'SNOOZED'::unified_ticket_status
+              AND snoozed_until IS NOT NULL
+              AND snoozed_until <= NOW()
+          `;
+        } catch (wakeErr: unknown) {
+          req.log.warn({ err: wakeErr }, "merchant ticket snooze wake skipped");
+        }
+
         const ticketRows = await sql`
           SELECT id,
                  ticket_id,
                  status,
                  priority,
+                 subject,
+                 description,
                  created_at,
                  satisfaction_rating,
                  satisfaction_feedback,
-                 satisfaction_collected_at
+                 satisfaction_collected_at,
+                 snoozed_until,
+                 snooze_reason
           FROM unified_tickets
           WHERE id = ${ticketIdNum}
             AND merchant_store_id = ${storeId}
@@ -5131,6 +5223,35 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           LIMIT 1
         `;
         if (ticketRows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
+
+        const rawTicket = ticketRows[0] as Record<string, unknown>;
+        const toIsoOrNull = (v: unknown): string | null => {
+          if (v == null) return null;
+          if (v instanceof Date) {
+            return Number.isFinite(v.getTime()) ? v.toISOString() : null;
+          }
+          const s = String(v).trim();
+          if (!s) return null;
+          const d = new Date(s);
+          return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+        };
+        const ticketPayload = {
+          id: Number(rawTicket.id),
+          ticket_id: String(rawTicket.ticket_id ?? ""),
+          status: String(rawTicket.status ?? ""),
+          priority: String(rawTicket.priority ?? ""),
+          subject: rawTicket.subject ?? null,
+          description: rawTicket.description ?? null,
+          created_at: toIsoOrNull(rawTicket.created_at) ?? new Date().toISOString(),
+          satisfaction_rating: rawTicket.satisfaction_rating ?? null,
+          satisfaction_feedback: rawTicket.satisfaction_feedback ?? null,
+          satisfaction_collected_at: toIsoOrNull(rawTicket.satisfaction_collected_at),
+          snoozed_until: toIsoOrNull(rawTicket.snoozed_until),
+          snooze_reason:
+            typeof rawTicket.snooze_reason === "string" && rawTicket.snooze_reason.trim()
+              ? rawTicket.snooze_reason.trim()
+              : null,
+        };
 
         const msgRows = await sql`
           SELECT id,
@@ -5161,7 +5282,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }));
 
         return reply.send({
-          ticket: ticketRows[0],
+          ticket: ticketPayload,
           messages,
         });
       });
@@ -5203,6 +5324,36 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (ticketRows.length === 0) return reply.code(404).send({ error: "ticket_not_found" });
 
         const senderName = (req.auth as any)?.name ?? null;
+        const normalizedText = text.replace(/\r\n/g, "\n").trim();
+
+        // Idempotency guard: if the same merchant sends the exact same message within
+        // a short window, return the existing row instead of inserting duplicate.
+        const duplicateRows = await sql`
+          SELECT id, created_at
+          FROM unified_ticket_messages
+          WHERE ticket_id = ${ticketIdNum}
+            AND sender_type = 'MERCHANT'::unified_ticket_source
+            AND sender_id = ${storeId}
+            AND COALESCE(is_internal_note, false) = FALSE
+            AND UPPER(COALESCE(message_type, 'TEXT')) = 'TEXT'
+            AND BTRIM(COALESCE(message_text, '')) = ${normalizedText}
+            AND created_at >= (NOW() - INTERVAL '20 seconds')
+          ORDER BY id DESC
+          LIMIT 1
+        `;
+        if (duplicateRows.length > 0) {
+          const dupe = duplicateRows[0] as { id: number; created_at: Date | string };
+          return reply.send({
+            ok: true,
+            deduped_existing_message: true,
+            message: {
+              id: dupe.id,
+              message_text: text,
+              created_at:
+                dupe.created_at instanceof Date ? dupe.created_at.toISOString() : String(dupe.created_at),
+            },
+          });
+        }
 
         const rows = await sql`
           INSERT INTO unified_ticket_messages (

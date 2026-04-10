@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import OrderTimeline, { type OrderTimelineEntry } from "./OrderTimeline";
 import OrderRightSidebar from "./OrderRightSidebar";
 import CustomerDetails from "./CustomerDetails";
@@ -9,7 +9,7 @@ import PaymentDetails from "./PaymentDetails";
 import RiderDetails from "./RiderDetails";
 import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
-import { ChevronDown, History, X } from "lucide-react";
+import { ChevronDown, History, RefreshCw, X } from "lucide-react";
 
 /** Status options for "Update order status" modal (value = DB enum) */
 const STATUS_OPTIONS = [
@@ -217,6 +217,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<
     "picked_up" | "in_transit" | "delivered"
@@ -228,6 +229,8 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
   const [statusHistory, setStatusHistory] = useState<OrderStatusHistoryEntry[]>([]);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
+  const [copiedOrderId, setCopiedOrderId] = useState(false);
+  const copyOrderIdResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const auth = useAuthOptional();
   const loggedInEmail = auth?.user?.email ?? null;
 
@@ -273,6 +276,7 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
     }
 
     if (refetchTrigger === 0) setLoading(true);
+    else setIsRefreshing(true);
     setError(null);
 
     const params = new URLSearchParams({
@@ -281,6 +285,9 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
       search: orderPublicId,
       limit: "1",
     });
+    if (refetchTrigger > 0) {
+      params.set("skipCache", "1");
+    }
 
     const orderIdForParallel = refetchTrigger > 0 && order?.id ? order.id : null;
 
@@ -296,7 +303,12 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         let timelineBody = timelineBodyOrNull;
         if (timelineBody == null && body?.success && Array.isArray(body?.data) && body.data.length > 0) {
           const row = body.data[0] as any;
-          timelineBody = await fetch(`/api/orders/${row.id}/timeline`).then((r) => r.json().catch(() => null));
+          const embedded = (body as { timeline?: unknown }).timeline;
+          if (Array.isArray(embedded)) {
+            timelineBody = { success: true, data: embedded };
+          } else {
+            timelineBody = await fetch(`/api/orders/${row.id}/timeline`).then((r) => r.json().catch(() => null));
+          }
         }
         if (body.success && Array.isArray(body.data) && body.data.length > 0) {
           const row = body.data[0] as any;
@@ -389,19 +401,20 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             etaBreachedTimelineId: row.etaBreachedTimelineId != null ? Number(row.etaBreachedTimelineId) : null,
           });
 
-          // Load refunds in the same initial load, so payment card stats
-          // appear together with the rest of the order details.
-          try {
-            const refundsRes = await fetch(`/api/orders/${row.id}/refunds`);
-            const refundsBody = await refundsRes.json().catch(() => null);
-            if (!cancelled && refundsRes.ok && refundsBody?.success && Array.isArray(refundsBody.data)) {
-              setOrderRefunds(refundsBody.data as OrderRefundListItem[]);
-            } else if (!cancelled) {
-              setOrderRefunds([]);
+          // Refunds load in background so the page can render without waiting on a second round trip.
+          void (async () => {
+            try {
+              const refundsRes = await fetch(`/api/orders/${row.id}/refunds`);
+              const refundsBody = await refundsRes.json().catch(() => null);
+              if (!cancelled && refundsRes.ok && refundsBody?.success && Array.isArray(refundsBody.data)) {
+                setOrderRefunds(refundsBody.data as OrderRefundListItem[]);
+              } else if (!cancelled) {
+                setOrderRefunds([]);
+              }
+            } catch {
+              if (!cancelled) setOrderRefunds([]);
             }
-          } catch {
-            if (!cancelled) setOrderRefunds([]);
-          }
+          })();
 
           // Load tickets for this order via order-scoped API (uses ORDER_FOOD access, not TICKET)
           if (!cancelled && row.id != null && Number.isFinite(Number(row.id))) {
@@ -430,7 +443,12 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         }
       })
       .catch(() => !cancelled && setError("Failed to load order."))
-      .finally(() => !cancelled && setLoading(false));
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -490,6 +508,10 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
     }
   }, [order?.id, selectedStatus, isUpdatingStatus]);
 
+  const handleRefreshOrder = useCallback(() => {
+    setRefetchTrigger((t) => t + 1);
+  }, []);
+
   const displayId = useMemo(
     () =>
       order
@@ -497,6 +519,20 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
         : "—",
     [order]
   );
+
+  useEffect(() => {
+    setCopiedOrderId(false);
+    if (copyOrderIdResetRef.current) {
+      clearTimeout(copyOrderIdResetRef.current);
+      copyOrderIdResetRef.current = null;
+    }
+    return () => {
+      if (copyOrderIdResetRef.current) {
+        clearTimeout(copyOrderIdResetRef.current);
+        copyOrderIdResetRef.current = null;
+      }
+    };
+  }, [order?.id, displayId]);
 
   if (loading) {
     return (
@@ -630,10 +666,23 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
 
   const handleCopyId = () => {
     if (!order || !normalizedId) return;
+    if (copyOrderIdResetRef.current) {
+      clearTimeout(copyOrderIdResetRef.current);
+      copyOrderIdResetRef.current = null;
+    }
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(normalizedId).catch(() => {
-        // Swallow clipboard errors; copying is a convenience feature.
-      });
+      navigator.clipboard
+        .writeText(normalizedId)
+        .then(() => {
+          setCopiedOrderId(true);
+          copyOrderIdResetRef.current = setTimeout(() => {
+            setCopiedOrderId(false);
+            copyOrderIdResetRef.current = null;
+          }, 2500);
+        })
+        .catch(() => {
+          // Swallow clipboard errors; copying is a convenience feature.
+        });
     }
   };
 
@@ -670,10 +719,24 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
               <button
                 type="button"
                 onClick={handleCopyId}
-                className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] text-slate-500 hover:bg-slate-50 hover:text-slate-700 cursor-pointer"
-                aria-label="Copy order ID"
+                className={`inline-flex shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:bg-transparent hover:text-slate-700 cursor-pointer ${
+                  copiedOrderId ? "min-h-5 px-0.5" : "h-5 w-5"
+                }`}
+                aria-label={copiedOrderId ? "Copied" : "Copy order ID"}
               >
-                <span>⧉</span>
+                {copiedOrderId ? (
+                  <span
+                    className="text-[10px] font-medium text-emerald-600 whitespace-nowrap"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    Copied
+                  </span>
+                ) : (
+                  <span className="text-[10px]" aria-hidden>
+                    ⧉
+                  </span>
+                )}
               </button>
             </h1>
             <p className="mt-0.5 text-[11px] text-slate-600">
@@ -681,14 +744,29 @@ export default function OrderDetailClient({ orderPublicId, onLoadingChange }: Or
             </p>
           </div>
           <div className="flex flex-col items-end gap-1 text-[11px]">
-            {effectiveRoutedTo && (
-              <p className="text-[11px] text-slate-500">
-                Routed To:{" "}
-                <span className="font-medium text-slate-800">
-                  {effectiveRoutedTo}
-                </span>
-              </p>
-            )}
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              {effectiveRoutedTo && (
+                <p className="text-[11px] text-slate-500">
+                  Routed To:{" "}
+                  <span className="font-medium text-slate-800">
+                    {effectiveRoutedTo}
+                  </span>
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={handleRefreshOrder}
+                disabled={isRefreshing}
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-slate-500 transition hover:bg-transparent hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                title="Refresh order details"
+                aria-label="Refresh order details"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`}
+                  aria-hidden
+                />
+              </button>
+            </div>
           </div>
         </section>
 

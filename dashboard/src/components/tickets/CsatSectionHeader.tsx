@@ -22,12 +22,14 @@ export function CsatSectionHeader() {
         <div className="flex flex-wrap items-center gap-2 self-start">
           <Link
             href="/dashboard/tickets"
+            scroll={false}
             className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             All tickets
           </Link>
           <Link
             href="/dashboard/tickets/agent-activity"
+            scroll={false}
             className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Full agent activity
@@ -39,6 +41,7 @@ export function CsatSectionHeader() {
       <nav className="flex flex-wrap gap-2 border-b border-gray-200 pb-3" aria-label={"C&D-SAT sections"}>
         <Link
           href={BASE}
+          scroll={false}
           className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
             !isDetails ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
           }`}
@@ -47,6 +50,7 @@ export function CsatSectionHeader() {
         </Link>
         <Link
           href={`${BASE}/details`}
+          scroll={false}
           className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
             isDetails ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
           }`}

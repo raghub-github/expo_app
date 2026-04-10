@@ -10,6 +10,7 @@ import { DashboardAccessSelector, DASHBOARD_DEFINITIONS } from "./DashboardAcces
 import { SubroleSelector } from "./SubroleSelector";
 import { ReportsToSelector } from "./ReportsToSelector";
 import { hasSubroles } from "@/lib/roles/subrole-mapping";
+import { useToast } from "@/context/ToastContext";
 
 interface UserFormProps {
   userId?: number;
@@ -22,6 +23,7 @@ interface UserFormProps {
 
 export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = false, currentUserId = null }: UserFormProps) {
   const router = useRouter();
+  const { toast } = useToast();
   const normalizeRoleValue = (value: string) => value.replace(/\s+/g, " ").trim();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -300,8 +302,11 @@ export function UserForm({ userId, mode, onSuccess, onCancel, isSuperAdmin = fal
       const result = await response.json();
 
       if (result.success) {
-        // If editing, refetch user data to show updated information (including new system_user_id, role, subrole, etc.)
-        if (mode === "edit" && userId) {
+        toast(mode === "create" ? "User created successfully" : "User updated successfully", "success");
+        // When the parent provides `onSuccess`, it already handles refetching + closing edit mode.
+        // Avoid double-refetching here to prevent the user form from briefly showing "Loading user..."
+        // after a successful update.
+        if (!onSuccess && mode === "edit" && userId) {
           try {
             await fetchUser();
           } catch (err) {

@@ -134,10 +134,10 @@ export const riderDashboardRoutes: DashboardSubRoute[] = [
  */
 export const customerDashboardRoutes: DashboardSubRoute[] = [
   {
-    name: "Overall Stats",
+    name: "User Stats",
     href: "/dashboard/customers/all",
     icon: UserCircle,
-    description: "View overall customer statistics",
+    description: "View customer statistics",
   },
   {
     name: "Food Customers",
@@ -288,7 +288,7 @@ export function getMerchantSubRoutesForPath(pathname: string): DashboardSubRoute
 export const ticketDashboardRoutes: DashboardSubRoute[] = [
   {
     name: "Dashboard",
-    href: "/dashboard/tickets/dashboard",
+    href: "/dashboard/tickets/dashboard_snapshot",
     icon: LayoutDashboard,
     description: "GatiMitra Queue metrics, queues, and email delivery",
   },
@@ -580,6 +580,10 @@ export function getCurrentPageName(pathname: string): string {
   if (cleanPath === "/dashboard/tickets/csat/details") {
     return "C&D-SAT — Daily breakdown";
   }
+
+  if (cleanPath.startsWith("/dashboard/tickets/queue")) {
+    return "Queue";
+  }
   
   // Check if we're on a sub-route (most specific first: match longer hrefs so wallet-history → Wallet & Earnings)
   if (currentDashboard.subRoutes) {
@@ -615,7 +619,7 @@ export function getCurrentPageName(pathname: string): string {
 
   // Check for special pages
   const pageNameMap: Record<string, string> = {
-    "/dashboard/tickets/dashboard": "Dashboard",
+    "/dashboard/tickets/dashboard_snapshot": "Dashboard",
     "/dashboard/users": "User Management",
     "/dashboard/users/new": "Add User",
     "/dashboard/users/roles": "System roles",

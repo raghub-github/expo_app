@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import {
@@ -31,6 +31,7 @@ import { useLogout } from "@/hooks/queries/useAuthQuery";
 import { getUserInitials } from "@/lib/user-avatar";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { useCurrentRoute } from "@/context/CurrentRouteContext";
+import { TICKETS_QUEUE_HOME_PATH, isTicketsQueueWorkspacePath } from "@/lib/tickets/ticket-path-utils";
 
 interface HierarchicalSidebarProps {
   isOpen: boolean;
@@ -42,6 +43,7 @@ interface HierarchicalSidebarProps {
 
 export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: propIsInSpecificDashboard, onNavigationStart }: HierarchicalSidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const { dashboards, loading: accessLoading, error: accessError } = useDashboardAccess();
   const handleNavPrefetch = useCallback(
@@ -80,6 +82,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
 
   // Remove query parameters for comparison
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
+  const isTicketsQueueWorkspace = useMemo(() => isTicketsQueueWorkspacePath(cleanPathname), [cleanPathname]);
 
   // Get current dashboard
   const currentDashboard = useMemo(
@@ -121,6 +124,19 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   useEffect(() => {
     setPendingNavHref(null);
   }, [cleanPathname]);
+
+  /** Same moment as optimistic sidebar highlight — updates the address bar immediately (App Router Link alone can lag behind context). */
+  const pushIfNavigating = useCallback(
+    (targetHref: string) => {
+      const cleanTarget = targetHref.split("?")[0].split("#")[0];
+      const isAlreadyActive =
+        cleanPathname === cleanTarget ||
+        (cleanTarget !== "/dashboard" && cleanPathname.startsWith(cleanTarget + "/"));
+      if (isAlreadyActive) return;
+      router.push(targetHref);
+    },
+    [cleanPathname, router]
+  );
 
   const effectiveSuperAdmin = hasError || useFallback ? true : isSuperAdmin;
 
@@ -216,7 +232,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
           {isOpen ? (
             <>
-              <Link href="/dashboard" className="flex items-center gap-2.5 flex-1 min-w-0" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2.5 flex-1 min-w-0"
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  onNavigationStart?.("/dashboard");
+                  setPendingNavHref("/dashboard");
+                  currentRouteCtx?.setCurrentRoute("/dashboard");
+                  pushIfNavigating("/dashboard");
+                }}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  setMobileMenuOpen(false);
+                  if (e.detail === 0) {
+                    onNavigationStart?.("/dashboard");
+                    setPendingNavHref("/dashboard");
+                    currentRouteCtx?.setCurrentRoute("/dashboard");
+                    pushIfNavigating("/dashboard");
+                  }
+                }}
+              >
                 <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
                 <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
               </Link>
@@ -225,7 +263,29 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
               </button>
             </>
           ) : (
-            <Link href="/dashboard" className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1" onMouseDown={() => { onNavigationStart?.("/dashboard"); setPendingNavHref("/dashboard"); currentRouteCtx?.setCurrentRoute("/dashboard"); }} onClick={() => setMobileMenuOpen(false)}>
+            <Link
+              href="/dashboard"
+              className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1"
+              onMouseDown={(e) => {
+                if (e.button !== 0) return;
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                onNavigationStart?.("/dashboard");
+                setPendingNavHref("/dashboard");
+                currentRouteCtx?.setCurrentRoute("/dashboard");
+                pushIfNavigating("/dashboard");
+              }}
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                setMobileMenuOpen(false);
+                if (e.detail === 0) {
+                  onNavigationStart?.("/dashboard");
+                  setPendingNavHref("/dashboard");
+                  currentRouteCtx?.setCurrentRoute("/dashboard");
+                  pushIfNavigating("/dashboard");
+                }
+              }}
+            >
               <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
               <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
             </Link>
@@ -236,6 +296,9 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
         <nav className="flex-1 min-h-0 overflow-y-auto px-2.5 py-4">
           <div className="space-y-0.5">
             {filteredNavigation.map((item) => {
+              const inQueueWorkspace = isTicketsQueueWorkspacePath(cleanPathname);
+              const itemHref =
+                item.href === "/dashboard/tickets" && inQueueWorkspace ? TICKETS_QUEUE_HOME_PATH : item.href;
               // Exactly one active: during pending nav only that item is active; otherwise use pathname
               const isRouteActive =
                 cleanPathname === item.href ||
@@ -243,21 +306,34 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 (item.href === "/dashboard/super-admin" && isSuperAdminNavPath(cleanPathname));
               const isActive =
                 pendingNavHref !== null
-                  ? item.href === pendingNavHref
+                  ? itemHref === pendingNavHref
                   : isRouteActive;
               const Icon = item.icon;
               return (
                 <Link
                   key={item.name}
-                  href={item.href}
-                  onMouseDown={() => {
-                    onNavigationStart?.(item.href);
-                    setPendingNavHref(item.href);
-                    currentRouteCtx?.setCurrentRoute(item.href);
+                  href={itemHref}
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                    onNavigationStart?.(itemHref);
+                    setPendingNavHref(itemHref);
+                    currentRouteCtx?.setCurrentRoute(itemHref);
+                    pushIfNavigating(itemHref);
                   }}
-                  onMouseEnter={() => handleNavPrefetch(item.href)}
-                  onFocus={() => handleNavPrefetch(item.href)}
-                  onClick={() => setMobileMenuOpen(false)}
+                  onMouseEnter={() => handleNavPrefetch(itemHref)}
+                  onFocus={() => handleNavPrefetch(itemHref)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                    e.preventDefault();
+                    setMobileMenuOpen(false);
+                    if (e.detail === 0) {
+                      onNavigationStart?.(itemHref);
+                      setPendingNavHref(itemHref);
+                      currentRouteCtx?.setCurrentRoute(itemHref);
+                      pushIfNavigating(itemHref);
+                    }
+                  }}
                   className={`group relative flex items-center rounded-xl transition-all duration-150 max-lg:gap-3 max-lg:px-3 max-lg:py-2.5 max-lg:text-sm ${
                     isOpen
                       ? `gap-3 px-3 py-2.5 text-sm font-medium ${
@@ -318,14 +394,16 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 {userEmail && <p className="text-xs text-white/70 truncate">{userEmail}</p>}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowLogoutConfirm(true)}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-red-400/80 text-red-200 py-3 text-sm font-medium hover:bg-red-500/20 transition-colors min-h-[44px]"
-            >
-              <LogOut className="h-4 w-4" />
-              Logout
-            </button>
+            {!isTicketsQueueWorkspace && (
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirm(true)}
+                className="w-full flex items-center justify-center gap-2 rounded-xl border border-red-400/80 text-red-200 py-3 text-sm font-medium hover:bg-red-500/20 transition-colors min-h-[44px]"
+              >
+                <LogOut className="h-4 w-4" />
+                Logout
+              </button>
+            )}
           </div>
         </div>
       </aside>
@@ -338,7 +416,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           aria-hidden="true"
         />
       )}
-      {showLogoutConfirm && (
+      {showLogoutConfirm && !isTicketsQueueWorkspace && (
         <div
           className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
           role="dialog"
