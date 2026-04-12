@@ -511,9 +511,20 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
       WHERE ms.deleted_at IS NULL
     `;
 
-    const hoursRows = await sql`
-      SELECT * FROM merchant_store_operating_hours
-    `;
+    const storeIds = [
+      ...new Set(
+        (storeRows as unknown as StoreRow[])
+          .map((s) => s.store_id)
+          .filter((id) => Number.isInteger(id) && id > 0)
+      ),
+    ];
+    const hoursRows =
+      storeIds.length === 0
+        ? []
+        : await sql`
+            SELECT * FROM merchant_store_operating_hours
+            WHERE store_id IN ${sql(storeIds)}
+          `;
     const hoursByStore = new Map<number, Record<string, unknown>>();
     for (const r of hoursRows as Record<string, unknown>[]) {
       const sid = Number((r as any).store_id);

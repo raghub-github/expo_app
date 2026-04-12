@@ -22,14 +22,12 @@ import {
   PanResponder,
   Vibration,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import {
   GatiMitraMerchant,
   H_PADDING,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
   CARD_RADIUS,
 } from "@/constants/theme";
 import {
@@ -577,10 +575,9 @@ function OrderCard({
 }
 
 export default function OrdersScreen() {
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
-  const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
+  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
   const { orders, loading, error, refetch, transitionOrder, counts } = useOrders();
 

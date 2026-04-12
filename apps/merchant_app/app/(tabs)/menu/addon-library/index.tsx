@@ -18,7 +18,11 @@ import {
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraMerchant, H_PADDING, TAB_BAR_HEIGHT, SCROLL_BOTTOM_SAFE } from "@/constants/theme";
+import {
+  GatiMitraMerchant,
+  H_PADDING,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
+} from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
@@ -119,7 +123,7 @@ export default function AddonLibraryScreen() {
     );
   };
 
-  const scrollBottom = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom + 16;
+  const scrollBottom = TAB_BAR_SCROLL_CONTENT_PADDING + 16;
 
   if (!storeId || !token) {
     return (

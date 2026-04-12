@@ -126,6 +126,9 @@ export type OperatingHours = {
   sunday: DaySlots;
 };
 
+/** Overlapping GET operating-hours (header + Strict Mode) share one in-flight request per store. */
+const operatingHoursInFlight = new Map<number, Promise<OperatingHours | null>>();
+
 export async function getOutlet(
   storeId: number,
   token: string
@@ -222,13 +225,26 @@ export async function updatePickupInstruction(
 }
 
 export async function getOperatingHours(storeId: number, token: string): Promise<OperatingHours | null> {
-  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/operating-hours`, token);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || res.statusText || "Failed to load timings");
+  const sid = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : Number(storeId);
+  if (!Number.isInteger(sid) || sid < 1) {
+    return Promise.reject(new Error("Invalid store"));
   }
-  const data = await res.json();
-  return data === null ? null : data;
+  const existing = operatingHoursInFlight.get(sid);
+  if (existing) return existing;
+
+  const p = (async (): Promise<OperatingHours | null> => {
+    const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${sid}/operating-hours`, token);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).error || res.statusText || "Failed to load timings");
+    }
+    const data = await res.json();
+    return data === null ? null : data;
+  })().finally(() => {
+    operatingHoursInFlight.delete(sid);
+  });
+  operatingHoursInFlight.set(sid, p);
+  return p;
 }
 
 export async function updateOperatingHours(

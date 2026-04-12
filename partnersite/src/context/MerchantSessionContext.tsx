@@ -6,6 +6,8 @@ interface MerchantSessionUser {
   id: string;
   email: string | null;
   phone?: string | null;
+  name?: string | null;
+  avatar_url?: string | null;
 }
 
 interface MerchantSessionStatus {
@@ -23,6 +25,8 @@ export interface MerchantParentSummary {
   is_active?: boolean;
   can_register_child: boolean;
   block_message?: string;
+  /** Brand logo: `/api/attachments/proxy?key=...` from merchant_parents.store_logo */
+  store_logo?: string | null;
 }
 
 interface MerchantSessionContextValue {
@@ -56,6 +60,8 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
           id: sessionData.data.user.id,
           email: sessionData.data.user.email ?? null,
           phone: sessionData.data.user.phone ?? null,
+          name: sessionData.data.user.name ?? null,
+          avatar_url: sessionData.data.user.avatar_url ?? null,
         });
         setParent(sessionData.data.parent ?? null);
       } else {

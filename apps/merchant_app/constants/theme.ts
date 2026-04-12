@@ -21,9 +21,24 @@ export const SAFE_AREA_TOP_MIN = 10;
 export const HEADER_HEIGHT = 60; // 56–64px
 export const HEADER_RIGHT_EDGE = 20; // min 20px from right for toggle
 
-// Bottom tab bar — for scroll content padding so last item clears nav
-export const TAB_BAR_HEIGHT = 62;
-export const SCROLL_BOTTOM_SAFE = 18; // breathing space above nav (80–90px total when + TAB_BAR_HEIGHT)
+// Bottom tab bar — height of chrome inside the tab slot (navigator reserves this space).
+export const TAB_BAR_HEIGHT = 50;
+/** Space between pill row and bottom of tab slot (above home indicator). */
+export const TAB_BAR_FLOATING_GAP = 10;
+
+/**
+ * Padding for ScrollView/FlatList `contentContainerStyle` inside `(tabs)` routes.
+ * The tab bar is laid out below the scene (not over it), so this is only breathing room
+ * above the bar — not the full bar height.
+ */
+export const TAB_BAR_SCROLL_CONTENT_PADDING = 24;
+
+/** Tab screens that need more room above the bar (e.g. earnings ledger). */
+export const TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE =
+  TAB_BAR_SCROLL_CONTENT_PADDING + 20;
+
+/** @deprecated Use TAB_BAR_SCROLL_CONTENT_PADDING for tab screens. Kept for gradual migration. */
+export const SCROLL_BOTTOM_SAFE = 18;
 
 // KPI card fixed height for equal size
 export const KPI_CARD_HEIGHT = 128; // Enough for icon, value, title, subtitle without overlap

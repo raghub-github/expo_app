@@ -25,8 +25,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   GatiMitraMerchant,
   H_PADDING,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
   CARD_RADIUS,
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
@@ -474,7 +473,7 @@ function ComboCard({
 export default function MenuScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
+  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -605,6 +604,11 @@ export default function MenuScreen() {
           map.set(entry[0], entry[1]);
         }
         setComboDetails(map);
+      } catch {
+        if (!cancelled) {
+          setCombos([]);
+          setComboDetails(new Map());
+        }
       } finally {
         if (!cancelled) setCombosLoading(false);
       }
@@ -1379,7 +1383,7 @@ export default function MenuScreen() {
 
       {/* FAB: fixed position just above tab bar — moved slightly lower so it does not cover item toggles */}
       <TouchableOpacity
-        style={[styles.fab, { bottom: TAB_BAR_HEIGHT - 6 }]}
+        style={[styles.fab, { bottom: TAB_BAR_SCROLL_CONTENT_PADDING }]}
         onPress={() => setManageSheetVisible(true)}
         activeOpacity={0.9}
       >

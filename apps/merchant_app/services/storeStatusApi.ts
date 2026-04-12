@@ -17,6 +17,9 @@ function getBase(): string {
   return "http://localhost:3000";
 }
 
+/** Merge overlapping GET /status calls (Strict Mode double-mount, header + poll race). */
+const storeStatusInFlight = new Map<number, Promise<StoreStatus>>();
+
 export type ScheduledClosure = {
   from: string;
   to: string;
@@ -123,11 +126,26 @@ export async function getStoreStatus(
   storeId: number,
   token: string
 ): Promise<StoreStatus> {
-  try {
-  const storeIdNum = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : parseInt(String(storeId), 10);
-  if (!Number.isFinite(storeIdNum) || storeIdNum < 1) throw new Error("Invalid store");
+  const storeIdNumEarly = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : parseInt(String(storeId), 10);
+  if (!Number.isFinite(storeIdNumEarly) || storeIdNumEarly < 1) {
+    return Promise.reject(new Error("Invalid store"));
+  }
   const tokenStr = token != null ? String(token).trim() : "";
-  if (!tokenStr) throw new Error("Session required");
+  if (!tokenStr) {
+    return Promise.reject(new Error("Session required"));
+  }
+  const existing = storeStatusInFlight.get(storeIdNumEarly);
+  if (existing) return existing;
+
+  const promise = fetchStoreStatusOnce(storeIdNumEarly, tokenStr).finally(() => {
+    storeStatusInFlight.delete(storeIdNumEarly);
+  });
+  storeStatusInFlight.set(storeIdNumEarly, promise);
+  return promise;
+}
+
+async function fetchStoreStatusOnce(storeIdNum: number, tokenStr: string): Promise<StoreStatus> {
+  try {
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeIdNum}/status`,
     tokenStr

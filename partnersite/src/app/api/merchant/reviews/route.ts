@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
 import { createClient } from "@supabase/supabase-js";
+import { assertStoreAccess } from "@/lib/auth/assert-store-access";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -12,178 +11,152 @@ function getSupabaseAdmin() {
   });
 }
 
+type RatingRow = {
+  id: number;
+  store_id: number;
+  order_id: number | null;
+  customer_id: number | null;
+  rating: number;
+  food_rating: number | null;
+  service_rating: number | null;
+  packaging_rating: number | null;
+  review_text: string | null;
+  review_title: string | null;
+  review_images: string[] | null;
+  merchant_response: string | null;
+  merchant_responded_at: string | null;
+  is_verified: boolean | null;
+  is_flagged: boolean | null;
+  flag_reason: string | null;
+  created_at: string;
+};
+
 /**
- * GET /api/merchant/reviews?storeId=GMMC1001
- * Returns customer reviews/feedback for a merchant store
+ * GET /api/merchant/reviews?storeId=GMMC…&from=&to=
+ * Same data as the merchant app: `merchant_store_ratings` for the store (numeric internal id resolved via assertStoreAccess).
  */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const storeId = searchParams.get('storeId');
+    const storeId = searchParams.get("storeId")?.trim() || "";
+    const fromParam = searchParams.get("from");
+    const toParam = searchParams.get("to");
 
     if (!storeId) {
-      return NextResponse.json(
-        { success: false, error: "Store ID is required." },
-        { status: 400 }
-      );
+      return NextResponse.json({ success: false, error: "Store ID is required." }, { status: 400 });
     }
 
-    const supabase = await createServerSupabaseClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: "Please log in to view reviews." },
-        { status: 401 }
-      );
+    const gate = await assertStoreAccess(storeId);
+    if (!gate.ok) {
+      return NextResponse.json({ success: false, error: gate.error }, { status: gate.status });
     }
+    const storeInternalId = gate.storeIdNum;
 
-    let merchant_parent_id: number | null = null;
-    try {
-      const validation = await validateMerchantFromSession({ 
-        id: user.id, 
-        email: user.email ?? null, 
-        phone: user.phone ?? null 
-      });
-      if (validation.merchantParentId != null) {
-        merchant_parent_id = validation.merchantParentId;
-      }
-    } catch {
-      return NextResponse.json(
-        { success: false, error: "Merchant account not found." },
-        { status: 403 }
-      );
-    }
+    const from =
+      fromParam && !Number.isNaN(Date.parse(fromParam)) ? new Date(fromParam) : null;
+    const to = toParam && !Number.isNaN(Date.parse(toParam)) ? new Date(toParam) : null;
 
     const db = getSupabaseAdmin();
-    
-    // Resolve store ID to internal ID
-    const { data: storeData } = await db
-      .from("merchant_stores")
-      .select("id")
-      .or(`store_id.eq.${storeId},id.eq.${storeId}`)
-      .eq("merchant_parent_id", merchant_parent_id)
-      .maybeSingle();
 
-    if (!storeData) {
-      return NextResponse.json(
-        { success: false, error: "Store not found or access denied." },
-        { status: 404 }
-      );
-    }
-
-    const storeInternalId = storeData.id;
-
-    // Fetch customer reviews for this store
-    const { data: reviews, error: reviewsError } = await db
-      .from("customer_ratings_given")
-      .select(`
-        id,
-        customer_id,
-        order_id,
-        overall_rating,
-        food_quality_rating,
-        delivery_rating,
-        packaging_rating,
-        review_title,
-        review_text,
-        review_images,
-        review_tags,
-        merchant_response,
-        merchant_responded_at,
-        is_verified,
-        is_flagged,
-        flag_reason,
-        created_at,
-        updated_at,
-        customers:customer_id (
-          id,
-          name,
-          mobile,
-          email
-        )
-      `)
-      .eq("target_type", "MERCHANT")
-      .eq("target_id", storeInternalId)
+    const { data: rows, error } = await db
+      .from("merchant_store_ratings")
+      .select(
+        "id, store_id, order_id, customer_id, rating, food_rating, service_rating, packaging_rating, review_text, review_title, review_images, merchant_response, merchant_responded_at, is_verified, is_flagged, flag_reason, created_at"
+      )
+      .eq("store_id", storeInternalId)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .limit(200);
 
-    if (reviewsError) {
-      console.error("[merchant/reviews] fetch error:", reviewsError);
-      return NextResponse.json(
-        { success: false, error: "Failed to fetch reviews." },
-        { status: 500 }
-      );
+    if (error) {
+      console.error("[merchant/reviews] merchant_store_ratings:", error);
+      return NextResponse.json({ success: false, error: "Failed to fetch reviews." }, { status: 500 });
     }
 
-    // Get order counts for each customer
-    const customerIds = [...new Set(reviews?.map((r: any) => r.customer_id).filter(Boolean) || [])];
+    const list = (rows ?? []) as RatingRow[];
+
+    const filtered = list.filter((r) => {
+      const created = new Date(r.created_at);
+      if (Number.isNaN(created.getTime())) return false;
+      if (from && created < from) return false;
+      if (to && created > to) return false;
+      return true;
+    });
+
+    const customerIds = [...new Set(filtered.map((r) => r.customer_id).filter((id): id is number => typeof id === "number" && id > 0))];
+
+    const customerById: Record<number, { name: string | null; mobile: string | null; email: string | null }> = {};
+    if (customerIds.length > 0) {
+      const { data: custRows } = await db.from("customers").select("id, name, mobile, email").in("id", customerIds);
+      for (const c of custRows ?? []) {
+        const id = (c as { id?: number }).id;
+        if (typeof id === "number") {
+          customerById[id] = {
+            name: (c as { name?: string | null }).name ?? null,
+            mobile: (c as { mobile?: string | null }).mobile ?? null,
+            email: (c as { email?: string | null }).email ?? null,
+          };
+        }
+      }
+    }
+
     const orderCounts: Record<number, number> = {};
-    
     if (customerIds.length > 0) {
       const { data: orderData } = await db
         .from("orders_food")
         .select("customer_id")
         .in("customer_id", customerIds)
         .eq("merchant_store_id", storeInternalId);
-      
-      orderData?.forEach((order: any) => {
-        if (order.customer_id) {
-          orderCounts[order.customer_id] = (orderCounts[order.customer_id] || 0) + 1;
+      for (const order of orderData ?? []) {
+        const cid = (order as { customer_id?: number | null }).customer_id;
+        if (typeof cid === "number") {
+          orderCounts[cid] = (orderCounts[cid] || 0) + 1;
         }
-      });
+      }
     }
 
-    // Format reviews
-    const formattedReviews = (reviews || []).map((review: any) => {
-      const customer = review.customers;
-      const orderCount = orderCounts[review.customer_id] || 0;
-      
-      // Determine user type based on order count
-      let userType = 'new';
-      if (orderCount >= 10) {
-        userType = 'repeated';
-      } else if (orderCount >= 5) {
-        userType = 'repeated';
-      }
+    const formattedReviews = filtered.map((review) => {
+      const customer = review.customer_id != null ? customerById[review.customer_id] : undefined;
+      const orderCount = review.customer_id != null ? orderCounts[review.customer_id] || 0 : 0;
+      let userType: "new" | "repeated" | "fraud" = "new";
+      if (review.is_flagged === true) userType = "fraud";
+      else if (orderCount >= 5) userType = "repeated";
 
-      // Determine if it's a review or complaint based on rating
-      const type = review.overall_rating >= 4 ? 'Review' : 'Complaint';
+      const type = review.rating >= 4 ? "Review" : "Complaint";
+      const imgs = Array.isArray(review.review_images) ? review.review_images : [];
 
       return {
         id: review.id,
-        customerId: review.customer_id,
-        customerName: customer?.name || 'Anonymous',
-        customerEmail: customer?.email || null,
-        customerMobile: customer?.mobile || null,
+        customerId: review.customer_id ?? 0,
+        customerName: customer?.name || "Anonymous",
+        customerEmail: customer?.email ?? null,
+        customerMobile: customer?.mobile ?? null,
         orderId: review.order_id,
         date: review.created_at,
         type,
-        message: review.review_text || review.review_title || '',
-        response: review.merchant_response || '',
+        message: review.review_text || review.review_title || "",
+        response: review.merchant_response || "",
         respondedAt: review.merchant_responded_at,
         userType,
-        rating: review.overall_rating,
-        foodQualityRating: review.food_quality_rating,
-        deliveryRating: review.delivery_rating,
+        rating: review.rating,
+        foodQualityRating: review.food_rating,
+        deliveryRating: review.service_rating,
         packagingRating: review.packaging_rating,
-        reviewImages: review.review_images || [],
-        reviewTags: review.review_tags || [],
+        reviewImages: imgs,
+        reviewTags: [] as string[],
         orderCount,
-        isVerified: review.is_verified || false,
-        isFlagged: review.is_flagged || false,
-        flagReason: review.flag_reason || null,
+        isVerified: review.is_verified === true,
+        isFlagged: review.is_flagged === true,
+        flagReason: review.flag_reason ?? null,
       };
     });
 
-    // Calculate stats
     const stats = {
       total: formattedReviews.length,
-      reviews: formattedReviews.filter((r: any) => r.type === 'Review').length,
-      complaints: formattedReviews.filter((r: any) => r.type === 'Complaint').length,
-      repeatedUsers: formattedReviews.filter((r: any) => r.userType === 'repeated').length,
-      newUsers: formattedReviews.filter((r: any) => r.userType === 'new').length,
-      fraudUsers: formattedReviews.filter((r: any) => r.isFlagged).length,
+      reviews: formattedReviews.filter((r) => r.type === "Review").length,
+      complaints: formattedReviews.filter((r) => r.type === "Complaint").length,
+      repeatedUsers: formattedReviews.filter((r) => r.userType === "repeated").length,
+      newUsers: formattedReviews.filter((r) => r.userType === "new").length,
+      fraudUsers: formattedReviews.filter((r) => r.userType === "fraud").length,
     };
 
     return NextResponse.json({
@@ -193,9 +166,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (e) {
     console.error("[merchant/reviews] Error:", e);
-    return NextResponse.json(
-      { success: false, error: "An error occurred. Please try again." },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: "An error occurred. Please try again." }, { status: 500 });
   }
 }

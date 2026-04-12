@@ -10,10 +10,9 @@ import {
   Alert,
   Switch,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
+import { GatiMitraMerchant, H_PADDING, TAB_BAR_SCROLL_CONTENT_PADDING } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getRushStatus, startRushWindow, stopRushWindow } from "@/services/rushApi";
@@ -26,7 +25,6 @@ const DURATION_OPTIONS = [
 ];
 
 export default function PreparationTimeScreen() {
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
@@ -147,15 +145,10 @@ export default function PreparationTimeScreen() {
   };
 
   return (
-    <View
-      style={[
-        styles.container,
-        { paddingBottom: insets.bottom + 8 },
-      ]}
-    >
+    <View style={styles.container}>
       <ScrollView
         style={styles.body}
-        contentContainerStyle={styles.bodyContent}
+        contentContainerStyle={[styles.bodyContent, { paddingBottom: TAB_BAR_SCROLL_CONTENT_PADDING }]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.heroCard}>
@@ -348,7 +341,6 @@ const styles = StyleSheet.create({
   bodyContent: {
     paddingHorizontal: H_PADDING,
     paddingTop: 10,
-    paddingBottom: 72,
     gap: 14,
   },
   heroCard: {

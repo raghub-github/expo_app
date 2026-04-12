@@ -4,7 +4,12 @@ import {
   Alert, TextInput, RefreshControl, Modal,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
+import {
+  GatiMitraMerchant,
+  H_PADDING,
+  CARD_RADIUS,
+  TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE,
+} from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -60,6 +65,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function EarningsScreen() {
+  const scrollBottom = TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE;
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const storeId = selectedStore?.id ?? null;
@@ -160,11 +166,14 @@ export default function EarningsScreen() {
   return (
     <View style={s.container}>
       <ScrollView
-        contentContainerStyle={s.scrollContent}
+        style={s.scroll}
+        contentContainerStyle={[s.scrollContent, { paddingBottom: scrollBottom }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={GatiMitraMerchant.primary} />}
       >
         {loading && !wallet ? (
-          <View style={s.centered}><ActivityIndicator size="large" color={GatiMitraMerchant.primary} /></View>
+          <View style={s.loadingBlock}>
+            <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+          </View>
         ) : (
           <>
             {/* Balance hero */}
@@ -336,7 +345,9 @@ export default function EarningsScreen() {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
-  scrollContent: { padding: H_PADDING, paddingBottom: 40 },
+  scroll: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
+  scrollContent: { padding: H_PADDING, backgroundColor: GatiMitraMerchant.surfaceWarm },
+  loadingBlock: { paddingVertical: 56, alignItems: "center" },
   centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40 },
   emptyText: { fontSize: 14, color: GatiMitraMerchant.textTertiary, textAlign: "center", marginTop: 8 },
   heroCard: { backgroundColor: GatiMitraMerchant.primary, borderRadius: 20, padding: 20, marginBottom: 14 },

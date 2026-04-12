@@ -2,11 +2,16 @@
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { MXLayoutWhite } from "@/components/MXLayoutWhite";
+import { PartnerPageHeader } from "@/context/PartnerShellHeaderContext";
 import { R2Image } from "@/components/R2Image";
 import { fetchRestaurantById as fetchStoreById, updateStoreInfo } from "@/lib/database";
 import { MerchantStore } from "@/lib/merchantStore";
-import { getMerchantAssetsPath } from "@/lib/r2-paths";
-import { toStoredDocumentUrl } from "@/lib/r2";
+import {
+  getOnboardingAssetsBannerPath,
+  getOnboardingAssetsGalleryPath,
+  getMerchantStoreMediaPath,
+} from "@/lib/r2-paths";
+import { normalizeMerchantStoreMediaUrl, normalizeR2ObjectKey, toStoredDocumentUrl } from "@/lib/r2";
 
 /** Bank/UPI attachment link that never expires: store keys use proxy?key=; full R2 URLs use proxy?url= so old signed URLs are served via proxy. */
 function bankAttachmentHref(value: string | null | undefined): string | null {
@@ -44,11 +49,8 @@ import {
   FileCheck,
   Download,
   ExternalLink,
-  Store,
 } from "lucide-react";
 import { PageSkeletonProfile } from "@/components/PageSkeleton";
-import { MobileHamburgerButton } from "@/components/MobileHamburgerButton";
-import { useRouter, usePathname } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -77,82 +79,13 @@ class ProfileErrorBoundary extends React.Component<{ children: React.ReactNode }
   }
 }
 
-// ================= OPERATING DAYS CARD COMPONENT =================
-function OperatingDaysCard({ storeId }: { storeId: string | null }) {
-  const [days, setDays] = useState<any[]>([]);
-  const [totalMinutes, setTotalMinutes] = useState(0);
-  const [loading, setLoading] = useState(true);
-  
-  useEffect(() => {
-    if (!storeId) {
-      setLoading(false);
-      return;
-    }
-    
-    const fetchOperatingDays = async () => {
-      try {
-        setLoading(true);
-        // First get the numeric store ID from the API
-        const storeIdRes = await fetch(`/api/store-id?store_id=${encodeURIComponent(storeId)}`);
-        if (!storeIdRes.ok) {
-          throw new Error('Failed to get store ID');
-        }
-        const storeIdData = await storeIdRes.json();
-        const numericStoreId = storeIdData.id;
-        
-        if (!numericStoreId) {
-          throw new Error('Store ID not found');
-        }
-        
-        // Fetch operating hours using the numeric ID
-        const res = await fetch(`/api/outlet-timings?store_id=${numericStoreId}`);
-        if (!res.ok) {
-          throw new Error('Failed to fetch operating hours');
-        }
-        
-        const data = await res.json();
-        
-        if (!data) {
-          setDays([]);
-          setTotalMinutes(0);
-          setLoading(false);
-          return;
-        }
-        
-        // Transform to array of days
-        const dayList = [
-          { key: 'monday', label: 'Monday' },
-          { key: 'tuesday', label: 'Tuesday' },
-          { key: 'wednesday', label: 'Wednesday' },
-          { key: 'thursday', label: 'Thursday' },
-          { key: 'friday', label: 'Friday' },
-          { key: 'saturday', label: 'Saturday' },
-          { key: 'sunday', label: 'Sunday' }
-        ];
-        
-        const transformedDays = dayList.map(day => ({
-          day_label: day.label,
-          open: data[`${day.key}_open`] ?? false,
-          slot1_start: data[`${day.key}_slot1_start`] ?? null,
-          slot1_end: data[`${day.key}_slot1_end`] ?? null,
-          slot2_start: data[`${day.key}_slot2_start`] ?? null,
-          slot2_end: data[`${day.key}_slot2_end`] ?? null,
-          total_duration_minutes: data[`${day.key}_total_duration_minutes`] ?? 0,
-        }));
-        
-        setDays(transformedDays);
-        setTotalMinutes(transformedDays.reduce((sum: number, d: any) => sum + (d.total_duration_minutes || 0), 0));
-      } catch (err) {
-        console.error('Error loading operating hours:', err);
-        setDays([]);
-        setTotalMinutes(0);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
-    fetchOperatingDays();
-  }, [storeId]);
+// ================= OPERATING DAYS CARD =================
+/** Uses hours from parent profile load (`fetchStoreOperatingHoursViaApi` → service role). */
+function OperatingDaysCard({ hours, className = "" }: { hours: any[]; className?: string }) {
+  const totalMinutes = useMemo(
+    () => hours.reduce((sum: number, d: any) => sum + (d.total_duration_minutes || 0), 0),
+    [hours]
+  );
 
   function formatSlot(start: string, end: string) {
     if (!start || !end) return null;
@@ -179,8 +112,10 @@ function OperatingDaysCard({ storeId }: { storeId: string | null }) {
   }
 
   return (
-    <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-      <div className="flex items-center justify-between mb-2">
+    <div
+      className={`bg-gray-50 rounded-lg p-3 border border-gray-200 w-full min-w-0 h-full min-h-0 flex flex-col ${className}`}
+    >
+      <div className="flex items-center justify-between mb-2 shrink-0">
         <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
           <Clock size={16} className="text-blue-600" />
           Operating Days
@@ -191,18 +126,13 @@ function OperatingDaysCard({ storeId }: { storeId: string | null }) {
           </span>
         )}
       </div>
-      {loading ? (
-        <div className="text-center py-4">
-          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="text-xs text-gray-500 mt-2">Loading operating days...</p>
-        </div>
-      ) : days.length === 0 ? (
-        <div className="text-center py-4">
+      {hours.length === 0 ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center py-4">
           <p className="text-xs text-gray-500">No operating hours configured</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-1.5">
-          {days.map((day: any) => (
+        <div className="grid grid-cols-1 gap-1.5 flex-1 min-h-0 overflow-y-auto pr-0.5">
+          {hours.map((day: any) => (
             <div key={day.day_label} className="flex items-center justify-between text-xs py-1 px-2 rounded border border-gray-100 bg-white">
               <span className="font-medium w-16 text-gray-900">{abbreviateDayLabel(day.day_label)}</span>
               {day.open ? (
@@ -234,15 +164,11 @@ function OperatingDaysCard({ storeId }: { storeId: string | null }) {
 }
 
 export default function ProfilePage() {
-  const router = useRouter();
-  const pathname = usePathname();
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [editData, setEditData] = useState<MerchantStore | null>(null);
   const [storeId, setStoreId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [storeCuisines, setStoreCuisines] = useState<string[]>([]);
-  const [storeOptions, setStoreOptions] = useState<Array<{ store_id: string; store_name: string }>>([]);
-  const [storeSwitcherOpen, setStoreSwitcherOpen] = useState(false);
   const [showAllCuisines, setShowAllCuisines] = useState(false);
   const [cuisineEditMode, setCuisineEditMode] = useState(false);
   const [cuisineDetailRows, setCuisineDetailRows] = useState<
@@ -253,8 +179,8 @@ export default function ProfilePage() {
   >([]);
   const [cuisineSearch, setCuisineSearch] = useState("");
   const [cuisineMutating, setCuisineMutating] = useState(false);
-  const [confirmSave, setConfirmSave] = useState(false);
   const [editingField, setEditingField] = useState<string | null>(null);
+  const [savingField, setSavingField] = useState<string | null>(null);
   const [uploadingImages, setUploadingImages] = useState<string[]>([]);
   const [bankVerification, setBankVerification] = useState<{
     verified: boolean;
@@ -290,29 +216,6 @@ export default function ProfilePage() {
       return;
     }
     setStoreId(id);
-  }, []);
-
-  // Load all approved child stores for quick switching (from merchant-auth resolve-session)
-  useEffect(() => {
-    const loadStores = async () => {
-      try {
-        const res = await fetch("/api/merchant-auth/resolve-session", { credentials: "include" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data || !Array.isArray(data.stores)) return;
-        const approved = (data.stores as any[]).filter(
-          (s) => String(s.approval_status || "").toUpperCase() === "APPROVED"
-        );
-        setStoreOptions(
-          approved.map((s) => ({
-            store_id: String(s.store_id),
-            store_name: String(s.store_name || s.store_id || "Store"),
-          }))
-        );
-      } catch {
-        // ignore; dropdown will just not show
-      }
-    };
-    loadStores();
   }, []);
 
   // Load cuisines configured for this store (distinct list from merchant_store_cuisines)
@@ -578,44 +481,44 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!storeId) return;
     setLoading(true);
-    Promise.all([
-      fetchStoreById(storeId),
-      import("@/lib/database").then(mod => mod.fetchStoreOperatingHours(storeId).catch(() => [])),
-      fetchStoreById(storeId).then(async (storeData) => {
-        console.log('Store data fetched:', storeData);
-        if (storeData?.id) {
-          console.log('Store internal ID:', storeData.id, 'Store ID (public):', storeData.store_id);
-          const mod = await import("@/lib/database");
-          try {
-            const [docs, banks] = await Promise.all([
-              mod.fetchStoreDocuments(storeData.id).catch((err) => {
-                console.error('Error fetching documents:', err);
-                return null;
-              }),
-              mod.fetchStoreBankAccounts(storeData.id).catch((err) => {
-                console.error('Error fetching bank accounts:', err);
-                return [];
-              })
-            ]);
-            console.log('Fetched results - Documents:', docs ? 'Found' : 'None', 'Bank Accounts:', banks?.length || 0);
-            return { docs, banks };
-          } catch (error) {
-            console.error('Error in fetch promise:', error);
-            return { docs: null, banks: [] };
-          }
-        } else {
-          console.warn('Store data missing id field:', storeData);
-        }
-        return { docs: null, banks: [] };
-      })
-    ])
-      .then(async ([storeData, hoursData, { docs, banks }]) => {
+    (async () => {
+      try {
+        const storeData = await fetchStoreById(storeId);
+        const internalId = storeData?.id;
+
+        const [hoursData, { docs, banks }] = await Promise.all([
+          internalId
+            ? import("@/lib/database").then((m) => m.fetchStoreOperatingHoursViaApi(internalId))
+            : Promise.resolve([]),
+          (async () => {
+            if (!internalId) {
+              return { docs: null as any, banks: [] as any[] };
+            }
+            const mod = await import("@/lib/database");
+            try {
+              const [docs, banks] = await Promise.all([
+                mod.fetchStoreDocuments(internalId).catch((err) => {
+                  console.error('Error fetching documents:', err);
+                  return null;
+                }),
+                mod.fetchStoreBankAccounts(internalId).catch((err) => {
+                  console.error('Error fetching bank accounts:', err);
+                  return [];
+                }),
+              ]);
+              return { docs, banks };
+            } catch {
+              return { docs: null, banks: [] };
+            }
+          })(),
+        ]);
+
         const store = storeData as MerchantStore | null;
         if (store) {
-          console.log('Store loaded with area_manager_id:', (store as any).area_manager_id);
-          // Convert R2 URLs to signed URLs for images
           const bannerUrl = await convertR2UrlToSigned(store.banner_url);
-          const galleryImages = store.gallery_images ? await Promise.all(store.gallery_images.map(convertR2UrlToSigned)) : null;
+          const galleryImages = store.gallery_images
+            ? await Promise.all(store.gallery_images.map(convertR2UrlToSigned))
+            : null;
           const logoUrl = await convertR2UrlToSigned(store.logo_url);
           const updatedStore = {
             ...store,
@@ -626,27 +529,21 @@ export default function ProfilePage() {
           setStore(updatedStore);
           setEditData(updatedStore);
         }
-        if (hoursData && Array.isArray(hoursData)) {
+        if (Array.isArray(hoursData)) {
           setOperatingHours(hoursData);
         }
         if (docs) {
           setStoreDocuments(docs);
         }
-        // Always set bank accounts array (even if empty) to ensure state is updated
         const bankAccountsArray = Array.isArray(banks) ? banks : [];
-        console.log('Setting bank accounts in state:', bankAccountsArray.length, 'accounts');
-        if (bankAccountsArray.length > 0) {
-          console.log('Bank accounts data:', JSON.stringify(bankAccountsArray, null, 2));
-        } else {
-          console.log('No bank accounts found in database');
-        }
         setBankAccounts(bankAccountsArray);
-      })
-      .catch((error) => {
+      } catch (error) {
         console.error('Error loading profile:', error);
         toast.error("Failed to load profile");
-      })
-      .finally(() => setLoading(false));
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, [storeId]);
 
   /* ===== BANK VERIFICATION STATUS ===== */
@@ -694,129 +591,206 @@ export default function ProfilePage() {
   const storeInitial = store?.store_name?.charAt(0).toUpperCase() || "R";
   const isVerified = store?.approval_status === 'APPROVED';
 
-  /* ===== SAVE CHANGES ===== */
-  const handleSave = async () => {
+  const revertFieldFromStore = useCallback(() => {
+    if (store) setEditData({ ...store });
+    setEditingField(null);
+  }, [store]);
+
+  const runBankVerificationIfNeeded = useCallback(async () => {
     if (!storeId || !editData) return;
-
+    const hasBank =
+      editData.bank_account_holder &&
+      editData.bank_account_number &&
+      editData.bank_ifsc &&
+      editData.bank_name;
+    if (
+      !hasBank ||
+      bankVerification?.verified ||
+      !bankVerification?.canTryVerify ||
+      bankVerifying
+    ) {
+      return;
+    }
+    setBankVerifying(true);
     try {
-      const updates = {
-        store_name: editData.store_name,
-        store_email: editData.store_email,
-        store_phones: editData.store_phones,
-        store_description: editData.store_description,
-        cuisine_types: editData.cuisine_types,
-        food_categories: editData.food_categories,
-        full_address: editData.full_address,
-        city: editData.city,
-        state: editData.state,
-        landmark: editData.landmark,
-        postal_code: editData.postal_code,
-        latitude: editData.latitude,
-        longitude: editData.longitude,
-        gst_number: editData.gst_number,
-        pan_number: editData.pan_number,
-        aadhar_number: editData.aadhar_number,
-        fssai_number: editData.fssai_number,
-        bank_account_holder: editData.bank_account_holder,
-        bank_account_number: editData.bank_account_number,
-        bank_ifsc: editData.bank_ifsc,
-        bank_name: editData.bank_name,
-        min_order_amount: editData.min_order_amount,
-        am_name: editData.am_name,
-        am_mobile: editData.am_mobile,
-        am_email: editData.am_email,
-      };
-      await updateStoreInfo(storeId, updates);
-      setStore(editData);
-      setEditingField(null);
-      toast.success("Profile updated successfully");
-
-      const hasBank =
-        editData.bank_account_holder &&
-        editData.bank_account_number &&
-        editData.bank_ifsc &&
-        editData.bank_name;
-      if (
-        hasBank &&
-        !bankVerification?.verified &&
-        bankVerification?.canTryVerify &&
-        !bankVerifying
-      ) {
-        setBankVerifying(true);
-        try {
-          const res = await fetch("/api/merchant/bank-account/verify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
+      const res = await fetch("/api/merchant/bank-account/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          storeId,
+          bank: {
+            account_holder_name: editData.bank_account_holder,
+            account_number: editData.bank_account_number,
+            ifsc_code: editData.bank_ifsc,
+            bank_name: editData.bank_name,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message || "We sent ₹1 to verify your account. Check back in a few minutes.");
+        setTimeout(() => {
+          fetch(`/api/merchant/bank-account/verify/status?storeId=${encodeURIComponent(storeId)}`, {
             credentials: "include",
-            body: JSON.stringify({
-              storeId,
-              bank: {
-                account_holder_name: editData.bank_account_holder,
-                account_number: editData.bank_account_number,
-                ifsc_code: editData.bank_ifsc,
-                bank_name: editData.bank_name,
-              },
-            }),
-          });
-          const data = await res.json();
-          if (data.success) {
-            toast.success(data.message || "We sent ₹1 to verify your account. Check back in a few minutes.");
-            setTimeout(() => {
-              fetch(`/api/merchant/bank-account/verify/status?storeId=${encodeURIComponent(storeId)}`, {
-                credentials: "include",
-              })
-                .then((r) => r.json())
-                .then((d) => {
-                  if (d.success && d.verified !== undefined) {
-                    setBankVerification({
-                      verified: d.verified,
-                      canTryVerify: d.canTryVerify !== false,
-                      attemptsToday: d.attemptsToday ?? 0,
-                      maxAttemptsPerDay: d.maxAttemptsPerDay ?? 3,
-                    });
-                  }
-                })
-                .catch(() => {});
-            }, 2000);
-          } else {
-            toast.error(data.error || "Verification request failed.");
-            if (res.status === 429) {
-              setBankVerification((prev) =>
-                prev ? { ...prev, canTryVerify: false, attemptsToday: prev.maxAttemptsPerDay } : null
-              );
-            }
-          }
-        } catch {
-          toast.error("Verification request failed. You can try again later.");
-        } finally {
-          setBankVerifying(false);
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.success && d.verified !== undefined) {
+                setBankVerification({
+                  verified: d.verified,
+                  canTryVerify: d.canTryVerify !== false,
+                  attemptsToday: d.attemptsToday ?? 0,
+                  maxAttemptsPerDay: d.maxAttemptsPerDay ?? 3,
+                });
+              }
+            })
+            .catch(() => {});
+        }, 2000);
+      } else {
+        toast.error(data.error || "Verification request failed.");
+        if (res.status === 429) {
+          setBankVerification((prev) =>
+            prev ? { ...prev, canTryVerify: false, attemptsToday: prev.maxAttemptsPerDay } : null
+          );
         }
       }
-    } catch (error) {
-      toast.error("Failed to update profile");
+    } catch {
+      toast.error("Verification request failed. You can try again later.");
     } finally {
-      setConfirmSave(false);
+      setBankVerifying(false);
+    }
+  }, [storeId, editData, bankVerification, bankVerifying]);
+
+  const persistProfileField = async (field: string) => {
+    if (!storeId || !editData) return;
+    setSavingField(field);
+    try {
+      const partial: Partial<MerchantStore> = {};
+      switch (field) {
+        case "store_name":
+          partial.store_name = editData.store_name;
+          break;
+        case "store_email":
+          partial.store_email = editData.store_email;
+          break;
+        case "store_phones":
+          partial.store_phones = editData.store_phones;
+          break;
+        case "store_description":
+          partial.store_description = editData.store_description;
+          break;
+        case "full_address":
+          partial.full_address = editData.full_address;
+          break;
+        case "city":
+          partial.city = editData.city;
+          break;
+        case "state":
+          partial.state = editData.state;
+          break;
+        case "landmark":
+          partial.landmark = editData.landmark;
+          break;
+        case "postal_code":
+          partial.postal_code = editData.postal_code;
+          break;
+        case "latitude":
+          partial.latitude = editData.latitude;
+          break;
+        case "longitude":
+          partial.longitude = editData.longitude;
+          break;
+        case "bank_account_holder":
+          partial.bank_account_holder = editData.bank_account_holder;
+          break;
+        case "bank_account_number":
+          partial.bank_account_number = editData.bank_account_number;
+          break;
+        case "bank_ifsc":
+          partial.bank_ifsc = editData.bank_ifsc;
+          break;
+        case "bank_name":
+          partial.bank_name = editData.bank_name;
+          break;
+        default:
+          toast.error("Cannot save this field here.");
+          return;
+      }
+      const ok = await updateStoreInfo(storeId, partial);
+      if (!ok) {
+        toast.error("Failed to save");
+        return;
+      }
+      setStore((prev) => (prev ? { ...prev, ...partial } : prev));
+      setEditData((prev) => (prev ? { ...prev, ...partial } : prev));
+      toast.success("Saved");
+      setEditingField(null);
+      if (
+        field === "bank_account_holder" ||
+        field === "bank_account_number" ||
+        field === "bank_ifsc" ||
+        field === "bank_name"
+      ) {
+        await runBankVerificationIfNeeded();
+      }
+    } catch {
+      toast.error("Failed to save");
+    } finally {
+      setSavingField(null);
     }
   };
 
-  /* ===== R2 UPLOAD (server-side, no Supabase Storage RLS) ===== */
-  const uploadFileToR2 = async (file: File, parentFolder: string, filename?: string): Promise<string | null> => {
+  /* ===== R2 UPLOAD (server-side, no Supabase Storage RLS) =====
+   * Banner/gallery: docs/merchants/{parent_pk}/stores/{GMMC}/onboarding/assets/{banner|gallery}/...
+   * Logo: .../store-media/logo/...
+   */
+  const uploadStoreMediaToR2 = async (
+    file: File,
+    kind: "banner" | "gallery" | "logo",
+    gallerySlot?: number,
+    galleryBatchTs?: number
+  ): Promise<string | null> => {
     if (!storeId) return null;
+    const parentPk = store?.parent_id;
+    if (parentPk == null || String(parentPk).trim() === "") {
+      throw new Error("Store parent is missing; cannot upload to the correct folder.");
+    }
+    const ext = file.name.split(".").pop() || "jpg";
+    let parent: string;
+    let filename: string;
+    if (kind === "banner") {
+      parent = getOnboardingAssetsBannerPath(parentPk, storeId);
+      filename = `banner_${Date.now()}.${ext}`;
+    } else if (kind === "gallery") {
+      parent = getOnboardingAssetsGalleryPath(parentPk, storeId);
+      const ts = galleryBatchTs ?? Date.now();
+      filename = `gallery_${ts}_${gallerySlot ?? 0}.${ext}`;
+    } else {
+      parent = getMerchantStoreMediaPath(storeId, "logo", String(parentPk));
+      filename = `logo_${Date.now()}.${ext}`;
+    }
     const formData = new FormData();
     formData.append("file", file);
-    const ext = file.name.split(".").pop() || "jpg";
-    formData.append("parent", `${getMerchantAssetsPath(storeId, store?.parent_id != null ? String(store.parent_id) : undefined)}/${parentFolder}`);
-    formData.append("filename", filename || `${parentFolder}_${Date.now()}.${ext}`);
+    formData.append("parent", parent);
+    formData.append("filename", filename);
     const res = await fetch("/api/upload/r2", { method: "POST", body: formData });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data?.error || data?.details || "Upload failed");
     }
     const data = await res.json();
-    // Store proxy URL (no expiry) so image loads in profile same as onboarding uploads
     const key = data?.key ?? data?.path;
-    if (key && typeof key === "string") return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
-    return data?.url ?? null;
+    if (key && typeof key === "string") {
+      const proxy = normalizeMerchantStoreMediaUrl(key);
+      if (proxy) return proxy;
+      return `/api/attachments/proxy?key=${encodeURIComponent(normalizeR2ObjectKey(key))}`;
+    }
+    const url = data?.url;
+    if (url && typeof url === "string") {
+      return normalizeMerchantStoreMediaUrl(url) ?? url;
+    }
+    return null;
   };
 
   /* ===== UPDATE STORE MEDIA VIA API (bypasses RLS, uses service role on server) ===== */
@@ -845,7 +819,7 @@ export default function ProfilePage() {
     try {
       if (type === 'banner') {
         const file = files[0];
-        const url = await uploadFileToR2(file, "banners");
+        const url = await uploadStoreMediaToR2(file, "banner");
         if (!url) throw new Error("Banner upload failed");
         await updateStoreMedia({ banner_url: url });
         setStore(r => r ? { ...r, banner_url: url } : r);
@@ -853,14 +827,17 @@ export default function ProfilePage() {
         toast.success("Store banner updated!");
       } else if (type === 'logo') {
         const file = files[0];
-        const url = await uploadFileToR2(file, "logos");
+        const url = await uploadStoreMediaToR2(file, "logo");
         if (!url) throw new Error("Logo upload failed");
         await updateStoreMedia({ logo_url: url });
         setStore(r => r ? { ...r, logo_url: url } : r);
         setEditData(r => r ? { ...r, logo_url: url } : r);
         toast.success("Logo updated!");
       } else if (type === 'gallery') {
-        const urls = await Promise.all(files.map((file, i) => uploadFileToR2(file, "gallery", `gallery_${Date.now()}_${i}.${file.name.split(".").pop() || "jpg"}`)));
+        const galleryBatch = Date.now();
+        const urls = await Promise.all(
+          files.map((file, i) => uploadStoreMediaToR2(file, "gallery", i, galleryBatch))
+        );
         const validUrls = urls.filter(Boolean) as string[];
         const currentGallery = store?.gallery_images || [];
         const newGallery = [...currentGallery, ...validUrls].slice(0, 10);
@@ -912,17 +889,22 @@ export default function ProfilePage() {
     }
   };
 
-  // Format operating hours from merchant_store_operating_hours table
+  // Today's slots from merchant_store_operating_hours (matches OperatingDaysCard day_label)
   const formatOperatingHours = () => {
-    if (!operatingHours || operatingHours.length === 0) return "— — —";
-    
-    // Find first open day
-    const openDay = operatingHours.find((d: any) => d.open && d.slot1_start && d.slot1_end);
-    if (!openDay) return "Closed";
-    
-    const start = formatTime(openDay.slot1_start);
-    const end = formatTime(openDay.slot1_end);
-    return `${start} - ${end}`;
+    if (!operatingHours || operatingHours.length === 0) return "—";
+    const dayLabels = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const todayLabel = dayLabels[new Date().getDay()];
+    const row = operatingHours.find((d: any) => d.day_label === todayLabel);
+    if (!row) return "—";
+    if (!row.open) return "Closed";
+    const parts: string[] = [];
+    if (row.slot1_start && row.slot1_end) {
+      parts.push(`${formatTime(row.slot1_start)} – ${formatTime(row.slot1_end)}`);
+    }
+    if (row.slot2_start && row.slot2_end) {
+      parts.push(`${formatTime(row.slot2_start)} – ${formatTime(row.slot2_end)}`);
+    }
+    return parts.length > 0 ? parts.join(" · ") : "—";
   };
 
   const formatDate = (dateString?: string) => {
@@ -970,39 +952,17 @@ export default function ProfilePage() {
         restaurantName={store.store_name}
         restaurantId={store.store_id}
       >
-        <div className="bg-gray-50 flex-1 flex flex-col overflow-hidden">
-          {/* HEADER - Fixed and stable across screen sizes */}
-          <header className="sticky top-0 z-20 bg-white border-b border-gray-200 flex-shrink-0">
-            <div className="px-4 py-3 md:px-6 md:py-4">
-              <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-                {/* Hamburger menu on left (mobile) */}
-                <MobileHamburgerButton />
-                {/* Heading on right for mobile, left for desktop */}
-                <div className="min-w-0 flex-1 ml-auto md:ml-0">
-                  <h1 className="text-lg md:text-2xl font-bold text-gray-900 truncate">Merchant Profile</h1>
-                  <p className="text-xs md:text-sm text-gray-600 mt-0.5">Manage your restaurant details</p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => setConfirmSave(true)}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg font-medium text-xs sm:text-sm"
-                  >
-                    Save Changes
-                  </button>
-                </div>
-              </div>
-            </div>
-          </header>
-          
-          {/* MAIN CONTENT CONTAINER - Scroll only as much as content needs */}
+        <PartnerPageHeader title="Merchant Profile" subtitle="Manage your restaurant details" />
+        <div className="bg-gray-50 flex-1 flex flex-col min-h-0 overflow-hidden">
+          {/* MAIN CONTENT — no duplicate strip under shell header (avoids large white gap) */}
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar" style={{ scrollBehavior: 'smooth' }}>
-            <div className="p-4">
+            <div className="px-4 pt-0 pb-3">
               <div className="max-w-7xl mx-auto w-full">
 
                 {/* MAIN CARD */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-4">
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-2">
                   {/* STORE HEADER - Card layout on small screens, wide on desktop */}
-                  <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-4 py-3 border-b border-gray-200">
+                  <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-4 py-2 border-b border-gray-200">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                       <div className="flex items-center gap-2.5 flex-1 min-w-0">
                         <div className="relative shrink-0">
@@ -1020,56 +980,6 @@ export default function ProfilePage() {
                             <h2 className="text-base font-bold text-gray-900 truncate">
                               {store?.store_name || '—'}
                             </h2>
-                            {storeOptions.length > 0 && storeId && (
-                              <div className="relative">
-                                <button
-                                  type="button"
-                                  onClick={() => setStoreSwitcherOpen((v) => !v)}
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-blue-200 bg-white text-[11px] font-medium text-blue-700 hover:bg-blue-50"
-                                >
-                                  Switch store
-                                  <span className="ml-0.5">{storeSwitcherOpen ? "▲" : "▼"}</span>
-                                </button>
-                                {storeSwitcherOpen && (
-                                  <div className="absolute z-30 mt-1 w-56 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg py-1">
-                                    {storeOptions.map((s) => (
-                                      <button
-                                        key={s.store_id}
-                                        type="button"
-                                        onClick={() => {
-                                          localStorage.setItem("selectedStoreId", s.store_id);
-                                          setStoreSwitcherOpen(false);
-                                          const base = (pathname || "/mx/dashboard").split("?")[0];
-                                          const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
-                                          params.set("storeId", s.store_id);
-                                          window.location.href = `${base}?${params.toString()}`;
-                                        }}
-                                        className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-blue-50 ${
-                                          s.store_id === storeId ? "bg-blue-50 font-semibold text-blue-700" : "text-gray-700"
-                                        }`}
-                                      >
-                                        <span className="truncate">{s.store_name}</span>
-                                        <span className="ml-2 text-[10px] text-gray-500 font-mono truncate shrink-0">
-                                          {s.store_id}
-                                        </span>
-                                      </button>
-                                    ))}
-                                    <div className="border-t border-gray-100 my-1" />
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setStoreSwitcherOpen(false);
-                                        window.location.href = "/auth/post-login";
-                                      }}
-                                      className="w-full text-left px-3 py-2 text-xs font-medium text-blue-600 hover:bg-blue-50 flex items-center gap-2"
-                                    >
-                                      <Store size={14} />
-                                      View all stores
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
                           </div>
                           <div className="flex items-center gap-2.5 text-xs text-gray-600 mt-0.5">
                             <span className="flex items-center gap-1 shrink-0">
@@ -1113,13 +1023,14 @@ export default function ProfilePage() {
                   </div>
 
                   {/* CONTENT GRID - Compact */}
-                  <div className="p-4">
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="p-3">
+                    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)] gap-3 lg:gap-4 lg:items-stretch">
                       
-                      {/* COLUMN 1: STORE DETAILS */}
-                      <div className="space-y-3">
-                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                          <div className="flex items-center justify-between mb-1.5">
+                      {/* Left: 2×2 pairs — row1 Store Details | Operating Days; row2 Location | Area Manager; then Store Info */}
+                      <div className="min-w-0 grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4 lg:items-stretch">
+                        <div className="min-w-0 flex min-h-0 lg:h-full">
+                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200 flex flex-col min-h-0 h-full w-full min-w-0">
+                          <div className="flex items-center justify-between mb-1.5 shrink-0">
                             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 m-0">
                               <Building size={16} className="text-blue-600" />
                               Store Details
@@ -1153,7 +1064,7 @@ export default function ProfilePage() {
                               </div>
                             </label>
                           </div>
-                          <div className="space-y-1.5 text-sm">
+                          <div className="space-y-1.5 text-sm flex-1 min-h-0 overflow-y-auto pr-0.5">
                             <CompactEditableRow
                               label="Store Name"
                               value={editData?.store_name || ''}
@@ -1161,6 +1072,9 @@ export default function ProfilePage() {
                               onEdit={() => startEditing('store_name')}
                               onSave={stopEditing}
                               onChange={(v) => setEditData({ ...editData, store_name: v })}
+                              onPersist={() => persistProfileField('store_name')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'store_name'}
                             />
                             <CompactLockedRow
                               label="Store Display Name"
@@ -1272,10 +1186,6 @@ export default function ProfilePage() {
                                 </div>
                               )}
                             </div>
-                            <CompactLockedRow
-                              label="Food Categories"
-                              value={Array.isArray(store.food_categories) ? store.food_categories.join(', ') : (store.food_categories || '—')}
-                            />
                             <CompactEditableRow
                               label="Store Email"
                               value={editData.store_email}
@@ -1283,6 +1193,9 @@ export default function ProfilePage() {
                               onEdit={() => startEditing('store_email')}
                               onSave={stopEditing}
                               onChange={(v) => setEditData({ ...editData, store_email: v })}
+                              onPersist={() => persistProfileField('store_email')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'store_email'}
                             />
                             <CompactEditableRow
                               label="Store Phones"
@@ -1291,6 +1204,9 @@ export default function ProfilePage() {
                               onEdit={() => startEditing('store_phones')}
                               onSave={stopEditing}
                               onChange={(v) => setEditData({ ...editData, store_phones: v.split(',').map(s => s.trim()) })}
+                              onPersist={() => persistProfileField('store_phones')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'store_phones'}
                             />
                             <CompactEditableRow
                               label="Description"
@@ -1300,195 +1216,230 @@ export default function ProfilePage() {
                               onSave={stopEditing}
                               onChange={(v) => setEditData({ ...editData, store_description: v })}
                               multiline
+                              onPersist={() => persistProfileField('store_description')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'store_description'}
                             />
                           </div>
                         </div>
+                        </div>
 
-                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                          <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
+                        <div className="min-w-0 flex min-h-0 lg:h-full">
+                          <OperatingDaysCard hours={operatingHours} />
+                        </div>
+
+                        <div className="min-w-0 flex min-h-0 lg:h-full">
+                        <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-200 flex flex-col min-h-0 h-full w-full min-w-0">
+                          <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2 shrink-0">
                             <MapPin size={16} className="text-blue-600" />
                             Location
                           </h3>
-                          <div className="space-y-2">
+                          <div className="grid grid-cols-2 gap-x-2 gap-y-1 flex-1 min-h-0 overflow-y-auto content-start">
+                            <div className="col-span-2 min-w-0">
+                              <CompactEditableRow
+                                dense
+                                label="Full Address"
+                                value={editData?.full_address || ''}
+                                isEditing={editingField === 'full_address'}
+                                onEdit={() => startEditing('full_address')}
+                                onSave={stopEditing}
+                                onChange={(v) => editData && setEditData({ ...editData, full_address: v })}
+                                multiline
+                                onPersist={() => persistProfileField('full_address')}
+                                onCancel={revertFieldFromStore}
+                                isSaving={savingField === 'full_address'}
+                              />
+                            </div>
                             <CompactEditableRow
-                              label="Full Address"
-                              value={editData?.full_address || ''}
-                              isEditing={editingField === 'full_address'}
-                              onEdit={() => startEditing('full_address')}
-                              onSave={stopEditing}
-                              onChange={(v) => editData && setEditData({ ...editData, full_address: v })}
-                              multiline
-                            />
-                            <CompactEditableRow
+                              dense
                               label="City"
                               value={editData?.city || ''}
                               isEditing={editingField === 'city'}
                               onEdit={() => startEditing('city')}
                               onSave={stopEditing}
                               onChange={(v) => editData && setEditData({ ...editData, city: v })}
+                              onPersist={() => persistProfileField('city')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'city'}
                             />
                             <CompactEditableRow
+                              dense
                               label="State"
                               value={editData?.state || ''}
                               isEditing={editingField === 'state'}
                               onEdit={() => startEditing('state')}
                               onSave={stopEditing}
                               onChange={(v) => editData && setEditData({ ...editData, state: v })}
+                              onPersist={() => persistProfileField('state')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'state'}
                             />
                             <CompactEditableRow
+                              dense
                               label="Landmark"
                               value={editData.landmark}
                               isEditing={editingField === 'landmark'}
                               onEdit={() => startEditing('landmark')}
                               onSave={stopEditing}
                               onChange={(v) => setEditData({ ...editData, landmark: v })}
+                              onPersist={() => persistProfileField('landmark')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'landmark'}
                             />
                             <CompactEditableRow
+                              dense
                               label="Postal Code"
                               value={editData.postal_code}
                               isEditing={editingField === 'postal_code'}
                               onEdit={() => startEditing('postal_code')}
                               onSave={stopEditing}
                               onChange={(v) => setEditData({ ...editData, postal_code: v })}
+                              onPersist={() => persistProfileField('postal_code')}
+                              onCancel={revertFieldFromStore}
+                              isSaving={savingField === 'postal_code'}
                             />
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="col-span-2 grid grid-cols-2 gap-x-2 gap-y-1">
                               <CompactEditableRow
+                                dense
                                 label="Latitude"
                                 value={editData.latitude}
                                 isEditing={editingField === 'latitude'}
                                 onEdit={() => startEditing('latitude')}
                                 onSave={stopEditing}
                                 onChange={(v) => setEditData({ ...editData, latitude: parseFloat(v) })}
+                                onPersist={() => persistProfileField('latitude')}
+                                onCancel={revertFieldFromStore}
+                                isSaving={savingField === 'latitude'}
                               />
                               <CompactEditableRow
+                                dense
                                 label="Longitude"
                                 value={editData.longitude}
                                 isEditing={editingField === 'longitude'}
                                 onEdit={() => startEditing('longitude')}
                                 onSave={stopEditing}
                                 onChange={(v) => setEditData({ ...editData, longitude: parseFloat(v) })}
+                                onPersist={() => persistProfileField('longitude')}
+                                onCancel={revertFieldFromStore}
+                                isSaving={savingField === 'longitude'}
                               />
                             </div>
                           </div>
                         </div>
-                      </div>
+                        </div>
 
-                      {/* COLUMN 2: TIMINGS & OPERATIONS */}
-                      <div className="space-y-3">
-                        <OperatingDaysCard storeId={storeId} />
-
-                        {/* Area Manager and Store Info side by side */}
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                          <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                            <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                              <User size={16} className="text-blue-600" />
-                              Area Manager
-                            </h3>
-                            {loadingAreaManager ? (
-                              <div className="text-center py-4">
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mx-auto"></div>
-                                <p className="text-xs text-gray-500 mt-2">Loading...</p>
-                              </div>
-                            ) : areaManager ? (
-                              <div className="space-y-2">
-                                {areaManager.id != null && (
-                                  <div className="flex flex-col">
-                                    <label className="text-xs font-medium text-gray-600 mb-0.5">AM ID</label>
-                                    <span className="text-xs text-gray-900">{areaManager.id}</span>
-                                  </div>
-                                )}
+                        <div className="min-w-0 flex min-h-0 lg:h-full">
+                        <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-200 w-full min-w-0 h-full flex flex-col min-h-0">
+                          <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2 shrink-0">
+                            <User size={16} className="text-blue-600" />
+                            Area Manager
+                          </h3>
+                          {loadingAreaManager ? (
+                            <div className="flex-1 min-h-0 flex flex-col items-center justify-center py-3">
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mx-auto"></div>
+                              <p className="text-xs text-gray-500 mt-2">Loading...</p>
+                            </div>
+                          ) : areaManager ? (
+                            <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto">
+                              {areaManager.id != null && (
                                 <div className="flex flex-col">
-                                  <label className="text-xs font-medium text-gray-600 mb-0.5">AM Name</label>
-                                  <span className="text-xs text-gray-900 truncate" title={areaManager.name || undefined}>
-                                    {areaManager.name || 'Not set'}
-                                  </span>
+                                  <label className="text-[10px] font-medium text-gray-600 mb-0.5">AM ID</label>
+                                  <span className="text-xs text-gray-900">{areaManager.id}</span>
                                 </div>
-                                <div className="flex flex-col">
-                                  <label className="text-xs font-medium text-gray-600 mb-0.5">AM Mobile</label>
-                                  <span className="text-xs text-gray-900">{areaManager.mobile || 'Not set'}</span>
-                                </div>
-                                <div className="flex flex-col">
-                                  <label className="text-xs font-medium text-gray-600 mb-0.5">AM Email</label>
-                                  <span className="text-xs text-gray-900 truncate" title={areaManager.email || undefined}>
-                                    {areaManager.email || 'Not set'}
-                                  </span>
-                                </div>
-                              </div>
-                            ) : (
-                              <p className="text-xs text-gray-500">No area manager assigned</p>
-                            )}
-                          </div>
-
-                          <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                            <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                              <Activity size={16} className="text-blue-600" />
-                              Store Info
-                            </h3>
-                            <div className="grid grid-cols-1 gap-2 text-xs">
-                              <div className="flex items-center gap-2">
-                                <Hash size={12} className="text-gray-500" />
-                                <span className="text-gray-800">Store ID:</span>
-                                <span className="font-semibold text-gray-900">{store?.store_id || '—'}</span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Calendar size={12} className="text-gray-500" />
-                                <span className="text-gray-800">Created:</span>
-                                <span className="font-semibold text-gray-900">{store?.created_at ? formatDate(store.created_at) : '—'}</span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Activity size={12} className="text-gray-500" />
-                                <span className="text-gray-800">Status:</span>
-                                <span className={`font-semibold ${
-                                  store?.approval_status === 'APPROVED' ? 'text-green-600' :
-                                  store?.approval_status === 'REJECTED' ? 'text-red-600' :
-                                  'text-yellow-600'
-                                }`}>
-                                  {store?.approval_status || 'SUBMITTED'}
+                              )}
+                              <div className="flex flex-col">
+                                <label className="text-[10px] font-medium text-gray-600 mb-0.5">AM Name</label>
+                                <span className="text-xs text-gray-900 truncate" title={areaManager.name || undefined}>
+                                  {areaManager.name || 'Not set'}
                                 </span>
                               </div>
-                              <div className="flex items-center gap-2">
-                                <Activity size={12} className="text-gray-500" />
-                                <span className="text-gray-800">Active:</span>
-                                <label className="inline-flex items-center cursor-pointer ml-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!editData && editData.status === 'ACTIVE'}
-                                    onChange={async (e) => {
-                                      if (!editData || !store || !storeId) return;
-                                      const prevStatus = editData.status;
-                                      const prevOperational = editData.operational_status;
-                                      // Use correct enum value for status and operational_status
-                                      const newStatus = e.target.checked ? 'ACTIVE' : 'INACTIVE';
-                                      const newOperational = e.target.checked ? 'OPEN' : 'CLOSED';
-                                      // Optimistically update UI
-                                      setEditData({ ...editData, status: newStatus, operational_status: newOperational });
-                                      setStore({ ...store, status: newStatus, operational_status: newOperational });
-                                      try {
-                                        const ok = await updateStoreInfo(storeId, { status: newStatus, operational_status: newOperational });
-                                        if (!ok) throw new Error('Update failed');
-                                        toast.success(`Store is now ${newStatus} (${newOperational})`);
-                                      } catch (err) {
-                                        // Revert UI if update fails
-                                        setEditData({ ...editData, status: prevStatus, operational_status: prevOperational });
-                                        setStore({ ...store, status: prevStatus, operational_status: prevOperational });
-                                        toast.error('Failed to update store status');
-                                      }
-                                    }}
-                                    className="sr-only peer"
-                                  />
-                                  <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-500 rounded-full peer peer-checked:bg-green-500 transition-all relative">
-                                    <div className={`absolute left-1 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${editData?.status === 'ACTIVE' ? 'translate-x-4' : ''}`}></div>
-                                  </div>
-                                </label>
+                              <div className="flex flex-col">
+                                <label className="text-[10px] font-medium text-gray-600 mb-0.5">AM Mobile</label>
+                                <span className="text-xs text-gray-900">{areaManager.mobile || 'Not set'}</span>
                               </div>
+                              <div className="flex flex-col">
+                                <label className="text-[10px] font-medium text-gray-600 mb-0.5">AM Email</label>
+                                <span className="text-xs text-gray-900 truncate" title={areaManager.email || undefined}>
+                                  {areaManager.email || 'Not set'}
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500 flex-1 flex items-center">No area manager assigned</p>
+                          )}
+                        </div>
+                        </div>
+
+                        <div className="lg:col-span-2 bg-gray-50 rounded-lg p-2.5 border border-gray-200 w-full min-w-0">
+                          <h3 className="text-sm font-semibold text-gray-900 mb-1.5 flex items-center gap-2">
+                            <Activity size={16} className="text-blue-600" />
+                            Store Info
+                          </h3>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                            <div className="sm:col-span-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                              <Clock size={12} className="text-gray-500 shrink-0" />
+                              <span className="text-gray-800">Today&apos;s hours:</span>
+                              <span className="font-semibold text-gray-900 break-words">{formatOperatingHours()}</span>
+                            </div>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Hash size={12} className="text-gray-500 shrink-0" />
+                              <span className="text-gray-800 shrink-0">Store ID:</span>
+                              <span className="font-semibold text-gray-900 truncate">{store?.store_id || '—'}</span>
+                            </div>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Calendar size={12} className="text-gray-500 shrink-0" />
+                              <span className="text-gray-800 shrink-0">Created:</span>
+                              <span className="font-semibold text-gray-900">{store?.created_at ? formatDate(store.created_at) : '—'}</span>
+                            </div>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Activity size={12} className="text-gray-500 shrink-0" />
+                              <span className="text-gray-800 shrink-0">Status:</span>
+                              <span className={`font-semibold truncate ${
+                                store?.approval_status === 'APPROVED' ? 'text-green-600' :
+                                store?.approval_status === 'REJECTED' ? 'text-red-600' :
+                                'text-yellow-600'
+                              }`}>
+                                {store?.approval_status || 'SUBMITTED'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Activity size={12} className="text-gray-500 shrink-0" />
+                              <span className="text-gray-800 shrink-0">Active:</span>
+                              <label className="inline-flex items-center cursor-pointer ml-2">
+                                <input
+                                  type="checkbox"
+                                  checked={!!editData && editData.status === 'ACTIVE'}
+                                  onChange={async (e) => {
+                                    if (!editData || !store || !storeId) return;
+                                    const prevStatus = editData.status;
+                                    const prevOperational = editData.operational_status;
+                                    const newStatus = e.target.checked ? 'ACTIVE' : 'INACTIVE';
+                                    const newOperational = e.target.checked ? 'OPEN' : 'CLOSED';
+                                    setEditData({ ...editData, status: newStatus, operational_status: newOperational });
+                                    setStore({ ...store, status: newStatus, operational_status: newOperational });
+                                    try {
+                                      const ok = await updateStoreInfo(storeId, { status: newStatus, operational_status: newOperational });
+                                      if (!ok) throw new Error('Update failed');
+                                      toast.success(`Store is now ${newStatus} (${newOperational})`);
+                                    } catch (err) {
+                                      setEditData({ ...editData, status: prevStatus, operational_status: prevOperational });
+                                      setStore({ ...store, status: prevStatus, operational_status: prevOperational });
+                                      toast.error('Failed to update store status');
+                                    }
+                                  }}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-500 rounded-full peer peer-checked:bg-green-500 transition-all relative">
+                                  <div className={`absolute left-1 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${editData?.status === 'ACTIVE' ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                              </label>
                             </div>
                           </div>
                         </div>
-
                       </div>
 
-                      {/* COLUMN 3: DOCUMENTS & IMAGES */}
-                      <div className="space-y-3">
+                      {/* COLUMN 2: DOCUMENTS & IMAGES */}
+                      <div className="space-y-3 min-w-0">
                         <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
                           <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
                             <Shield size={16} className="text-blue-600" />
@@ -1900,6 +1851,9 @@ export default function ProfilePage() {
                                     onEdit={() => setEditingField("bank_account_holder")}
                                     onSave={() => setEditingField(null)}
                                     onChange={(v) => setEditData((d) => (d ? { ...d, bank_account_holder: v } : d))}
+                                    onPersist={() => persistProfileField("bank_account_holder")}
+                                    onCancel={revertFieldFromStore}
+                                    isSaving={savingField === "bank_account_holder"}
                                   />
                                   <CompactEditableRow
                                     label="Account Number"
@@ -1908,6 +1862,9 @@ export default function ProfilePage() {
                                     onEdit={() => setEditingField("bank_account_number")}
                                     onSave={() => setEditingField(null)}
                                     onChange={(v) => setEditData((d) => (d ? { ...d, bank_account_number: v } : d))}
+                                    onPersist={() => persistProfileField("bank_account_number")}
+                                    onCancel={revertFieldFromStore}
+                                    isSaving={savingField === "bank_account_number"}
                                   />
                                   <CompactEditableRow
                                     label="IFSC Code"
@@ -1916,6 +1873,9 @@ export default function ProfilePage() {
                                     onEdit={() => setEditingField("bank_ifsc")}
                                     onSave={() => setEditingField(null)}
                                     onChange={(v) => setEditData((d) => (d ? { ...d, bank_ifsc: v } : d))}
+                                    onPersist={() => persistProfileField("bank_ifsc")}
+                                    onCancel={revertFieldFromStore}
+                                    isSaving={savingField === "bank_ifsc"}
                                   />
                                   <CompactEditableRow
                                     label="Bank Name"
@@ -1924,6 +1884,9 @@ export default function ProfilePage() {
                                     onEdit={() => setEditingField("bank_name")}
                                     onSave={() => setEditingField(null)}
                                     onChange={(v) => setEditData((d) => (d ? { ...d, bank_name: v } : d))}
+                                    onPersist={() => persistProfileField("bank_name")}
+                                    onCancel={revertFieldFromStore}
+                                    isSaving={savingField === "bank_name"}
                                   />
                                   {bankVerification && !bankVerification.canTryVerify && (
                                     <p className="text-xs text-amber-700 mt-1">
@@ -1944,6 +1907,9 @@ export default function ProfilePage() {
                                   onEdit={() => setEditingField("bank_account_holder")}
                                   onSave={() => setEditingField(null)}
                                   onChange={(v) => setEditData((d) => (d ? { ...d, bank_account_holder: v } : d))}
+                                  onPersist={() => persistProfileField("bank_account_holder")}
+                                  onCancel={revertFieldFromStore}
+                                  isSaving={savingField === "bank_account_holder"}
                                 />
                                 <CompactEditableRow
                                   label="Account Number"
@@ -1952,6 +1918,9 @@ export default function ProfilePage() {
                                   onEdit={() => setEditingField("bank_account_number")}
                                   onSave={() => setEditingField(null)}
                                   onChange={(v) => setEditData((d) => (d ? { ...d, bank_account_number: v } : d))}
+                                  onPersist={() => persistProfileField("bank_account_number")}
+                                  onCancel={revertFieldFromStore}
+                                  isSaving={savingField === "bank_account_number"}
                                 />
                                 <CompactEditableRow
                                   label="IFSC Code"
@@ -1960,6 +1929,9 @@ export default function ProfilePage() {
                                   onEdit={() => setEditingField("bank_ifsc")}
                                   onSave={() => setEditingField(null)}
                                   onChange={(v) => setEditData((d) => (d ? { ...d, bank_ifsc: v } : d))}
+                                  onPersist={() => persistProfileField("bank_ifsc")}
+                                  onCancel={revertFieldFromStore}
+                                  isSaving={savingField === "bank_ifsc"}
                                 />
                                 <CompactEditableRow
                                   label="Bank Name"
@@ -1968,6 +1940,9 @@ export default function ProfilePage() {
                                   onEdit={() => setEditingField("bank_name")}
                                   onSave={() => setEditingField(null)}
                                   onChange={(v) => setEditData((d) => (d ? { ...d, bank_name: v } : d))}
+                                  onPersist={() => persistProfileField("bank_name")}
+                                  onCancel={revertFieldFromStore}
+                                  isSaving={savingField === "bank_name"}
                                 />
                                 {bankVerification && !bankVerification.canTryVerify && (
                                   <p className="text-xs text-amber-700 mt-1">
@@ -2115,31 +2090,6 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* SAVE CONFIRM MODAL */}
-        {confirmSave && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-5 w-full max-w-sm mx-4">
-              <h3 className="text-base font-semibold text-gray-900 mb-2">Save Changes?</h3>
-              <p className="text-sm text-gray-600 mb-4">
-                Confirm to update your profile information
-              </p>
-              <div className="flex justify-end gap-2">
-                <button 
-                  onClick={() => setConfirmSave(false)}
-                  className="px-3 py-1.5 text-sm text-gray-700 hover:text-gray-900"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-medium"
-                >
-                  Save
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </MXLayoutWhite>
     </ProfileErrorBoundary>
   );
@@ -2156,6 +2106,11 @@ function CompactEditableRow({
   onChange,
   multiline = false,
   prefix = "",
+  onPersist,
+  onCancel,
+  isSaving = false,
+  /** Tighter spacing and smaller type (e.g. Location card). */
+  dense = false,
 }: {
   label: string;
   value?: any;
@@ -2165,62 +2120,109 @@ function CompactEditableRow({
   onChange: (value: string) => void;
   multiline?: boolean;
   prefix?: string;
+  /** When set, Save persists via API then closes; blur does not auto-close. */
+  onPersist?: () => Promise<void>;
+  /** Revert draft and close editor (Escape). */
+  onCancel?: () => void;
+  isSaving?: boolean;
+  dense?: boolean;
 }) {
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !multiline) {
-      onSave();
+  const handleCommit = async () => {
+    if (isSaving) return;
+    if (onPersist) {
+      await onPersist();
+      return;
     }
-    if (e.key === 'Escape') {
-      onSave();
+    onSave();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !multiline) {
+      e.preventDefault();
+      void handleCommit();
+    }
+    if (e.key === "Escape") {
+      (onCancel ?? onSave)();
     }
   };
 
+  const blurHandler = onPersist ? undefined : onSave;
+
+  const labelCls = dense ? "text-[10px] font-medium text-gray-600" : "text-xs font-medium text-gray-600";
+  const valCls = dense ? "text-xs text-gray-900 font-medium" : "text-sm text-gray-900 font-medium";
+  const fieldPad = dense ? "px-2 py-0.5 text-xs" : "px-2 py-1 text-sm";
+
   return (
-    <div className="group">
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs font-medium text-gray-600">{label}</span>
+    <div className="group min-w-0">
+      <div className={`flex items-center justify-between ${dense ? "mb-0.5" : "mb-1"}`}>
+        <span className={labelCls}>{label}</span>
         {!isEditing ? (
           <button
+            type="button"
             onClick={onEdit}
             className="text-blue-600 hover:text-blue-800 opacity-0 group-hover:opacity-100 transition-all"
           >
             <Edit2 size={12} />
           </button>
         ) : (
-          <button
-            onClick={onSave}
-            className="text-green-600 hover:text-green-800 text-xs"
-          >
-            Save
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onPersist && onCancel ? (
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={isSaving}
+                className="text-xs text-gray-600 hover:text-gray-800 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void handleCommit()}
+              disabled={isSaving}
+              className="text-green-600 hover:text-green-800 text-xs font-semibold disabled:opacity-50"
+            >
+              {isSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
         )}
       </div>
       {isEditing ? (
         multiline ? (
           <textarea
-            value={value || ""}
+            value={value ?? ""}
             onChange={(e) => onChange(e.target.value)}
-            onBlur={onSave}
+            onBlur={blurHandler}
             onKeyDown={handleKeyDown}
-            className="w-full border border-blue-300 rounded px-2 py-1 text-sm text-gray-900 bg-white focus:ring-1 focus:ring-blue-500 focus:border-transparent"
-            rows={2}
+            className={`w-full border border-blue-300 rounded bg-white focus:ring-1 focus:ring-blue-500 focus:border-transparent ${fieldPad} text-gray-900`}
+            rows={dense ? 2 : 2}
             autoFocus
+            disabled={isSaving}
           />
         ) : (
           <input
-            type={label.toLowerCase().includes('time') ? 'time' : 'text'}
-            value={value || ""}
+            type={label.toLowerCase().includes("time") ? "time" : "text"}
+            value={value !== undefined && value !== null ? String(value) : ""}
             onChange={(e) => onChange(e.target.value)}
-            onBlur={onSave}
+            onBlur={blurHandler}
             onKeyDown={handleKeyDown}
-            className="w-full border border-blue-300 rounded px-2 py-1 text-sm text-gray-900 bg-white focus:ring-1 focus:ring-blue-500 focus:border-transparent"
+            className={`w-full border border-blue-300 rounded bg-white focus:ring-1 focus:ring-blue-500 focus:border-transparent ${fieldPad} text-gray-900`}
             autoFocus
+            disabled={isSaving}
           />
         )
       ) : (
-        <div className="text-sm text-gray-900 font-medium truncate">
+        <div
+          className={`${valCls} ${
+            multiline && dense ? "line-clamp-2 whitespace-normal break-words" : "truncate"
+          }`}
+        >
           {prefix && <span className="text-gray-600">{prefix}</span>}
-          {value || <span className="text-gray-400">Not set</span>}
+          {value !== undefined && value !== null && value !== "" ? (
+            String(value)
+          ) : (
+            <span className="text-gray-400">Not set</span>
+          )}
         </div>
       )}
     </div>

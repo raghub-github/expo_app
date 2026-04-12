@@ -1,125 +1,88 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Pressable,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-
-type HelpSectionId =
-  | "outlet_status"
-  | "orders"
-  | "restaurant"
-  | "address"
-  | "menu"
-  | "payments"
-  | "taxes"
-  | "ads"
-  | "branding"
-  | "hygiene_audit"
-  | "reports"
-  | "other";
+import { fetchMerchantHelpSections } from "@/services/ticketApi";
 
 type HelpSection = {
-  id: HelpSectionId;
+  /** Stable list key / navigation id (ticket_titles.id). */
+  id: string;
+  ticketTitleId: number;
+  /** Help hub section code (`merchant_section_id`) for API + quick options. */
+  sectionCode: string;
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
   subtitle: string;
 };
 
-const SECTIONS: HelpSection[] = [
-  {
-    id: "outlet_status",
-    icon: "power-outline",
-    title: "Outlet online / offline status",
-    subtitle: "Current status, visibility and restrictions",
-  },
-  {
-    id: "orders",
-    icon: "document-text-outline",
-    title: "Order related issues",
-    subtitle: "Cancellations, delays and delivery concerns",
-  },
-  {
-    id: "restaurant",
-    icon: "business-outline",
-    title: "Restaurant profile",
-    subtitle: "Timings, contacts, FSSAI, bank details etc.",
-  },
-  {
-    id: "address",
-    icon: "location-outline",
-    title: "Address & location",
-    subtitle: "Outlet address, map location and coverage",
-  },
-  {
-    id: "menu",
-    icon: "fast-food-outline",
-    title: "Menu & pricing",
-    subtitle: "Items, photos, prices and charges",
-  },
-  {
-    id: "payments",
-    icon: "wallet-outline",
-    title: "Payments & payouts",
-    subtitle: "Statements, invoices and settlement issues",
-  },
-  {
-    id: "taxes",
-    icon: "receipt-outline",
-    title: "Taxes & compliance",
-    subtitle: "GST, TCS, TDS and reports",
-  },
-  {
-    id: "ads",
-    icon: "megaphone-outline",
-    title: "Promotions & visibility",
-    subtitle: "Boosts, offers and campaigns",
-  },
-  {
-    id: "branding",
-    icon: "pricetag-outline",
-    title: "Branding & materials",
-    subtitle: "Standees, stickers and other creatives",
-  },
-  {
-    id: "reports",
-    icon: "stats-chart-outline",
-    title: "Analytics & reports",
-    subtitle: "Performance, ratings and insights",
-  },
-  {
-    id: "hygiene_audit",
-    icon: "medkit-outline",
-    title: "Kitchen hygiene audit report",
-    subtitle: "Upload or request hygiene audit report",
-  },
-  {
-    id: "other",
-    icon: "chatbubbles-outline",
-    title: "Need help with something else",
-    subtitle: "Raise a ticket and our team will assist you",
-  },
-];
+/** Icon comes from API (`merchant_help_icon_name`); only validate against Ionicons. */
+function resolveHelpHubIcon(fromDb: string | null): keyof typeof Ionicons.glyphMap {
+  if (fromDb && fromDb in Ionicons.glyphMap) {
+    return fromDb as keyof typeof Ionicons.glyphMap;
+  }
+  return "help-circle-outline";
+}
 
 export default function ContactUsScreen() {
   const router = useRouter();
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
+  const [sections, setSections] = useState<HelpSection[]>([]);
+  const [loadingSections, setLoadingSections] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    if (!token) {
+      setSections([]);
+      setLoadError(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingSections(true);
+    setLoadError(false);
+    fetchMerchantHelpSections(token)
+      .then((rows) => {
+        if (cancelled) return;
+        setSections(
+          rows.map((r) => ({
+            id: String(r.ticketTitleId),
+            ticketTitleId: r.ticketTitleId,
+            sectionCode: r.sectionId,
+            icon: resolveHelpHubIcon(r.helpHubIcon),
+            title: r.title,
+            subtitle: r.subtitle ?? "",
+          }))
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSections([]);
+          setLoadError(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSections(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   const groups = useMemo(() => {
-    return [
-      SECTIONS.slice(0, 2),
-      SECTIONS.slice(2, 5),
-      SECTIONS.slice(5),
-    ];
-  }, []);
+    if (sections.length === 0) return [];
+    if (sections.length < 3) return [sections];
+    return [sections.slice(0, 2), sections.slice(2, 5), sections.slice(5)];
+  }, [sections]);
 
   const onSectionPress = async (section: HelpSection) => {
     if (!token || !selectedStore?.id) {
@@ -129,7 +92,10 @@ export default function ContactUsScreen() {
       pathname: "/support/chat/[ticketId]",
       params: {
         ticketId: "new",
-        sectionId: section.id,
+        sectionId: section.sectionCode,
+        ...(section.ticketTitleId > 0
+          ? { ticketTitleId: String(section.ticketTitleId) }
+          : {}),
         sectionTitle: section.title,
       },
     });
@@ -149,42 +115,78 @@ export default function ContactUsScreen() {
         </Text>
       </View>
 
-      {groups.map((group, idx) => (
-        <View key={idx} style={styles.sectionCard}>
-          {group.map((s, i) => (
-            <Pressable
-              key={s.id}
-              onPress={() => onSectionPress(s)}
-              style={({ pressed }) => [
-                styles.row,
-                i !== group.length - 1 && styles.rowDivider,
-                pressed && styles.rowPressed,
-              ]}
-            >
-              <View style={styles.iconWrap}>
-                <Ionicons
-                  name={s.icon}
-                  size={20}
-                  color={GatiMitraMerchant.primary}
-                />
-              </View>
-              <View style={styles.textWrap}>
-                <Text style={styles.rowTitle} numberOfLines={1}>
-                  {s.title}
-                </Text>
-                <Text style={styles.rowSubtitle} numberOfLines={1}>
-                  {s.subtitle}
-                </Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={GatiMitraMerchant.textTertiary}
-              />
-            </Pressable>
-          ))}
+      {loadingSections ? (
+        <View style={styles.loadingRow}>
+          <ActivityIndicator color={GatiMitraMerchant.primary} />
         </View>
-      ))}
+      ) : null}
+
+      {!token ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>Sign in to see help topics</Text>
+          <Text style={styles.emptySubtitle}>
+            Help options are loaded from your account after you log in.
+          </Text>
+        </View>
+      ) : loadError ? (
+        <View style={styles.emptyCard}>
+          <Ionicons
+            name="cloud-offline-outline"
+            size={28}
+            color={GatiMitraMerchant.textTertiary}
+            style={styles.emptyIcon}
+          />
+          <Text style={styles.emptyTitle}>Could not load help topics</Text>
+          <Text style={styles.emptySubtitle}>
+            Check your connection and try opening this screen again.
+          </Text>
+        </View>
+      ) : !loadingSections && sections.length === 0 ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>No help topics yet</Text>
+          <Text style={styles.emptySubtitle}>
+            Your administrator has not published any contact options. Please try
+            again later or reach out through another channel.
+          </Text>
+        </View>
+      ) : (
+        groups.map((group, idx) => (
+          <View key={idx} style={styles.sectionCard}>
+            {group.map((s, i) => (
+              <Pressable
+                key={s.id}
+                onPress={() => onSectionPress(s)}
+                style={({ pressed }) => [
+                  styles.row,
+                  i !== group.length - 1 && styles.rowDivider,
+                  pressed && styles.rowPressed,
+                ]}
+              >
+                <View style={styles.iconWrap}>
+                  <Ionicons
+                    name={s.icon}
+                    size={20}
+                    color={GatiMitraMerchant.primary}
+                  />
+                </View>
+                <View style={styles.textWrap}>
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {s.title}
+                  </Text>
+                  <Text style={styles.rowSubtitle} numberOfLines={1}>
+                    {s.subtitle}
+                  </Text>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={GatiMitraMerchant.textTertiary}
+                />
+              </Pressable>
+            ))}
+          </View>
+        ))
+      )}
 
       <View style={styles.footerCard}>
         <Ionicons
@@ -207,6 +209,31 @@ export default function ContactUsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
   content: { padding: H_PADDING, paddingBottom: 24 },
+  loadingRow: { paddingVertical: 8, alignItems: "center" },
+  emptyCard: {
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderWidth: 1,
+    borderColor: GatiMitraMerchant.border,
+    alignItems: "center",
+  },
+  emptyIcon: { marginBottom: 8 },
+  emptyTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textPrimary,
+    textAlign: "center",
+  },
+  emptySubtitle: {
+    marginTop: 6,
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+    lineHeight: 18,
+    textAlign: "center",
+  },
   headerCard: {
     paddingHorizontal: 14,
     paddingVertical: 12,
@@ -296,4 +323,3 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 });
-

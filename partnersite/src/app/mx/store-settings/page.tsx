@@ -6,14 +6,14 @@ import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
-import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
+import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { Toaster, toast } from 'sonner'
-import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 import { SettingsSidebar } from './components/SettingsSidebar'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
@@ -57,6 +57,9 @@ function StoreSettingsContent() {
     }
     return 'plans'
   })
+
+  /** Desktop right settings rail: icon-only vs full labels (matches partner left sidebar behaviour). */
+  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false)
 
   const validTabsList = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'audit', 'gatimitra']
   useEffect(() => {
@@ -569,6 +572,14 @@ function StoreSettingsContent() {
     )
   }, [fullAddress, addressLandmark, storeAddress, addressState, addressPostalCode, latitude, longitude])
 
+  /** Customer-facing store page on partner (public `store_id`, e.g. GMMC1025). */
+  const gatimitraCustomerStoreUrl = useMemo(() => {
+    const slug = (store?.store_id ?? storeId ?? '').trim()
+    if (!slug) return null
+    const origin = 'https://partner.gatimitra.com'
+    return `${origin}/restaurant/${encodeURIComponent(slug)}?from=around-you&location=India`
+  }, [store?.store_id, storeId])
+
   // Address search: click outside to close results
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -719,79 +730,107 @@ function StoreSettingsContent() {
     load()
   }, [storeId])
 
-  // Load plans and subscription
+  // Load plans and subscription (plans list unblocks as soon as /plans returns; other calls run in parallel)
   useEffect(() => {
     if (!storeId) return
+    let cancelled = false
+
+    const parseJson = async (res: Response) => {
+      try {
+        return await res.json()
+      } catch (e) {
+        console.error('Failed to parse JSON:', e)
+        return {}
+      }
+    }
+
     const loadPlansAndSubscription = async () => {
       setLoadingPlans(true)
+
+      const plansPromise = fetch('/api/merchant/plans')
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Plans fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
+      const subscriptionPromise = fetch(
+        `/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`
+      )
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Subscription fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
+      const paymentsPromise = fetch(
+        `/api/merchant/subscription/payments?storeId=${encodeURIComponent(storeId)}`
+      )
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Subscription payments fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
+      const onboardingPromise = fetch(
+        `/api/merchant/onboarding-payments?storeId=${encodeURIComponent(storeId)}`
+      )
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Onboarding payments fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
       try {
-        // Load available plans
-        const plansRes = await fetch('/api/merchant/plans')
-        let plansData;
-        try {
-          plansData = await plansRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse plans JSON:', jsonError);
-        }
-        if (plansRes.ok && plansData?.plans) {
+        const { res: plansRes, data: plansData } = await plansPromise
+        if (!cancelled && plansRes?.ok && plansData?.plans) {
           setPlans(plansData.plans)
         }
+      } catch (error) {
+        console.error('Error loading plans:', error)
+      } finally {
+        if (!cancelled) setLoadingPlans(false)
+      }
 
-        // Load current subscription
-        const subRes = await fetch(`/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`)
-        let subData;
-        try {
-          subData = await subRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse subscription JSON:', jsonError);
-        }
-        if (subRes.ok && subData) {
-          setCurrentSubscription(subData.subscription)
-          setCurrentPlan(subData.plan)
-          // Auto-renew should be off by default
-          setAutoRenew(subData.subscription?.auto_renew === true ? true : false)
-          if (subData.plan?.plan_code) {
-            setSubscriptionPlan(subData.plan.plan_code.toLowerCase() as 'free' | 'pro' | 'enterprise')
-            setMaxMenuItems(subData.plan.max_menu_items)
-            setMaxCuisines(subData.plan.max_cuisines)
-            setImageUploadAllowed(subData.plan.image_upload_allowed || false)
-            setAnalyticsEnabled(subData.plan.analytics_access || false)
-            setAdvancedSecurity(subData.plan.advanced_analytics || false)
-            setPrioritySupport(subData.plan.priority_support || false)
-            setMarketingAutomation(subData.plan.marketing_automation || false)
+      try {
+        const [sub, payments, onboarding] = await Promise.all([
+          subscriptionPromise,
+          paymentsPromise,
+          onboardingPromise,
+        ])
+        if (cancelled) return
+
+        if (sub.res?.ok && sub.data) {
+          setCurrentSubscription(sub.data.subscription)
+          setCurrentPlan(sub.data.plan)
+          setAutoRenew(sub.data.subscription?.auto_renew === true ? true : false)
+          if (sub.data.plan?.plan_code) {
+            setSubscriptionPlan(sub.data.plan.plan_code.toLowerCase() as 'free' | 'pro' | 'enterprise')
+            setMaxMenuItems(sub.data.plan.max_menu_items)
+            setMaxCuisines(sub.data.plan.max_cuisines)
+            setImageUploadAllowed(sub.data.plan.image_upload_allowed || false)
+            setAnalyticsEnabled(sub.data.plan.analytics_access || false)
+            setAdvancedSecurity(sub.data.plan.advanced_analytics || false)
+            setPrioritySupport(sub.data.plan.priority_support || false)
+            setMarketingAutomation(sub.data.plan.marketing_automation || false)
           }
         }
 
-        // Load payment history
-        const paymentsRes = await fetch(`/api/merchant/subscription/payments?storeId=${encodeURIComponent(storeId)}`)
-        let paymentsData;
-        try {
-          paymentsData = await paymentsRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse payments JSON:', jsonError);
-        }
-        if (paymentsRes.ok && paymentsData?.payments) {
-          setPaymentHistory(paymentsData.payments)
+        if (payments.res?.ok && payments.data?.payments) {
+          setPaymentHistory(payments.data.payments)
         }
 
-        // Load onboarding payments
-        const onboardingRes = await fetch(`/api/merchant/onboarding-payments?storeId=${encodeURIComponent(storeId)}`)
-        let onboardingData;
-        try {
-          onboardingData = await onboardingRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse onboarding payments JSON:', jsonError);
-        }
-        if (onboardingRes.ok && onboardingData?.payments) {
-          setOnboardingPayments(onboardingData.payments)
+        if (onboarding.res?.ok && onboarding.data?.payments) {
+          setOnboardingPayments(onboarding.data.payments)
         }
       } catch (error) {
-        console.error('Error loading plans/subscription:', error)
-      } finally {
-        setLoadingPlans(false)
+        console.error('Error loading subscription details:', error)
       }
     }
     loadPlansAndSubscription()
+    return () => {
+      cancelled = true
+    }
   }, [storeId])
 
   // Load menu items count for capacity display
@@ -1030,10 +1069,18 @@ function StoreSettingsContent() {
       return
     }
     try {
+      const manualCloseUntil = new Date(Date.now() + duration * 60 * 1000).toISOString()
       const res = await fetch('/api/store-operations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_id: storeId, action: 'manual_close', duration_minutes: duration }),
+        body: JSON.stringify({
+          store_id: storeId,
+          action: 'manual_close',
+          closure_type: 'temporary',
+          duration_minutes: duration,
+          manual_close_until: manualCloseUntil,
+          close_reason: 'Temporary break',
+        }),
       })
       let data;
       try {
@@ -2389,26 +2436,12 @@ function StoreSettingsContent() {
     <>
       <Toaster />
       <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || DEMO_STORE_ID}>
+        <PartnerPageHeader title="Store Settings" subtitle="Manage store configuration and preferences" />
         <div className="flex h-full min-h-0 bg-gray-50 overflow-hidden">
-          {/* Left: header + main content */}
-          <div className="flex flex-1 min-w-0 flex-col">
-            {/* Compact header – matches Orders page height */}
-            <header className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0 shadow-sm">
-              <div className="w-full px-3 sm:px-4 py-2.5 sm:py-3">
-                <div className="flex items-center gap-3">
-                  {/* Hamburger menu on left (mobile) */}
-                  <MobileHamburgerButton />
-                  {/* Heading - properly aligned */}
-                  <div className="flex-1 min-w-0">
-                    <h1 className="text-base sm:text-lg md:text-xl font-bold text-gray-900">Store Settings</h1>
-                    <p className="text-xs sm:text-sm text-gray-600 mt-0.5 hidden sm:block">Manage store configuration and preferences</p>
-                  </div>
-                </div>
-              </div>
-            </header>
-            {/* Main Content Area - Scrollable */}
+          {/* Main scroll area — no duplicate strip under MXPartnerTopBar (hamburger lives in top bar) */}
+          <div className="flex flex-1 min-w-0 flex-col min-h-0">
             <div className="flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar min-h-0">
-            <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5">
+            <div className="px-4 sm:px-6 lg:px-8 pt-2 pb-4 sm:pb-5">
               <div className="max-w-6xl mx-auto w-full">
               {/* Mobile Tabs */}
               <div className="lg:hidden mb-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8">
@@ -4391,15 +4424,25 @@ function StoreSettingsContent() {
               <div className="flex flex-col items-center justify-center min-h-[400px] bg-white rounded-xl border border-gray-200 py-12">
                 <img src="/gstore.png" alt="Store" className="w-64 h-64 mb-8" style={{ maxWidth: '320px', maxHeight: '320px' }} />
                 <p className="text-xl font-semibold text-center mb-6" style={{ color: '#08a353ff' }}>Experience your store from a customer's perspective on <span style={{ color: '#a89a03ff' }}>GatiMitra</span>.</p>
-                <a
-                  href="https://gatimitra.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-12 py-4 rounded-xl bg-gradient-to-r from-indigo-400 to-red-400 text-white font-semibold text-lg shadow-md hover:from-indigo-500 hover:to-purple-500 transition text-center"
-                  style={{ display: 'inline-block' }}
-                >
-                  View store now
-                </a>
+                {gatimitraCustomerStoreUrl ? (
+                  <a
+                    href={gatimitraCustomerStoreUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-12 py-4 rounded-xl bg-gradient-to-r from-indigo-400 to-red-400 text-white font-semibold text-lg shadow-md hover:from-indigo-500 hover:to-purple-500 transition text-center"
+                    style={{ display: 'inline-block' }}
+                  >
+                    View store on GatiMitra
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="px-12 py-4 rounded-xl bg-gray-300 text-gray-600 font-semibold text-lg cursor-not-allowed"
+                  >
+                    Loading store link…
+                  </button>
+                )}
               </div>
             )}
 
@@ -4493,12 +4536,33 @@ function StoreSettingsContent() {
           </div>
           </div>
 
-          {/* Right Sidebar Navigation - uses shared list so Packaging Charge is always visible */}
-          <div className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 bg-white border-l border-gray-200">
+          {/* Right nav — collapsible on desktop (icon strip vs full labels) */}
+          <div
+            className={`hidden lg:flex lg:flex-col lg:shrink-0 lg:min-h-0 h-full bg-[#f5f5f5] border-l border-[#e8e8e8] transition-[width] duration-200 ease-out ${
+              settingsSidebarCollapsed ? 'lg:w-14' : 'lg:w-56'
+            }`}
+          >
             <SettingsSidebar
               activeTab={activeTab}
               onTabChange={(tab) => setActiveTab(tab as typeof activeTab)}
+              collapsed={settingsSidebarCollapsed}
             />
+            <div className="flex justify-center py-2 border-t border-[#e8e8e8] shrink-0">
+              <button
+                type="button"
+                onClick={() => setSettingsSidebarCollapsed((c) => !c)}
+                className="p-1.5 rounded-lg hover:bg-gray-200/80 text-gray-600 hover:text-gray-900"
+                title={settingsSidebarCollapsed ? 'Expand settings menu' : 'Collapse settings menu'}
+                aria-expanded={!settingsSidebarCollapsed}
+                aria-label={settingsSidebarCollapsed ? 'Expand settings menu' : 'Collapse settings menu'}
+              >
+                {settingsSidebarCollapsed ? (
+                  <ChevronLeft size={18} aria-hidden />
+                ) : (
+                  <ChevronRight size={18} aria-hidden />
+                )}
+              </button>
+            </div>
           </div>
         </div>
 

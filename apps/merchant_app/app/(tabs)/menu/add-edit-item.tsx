@@ -26,8 +26,7 @@ import {
   H_PADDING,
   CARD_RADIUS,
   BUTTON_RADIUS,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -1006,7 +1005,9 @@ export default function AddEditItemScreen() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom + 80 }}
+        contentContainerStyle={{
+          paddingBottom: TAB_BAR_SCROLL_CONTENT_PADDING + 80,
+        }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >

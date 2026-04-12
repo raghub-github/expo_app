@@ -25,6 +25,15 @@ import type { ChildStore } from "@/context/AuthContext";
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 type DayKey = (typeof DAY_KEYS)[number];
 
+/** Header title: max visible characters before ellipsis (Unicode-safe). */
+const HEADER_STORE_NAME_MAX_CHARS = 25;
+
+function truncateStoreNameForHeader(text: string, maxChars: number): string {
+  const chars = Array.from(text.trim());
+  if (chars.length <= maxChars) return chars.join("");
+  return `${chars.slice(0, maxChars).join("")}…`;
+}
+
 function formatSlotTime(t: string | null): string {
   if (!t) return "";
   const [hStr, mStr] = t.split(":");
@@ -81,6 +90,8 @@ const PAGE_TITLES: Record<string, string> = {
   orders: "Orders",
   menu: "Catalog",
   earnings: "Earnings",
+  growth: "Growth",
+  reviews: "Reviews",
   profile: "Profile",
 };
 
@@ -112,6 +123,7 @@ function MainHeader({
   const isProfileSection = segments.includes("profile");
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = partner?.childStores ?? [];
+  const hasMultipleChildStores = stores.length > 1;
 
   useEffect(() => {
     if (Platform.OS !== "web") {
@@ -131,19 +143,22 @@ function MainHeader({
             accessibilityLabel="GatiMitra"
           />
           <Pressable
-            disabled={stores.length === 0}
+            disabled={stores.length === 0 || !hasMultipleChildStores}
             onPress={() => setPickerVisible(true)}
             style={({ pressed }) => [
               styles.greetingBlock,
-              pressed && stores.length > 0 && styles.pressed,
+              pressed && hasMultipleChildStores && styles.pressed,
               GatiMitraMerchant.cursorPointer,
             ]}
           >
             <View style={styles.greetingRow}>
-              <Text style={styles.greeting} numberOfLines={1}>
-                {selectedStore?.store_name ?? "Select a store"}
+              <Text style={styles.greeting} numberOfLines={1} ellipsizeMode="clip">
+                {truncateStoreNameForHeader(
+                  selectedStore?.store_name ?? "Select a store",
+                  HEADER_STORE_NAME_MAX_CHARS
+                )}
               </Text>
-              {stores.length > 0 && (
+              {hasMultipleChildStores && (
                 <Ionicons
                   name={pickerVisible ? "chevron-up" : "chevron-down"}
                   size={16}
@@ -470,7 +485,6 @@ export function MerchantCustomHeader() {
     isOnline,
     toggle,
     closeStore,
-    lastRefreshedAt,
     scheduledClosure,
     manualCloseUntil,
     manualCloseReason,
@@ -533,7 +547,8 @@ export function MerchantCustomHeader() {
       tab === "index");
   const topPadding = Math.max(insets.top, SAFE_AREA_TOP_MIN);
 
-  // Refetch when store or auth changes, and when store status is refreshed (e.g. after saving business hours).
+  // Refetch when store, auth, or route changes (e.g. back from profile/hours). Do not tie to status poll —
+  // lastRefreshedAt updated every few seconds caused duplicate GET operating-hours + status storms.
   useEffect(() => {
     if (!selectedStore?.id || !token) {
       setTodayHoursLabel(null);
@@ -554,7 +569,7 @@ export function MerchantCustomHeader() {
     return () => {
       cancelled = true;
     };
-  }, [selectedStore?.id, token, lastRefreshedAt]);
+  }, [selectedStore?.id, token, pathname]);
 
   const showStoreStatusWarning = () => {
     setCloseMode("TEMP");

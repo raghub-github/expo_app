@@ -30,6 +30,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { getConfig, resolveUrlForDevice } from "@/config/env";
+import { ticketDebugLog } from "@/lib/ticketDebugLog";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -41,6 +42,7 @@ import {
   postTicketMessage,
   uploadTicketAttachment,
   createStoreTicket,
+  fetchMerchantHelpSections,
   rateTicket,
   reopenTicket,
   type TicketMessage,
@@ -48,7 +50,8 @@ import {
   type TicketSummary,
 } from "@/services/ticketApi";
 
-const QUICK_OPTIONS_BY_SECTION: Record<string, string[]> = {
+/** Fallback when API has no rows yet (offline / migration not run). */
+const STATIC_QUICK_OPTIONS_BY_SECTION: Record<string, string[]> = {
   outlet_status: [
     "I want to go online",
     "I want to go offline",
@@ -60,6 +63,12 @@ const QUICK_OPTIONS_BY_SECTION: Record<string, string[]> = {
     "I am not receiving orders",
     "Order got cancelled by mistake",
     "Delivery delay issue",
+    "Wrong order received",
+    "Other",
+  ],
+  order_timing: [
+    "Order not picked by rider",
+    "Order delayed",
     "Wrong order received",
     "Other",
   ],
@@ -85,6 +94,12 @@ const QUICK_OPTIONS_BY_SECTION: Record<string, string[]> = {
     "Payout not received",
     "Wrong amount credited",
     "Settlement or invoice query",
+    "Other",
+  ],
+  payout_delayed: [
+    "Payout not received yet",
+    "Settlement delayed",
+    "Wrong payout amount",
     "Other",
   ],
   taxes: [
@@ -262,6 +277,16 @@ function ticketStatusNormalized(status: string | null | undefined): string {
     .replace(/[\s-]+/g, "_");
 }
 
+/** Expo Router may pass `string | string[]` for a single key — normalize to one string. */
+function firstRouteString(v: string | string[] | undefined): string | undefined {
+  if (v == null) return undefined;
+  if (Array.isArray(v)) {
+    const x = v[0];
+    return typeof x === "string" ? x : undefined;
+  }
+  return v;
+}
+
 function isSnoozedTicketStatus(status: string | null | undefined): boolean {
   return ticketStatusNormalized(status) === "SNOOZED";
 }
@@ -416,16 +441,30 @@ export default function HelpChatScreen() {
   const router = useRouter();
   const { token, supabaseUserId, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
-  const { ticketId, sectionId, sectionTitle } = useLocalSearchParams<{
-    ticketId?: string;
-    sectionId?: string;
-    sectionTitle?: string;
+  const p = useLocalSearchParams<{
+    ticketId?: string | string[];
+    sectionId?: string | string[];
+    sectionTitle?: string | string[];
+    /** ticket_titles.id from Contact Us — disambiguates duplicate section codes. */
+    ticketTitleId?: string | string[];
   }>();
+  const ticketId = firstRouteString(p.ticketId);
+  const sectionId = firstRouteString(p.sectionId);
+  const sectionTitle = firstRouteString(p.sectionTitle);
+  const ticketTitleIdParam = firstRouteString(p.ticketTitleId);
+
+  const resolvedTicketTitleId = useMemo(() => {
+    const raw = typeof ticketTitleIdParam === "string" ? ticketTitleIdParam.trim() : "";
+    if (!/^\d+$/.test(raw)) return 0;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : 0;
+  }, [ticketTitleIdParam]);
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
 
   const [ticket, setTicket] = useState<TicketSummary | null>(null);
   const [messages, setMessages] = useState<TicketMessage[]>([]);
+  const [serverQuickBySection, setServerQuickBySection] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -564,8 +603,8 @@ export default function HelpChatScreen() {
 
   const showRatingPrompt =
     !!ticket &&
-    (ticket.status?.toUpperCase() === "RESOLVED" ||
-      ticket.status?.toUpperCase() === "CLOSED") &&
+    (ticketStatusNormalized(ticket.status) === "RESOLVED" ||
+      ticketStatusNormalized(ticket.status) === "CLOSED") &&
     (ticket.satisfaction_rating == null || Number.isNaN(ticket.satisfaction_rating)) &&
     !hasTappedChatAgain;
 
@@ -801,10 +840,41 @@ export default function HelpChatScreen() {
     };
   }, [activeTicketId, token, storeId, load, postgresLive, chatScreenFocused]);
 
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    fetchMerchantHelpSections(token)
+      .then((rows) => {
+        if (cancelled || !rows.length) return;
+        const map: Record<string, string[]> = {};
+        for (const r of rows) {
+          if (r.quickOptions.length > 0) {
+            map[r.sectionId] = r.quickOptions;
+            map[`__tid_${r.ticketTitleId}`] = r.quickOptions;
+          }
+        }
+        setServerQuickBySection(map);
+      })
+      .catch(() => {
+        /* keep static quick options */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   const quickOptions = useMemo(() => {
-    const id = typeof sectionId === "string" ? sectionId.toLowerCase() : "";
-    return QUICK_OPTIONS_BY_SECTION[id] ?? DEFAULT_QUICK_OPTIONS;
-  }, [sectionId]);
+    const sec = typeof sectionId === "string" ? sectionId.toLowerCase() : "";
+    if (resolvedTicketTitleId > 0) {
+      const byTitle = serverQuickBySection[`__tid_${resolvedTicketTitleId}`];
+      if (byTitle && byTitle.length > 0) return byTitle;
+    }
+    return (
+      serverQuickBySection[sec] ??
+      STATIC_QUICK_OPTIONS_BY_SECTION[sec] ??
+      DEFAULT_QUICK_OPTIONS
+    );
+  }, [sectionId, serverQuickBySection, resolvedTicketTitleId]);
 
   const firstMerchantMessage = useMemo(
     () => messages.find((m) => m.sender_type === "MERCHANT"),
@@ -1096,13 +1166,15 @@ export default function HelpChatScreen() {
       let ticketIdToUse = activeTicketId;
       let createdNow = false;
       if (ticketIdToUse == null) {
-        if (!sectionId) {
+        if (!sectionId && resolvedTicketTitleId < 1) {
           Alert.alert("Cannot start chat", "Support section missing. Please go back and try again.");
           return;
         }
-        const created = await createStoreTicket(storeId, sectionId, token, {
+        const sectionCode = (sectionId ?? "").trim().toLowerCase();
+        const created = await createStoreTicket(storeId, sectionCode, token, {
           subject: typeof sectionTitle === "string" ? sectionTitle : undefined,
           description: trimmed,
+          ticketTitleId: resolvedTicketTitleId > 0 ? resolvedTicketTitleId : undefined,
         });
         ticketIdToUse = created.id;
         createdNow = true;
@@ -1118,8 +1190,8 @@ export default function HelpChatScreen() {
       if (
         ticket &&
         ticketIdToUse != null &&
-        (ticket.status?.toUpperCase() === "RESOLVED" ||
-          ticket.status?.toUpperCase() === "CLOSED") &&
+        (ticketStatusNormalized(ticket.status) === "RESOLVED" ||
+          ticketStatusNormalized(ticket.status) === "CLOSED") &&
         hasTappedChatAgain
       ) {
         try {
@@ -1208,7 +1280,25 @@ export default function HelpChatScreen() {
       if (clientTempId != null) {
         setMessages((prev) => prev.filter((m) => m.client_temp_id !== clientTempId));
       }
-      const msg = e instanceof Error ? e.message : "Failed to send message.";
+      ticketDebugLog("sendMessage:catch", {
+        err:
+          e instanceof Error
+            ? { name: e.name, message: e.message, stack: e.stack?.split("\n").slice(0, 4).join(" | ") }
+            : String(e),
+        storeId,
+        activeTicketId,
+        sectionId: sectionId ?? null,
+        ticketTitleId: resolvedTicketTitleId,
+      });
+      const msg = (() => {
+        if (!(e instanceof Error)) return "Failed to send message.";
+        const m = e.message.trim();
+        if (m.length > 0 && m !== "TypeError") return m;
+        if (e.name === "TypeError" || m === "TypeError") {
+          return "Network or server response issue. Check connection and API URL, then try again.";
+        }
+        return m || "Failed to send message.";
+      })();
       Alert.alert("Message not sent", `${msg} You can edit the text below and try again.`);
       setInput(trimmed);
     } finally {
@@ -1220,9 +1310,9 @@ export default function HelpChatScreen() {
   const canSend = useMemo(() => {
     if (sending) return false;
     if (!token || !storeId) return false;
-    if (activeTicketId == null && !sectionId) return false;
+    if (activeTicketId == null && !sectionId && resolvedTicketTitleId < 1) return false;
     return input.trim().length > 0;
-  }, [sending, token, storeId, activeTicketId, sectionId, input]);
+  }, [sending, token, storeId, activeTicketId, sectionId, resolvedTicketTitleId, input]);
 
   const onSend = async () => {
     const trimmed = input.trim();
@@ -1231,7 +1321,7 @@ export default function HelpChatScreen() {
       Alert.alert("Cannot send", "Please select a store and login again.");
       return;
     }
-    if (activeTicketId == null && !sectionId) {
+    if (activeTicketId == null && !sectionId && resolvedTicketTitleId < 1) {
       Alert.alert("Cannot send", "Support section missing. Please go back and try again.");
       return;
     }
@@ -1740,7 +1830,7 @@ export default function HelpChatScreen() {
                 style={{ marginRight: 6 }}
               />
               <Text style={styles.ratingClosedText}>
-                {ticket.status?.toUpperCase() === "CLOSED"
+                {ticketStatusNormalized(ticket.status) === "CLOSED"
                   ? "This conversation has been closed"
                   : "This conversation has been resolved"}
               </Text>
@@ -1748,7 +1838,7 @@ export default function HelpChatScreen() {
 
             <Text style={styles.ratingHeading}>Hey there!</Text>
             <Text style={styles.ratingSubheading}>
-              {`We just ${ticket.status?.toLowerCase() ?? "closed"} ticket ${ticket.ticket_id}.`}
+              {`We just ${String(ticket.status ?? "closed").toLowerCase()} ticket ${ticket.ticket_id}.`}
             </Text>
             <Text style={styles.ratingSubheading}>
               We know you&apos;re busy, so we just have one question:

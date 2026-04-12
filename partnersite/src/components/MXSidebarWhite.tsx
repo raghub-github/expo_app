@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   UtensilsCrossed,
   ClipboardList,
+  History,
   Zap,
   CreditCard,
   Settings,
@@ -47,6 +48,8 @@ interface MXSidebarWhiteProps {
   mobileMenuExtra?: React.ReactNode
   /** Optional filters/stats content shown in sidebar (desktop and mobile) */
   sidebarFilters?: React.ReactNode
+  /** Zomato-style shell: no top store band (logo lives in MXPartnerTopBar), gray nav, fixed below top bar */
+  partnerShell?: boolean
 }
 
 export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
@@ -57,6 +60,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   onCollapsedChange,
   mobileMenuExtra,
   sidebarFilters,
+  partnerShell = false,
 }) => {
   const isRight = position === 'right';
   // Defer screen size until after mount to avoid hydration mismatch (server has no window).
@@ -157,6 +161,12 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       href: '/mx/menu'
     },
     {
+      id: 'order-history',
+      label: 'Order History',
+      icon: <History size={20} />,
+      href: '/mx/order-history'
+    },
+    {
       id: 'offers',
       label: 'Offers',
       icon: <Zap size={20} />, 
@@ -196,7 +206,11 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     )
   }
 
-  const isActive = (href: string) => (pathname || '') === href || (pathname || '').startsWith(href + '?')
+  const isActive = (href: string) => {
+    const p = pathname || ''
+    if (href === '/mx/order-history') return p === href || p.startsWith(`${href}/`)
+    return p === href || p.startsWith(`${href}?`)
+  }
 
   const switchToStore = (storeId: string) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', storeId);
@@ -243,17 +257,21 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       <Link
         href={item.href}
         onClick={() => setMobileMenuOpen(false)}
-        className={`flex items-center rounded-lg transition-all duration-200 font-medium text-sm ${
+        className={`flex items-center rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
           effectiveCollapsed
-            ? 'justify-center w-10 h-10'
-            : 'w-full gap-3 px-4 py-3'
+            ? 'justify-center w-9 h-9'
+            : 'w-full gap-2.5 px-3 py-2.5'
         } ${
           isItemActive
-            ? 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
-            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+            ? partnerShell
+              ? 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
+              : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
+            : partnerShell
+              ? 'text-gray-700 hover:bg-gray-200/60 hover:text-gray-900 border-l-4 border-transparent'
+              : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
         }`}
       >
-        <span className={`flex-shrink-0 ${isItemActive ? 'text-orange-600' : 'text-gray-500'}`}>
+        <span className={`flex-shrink-0 ${isItemActive ? (partnerShell ? 'text-gray-800' : 'text-orange-600') : 'text-gray-500'}`}>
           {item.icon}
         </span>
         {!effectiveCollapsed && (
@@ -286,11 +304,13 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
 
   const SidebarContent = () => (
     <>
-      {/* Header: Store icon, store id, name, and store switcher dropdown */}
-      <div className={`flex items-center border-b border-gray-200 ${effectiveCollapsed ? 'justify-center gap-1 p-2' : 'justify-between gap-2 p-6'}`}>
+      {!partnerShell && (
+      <div
+        className={`mx-shell-header ${effectiveCollapsed ? 'mx-shell-header--sidebar-collapsed' : 'justify-between gap-2'}`}
+      >
         <div className={`flex items-center ${effectiveCollapsed ? '' : 'gap-3 flex-1 min-w-0'}`}>
-          <div className={`rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0 ${effectiveCollapsed ? 'w-8 h-8' : 'w-10 h-10'}`}>
-            <Store size={effectiveCollapsed ? 16 : 20} className="text-white" />
+          <div className={`rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0 ${effectiveCollapsed ? 'w-8 h-8' : 'w-9 h-9'}`}>
+            <Store size={effectiveCollapsed ? 16 : 18} className="text-white" />
           </div>
           {effectiveCollapsed && storeList.length > 0 && (
             <div className="relative">
@@ -377,14 +397,15 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                   </div>
                 )}
               </div>
-              <h1 className="text-sm font-bold text-gray-900 truncate">{restaurantName || 'Store'}</h1>
+              <h1 className="text-xs sm:text-sm font-bold text-gray-900 truncate leading-tight">{restaurantName || 'Store'}</h1>
             </div>
           )}
         </div>
       </div>
+      )}
 
       {/* Navigation Menu */}
-      <nav className={`flex-1 overflow-y-auto overflow-x-hidden space-y-0.5 hide-scrollbar ${effectiveCollapsed ? 'px-3 py-4 flex flex-col items-center gap-1' : 'p-4 space-y-0.5'}`}>
+      <nav className={`flex-1 overflow-y-auto overflow-x-hidden space-y-0.5 hide-scrollbar ${effectiveCollapsed ? 'px-3 py-4 flex flex-col items-center gap-1' : `p-4 space-y-0.5 ${partnerShell ? 'pt-3' : ''}`}`}>
         {navigationItems.map((item) => (
           <NavLinkWithTooltip key={item.id} item={item} />
         ))}
@@ -412,7 +433,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
         </div>
       )}
 
-      {/* Footer: User Profile */}
+      {!partnerShell && (
       <div className={`border-t border-gray-200 ${effectiveCollapsed ? 'p-2' : 'p-4'}`}>
         <div className={`relative group ${effectiveCollapsed ? 'flex justify-center' : ''}`}>
           <button
@@ -451,6 +472,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
           )}
         </div>
       </div>
+      )}
     </>
   )
 
@@ -459,7 +481,13 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   return (
     <>
       {/* Desktop: fixed sidebar — hidden on viewport < 768px so never visible on mobile load */}
-      <aside className={`hidden md:flex flex-col h-screen bg-white fixed top-0 z-50 shrink-0 transition-all duration-200 ${effectiveCollapsed ? 'w-16' : 'w-64'} ${isRight ? 'right-0 border-l border-gray-200 shadow-lg' : 'left-0 border-r border-gray-200 shadow-lg'}`}>
+      <aside
+        className={`hidden md:flex flex-col fixed z-50 shrink-0 transition-all duration-200 ${effectiveCollapsed ? 'w-14' : 'w-52'} ${
+          partnerShell && !isRight
+            ? 'bg-[#f5f5f5] border-r border-[#e8e8e8] left-0'
+            : `bg-white ${isRight ? 'right-0 border-l border-gray-200 shadow-lg' : 'left-0 border-r border-gray-200 shadow-lg'}`
+        } ${partnerShell && !isRight ? 'top-[var(--mx-partner-topbar-h)] h-[calc(100vh-var(--mx-partner-topbar-h))]' : 'top-0 h-screen'}`}
+      >
         <SidebarContent />
       </aside>
 
@@ -474,10 +502,10 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
               aria-hidden
             />
             <aside className="fixed left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-white border-r border-gray-200 shadow-xl z-[60] overflow-y-auto">
-              <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <div className="mx-shell-header w-full justify-between gap-2">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0">
-                    <Store size={20} className="text-white" />
+                  <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0">
+                    <Store size={18} className="text-white" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1">
@@ -523,7 +551,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                         </div>
                       )}
                     </div>
-                    <h1 className="text-sm font-bold text-gray-900 truncate">{restaurantName || 'Store'}</h1>
+                    <h1 className="text-xs sm:text-sm font-bold text-gray-900 truncate leading-tight">{restaurantName || 'Store'}</h1>
                   </div>
                 </div>
                 <button
@@ -547,13 +575,17 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                         setMobileMenuOpen(false);
                         router.push(item.href);
                       }}
-                      className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 font-medium text-sm ${
+                      className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
                         active
-                          ? 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
-                          : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                          ? partnerShell
+                            ? 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
+                            : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
+                          : partnerShell
+                            ? 'text-gray-700 hover:bg-gray-200/60 border-l-4 border-transparent'
+                            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
                       }`}
                     >
-                      <span className={active ? 'text-orange-600' : 'text-gray-500'}>{item.icon}</span>
+                      <span className={active ? (partnerShell ? 'text-gray-800' : 'text-orange-600') : 'text-gray-500'}>{item.icon}</span>
                       <span>{item.label}</span>
                       {item.badge != null && (
                         <span className="ml-auto bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full">

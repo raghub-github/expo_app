@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   Plus,
   Search,
@@ -11,6 +13,7 @@ import {
   Store,
   Gift,
   IndianRupee,
+  ArrowLeft,
 } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import {
@@ -184,8 +187,20 @@ function MerchantPlanCards({
   );
 }
 
+function useOffersBackLink(): { href: string; label: string } | null {
+  const pathname = usePathname();
+  if (pathname === "/dashboard/offers") {
+    return { href: "/dashboard/super-admin", label: "Back to super admin" };
+  }
+  if (pathname === "/dashboard/merchants/offers") {
+    return { href: "/dashboard/merchants", label: "Back to dashboard" };
+  }
+  return null;
+}
+
 export function OffersClient() {
   const { toast } = useToast();
+  const backLink = useOffersBackLink();
   const [tab, setTab] = useState<OfferTab>("merchant");
   const [search, setSearch] = useState("");
   const [searchApplied, setSearchApplied] = useState("");
@@ -254,17 +269,22 @@ export function OffersClient() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Offers</h1>
-          <p className="mt-1 text-sm text-gray-600">Manage offers and plans for merchants, riders, and customers</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div role="group" aria-label="Offer type" className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+        {backLink && (
+          <Link
+            href={backLink.href}
+            className="inline-flex w-fit items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-900"
+          >
+            <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
+            {backLink.label}
+          </Link>
+        )}
+        <div className={`flex items-center gap-2 ${backLink ? "sm:ml-auto" : ""}`}>
+          <div role="group" aria-label="Subscription plan audience" className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
             {(
               [
                 { key: "merchant", label: "Merchant", icon: Store },
                 { key: "rider", label: "Rider", icon: Gift },
-                { key: "customer", label: "Customer", icon: Tag },
+                { key: "customer", label: "User", icon: Tag },
               ] as const
             ).map(({ key, label, icon: Icon }) => (
               <button
@@ -383,7 +403,7 @@ export function OffersClient() {
       {(tab === "rider" || tab === "customer") && (
         <div className="rounded-2xl border-2 border-dashed border-gray-200 bg-gray-50/50 px-6 py-16 text-center">
           <Gift className="h-14 w-14 text-gray-300 mx-auto mb-4" />
-          <p className="text-lg font-medium text-gray-700">{tab === "rider" ? "Rider" : "Customer"} offers coming soon</p>
+          <p className="text-lg font-medium text-gray-700">{tab === "rider" ? "Rider" : "User"} subscription plans coming soon</p>
           <p className="text-sm text-gray-500 mt-1">This section will be available in a future update</p>
         </div>
       )}

@@ -214,10 +214,20 @@ export function useTicketRoomRealtime(options: {
 
     let cancelled = false;
     let channel: RealtimeChannel | null = null;
+    let presenceSubscribed = false;
+    let unsubscribeAuth: (() => void) | null = null;
 
     void (async () => {
       await hydrateBrowserSupabaseFromCookies();
       if (cancelled) return;
+
+      // Wait briefly for setSession after cookie hydrate so Realtime joins with a JWT (not anon).
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const tok = (await supabase.auth.getSession()).data.session?.access_token;
+        if (tok) break;
+        await new Promise((r) => window.setTimeout(r, 120 * (attempt + 1)));
+        if (cancelled) return;
+      }
 
       const topic = ticketPresenceRealtimeTopic(ticketNumericId);
       const ch = supabase.channel(topic, {
@@ -234,20 +244,38 @@ export function useTicketRoomRealtime(options: {
       ch.on("presence", { event: "join" }, bump);
       ch.on("presence", { event: "leave" }, bump);
 
+      const trackPayload = {
+        user_id: presenceUserId,
+        role: presenceRole,
+        name: presenceDisplayName ? presenceDisplayName : undefined,
+      };
+
+      const doTrack = async () => {
+        try {
+          await ch.track(trackPayload);
+        } catch {
+          /* track can fail if channel dropped */
+        }
+        bump();
+      };
+
+      const {
+        data: { subscription: authSubscription },
+      } = supabase.auth.onAuthStateChange((event, session) => {
+        if (cancelled || !presenceSubscribed) return;
+        if (event === "SIGNED_OUT") return;
+        if (!session?.access_token) return;
+        void doTrack();
+      });
+      unsubscribeAuth = () => authSubscription.unsubscribe();
+
       ch.subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
-          try {
-            await ch.track({
-              user_id: presenceUserId,
-              role: presenceRole,
-              name: presenceDisplayName || undefined,
-            });
-          } catch {
-            /* track can fail if channel dropped */
-          }
-          bump();
+          presenceSubscribed = true;
+          await doTrack();
         }
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          presenceSubscribed = false;
           setCopresenceLive(false);
           setDistinctRoleCount(0);
           otherAgentsSerializedRef.current = serializeOtherAgentViewers([]);
@@ -258,6 +286,9 @@ export function useTicketRoomRealtime(options: {
 
     return () => {
       cancelled = true;
+      presenceSubscribed = false;
+      unsubscribeAuth?.();
+      unsubscribeAuth = null;
       if (channel) void supabase.removeChannel(channel);
       setCopresenceLive(false);
       setDistinctRoleCount(0);

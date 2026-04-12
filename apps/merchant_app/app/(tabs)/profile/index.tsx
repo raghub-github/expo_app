@@ -14,14 +14,13 @@ import {
   RefreshControl,
   Platform,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GatiMitraMerchant,
   H_PADDING,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
   CARD_RADIUS,
 } from "@/constants/theme";
 import { getActivePlanDisplayName } from "@/lib/activePlan";
@@ -93,9 +92,8 @@ function GridCard({
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
+  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
   const { selectedStore } = useSelectedStore();
   const { signOut, token } = useAuth();
   const { lastProfileSlug, setLastProfileSlug } = useProfileNav();
@@ -109,6 +107,7 @@ export default function ProfileScreen() {
   const subscriptionInactive = !subscriptionActive;
   const [rushBadge, setRushBadge] = useState<"OFF" | "ON">("OFF");
   const [refreshing, setRefreshing] = useState(false);
+  const [logoutModalVisible, setLogoutModalVisible] = useState(false);
 
   // Do not prefetch nested profile routes here: router.prefetch() for paths like
   // /(tabs)/profile/tickets dispatches a PRELOAD action that is not handled when
@@ -194,6 +193,17 @@ export default function ProfileScreen() {
   }, [selectedStore?.id, token]);
 
   return (
+    <>
+    <LogoutConfirmModal
+      visible={logoutModalVisible}
+      token={token}
+      onStay={() => setLogoutModalVisible(false)}
+      onCompleteSignOut={async () => {
+        setLogoutModalVisible(false);
+        await signOut();
+        router.replace("/(auth)/welcome");
+      }}
+    />
     <ScrollView
       style={styles.container}
       contentContainerStyle={[
@@ -340,10 +350,7 @@ export default function ProfileScreen() {
       </View>
 
       <Pressable
-        onPress={async () => {
-          await signOut();
-          router.replace("/(auth)/welcome");
-        }}
+        onPress={() => setLogoutModalVisible(true)}
         style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed, GatiMitraMerchant.cursorPointer]}
       >
         <Ionicons name="log-out-outline" size={22} color={GatiMitraMerchant.error} />
@@ -352,6 +359,7 @@ export default function ProfileScreen() {
 
       <Text style={styles.footer}>GatiMitra Partner • v1.0.0</Text>
     </ScrollView>
+    </>
   );
 }
 

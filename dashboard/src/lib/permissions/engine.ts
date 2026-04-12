@@ -24,7 +24,11 @@
 
 import { getDb } from "../db/client";
 import { eq, and, inArray, or, isNull, sql } from "drizzle-orm";
-import { getSystemUserByEmail, getSystemUserByAuthId, isUserAccountActive } from "../auth/user-mapping";
+import {
+  getSystemUserByEmail,
+  getSystemUserByAuthId,
+  isUserAccountActive,
+} from "../auth/user-mapping";
 import { dashboardAccess, dashboardAccessPoints, type DashboardType, type AccessPointGroup, type ActionType } from "../db/schema";
 import { getDashboardTypeFromPath } from "./path-mapping";
 import { supabaseAdmin } from "../supabase/server";
@@ -247,8 +251,12 @@ export async function getUserPermissions(
       return cached.data;
     }
     
-    // 1. Get system user by email
-    let systemUser = await getSystemUserByEmail(email || null);
+    // 1. Resolve system user: unique index on system_user_id (auth uid) first, then email
+    let systemUser =
+      supabaseAuthId?.trim() ? await getSystemUserByAuthId(supabaseAuthId.trim()) : null;
+    if (!systemUser && email?.trim()) {
+      systemUser = await getSystemUserByEmail(email.trim());
+    }
     if (!systemUser && supabaseAuthId && supabaseAdmin) {
       // Fallback: resolve email from Supabase Auth by auth id (e.g. when session email was missing)
       try {
@@ -675,18 +683,14 @@ export async function hasDashboardAccessByAuth(
   dashboardType: DashboardType
 ): Promise<boolean> {
   try {
-    const systemUserId = await getSystemUserIdFromAuthUser(supabaseAuthId, email);
-    if (!systemUserId) {
+    const userPerms = await getUserPermissions(supabaseAuthId, email);
+    if (!userPerms) {
       return false;
     }
-    
-    // Super admin has access to all dashboards
-    const userPerms = await getUserPermissions(supabaseAuthId, email);
-    if (userPerms?.isSuperAdmin) {
+    if (userPerms.isSuperAdmin) {
       return true;
     }
-    
-    return hasDashboardAccess(systemUserId, dashboardType);
+    return hasDashboardAccess(userPerms.systemUserId, dashboardType);
   } catch (error) {
     console.error("Error checking dashboard access by auth:", error);
     return false;

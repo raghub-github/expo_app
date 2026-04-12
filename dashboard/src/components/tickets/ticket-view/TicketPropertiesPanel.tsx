@@ -167,17 +167,29 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     ],
     [agents, currentUser]
   );
-  const tagOptions = useMemo(
-    () =>
-      (refData?.tags || []).map((t) => ({
-        value: t.tagCode,
-        label: t.tagName || t.tagCode,
-        color: (t as { tagColor?: string | null; tag_color?: string | null }).tagColor
-          ?? (t as { tagColor?: string | null; tag_color?: string | null }).tag_color
-          ?? null,
-      })),
-    [refData?.tags]
-  );
+  const tagOptions = useMemo(() => {
+    const base = (refData?.tags || []).map((t) => ({
+      value: t.tagCode,
+      label: t.tagName || t.tagCode,
+      color: (t as { tagColor?: string | null; tag_color?: string | null }).tagColor
+        ?? (t as { tagColor?: string | null; tag_color?: string | null }).tag_color
+        ?? null,
+    }));
+    const refUpper = new Map(
+      (refData?.tags || []).map((t) => [String(t.tagCode).trim().toUpperCase(), String(t.tagCode).trim()])
+    );
+    const seen = new Set(base.map((o) => o.value));
+    const extras: typeof base = [];
+    for (const code of ticket?.tags ?? []) {
+      const c = String(code).trim();
+      if (!c) continue;
+      if (refUpper.has(c.toUpperCase())) continue;
+      if (seen.has(c)) continue;
+      seen.add(c);
+      extras.push({ value: c, label: c, color: null });
+    }
+    return [...base, ...extras];
+  }, [refData?.tags, ticket?.tags]);
 
   const [status, setStatus] = useState("");
   const [priority, setPriority] = useState("");
@@ -204,7 +216,22 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
         ? "me"
         : String(ticket.assignee.id)
       : "";
-    const nextTags = Array.isArray(ticket.tags) ? [...ticket.tags] : [];
+    const nextTags = Array.isArray(ticket.tags)
+      ? [
+          ...new Set(
+            ticket.tags
+              .map((raw) => {
+                const s = String(raw).trim();
+                if (!s) return "";
+                const hit = (refData?.tags || []).find(
+                  (t) => String(t.tagCode).trim().toUpperCase() === s.toUpperCase()
+                );
+                return hit ? String(hit.tagCode).trim() : s;
+              })
+              .filter(Boolean)
+          ),
+        ]
+      : [];
     const nextBuyerNpName = ticket.buyerNpName ?? "";
     const nextSellerNpName = ticket.sellerNpName ?? "";
     const nextLogisticsNpName = ticket.logisticsNpName ?? "";
@@ -241,7 +268,7 @@ export function TicketPropertiesPanel({ ticketId }: { ticketId: number | string 
     setIgmLongResolution((prev) => (prev === nextIgmLongResolution ? prev : nextIgmLongResolution));
     setIgmRefundAmount((prev) => (prev === nextIgmRefundAmount ? prev : nextIgmRefundAmount));
     setGroDetails((prev) => (prev === nextGroDetails ? prev : nextGroDetails));
-  }, [ticket, currentUser]);
+  }, [ticket, currentUser, refData?.tags]);
 
   const handleUpdate = () => {
     const resolvedTicketId = ticket?.id;

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, Suspense, useRef } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
+import { PartnerShellHeaderSync } from '@/context/PartnerShellHeaderContext';
 import { fetchRestaurantById as fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants';
@@ -747,14 +748,18 @@ const UserInsightsContent = () => {
 
       const data = await res.json();
       if (data.success) {
-        // Update local state
-        setReviews(prev =>
-          prev.map(r =>
+        let newResponse = (message || '').trim();
+        if (uploadedImageUrls.length > 0) {
+          const imageJson = JSON.stringify(uploadedImageUrls);
+          newResponse = newResponse ? `${newResponse}\n\n[IMAGES:${imageJson}]` : `[IMAGES:${imageJson}]`;
+        }
+        setReviews((prev) =>
+          prev.map((r) =>
             String(r.id) === reviewId
               ? {
                   ...r,
-                  response: message || '',
-                  respondedAt: new Date().toISOString()
+                  response: newResponse,
+                  respondedAt: new Date().toISOString(),
                 }
               : r
           )
@@ -1016,6 +1021,23 @@ const UserInsightsContent = () => {
     </div>
   ) : null;
 
+  const partnerShellTitle =
+    showQueueView
+      ? showTicketDetail && selectedTicket
+        ? selectedTicket.subject
+        : 'Support Inbox'
+      : 'User Insights';
+
+  const partnerShellSubtitle =
+    showQueueView
+      ? showTicketDetail && selectedTicket
+        ? `#${selectedTicket.ticket_id} · ${selectedTicket.ticket_category} · ${new Date(selectedTicket.created_at).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+          })}`
+        : 'Store & GatiMitra concern tickets'
+      : 'Monitor customer feedback and respond to reviews';
+
   return (
     <MXLayoutWhite 
       restaurantName={store?.store_name} 
@@ -1023,6 +1045,7 @@ const UserInsightsContent = () => {
       hideHelpBadge={showTicketDetail && selectedTicket !== null}
       sidebarFilters={ticketFilterCards}
     >
+      <PartnerShellHeaderSync title={partnerShellTitle} subtitle={partnerShellSubtitle} />
       <div className="w-full p-3 sm:p-4 lg:p-5 relative h-full flex flex-col overflow-hidden">
         {/* Show Queue View or User Insights */}
         {showQueueView ? (
@@ -1031,10 +1054,10 @@ const UserInsightsContent = () => {
             <>
             <div className="flex flex-col bg-white border border-gray-200 overflow-hidden rounded-lg w-full h-[calc(100dvh-3rem)] sm:h-[calc(100vh-80px)] min-h-[300px]">
               {/* Ticket Header - Compact SaaS-style */}
-              <div className="flex-shrink-0 bg-white border-b border-gray-200 px-3 sm:px-4 py-2 sm:py-2.5 overflow-hidden">
-                <div className="flex items-start sm:items-center justify-between gap-2 flex-wrap sm:flex-nowrap">
+              <div className="flex-shrink-0 bg-white border-b border-gray-200 px-3 sm:px-4 py-2 sm:py-2.5 overflow-hidden min-h-[var(--mx-shell-header-min-h)] box-border">
+                <div className="flex items-center justify-between gap-2 flex-wrap min-w-0">
                   {/* Left: back + menu */}
-                  <div className="flex items-center gap-1 flex-shrink-0 order-1">
+                  <div className="flex items-center gap-1 flex-shrink-0">
                     <button
                       onClick={handleBackToQueue}
                       className="p-2 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
@@ -1046,25 +1069,8 @@ const UserInsightsContent = () => {
                     <MobileHamburgerButton />
                   </div>
 
-                  {/* Center: title (primary) + metadata row (secondary) - full width when wrapped on mobile */}
-                  <div className="flex-1 min-w-0 w-full sm:w-auto basis-full sm:basis-0 order-3 sm:order-2 flex flex-col items-center text-center">
-                    <h1 
-                      className="text-sm sm:text-base font-semibold text-gray-900 truncate w-full max-w-full leading-tight" 
-                      title={selectedTicket.subject}
-                    >
-                      {selectedTicket.subject}
-                    </h1>
-                    <p className="text-[10px] sm:text-xs text-gray-500 mt-0.5 truncate w-full max-w-full">
-                      <span className="font-mono">#{selectedTicket.ticket_id}</span>
-                      <span className="mx-1.5 text-gray-400">·</span>
-                      <span>{selectedTicket.ticket_category}</span>
-                      <span className="mx-1.5 text-gray-400">·</span>
-                      <span>{new Date(selectedTicket.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
-                    </p>
-                  </div>
-
                   {/* Right: status + priority + rating pills */}
-                  <div className="flex items-center gap-1.5 flex-shrink-0 order-2 sm:order-3 flex-wrap justify-end">
+                  <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end min-w-0">
                     <span className={`px-2 py-1 rounded-md text-[10px] sm:text-xs font-medium whitespace-nowrap ${
                       normalizedTicketStatus(selectedTicket.status) === 'REOPENED'
                         ? 'bg-purple-50 text-purple-700 border border-purple-100'
@@ -1561,8 +1567,8 @@ const UserInsightsContent = () => {
           /* Queue View - Full Page */
           <div className="flex flex-col h-full overflow-hidden">
             {/* Queue Header - Redesigned */}
-            <div className="mb-3 sm:mb-4 flex-shrink-0 rounded-b-xl bg-gradient-to-r from-orange-50 via-white to-amber-50 border-b border-orange-100 shadow-sm px-4 py-4 sm:px-5">
-              <div className="flex items-center gap-3">
+            <div className="mb-3 sm:mb-4 flex-shrink-0 rounded-b-xl bg-gradient-to-r from-orange-50 via-white to-amber-50 border-b border-orange-100 shadow-sm min-h-[var(--mx-shell-header-min-h)] flex items-center px-4 sm:px-5 py-2 box-border">
+              <div className="flex items-center gap-3 w-full min-w-0">
                 <button
                   onClick={() => {
                     setShowQueueView(false);
@@ -1571,23 +1577,14 @@ const UserInsightsContent = () => {
                     }
                     router.replace(pathname ?? '/mx/user-insights');
                   }}
-                  className="p-2.5 hover:bg-orange-100/80 rounded-xl transition-colors flex-shrink-0 text-gray-700 hover:text-orange-700"
+                  className="p-2 hover:bg-orange-100/80 rounded-xl transition-colors flex-shrink-0 text-gray-700 hover:text-orange-700"
                   aria-label="Back to User Insights"
                   title="Back to User Insights"
                 >
-                  <ChevronLeft size={22} strokeWidth={2} />
+                  <ChevronLeft size={20} strokeWidth={2} />
                 </button>
                 <MobileHamburgerButton />
-                <div className="flex items-center gap-3 flex-1 min-w-0 justify-center">
-                  <div className="flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-orange-500 text-white shadow-md flex-shrink-0">
-                    <Inbox className="w-5 h-5 sm:w-6 sm:h-6" />
-                  </div>
-                  <div className="text-center min-w-0">
-                    <h1 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-900 tracking-tight">Support Inbox</h1>
-                    <p className="text-[10px] sm:text-xs text-gray-500 mt-0.5 font-medium">Store & GatiMitra concern tickets</p>
-                  </div>
-                </div>
-                <div className="w-10 sm:w-12 flex-shrink-0" aria-hidden />
+                <div className="flex-1 min-w-0" aria-hidden />
               </div>
             </div>
 
@@ -1785,18 +1782,10 @@ const UserInsightsContent = () => {
         ) : (
           /* User Insights View */
           <div className="flex flex-col h-full overflow-hidden">
-        {/* Compact Header Section */}
-        <div className="mb-3 sm:mb-4 flex-shrink-0 bg-white border-b border-gray-200 shadow-sm px-4 py-3">
-          <div className="flex items-center gap-3">
-            {/* Hamburger Menu - Left Side */}
+        <div className="mb-3 sm:mb-4 flex-shrink-0 mx-shell-header !px-3 sm:!px-4 lg:!px-5 shadow-sm">
+          <div className="flex items-center gap-3 w-full min-w-0">
             <MobileHamburgerButton />
-            
-            {/* Heading - Left Aligned */}
-            <div className="flex-1 min-w-0 text-left">
-              <h1 className="text-lg sm:text-xl lg:text-2xl font-bold text-gray-900">User Insights</h1>
-              <p className="text-xs sm:text-sm text-gray-600 mt-0.5">Monitor customer feedback and respond to reviews</p>
-            </div>
-            
+            <div className="flex-1 min-w-0" aria-hidden />
             {/* Right: Inbox Button */}
             <button
               onClick={handleQueueOpen}

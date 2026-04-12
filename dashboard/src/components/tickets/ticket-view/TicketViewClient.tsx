@@ -157,7 +157,7 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   const urlPanel = useTicketUrlPanel();
   const setTicketPanel = useTicketPanelNavigation(pathname, router);
   const rightSidebar = useRightSidebar();
-  const { user: authUser } = useAuth();
+  const { user: authUser, systemUser } = useAuth();
   const { data: ticket, isLoading, isError, error } = useTicketDetail(ticketId);
 
   const showActivities = urlPanel === "activities";
@@ -177,21 +177,34 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
 
   const [agentPresenceIdentity, setAgentPresenceIdentity] = useState<TicketRoomPresenceIdentity | null>(null);
 
-  /** Bootstrap session carries Supabase user id; browser supabase.getUser() is often empty (autoRefreshToken off). */
+  /** Bootstrap session carries Supabase user id; presence key must match JWT sub (same as system_users.system_user_id). */
+  const authMeta = authUser?.user_metadata as { full_name?: unknown } | undefined;
+  const fullNameFromAuthMeta =
+    typeof authMeta?.full_name === "string" ? authMeta.full_name.trim() : "";
+
   useEffect(() => {
-    if (!authUser?.id) {
+    const uid = (authUser?.id || systemUser?.systemUserId || "").trim();
+    if (!uid) {
       setAgentPresenceIdentity(null);
       return;
     }
-    const meta = authUser.user_metadata as { full_name?: unknown } | undefined;
-    const fullName = typeof meta?.full_name === "string" ? meta.full_name.trim() : "";
-    const email = typeof authUser.email === "string" ? authUser.email.trim() : "";
+    const sysName = systemUser?.fullName?.trim() ?? "";
+    const email =
+      (typeof authUser?.email === "string" ? authUser.email.trim() : "") ||
+      (systemUser?.email?.trim() ?? "");
     setAgentPresenceIdentity({
-      userId: authUser.id,
+      userId: uid,
       role: "agent",
-      displayName: fullName || email || undefined,
+      displayName: fullNameFromAuthMeta || sysName || email || undefined,
     });
-  }, [authUser?.id, authUser?.email]);
+  }, [
+    authUser?.id,
+    authUser?.email,
+    fullNameFromAuthMeta,
+    systemUser?.systemUserId,
+    systemUser?.fullName,
+    systemUser?.email,
+  ]);
 
   const { copresenceLive, otherAgentViewers } = useTicketRoomRealtime({
     ticketNumericId,
@@ -761,6 +774,8 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
                   ticketId={ticket.id}
                   ticketNumber={ticket.ticketNumber}
                   ticketSubject={ticket.subject}
+                  ticketStatus={ticket.status}
+                  snoozedUntil={ticket.snoozedUntil ?? null}
                   messages={ticket.messages || []}
                   recipientEmail={ticket.raisedByEmail ?? undefined}
                   defaultReplyToOverride={defaultReplyToOverride}

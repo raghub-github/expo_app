@@ -3,9 +3,10 @@
 import React, { useState, useEffect, Suspense, useRef, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { fetchStoreById, fetchStoreByName, fetchAllOffers, fetchMenuCategories } from '@/lib/database'
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
-import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ShoppingBag, ChevronDown, Copy, Search, Check, Sparkles, Truck, Layers, Package } from 'lucide-react'
+import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, Copy, Search, Check, Sparkles, Truck, Layers, Package } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { Toaster, toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
@@ -914,20 +915,14 @@ function OffersContent() {
     <>
       <Toaster position="top-right" richColors />
       <MXLayoutWhite restaurantName={store?.store_name || "Offers"} restaurantId={storeId || ""}>
+        <PartnerPageHeader
+          title="Offers & Promotions"
+          subtitle={`Manage offers for ${store?.store_name || 'your store'}`}
+        />
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-orange-50/30">
-          {/* Header — compact title, responsive layout */}
-          <div className="bg-white/95 backdrop-blur-sm border-b border-gray-200/80 shadow-sm px-4 sm:px-5 md:px-6 py-3 sm:py-4">
-            <div className="flex flex-wrap items-center gap-3 sm:gap-4">
+          <div className="bg-white/95 backdrop-blur-sm border-b border-gray-200/80 shadow-sm mx-shell-header !px-4 sm:!px-5 md:!px-6 flex-wrap gap-3 sm:gap-4">
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4 w-full min-w-0 justify-between">
               <MobileHamburgerButton />
-              <div className="flex-1 min-w-0">
-                <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-gray-900 tracking-tight">
-                  <span className="bg-gradient-to-r from-orange-600 to-red-500 bg-clip-text text-transparent">Offers & Promotions</span>
-                </h1>
-                <p className="text-gray-500 mt-0.5 text-xs sm:text-sm flex items-center gap-1.5 flex-wrap">
-                  <ShoppingBag size={14} className="shrink-0 text-gray-400" />
-                  <span>Manage offers for <span className="font-medium text-orange-600">{store?.store_name || 'your store'}</span></span>
-                </p>
-              </div>
               <button
                 onClick={() => handleOpenModal()}
                 className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-xl hover:from-orange-600 hover:to-red-600 transition-all text-sm shadow-md hover:shadow-lg active:scale-[0.98]"

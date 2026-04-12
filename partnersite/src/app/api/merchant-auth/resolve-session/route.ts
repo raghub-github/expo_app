@@ -85,7 +85,9 @@ export async function GET(request: NextRequest) {
 
     const { data: stores, error: storesError } = await db
       .from("merchant_stores")
-      .select("id, store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed")
+      .select(
+        "id, store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed, banner_url"
+      )
       .eq("parent_id", parentId);
 
     if (storesError) {

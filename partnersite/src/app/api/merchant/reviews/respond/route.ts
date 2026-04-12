@@ -15,7 +15,7 @@ function getSupabaseAdmin() {
 /**
  * POST /api/merchant/reviews/respond
  * Body: { reviewId, message, images? }
- * Adds a merchant response to a customer review
+ * Updates `merchant_store_ratings` — same table as merchant app reply API.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -30,73 +30,59 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = await createServerSupabaseClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: "Please log in to respond to reviews." },
-        { status: 401 }
-      );
+      return NextResponse.json({ success: false, error: "Please log in to respond to reviews." }, { status: 401 });
     }
 
     let merchant_parent_id: number | null = null;
-    let merchantData: any = null;
     try {
-      const validation = await validateMerchantFromSession({ 
-        id: user.id, 
-        email: user.email ?? null, 
-        phone: user.phone ?? null 
+      const validation = await validateMerchantFromSession({
+        id: user.id,
+        email: user.email ?? null,
+        phone: user.phone ?? null,
       });
       if (validation.merchantParentId != null) {
         merchant_parent_id = validation.merchantParentId;
-        merchantData = validation;
       }
     } catch {
-      return NextResponse.json(
-        { success: false, error: "Merchant account not found." },
-        { status: 403 }
-      );
+      return NextResponse.json({ success: false, error: "Merchant account not found." }, { status: 403 });
+    }
+
+    if (merchant_parent_id == null) {
+      return NextResponse.json({ success: false, error: "Merchant account not found." }, { status: 403 });
     }
 
     const db = getSupabaseAdmin();
-    
-    // Verify review exists and belongs to a store owned by this merchant
-    const { data: review, error: reviewError } = await db
-      .from("customer_ratings_given")
-      .select(`
-        id,
-        target_id,
-        target_type,
-        merchant_stores:target_id!inner (
-          id,
-          merchant_parent_id
-        )
-      `)
-      .eq("id", reviewId)
-      .eq("target_type", "MERCHANT")
-      .single();
 
-    if (reviewError || !review) {
-      return NextResponse.json(
-        { success: false, error: "Review not found." },
-        { status: 404 }
-      );
+    const { data: ratingRow, error: ratingErr } = await db
+      .from("merchant_store_ratings")
+      .select("id, store_id")
+      .eq("id", reviewId)
+      .maybeSingle();
+
+    if (ratingErr || !ratingRow) {
+      return NextResponse.json({ success: false, error: "Review not found." }, { status: 404 });
     }
 
-    // Verify store ownership
-    const store = (review as any).merchant_stores;
-    if (!store || store.merchant_parent_id !== merchant_parent_id) {
+    const { data: storeRow, error: storeErr } = await db
+      .from("merchant_stores")
+      .select("id, parent_id")
+      .eq("id", ratingRow.store_id)
+      .maybeSingle();
+
+    if (storeErr || !storeRow || storeRow.parent_id !== merchant_parent_id) {
       return NextResponse.json(
         { success: false, error: "You don't have permission to respond to this review." },
         { status: 403 }
       );
     }
 
-    // Format response with images
-    let responseText = message?.trim() || '';
+    let responseText = message?.trim() || "";
     if (images && Array.isArray(images) && images.length > 0) {
-      // Store image URLs as JSON at the end of response (can be parsed later)
-      // Format: [text]\n\n[IMAGES:JSON_ARRAY]
       const imageJson = JSON.stringify(images);
       if (responseText) {
         responseText += `\n\n[IMAGES:${imageJson}]`;
@@ -105,26 +91,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Update review with merchant response
-    const updateData: any = {
-      merchant_response: responseText,
-      merchant_responded_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
     const { data: updatedReview, error: updateError } = await db
-      .from("customer_ratings_given")
-      .update(updateData)
+      .from("merchant_store_ratings")
+      .update({
+        merchant_response: responseText,
+        merchant_responded_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", reviewId)
+      .eq("store_id", ratingRow.store_id)
       .select()
       .single();
 
     if (updateError) {
       console.error("[merchant/reviews/respond] update error:", updateError);
-      return NextResponse.json(
-        { success: false, error: "Failed to save response." },
-        { status: 500 }
-      );
+      return NextResponse.json({ success: false, error: "Failed to save response." }, { status: 500 });
     }
 
     return NextResponse.json({
@@ -134,9 +115,6 @@ export async function POST(request: NextRequest) {
     });
   } catch (e) {
     console.error("[merchant/reviews/respond] Error:", e);
-    return NextResponse.json(
-      { success: false, error: "An error occurred. Please try again." },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, error: "An error occurred. Please try again." }, { status: 500 });
   }
 }
