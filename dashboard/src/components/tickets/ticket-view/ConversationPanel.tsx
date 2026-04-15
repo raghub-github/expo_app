@@ -659,11 +659,29 @@ function MessageBlock({
   );
 }
 
+function isTicketActivelySnoozed(
+  ticketStatus: string | null | undefined,
+  snoozedUntil: string | null | undefined
+): boolean {
+  const st = String(ticketStatus ?? "")
+    .toUpperCase()
+    .replace(/-/g, "_");
+  if (st !== "SNOOZED") return false;
+  if (!snoozedUntil || String(snoozedUntil).trim() === "") return true;
+  const end = new Date(snoozedUntil).getTime();
+  if (!Number.isFinite(end)) return true;
+  return end > Date.now();
+}
+
 interface ConversationPanelProps {
   ticketId: number;
   ticketNumber?: string | number | null;
   /** Ticket subject / title line (for toolbar forward template). */
   ticketSubject?: string | null;
+  /** Current ticket status (e.g. snoozed) — used to wake snooze on outbound send. */
+  ticketStatus?: string | null;
+  /** Snooze end time when status is snoozed. */
+  snoozedUntil?: string | null;
   messages: TicketMessage[];
   /** Email of the user who raised the ticket (for "To:" in each reply block). */
   recipientEmail?: string | null;
@@ -703,6 +721,8 @@ export function ConversationPanel({
   ticketId,
   ticketNumber = null,
   ticketSubject = null,
+  ticketStatus = null,
+  snoozedUntil = null,
   messages,
   recipientEmail = null,
   defaultReplyToOverride = null,
@@ -1050,7 +1070,7 @@ export function ConversationPanel({
       const rawHtml = replyBodyRef.current?.innerHTML ?? "";
       const sanitizedHtml = sanitizeMessageHtml(rawHtml);
       if (!text && attachedFiles.length === 0) return;
-      // Use exactly the status the user selected from dropdown; null/undefined = no change
+      // Dropdown selection; "no_change" / missing = do not change status unless snooze wake rules apply below.
       const statusToSet =
         statusForThisSend && statusForThisSend !== "no_change" ? statusForThisSend : null;
       setSending(true);
@@ -1172,22 +1192,27 @@ export function ConversationPanel({
         }
         let ticketStatusAfterSend: string | undefined;
 
-        if (statusToSet) {
+        const outboundWakesSnooze = !composeAsInternalNote;
+        const activeSnooze = isTicketActivelySnoozed(ticketStatus, snoozedUntil);
+        const statusPatch =
+          outboundWakesSnooze && activeSnooze ? (statusToSet ?? "OPEN") : statusToSet;
+
+        if (statusPatch) {
           const patchRes = await fetch(`/api/tickets/${ticketId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             credentials: "include",
-            body: JSON.stringify({ status: statusToSet }),
+            body: JSON.stringify({ status: statusPatch }),
           });
           const patchData = await patchRes.json().catch(() => ({ success: false }));
           if (!patchData.success) {
             toast(patchData.error ?? "Message sent but status update failed");
           } else {
             const statusLabel =
-              SEND_STATUS_OPTIONS.find((o) => o.value === statusToSet)?.label?.replace(/^Send and set as /i, "") ??
-              statusToSet;
+              SEND_STATUS_OPTIONS.find((o) => o.value === statusPatch)?.label?.replace(/^Send and set as /i, "") ??
+              (statusPatch === "OPEN" ? "Open" : statusPatch.replace(/_/g, " "));
             toast(`Status updated to ${statusLabel}`);
-            ticketStatusAfterSend = statusToSet;
+            ticketStatusAfterSend = statusPatch;
           }
         }
 
@@ -1241,6 +1266,8 @@ export function ConversationPanel({
       composeAuto,
       senderName,
       senderEmail,
+      ticketStatus,
+      snoozedUntil,
     ]
   );
 

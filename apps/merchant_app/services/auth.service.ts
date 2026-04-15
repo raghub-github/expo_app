@@ -15,6 +15,21 @@ import { getConfig } from "@/config/env";
 
 const AUTH_PREFIX = "/v1/auth";
 
+/** Thrown when backend returns structured auth errors (e.g. device session could not be created). */
+export class MerchantAuthError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "MerchantAuthError";
+    this.code = code;
+  }
+}
+
+export function isMerchantAuthError(e: unknown): e is MerchantAuthError {
+  return e instanceof MerchantAuthError;
+}
+
 export type SendOtpPayload = { phoneE164: string };
 export type VerifyOtpPayload = {
   phoneE164: string;
@@ -33,6 +48,39 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { 
     return res;
   } finally {
     clearTimeout(id);
+  }
+}
+
+type ExchangeMerchantResponse = {
+  accessToken: string;
+  expiresAt: number;
+  role: string;
+  userId: string;
+  partner: { parent: unknown; childStores: unknown[] };
+};
+
+function throwIfExchangeFailed(res: Response, dataJson: any, fallbackMessage: string): void {
+  if (res.ok) return;
+  const errCode = typeof dataJson?.error === "string" ? dataJson.error : "";
+  const serverMessage = typeof dataJson?.message === "string" ? dataJson.message : "";
+  const humanFromError =
+    errCode && errCode !== "device_session_unavailable" ? errCode : "";
+  const msg =
+    serverMessage ||
+    humanFromError ||
+    fallbackMessage;
+  if (errCode === "device_session_unavailable") {
+    throw new MerchantAuthError(
+      "device_session_unavailable",
+      serverMessage || "Could not start your session on this device. Please try again."
+    );
+  }
+  throw new Error(msg);
+}
+
+function assertExchangePayload(dataJson: any): asserts dataJson is ExchangeMerchantResponse {
+  if (!dataJson?.accessToken || !dataJson?.partner) {
+    throw new Error("Merchant session response missing partner information.");
   }
 }
 
@@ -98,23 +146,54 @@ export const merchantAuthService = {
     } catch {
       throw new Error("Invalid response from server while exchanging Supabase token.");
     }
-    if (!res.ok) {
-      const msg: string =
-        dataJson?.message ??
-        dataJson?.error ??
-        "Could not create merchant session after OTP verify.";
-      throw new Error(msg);
+    throwIfExchangeFailed(
+      res,
+      dataJson,
+      "Could not create merchant session after OTP verify."
+    );
+    assertExchangePayload(dataJson);
+    return dataJson;
+  },
+
+  /**
+   * After a successful Supabase OTP verify, if the backend exchange failed (e.g. device session),
+   * the Supabase session may still be valid — retry exchange without re-entering OTP.
+   */
+  async exchangeMerchantFromCurrentSupabaseSession(payload: {
+    phoneE164: string;
+    deviceId: string;
+  }): Promise<ExchangeMerchantResponse> {
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      throw new Error("Supabase is not configured for merchant OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.");
     }
-    if (!dataJson.accessToken || !dataJson.partner) {
-      throw new Error("Merchant session response missing partner information.");
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data?.session?.access_token) {
+      throw new Error("Your sign-in code expired. Please request a new OTP.");
     }
-    return dataJson as {
-      accessToken: string;
-      expiresAt: number;
-      role: string;
-      userId: string;
-      partner: { parent: unknown; childStores: unknown[] };
-    };
+    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/supabase/exchange-merchant`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accessToken: data.session.access_token,
+        phoneE164: payload.phoneE164,
+        deviceId: payload.deviceId,
+      }),
+    });
+    const raw = await res.text();
+    let dataJson: any;
+    try {
+      dataJson = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error("Invalid response from server while exchanging Supabase token.");
+    }
+    throwIfExchangeFailed(
+      res,
+      dataJson,
+      "Could not create merchant session after OTP verify."
+    );
+    assertExchangePayload(dataJson);
+    return dataJson;
   },
 
   /**
@@ -143,23 +222,48 @@ export const merchantAuthService = {
     } catch {
       throw new Error("Invalid response from server while exchanging Google sign-in.");
     }
-    if (!res.ok) {
-      const msg: string =
-        dataJson?.message ??
-        dataJson?.error ??
-        "Could not create merchant session after Google sign-in.";
-      throw new Error(msg);
+    throwIfExchangeFailed(
+      res,
+      dataJson,
+      "Could not create merchant session after Google sign-in."
+    );
+    assertExchangePayload(dataJson);
+    return dataJson;
+  },
+
+  async exchangeGoogleMerchantFromCurrentSupabaseSession(payload: {
+    deviceId: string;
+  }): Promise<ExchangeMerchantResponse> {
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      throw new Error("Supabase is not configured. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.");
     }
-    if (!dataJson.accessToken || !dataJson.partner) {
-      throw new Error("Merchant session response missing partner information.");
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data?.session?.access_token) {
+      throw new Error("Google sign-in expired. Please sign in with Google again.");
     }
-    return dataJson as {
-      accessToken: string;
-      expiresAt: number;
-      role: string;
-      userId: string;
-      partner: { parent: unknown; childStores: unknown[] };
-    };
+    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/supabase/exchange-merchant`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accessToken: data.session.access_token,
+        deviceId: payload.deviceId,
+      }),
+    });
+    const raw = await res.text();
+    let dataJson: any;
+    try {
+      dataJson = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error("Invalid response from server while exchanging Google sign-in.");
+    }
+    throwIfExchangeFailed(
+      res,
+      dataJson,
+      "Could not create merchant session after Google sign-in."
+    );
+    assertExchangePayload(dataJson);
+    return dataJson;
   },
 };
 

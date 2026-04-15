@@ -26,8 +26,7 @@ import {
   SECTION_GAP,
   FONT_PAGE_TITLE,
   FONT_LABEL,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
@@ -110,7 +109,7 @@ export default function VacationScreen() {
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const { manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
-  const footerBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + (insets.bottom || 0);
+  const footerBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
   const [activeTab, setActiveTab] = useState<"schedule" | "slots">("schedule");
   const [selectedReason, setSelectedReason] = useState<string | null>(null);

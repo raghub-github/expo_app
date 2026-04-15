@@ -13,6 +13,8 @@ import {
   runStoreScheduleTickForStore,
   emitStoreStatusChanged,
 } from "./store-schedule-engine.js";
+import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-title-for-insert.js";
+import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
 
 type AuditContext = {
   performedBy: string;
@@ -90,26 +92,55 @@ async function sendExpoPush(tokens: string[], payload: PushPayload): Promise<voi
   }
 }
 
+function isMissingFoodCategoriesColumnError(e: unknown): boolean {
+  const err = e as { code?: string; message?: string };
+  return (
+    err?.code === "42703" &&
+    String(err.message ?? "")
+      .toLowerCase()
+      .includes("food_categories")
+  );
+}
+
 /** Ensure store belongs to partner; return store row with parent store_logo (parent_logo_url) and child banner_url. Logo for UI = parent only; banner = child only. */
 async function getStoreForPartner(
   sql: ReturnType<typeof getSql>,
   storeId: number,
   parentId: number
 ): Promise<any | null> {
-  const rows = await sql`
-    SELECT ms.id, ms.store_id, ms.store_name, ms.store_display_name, ms.store_description,
-           ms.store_email, ms.store_phones, ms.full_address, ms.landmark, ms.city, ms.state,
-           ms.postal_code, ms.country, ms.latitude, ms.longitude,
-           ms.logo_url, ms.banner_url, ms.cuisine_types, ms.food_categories,
-           ms.min_order_amount, ms.delivery_radius_km, ms.avg_preparation_time_minutes,
-           ms.is_pure_veg, ms.accepts_online_payment, ms.accepts_cash,
-           mp.store_logo AS parent_logo_url
-    FROM merchant_stores ms
-    LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
-    WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
-    LIMIT 1
-  `;
-  return rows[0] ?? null;
+  try {
+    const rows = await sql`
+      SELECT ms.id, ms.store_id, ms.store_name, ms.store_display_name, ms.store_description,
+             ms.store_email, ms.store_phones, ms.full_address, ms.landmark, ms.city, ms.state,
+             ms.postal_code, ms.country, ms.latitude, ms.longitude,
+             ms.banner_url, ms.cuisine_types, ms.food_categories,
+             ms.min_order_amount, ms.delivery_radius_km, ms.avg_preparation_time_minutes,
+             ms.is_pure_veg, ms.accepts_online_payment, ms.accepts_cash,
+             mp.store_logo AS parent_logo_url
+      FROM merchant_stores ms
+      LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+      WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  } catch (e) {
+    if (!isMissingFoodCategoriesColumnError(e)) throw e;
+    const rows = await sql`
+      SELECT ms.id, ms.store_id, ms.store_name, ms.store_display_name, ms.store_description,
+             ms.store_email, ms.store_phones, ms.full_address, ms.landmark, ms.city, ms.state,
+             ms.postal_code, ms.country, ms.latitude, ms.longitude,
+             ms.banner_url, ms.cuisine_types,
+             ARRAY[]::text[] AS food_categories,
+             ms.min_order_amount, ms.delivery_radius_km, ms.avg_preparation_time_minutes,
+             ms.is_pure_veg, ms.accepts_online_payment, ms.accepts_cash,
+             mp.store_logo AS parent_logo_url
+      FROM merchant_stores ms
+      LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+      WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  }
 }
 
 /** Get parent row for audit (name, email). */
@@ -358,6 +389,51 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** GET /merchant-partner/merchant-help-sections — Contact Us / help hub rows from ticket_titles. */
+      protectedApp.get("/merchant-help-sections", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const sql = getSql();
+        try {
+          // Hide titles in inactive groups; hide if any ancestor title is inactive (nested help tree).
+          const rows = await sql.unsafe(`
+            SELECT
+              tt.id AS ticket_title_id,
+              tt.merchant_section_id AS section_id,
+              tt.title_text AS title,
+              tt.subtext AS subtitle,
+              tt.default_quick_options AS quick_options,
+              tt.display_order,
+              tt.merchant_help_icon_name AS help_hub_icon
+            FROM ticket_titles tt
+            LEFT JOIN ticket_groups tg ON tg.id = tt.group_id
+            WHERE tt.merchant_section_id IS NOT NULL
+              AND TRIM(tt.merchant_section_id::text) <> ''
+              AND tt.is_active = TRUE
+              AND tt.ticket_section::text = 'merchant'
+              AND (tt.group_id IS NULL OR tg.is_active = TRUE)
+              AND NOT EXISTS (
+                WITH RECURSIVE title_ancestors AS (
+                  SELECT id, parent_title_id, is_active
+                  FROM ticket_titles
+                  WHERE id = tt.parent_title_id
+                  UNION ALL
+                  SELECT p.id, p.parent_title_id, p.is_active
+                  FROM ticket_titles p
+                  INNER JOIN title_ancestors a ON p.id = a.parent_title_id
+                  WHERE a.parent_title_id IS NOT NULL
+                )
+                SELECT 1 FROM title_ancestors WHERE is_active = FALSE LIMIT 1
+              )
+            ORDER BY tt.display_order ASC NULLS LAST, tt.title_text ASC
+          `);
+          return reply.send({ ok: true, sections: rows });
+        } catch {
+          return reply.send({ ok: true, sections: [] });
+        }
+      });
+
       /** GET /merchant-partner/stores/:storeId — outlet info for partner app. */
       protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId", async (req, reply) => {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
@@ -398,7 +474,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           country: store.country ?? "IN",
           latitude: store.latitude != null ? Number(store.latitude) : null,
           longitude: store.longitude != null ? Number(store.longitude) : null,
-          logo_url: store.logo_url ?? null,
+          logo_url: store.parent_logo_url ?? null,
           banner_url: store.banner_url ?? null,
           parent_logo_url: store.parent_logo_url ?? null,
           cuisine_types: store.cuisine_types ?? [],
@@ -539,7 +615,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (typeof b.country === "string" || b.country === null) updates.country = b.country ?? "IN";
         if (b.latitude !== undefined) updates.latitude = b.latitude == null ? null : Number(b.latitude);
         if (b.longitude !== undefined) updates.longitude = b.longitude == null ? null : Number(b.longitude);
-        if (typeof b.logo_url === "string" || b.logo_url === null) updates.logo_url = b.logo_url;
+        // merchant_stores.logo_url removed (banner_url + parent store_logo only); ignore client logo_url.
         if (typeof b.banner_url === "string" || b.banner_url === null) updates.banner_url = b.banner_url;
         if (Array.isArray(b.cuisine_types)) updates.cuisine_types = b.cuisine_types;
         if (Array.isArray(b.food_categories)) updates.food_categories = b.food_categories;
@@ -575,14 +651,30 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           return reply.send({ ok: true, message: "no_updates" });
         }
         updates.updated_at = new Date().toISOString();
-        const setClause = Object.keys(updates)
-          .map((k, i) => `${k} = $${i + 1}`)
-          .join(", ");
-        const values = Object.values(updates);
-        await sql.unsafe(
-          `UPDATE merchant_stores SET ${setClause} WHERE id = $${values.length + 1} AND parent_id = $${values.length + 2}`,
-          [...values, storeId, parentId]
-        );
+        const runStoreUpdate = async (u: Record<string, any>) => {
+          const setClause = Object.keys(u)
+            .map((k, i) => `${k} = $${i + 1}`)
+            .join(", ");
+          const values = Object.values(u);
+          await sql.unsafe(
+            `UPDATE merchant_stores SET ${setClause} WHERE id = $${values.length + 1} AND parent_id = $${values.length + 2}`,
+            [...values, storeId, parentId]
+          );
+        };
+        try {
+          await runStoreUpdate(updates);
+        } catch (e) {
+          if (isMissingFoodCategoriesColumnError(e) && "food_categories" in updates) {
+            delete updates.food_categories;
+            const dataKeys = Object.keys(updates).filter((k) => k !== "updated_at");
+            if (dataKeys.length === 0) {
+              return reply.send({ ok: true, message: "no_updates" });
+            }
+            await runStoreUpdate(updates);
+          } else {
+            throw e;
+          }
+        }
         const parentRow = await getParentForAudit(sql, parentId);
         const auditCtx = getAuditContext(req, parentRow, parentId);
         for (const key of Object.keys(updates)) {
@@ -3907,6 +3999,290 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** GET /merchant-partner/stores/:storeId/growth/summary — KPIs + chart buckets for period=today|yesterday|week|month|alltime (IST). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { period?: string } }>(
+        "/stores/:storeId/growth/summary",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const raw = String(req.query?.period ?? "today").toLowerCase();
+          const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
+
+          const parseAgg = (row: { total_orders?: number; total_sales?: unknown } | undefined) => {
+            const totalOrders = Number(row?.total_orders) || 0;
+            const totalSalesRaw = row?.total_sales;
+            const totalSales =
+              typeof totalSalesRaw === "number"
+                ? totalSalesRaw
+                : parseFloat(String(totalSalesRaw ?? "0")) || 0;
+            return { total_orders: totalOrders, total_sales: totalSales };
+          };
+
+          type B = { key: string; label: string; orders_count: number };
+
+          const slotLabels8 = ["12–3am", "3–6am", "6–9am", "9–12pm", "12–3pm", "3–6pm", "6–9pm", "9–12am"];
+
+          let totals: { total_orders: number; total_sales: number };
+          let buckets: B[] = [];
+
+          if (period === "today") {
+            const agg = await sql`
+              SELECT COUNT(*)::int AS total_orders,
+                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date =
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+            `;
+            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
+            const br = await sql`
+              SELECT (FLOOR(EXTRACT(HOUR FROM (created_at AT TIME ZONE 'Asia/Kolkata')) / 3))::int AS slot,
+                     COUNT(*)::int AS orders_count
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date =
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+              GROUP BY 1 ORDER BY 1
+            `;
+            const byS = new Map(
+              (br as unknown as Array<{ slot: number; orders_count: number }>).map((r) => [
+                Number(r.slot),
+                Number(r.orders_count) || 0,
+              ])
+            );
+            for (let s = 0; s < 8; s++) {
+              buckets.push({ key: `t-${s}`, label: slotLabels8[s] ?? String(s), orders_count: byS.get(s) ?? 0 });
+            }
+          } else if (period === "yesterday") {
+            const agg = await sql`
+              SELECT COUNT(*)::int AS total_orders,
+                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date =
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day'
+            `;
+            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
+            const br = await sql`
+              SELECT (FLOOR(EXTRACT(HOUR FROM (created_at AT TIME ZONE 'Asia/Kolkata')) / 3))::int AS slot,
+                     COUNT(*)::int AS orders_count
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date =
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '1 day'
+              GROUP BY 1 ORDER BY 1
+            `;
+            const byS = new Map(
+              (br as unknown as Array<{ slot: number; orders_count: number }>).map((r) => [
+                Number(r.slot),
+                Number(r.orders_count) || 0,
+              ])
+            );
+            for (let s = 0; s < 8; s++) {
+              buckets.push({ key: `y-${s}`, label: slotLabels8[s] ?? String(s), orders_count: byS.get(s) ?? 0 });
+            }
+          } else if (period === "week") {
+            const agg = await sql`
+              SELECT COUNT(*)::int AS total_orders,
+                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
+                    date_trunc('week', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+            `;
+            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
+            const br = await sql`
+              SELECT gs::date AS d,
+                     trim(to_char(gs::date, 'Dy')) AS label,
+                     COALESCE(o.c, 0)::int AS orders_count
+              FROM generate_series(
+                date_trunc('week', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date,
+                (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date,
+                INTERVAL '1 day'
+              ) AS gs
+              LEFT JOIN (
+                SELECT (created_at AT TIME ZONE 'Asia/Kolkata')::date AS d, COUNT(*)::int AS c
+                FROM orders_food
+                WHERE merchant_store_id = ${storeId}
+                  AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
+                      date_trunc('week', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date
+                  AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
+                      (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+                GROUP BY 1
+              ) o ON o.d = gs::date
+              ORDER BY gs
+            `;
+            const rows = br as unknown as Array<{ d: string | Date; label: string; orders_count: number }>;
+            for (const r of rows) {
+              buckets.push({
+                key: String(r.d),
+                label: String(r.label || "—").replace(/\.$/, ""),
+                orders_count: Number(r.orders_count) || 0,
+              });
+            }
+          } else if (period === "month") {
+            const agg = await sql`
+              SELECT COUNT(*)::int AS total_orders,
+                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
+                    date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+            `;
+            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
+            const br = await sql`
+              SELECT gs::date AS d,
+                     (EXTRACT(DAY FROM gs::date))::int::text AS label,
+                     COALESCE(o.c, 0)::int AS orders_count
+              FROM generate_series(
+                date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date,
+                (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date,
+                INTERVAL '1 day'
+              ) AS gs
+              LEFT JOIN (
+                SELECT (created_at AT TIME ZONE 'Asia/Kolkata')::date AS d, COUNT(*)::int AS c
+                FROM orders_food
+                WHERE merchant_store_id = ${storeId}
+                  AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
+                      date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date
+                  AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
+                      (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+                GROUP BY 1
+              ) o ON o.d = gs::date
+              ORDER BY gs
+            `;
+            const rows = br as unknown as Array<{ d: string | Date; label: string; orders_count: number }>;
+            for (const r of rows) {
+              buckets.push({
+                key: String(r.d),
+                label: String(r.label || "—"),
+                orders_count: Number(r.orders_count) || 0,
+              });
+            }
+          } else {
+            const agg = await sql`
+              SELECT COUNT(*)::int AS total_orders,
+                     COALESCE(SUM(food_items_total_value), 0)::numeric AS total_sales
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+            `;
+            totals = parseAgg(agg[0] as { total_orders?: number; total_sales?: unknown });
+            const br = await sql`
+              SELECT gs::date AS m, COALESCE(o.c, 0)::int AS orders_count
+              FROM generate_series(
+                (date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::timestamp) - INTERVAL '11 months')::date,
+                date_trunc('month', (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date)::date,
+                INTERVAL '1 month'
+              ) AS gs
+              LEFT JOIN (
+                SELECT date_trunc('month', (created_at AT TIME ZONE 'Asia/Kolkata'))::date AS m,
+                       COUNT(*)::int AS c
+                FROM orders_food
+                WHERE merchant_store_id = ${storeId}
+                GROUP BY 1
+              ) o ON o.m = gs::date
+              ORDER BY gs
+            `;
+            const rows = br as unknown as Array<{ m: string | Date; orders_count: number }>;
+            const fmt = new Intl.DateTimeFormat("en-IN", { month: "short", timeZone: "Asia/Kolkata" });
+            for (const r of rows) {
+              const dt = typeof r.m === "string" ? new Date(r.m + "T12:00:00Z") : r.m;
+              const label = Number.isFinite(dt.getTime()) ? fmt.format(dt) : "—";
+              buckets.push({
+                key: String(r.m),
+                label,
+                orders_count: Number(r.orders_count) || 0,
+              });
+            }
+          }
+
+          /** Rolling last 7 calendar days (IST), for the weekly activity chart (independent of period). */
+          const wk = await sql`
+            SELECT gs::date AS d,
+                   trim(to_char(gs::date, 'Dy')) AS label,
+                   COALESCE(o.c, 0)::int AS orders_count
+            FROM generate_series(
+              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '6 days',
+              (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date,
+              INTERVAL '1 day'
+            ) AS gs
+            LEFT JOIN (
+              SELECT (created_at AT TIME ZONE 'Asia/Kolkata')::date AS d, COUNT(*)::int AS c
+              FROM orders_food
+              WHERE merchant_store_id = ${storeId}
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >=
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - INTERVAL '6 days'
+                AND (created_at AT TIME ZONE 'Asia/Kolkata')::date <=
+                    (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date
+              GROUP BY 1
+            ) o ON o.d = gs::date
+            ORDER BY gs
+          `;
+          const weeklyBuckets: B[] = (
+            wk as unknown as Array<{ d: string | Date; label: string; orders_count: number }>
+          ).map((r) => ({
+            key: String(r.d),
+            label: String(r.label || "—").replace(/\.$/, ""),
+            orders_count: Number(r.orders_count) || 0,
+          }));
+
+          return reply.send({
+            period,
+            total_orders: totals.total_orders,
+            total_sales: totals.total_sales,
+            buckets,
+            weekly_buckets: weeklyBuckets,
+          });
+        }
+      );
+
+      /** GET /merchant-partner/stores/:storeId/growth/business-insights — KPIs + compare + dual series for Business tab (IST). */
+      protectedApp.get<{ Params: { storeId: string }; Querystring: { period?: string } }>(
+        "/stores/:storeId/growth/business-insights",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const raw = String(req.query?.period ?? "today").toLowerCase();
+          const period = ["today", "yesterday", "week", "month", "alltime"].includes(raw) ? raw : "today";
+          const body = await buildGrowthBusinessInsights(sql, storeId, period);
+          return reply.send(body);
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/status/history — recent status log (open/close/scheduled). */
       protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
         "/stores/:storeId/status/history",
@@ -4939,6 +5315,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         Params: { storeId: string };
         Body: {
           section_code?: string;
+          ticket_title_id?: number | string | null;
           subject?: string;
           description?: string;
           order_id?: number | null;
@@ -4951,13 +5328,27 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (!Number.isInteger(storeId) || storeId < 1) {
           return reply.code(400).send({ error: "invalid_store_id" });
         }
+        req.log.info(
+          { storeId, requestId: (req as { id?: string }).id },
+          "merchant_partner_create_ticket_start"
+        );
         const body = (req.body || {}) as {
           section_code?: string;
+          ticket_title_id?: number | string | null;
           subject?: string;
           description?: string;
           order_id?: number | null;
         };
-        const sectionCode = (body.section_code || "").toLowerCase();
+        const rawTid = body.ticket_title_id;
+        const ticketTitleIdFromBody =
+          typeof rawTid === "number" && Number.isInteger(rawTid) && rawTid > 0
+            ? rawTid
+            : typeof rawTid === "string" && /^\d+$/.test(rawTid.trim())
+              ? Number(rawTid.trim())
+              : null;
+        let sectionCode = String(body.section_code ?? "")
+          .trim()
+          .toLowerCase();
 
         const sql = getSql();
         const parentId = await getPartnerParentId(sql, req.auth.sub);
@@ -4978,9 +5369,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         const mapSection = (code: string): MappedConfig => {
           switch (code) {
             case "orders":
-              return { title: "ORDER_RELATED", category: "ORDER", priority: "HIGH" };
+              return { title: "MERCHANT_ORDER_NOT_RECEIVED", category: "ORDER", priority: "HIGH" };
+            case "order_timing":
+              return { title: "ORDER_DELAYED", category: "DELIVERY", priority: "HIGH" };
             case "payments":
               return { title: "PAYOUT_NOT_RECEIVED", category: "EARNINGS", priority: "URGENT" };
+            case "payout_delayed":
+              return { title: "PAYOUT_DELAYED", category: "EARNINGS", priority: "URGENT" };
             case "restaurant":
               return { title: "MERCHANT_APP_TECHNICAL_ISSUE", category: "TECHNICAL", priority: "MEDIUM" };
             case "address":
@@ -5005,28 +5400,258 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           }
         };
 
+        const UNIFIED_CATEGORY_ENUM = new Set([
+          "ORDER",
+          "PAYMENT",
+          "DELIVERY",
+          "REFUND",
+          "ACCOUNT",
+          "TECHNICAL",
+          "EARNINGS",
+          "VERIFICATION",
+          "COMPLAINT",
+          "FEEDBACK",
+          "OTHER",
+        ]);
+        /** ticket_titles.intake_unified_category is free text; PG unified_ticket_category is a fixed enum. */
+        const INTAKE_CATEGORY_TO_ENUM: Record<string, string> = {
+          PROFILE_ISSUE: "TECHNICAL",
+          PROFILE: "TECHNICAL",
+          STORE_PROFILE: "TECHNICAL",
+          RESTAURANT_PROFILE: "TECHNICAL",
+          MENU_ISSUE: "TECHNICAL",
+        };
+        const normalizeUnifiedCategory = (raw: string): string => {
+          const key = String(raw ?? "")
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, "_")
+            .replace(/[^A-Z0-9_]/g, "_")
+            .replace(/_+/g, "_")
+            .replace(/^_|_$/g, "");
+          if (UNIFIED_CATEGORY_ENUM.has(key)) return key;
+          const mapped = INTAKE_CATEGORY_TO_ENUM[key];
+          if (mapped && UNIFIED_CATEGORY_ENUM.has(mapped)) return mapped;
+          return "OTHER";
+        };
+        const UNIFIED_PRIORITY_ENUM = new Set(["LOW", "MEDIUM", "HIGH", "URGENT", "CRITICAL"]);
+        const normalizeUnifiedPriority = (raw: string): string => {
+          const key = String(raw ?? "")
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, "_");
+          if (UNIFIED_PRIORITY_ENUM.has(key)) return key;
+          return "MEDIUM";
+        };
+        const UNIFIED_SERVICE_ENUM = new Set(["FOOD", "PARCEL", "RIDE", "GENERAL"]);
+        const normalizeUnifiedServiceType = (raw: string): string => {
+          const key = String(raw ?? "").trim().toUpperCase();
+          if (UNIFIED_SERVICE_ENUM.has(key)) return key;
+          return "GENERAL";
+        };
+
+        type HelpTitleRow = {
+          id: number;
+          group_id: number | null;
+          merchant_section_id: string | null;
+          intake_unified_title: string | null;
+          intake_unified_category: string | null;
+          intake_unified_priority: string | null;
+          intake_unified_service_type: string | null;
+          title_text: string | null;
+          /** Tag codes from ticket_title_tags (and legacy tag_id). */
+          tag_codes: string[] | null;
+        };
+
+        const rowToHelp = (r: Record<string, unknown> | undefined): HelpTitleRow | null => {
+          if (!r) return null;
+          const rawId = r.id;
+          const idNum =
+            typeof rawId === "number" && Number.isFinite(rawId)
+              ? rawId
+              : typeof rawId === "string" && /^\d+$/.test(rawId.trim())
+                ? Number(rawId.trim())
+                : typeof rawId === "bigint"
+                  ? Number(rawId)
+                  : NaN;
+          if (!Number.isInteger(idNum) || idNum < 1) return null;
+          let tag_codes: string[] | null = null;
+          const rawCodes = r.help_tag_codes;
+          if (Array.isArray(rawCodes) && rawCodes.length > 0) {
+            tag_codes = rawCodes.map((c) => String(c).trim().toUpperCase()).filter(Boolean);
+          }
+          return {
+            id: idNum,
+            group_id: r.group_id != null ? Number(r.group_id) : null,
+            merchant_section_id: r.merchant_section_id != null ? String(r.merchant_section_id).trim() : null,
+            intake_unified_title: r.intake_unified_title != null ? String(r.intake_unified_title) : null,
+            intake_unified_category: r.intake_unified_category != null ? String(r.intake_unified_category) : null,
+            intake_unified_priority: r.intake_unified_priority != null ? String(r.intake_unified_priority) : null,
+            intake_unified_service_type: r.intake_unified_service_type != null ? String(r.intake_unified_service_type) : null,
+            title_text: r.title_text != null ? String(r.title_text) : null,
+            tag_codes: tag_codes?.length ? tag_codes : null,
+          };
+        };
+
+        let helpRow: HelpTitleRow | null = null;
+        if (ticketTitleIdFromBody != null) {
+          try {
+            const hr = await sql`
+              SELECT
+                tt.id,
+                tt.group_id,
+                tt.merchant_section_id,
+                tt.intake_unified_title,
+                tt.intake_unified_category,
+                tt.intake_unified_priority,
+                tt.intake_unified_service_type,
+                tt.title_text,
+                COALESCE(
+                  (
+                    SELECT array_agg(UPPER(TRIM(tg2.tag_code)) ORDER BY tg2.id)
+                    FROM ticket_title_tags ttm
+                    INNER JOIN ticket_tags tg2 ON tg2.id = ttm.tag_id
+                    WHERE ttm.ticket_title_id = tt.id
+                  ),
+                  CASE
+                    WHEN tt.tag_id IS NOT NULL THEN
+                      (SELECT ARRAY[UPPER(TRIM(tg3.tag_code))] FROM ticket_tags tg3 WHERE tg3.id = tt.tag_id LIMIT 1)
+                    ELSE NULL
+                  END
+                ) AS help_tag_codes
+              FROM ticket_titles tt
+              WHERE tt.id = ${ticketTitleIdFromBody}
+                AND tt.is_active = TRUE
+                AND tt.ticket_section::text = 'merchant'
+                AND tt.merchant_section_id IS NOT NULL
+                AND TRIM(tt.merchant_section_id::text) <> ''
+              LIMIT 1
+            `;
+            helpRow = rowToHelp(hr[0] as Record<string, unknown> | undefined);
+            if (!helpRow) {
+              return reply.code(400).send({ error: "invalid_ticket_title_id" });
+            }
+            sectionCode = (helpRow.merchant_section_id || "").trim().toLowerCase();
+          } catch {
+            return reply.code(400).send({ error: "invalid_ticket_title_id" });
+          }
+        } else if (sectionCode) {
+          try {
+            const hr = await sql`
+              SELECT
+                tt.id,
+                tt.group_id,
+                tt.merchant_section_id,
+                tt.intake_unified_title,
+                tt.intake_unified_category,
+                tt.intake_unified_priority,
+                tt.intake_unified_service_type,
+                tt.title_text,
+                COALESCE(
+                  (
+                    SELECT array_agg(UPPER(TRIM(tg2.tag_code)) ORDER BY tg2.id)
+                    FROM ticket_title_tags ttm
+                    INNER JOIN ticket_tags tg2 ON tg2.id = ttm.tag_id
+                    WHERE ttm.ticket_title_id = tt.id
+                  ),
+                  CASE
+                    WHEN tt.tag_id IS NOT NULL THEN
+                      (SELECT ARRAY[UPPER(TRIM(tg3.tag_code))] FROM ticket_tags tg3 WHERE tg3.id = tt.tag_id LIMIT 1)
+                    ELSE NULL
+                  END
+                ) AS help_tag_codes
+              FROM ticket_titles tt
+              WHERE LOWER(TRIM(tt.merchant_section_id)) = LOWER(TRIM(${sectionCode}))
+                AND tt.is_active = TRUE
+                AND tt.ticket_section::text = 'merchant'
+              LIMIT 1
+            `;
+            helpRow = rowToHelp(hr[0] as Record<string, unknown> | undefined);
+          } catch {
+            helpRow = null;
+          }
+        }
+
         const mapped = mapSection(sectionCode);
+
+        /** unified_tickets.ticket_title is text (migration 0201); use catalog intake or section default. */
+        const rawIntakeTitle = String(helpRow?.intake_unified_title ?? "").trim();
+        const ticketTitle = rawIntakeTitle || mapped.title;
+        const ticketTitleForInsert = await resolveTicketTitleForUnifiedTicketsInsert(sql, ticketTitle);
+        const ticketCategory = normalizeUnifiedCategory(String(helpRow?.intake_unified_category || mapped.category));
+        const priority = normalizeUnifiedPriority(String(helpRow?.intake_unified_priority || mapped.priority));
+        const serviceType = normalizeUnifiedServiceType(String(helpRow?.intake_unified_service_type || "GENERAL"));
 
         const ticketType =
           body.order_id != null && Number.isInteger(Number(body.order_id))
             ? "ORDER_RELATED"
             : "NON_ORDER_RELATED";
-        const serviceType = "GENERAL";
 
+        const titleForSubjectFallback = ticketTitle;
         const subject =
           body.subject && String(body.subject).trim()
             ? String(body.subject).trim()
-            : mapped.title
-                .toLowerCase()
-                .split("_")
-                .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-                .join(" ");
+            : helpRow?.title_text && String(helpRow.title_text).trim()
+              ? String(helpRow.title_text).trim()
+              : titleForSubjectFallback
+                  .toLowerCase()
+                  .split("_")
+                  .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+                  .join(" ");
         const description =
           body.description && String(body.description).trim()
             ? String(body.description).trim()
             : "Merchant has raised a support request from contact centre.";
 
-        const raisedName = (req.auth as any)?.name ?? null;
+        const rawAuthName = (req.auth as any)?.name;
+        const raisedName =
+          rawAuthName == null
+            ? null
+            : typeof rawAuthName === "string"
+              ? rawAuthName.trim() || null
+              : typeof rawAuthName === "number" || typeof rawAuthName === "boolean"
+                ? String(rawAuthName)
+                : null;
+
+        const groupId = helpRow?.group_id != null && Number.isFinite(helpRow.group_id) ? helpRow.group_id : null;
+        const tagList =
+          helpRow?.tag_codes && helpRow.tag_codes.length > 0
+            ? [...new Set(helpRow.tag_codes.map((c) => String(c).trim()).filter(Boolean))]
+            : null;
+        const metadataPayload = {
+          merchant_help: {
+            section_code: sectionCode || null,
+            ticket_title_id: helpRow?.id ?? null,
+            ticket_title_row_code: helpRow ? ticketTitle : null,
+          },
+        };
+        /** Avoid sql.json / sql.array here: some postgres.js paths pass internal Objects into Buffer.byteLength (ERR_INVALID_ARG_TYPE). */
+        const metadataJson = JSON.stringify(metadataPayload);
+        const tagsArrayLiteral =
+          tagList == null
+            ? null
+            : `{${tagList
+                .map((s) => {
+                  const t = String(s);
+                  return `"${t.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+                })
+                .join(",")}}`;
+
+        const rawOrderId = body.order_id as unknown;
+        const orderIdForInsert =
+          rawOrderId == null
+            ? null
+            : typeof rawOrderId === "number" && Number.isInteger(rawOrderId) && rawOrderId > 0
+              ? rawOrderId
+              : typeof rawOrderId === "string" && /^\d+$/.test(rawOrderId.trim())
+                ? Number(rawOrderId.trim())
+                : null;
+
+        const slugHeaderRaw = req.headers["x-merchant-app-slug"];
+        const slugHeader = Array.isArray(slugHeaderRaw) ? slugHeaderRaw[0] : slugHeaderRaw;
+        const merchantAppSlug =
+          typeof slugHeader === "string" ? slugHeader.trim().toLowerCase() : "";
+        const buyerNpName = merchantAppSlug === "gatimitra" ? "GatiMitra" : null;
 
         const rows = await sql`
           INSERT INTO unified_tickets (
@@ -5047,14 +5672,18 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             description,
             priority,
             status,
-            auto_generated
+            auto_generated,
+            group_id,
+            tags,
+            metadata,
+            buyer_np_name
           ) VALUES (
             ${ticketType}::unified_ticket_type,
             'MERCHANT'::unified_ticket_source,
             ${serviceType}::unified_ticket_service_type,
-            ${mapped.title}::unified_ticket_title,
-            ${mapped.category}::unified_ticket_category,
-            ${body.order_id ?? null},
+            ${ticketTitleForInsert},
+            ${ticketCategory}::unified_ticket_category,
+            ${orderIdForInsert},
             NULL,
             NULL,
             ${storeId},
@@ -5064,9 +5693,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             ${raisedName},
             ${subject},
             ${description},
-            ${mapped.priority}::unified_ticket_priority,
+            ${priority}::unified_ticket_priority,
             'OPEN'::unified_ticket_status,
-            FALSE
+            FALSE,
+            ${groupId},
+            ${tagsArrayLiteral}::text[],
+            ${metadataJson}::jsonb,
+            ${buyerNpName}
           )
           RETURNING id,
                     ticket_id,
@@ -5078,7 +5711,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     to_char(created_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon YYYY, HH24:MI') AS created_at_ist
         `;
         const row = rows[0] as {
-          id: number;
+          id: number | string | bigint;
           ticket_id: string;
           status: string;
           priority: string;
@@ -5088,10 +5721,26 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           created_at_ist?: string | null;
         };
 
+        const numericId =
+          typeof row.id === "bigint"
+            ? Number(row.id)
+            : typeof row.id === "string"
+              ? Number(row.id.trim())
+              : Number(row.id);
+        if (!Number.isInteger(numericId) || numericId < 1) {
+          req.log.error({ rowId: row.id }, "merchant_create_ticket_invalid_id");
+          return reply.code(500).send({ error: "ticket_create_failed", message: "Invalid ticket id from database" });
+        }
+
+        req.log.info(
+          { storeId, unifiedTicketId: numericId, ticketId: row.ticket_id },
+          "merchant_partner_create_ticket_ok"
+        );
+
         return reply.send({
           ok: true,
           ticket: {
-            id: row.id,
+            id: numericId,
             ticket_id: row.ticket_id,
             status: row.status,
             priority: row.priority,

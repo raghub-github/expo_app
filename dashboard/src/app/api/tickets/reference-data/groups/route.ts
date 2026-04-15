@@ -188,25 +188,23 @@ export async function POST(request: NextRequest) {
         [groupId, serviceTypeVal, ticketSectionVal, sourceRoleVal, uniqueCode, String(titleText).trim(), i]
       );
     }
-    return NextResponse.json({
-      success: true,
-      data: {
-        id: groupId,
-        groupCode: row.group_code,
-        groupName: row.group_name,
-        groupDescription: row.group_description,
-        parentGroupId: row.parent_group_id != null ? Number(row.parent_group_id) : null,
-        groupLevel: Number(row.group_level),
-        displayOrder: row.display_order != null ? Number(row.display_order) : null,
-        serviceType: row.service_type,
-        ticketSection: row.ticket_section,
-        ticketCategory: row.ticket_category,
-        sourceRole: row.source_role,
-        isActive: Boolean(row.is_active),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      },
-    });
+    const group = {
+      id: groupId,
+      groupCode: row.group_code,
+      groupName: row.group_name,
+      groupDescription: row.group_description,
+      parentGroupId: row.parent_group_id != null ? Number(row.parent_group_id) : null,
+      groupLevel: Number(row.group_level),
+      displayOrder: row.display_order != null ? Number(row.display_order) : null,
+      serviceType: row.service_type,
+      ticketSection: row.ticket_section,
+      ticketCategory: row.ticket_category ?? null,
+      sourceRole: row.source_role ?? null,
+      isActive: Boolean(row.is_active),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    return NextResponse.json({ success: true, data: { group } });
   } catch (e) {
     console.error("[POST /api/tickets/reference-data/groups]", e);
     return NextResponse.json({ success: false, error: String(e) }, { status: 500 });

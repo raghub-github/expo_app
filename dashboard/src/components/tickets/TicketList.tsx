@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import { FixedSizeList as List, ListChildComponentProps } from "react-window";
 import { ChevronLeft, ChevronRight, ChevronDown, Check, Download, LayoutList, LayoutGrid, UserPlus, UserMinus, CheckCircle, RefreshCw, Link2, Merge, Ban, Trash2, PanelRightOpen, PanelRightClose } from "lucide-react";
 import { useTickets, fetchTickets, type TicketFilters } from "@/hooks/tickets/useTickets";
 import { useTicketsRealtime } from "@/hooks/tickets/useTicketsRealtime";
@@ -814,52 +813,6 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
     URL.revokeObjectURL(url);
   }, [tickets, selectedIds]);
 
-  /** Match list row content height; too small causes overlap between virtual rows; too large adds empty gap between tickets. */
-
-  const ROW_HEIGHT = 93;
-
-  const VirtualRow = useCallback(
-    ({ index, style }: ListChildComponentProps) => {
-      const ticket = tickets[index];
-      if (!ticket) return null;
-
-      return (
-        <div style={style}>
-          <TicketListRow
-            ticket={ticket}
-            selected={selectedIds.has(ticket.id)}
-            onSelect={(checked) => onSelect(ticket.id, checked)}
-            onUpdatePriority={handleUpdatePriority}
-            onUpdateGroup={handleUpdateGroup}
-            onUpdateAssignee={handleUpdateAssignee}
-            onUpdateStatus={handleUpdateStatus}
-            priorityOptions={priorityOptions}
-            groupOptions={groupOptions}
-            agentOptions={agentOptions}
-            statusOptions={statusOptions}
-            currentUserId={currentUser?.id}
-            detailHref={detailHrefForTicket(ticket.id)}
-          />
-        </div>
-      );
-    },
-    [
-      tickets,
-      selectedIds,
-      onSelect,
-      handleUpdatePriority,
-      handleUpdateGroup,
-      handleUpdateAssignee,
-      handleUpdateStatus,
-      priorityOptions,
-      groupOptions,
-      agentOptions,
-      statusOptions,
-      currentUser?.id,
-      detailHrefForTicket,
-    ]
-  );
-
   // isLoading is false while the query is disabled (e.g. auth not ready); isPending stays true with no data — show spinner, not empty state.
   // When queue home is offline we intentionally disable the tickets query — never spin forever on a disabled query with no data.
   const awaitingTickets =
@@ -1482,7 +1435,7 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
         ) : viewMode === "list" ? (
           <div className="w-full relative" style={{ overflow: "visible" }}>
             {/* List header row - compact, single line */}
-            <div className="flex items-center gap-2.5 border-b border-gray-200 bg-slate-50/90 pl-2 pr-1 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
+            <div className="flex items-center gap-2 border-b border-gray-200 bg-slate-50/90 pl-2 pr-1 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
               <div className="shrink-0 w-4 flex justify-center">
                 <input
                   type="checkbox"
@@ -1498,17 +1451,26 @@ export function TicketList({ hideExportAndSidebarToggle = false }: { hideExportA
                 <span className="text-gray-500 text-[11px] font-medium">Priority · Group/Agent · Status</span>
               </div>
             </div>
-            <List
-              height={Math.min(
-                600,
-                Math.max(ROW_HEIGHT * 3, data.tickets.length * ROW_HEIGHT)
-              )}
-              itemCount={data.tickets.length}
-              itemSize={ROW_HEIGHT}
-              width="100%"
-            >
-              {VirtualRow}
-            </List>
+            <div className="w-full">
+              {data.tickets.map((ticket) => (
+                <TicketListRow
+                  key={ticket.id}
+                  ticket={ticket}
+                  selected={selectedIds.has(ticket.id)}
+                  onSelect={(checked) => onSelect(ticket.id, checked)}
+                  onUpdatePriority={handleUpdatePriority}
+                  onUpdateGroup={handleUpdateGroup}
+                  onUpdateAssignee={handleUpdateAssignee}
+                  onUpdateStatus={handleUpdateStatus}
+                  priorityOptions={priorityOptions}
+                  groupOptions={groupOptions}
+                  agentOptions={agentOptions}
+                  statusOptions={statusOptions}
+                  currentUserId={currentUser?.id}
+                  detailHref={detailHrefForTicket(ticket.id)}
+                />
+              ))}
+            </div>
           </div>
         ) : (
           <>

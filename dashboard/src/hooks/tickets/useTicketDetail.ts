@@ -2,6 +2,7 @@
 
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { coerceSqlTextArray } from "@/lib/tickets/coerce-sql-text-array";
 
 /**
  * After a real HTTP 404, block further network calls for this id in the SPA session.
@@ -273,7 +274,7 @@ function normalizeTicket(raw: Record<string, unknown>): TicketDetail {
     firstResponseAt: (raw.first_response_at ?? null) as string | null,
     firstResponseTimeMinutes:
       raw.first_response_time_minutes != null ? Number(raw.first_response_time_minutes) : null,
-    tags: Array.isArray(raw.tags) ? (raw.tags as string[]).filter(Boolean) : [],
+    tags: coerceSqlTextArray(raw.tags),
     storeId: raw.store_id != null && String(raw.store_id).trim() !== "" ? String(raw.store_id) : null,
     storeNumber: raw.store_number != null && String(raw.store_number).trim() !== "" ? String(raw.store_number) : null,
     storeParentId: raw.store_parent_id != null ? Number(raw.store_parent_id) : null,

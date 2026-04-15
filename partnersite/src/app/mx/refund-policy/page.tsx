@@ -4,6 +4,7 @@ import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSearchParams } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { ArrowLeft } from 'lucide-react';
@@ -26,11 +27,12 @@ function RefundPolicyPageContent() {
       restaurantName="Refund Policy"
       restaurantId={storeId || DEMO_RESTAURANT_ID}
     >
+      <PartnerPageHeader title="Refund Policy" subtitle="Eligibility and settlement terms" />
       <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-orange-50/30">
         {/* In-layout header: Back + title — no full-page wrapper so sidebar stays */}
-        <div className="sticky top-0 z-[100] border-b border-slate-200/80 bg-white shadow-sm">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
-            <div className="flex items-center gap-3">
+        <div className="sticky top-0 z-[100] bg-white shadow-sm mx-shell-header !px-0">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 w-full">
+            <div className="flex items-center gap-3 min-w-0">
               <MobileHamburgerButton />
               <button
                 type="button"
@@ -40,12 +42,6 @@ function RefundPolicyPageContent() {
                 <ArrowLeft size={18} />
                 Back
               </button>
-              <div className="flex items-center gap-2">
-                <img src="/logo.png" alt="GatiMitra" className="h-7 w-auto object-contain" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-500 hidden sm:inline">
-                  Refund Policy
-                </span>
-              </div>
             </div>
           </div>
         </div>
@@ -61,17 +57,12 @@ function RefundPolicyPageContent() {
 function RefundPolicyFallback() {
   return (
     <MXLayoutWhite restaurantName="Refund Policy" restaurantId={DEMO_RESTAURANT_ID}>
+      <PartnerPageHeader title="Refund Policy" subtitle="Eligibility and settlement terms" />
       <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-orange-50/30">
-        <div className="sticky top-0 z-[100] border-b border-slate-200/80 bg-white shadow-sm">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
-            <div className="flex items-center gap-3">
+        <div className="sticky top-0 z-[100] bg-white shadow-sm mx-shell-header !px-0">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 w-full">
+            <div className="flex items-center gap-3 min-w-0">
               <MobileHamburgerButton />
-              <div className="flex items-center gap-2">
-                <img src="/logo.png" alt="GatiMitra" className="h-7 w-auto object-contain" />
-                <span className="text-xs font-medium uppercase tracking-wider text-slate-500 hidden sm:inline">
-                  Refund Policy
-                </span>
-              </div>
             </div>
           </div>
         </div>

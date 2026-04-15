@@ -10,12 +10,9 @@ function isTicketPresenceRole(v: unknown): v is TicketPresenceRole {
 
 function roleFromPresenceMeta(meta: object): TicketPresenceRole | null {
   const rec = meta as Record<string, unknown>;
-  const direct = rec.role;
-  if (isTicketPresenceRole(direct)) return direct;
-  const nested = rec.payload;
-  if (nested != null && typeof nested === "object") {
-    const p = (nested as Record<string, unknown>).role;
-    if (isTicketPresenceRole(p)) return p;
+  const candidates = [rec.role, rec.user_role, (rec.payload as Record<string, unknown> | undefined)?.role];
+  for (const c of candidates) {
+    if (isTicketPresenceRole(c)) return c;
   }
   return null;
 }

@@ -60,10 +60,11 @@ export function getConfig(): {
   const fromExtra =
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
     (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
-  const raw =
+  const raw = (
     asNonEmptyString(fromEnv) ??
     asNonEmptyString(fromExtra) ??
-    "http://localhost:3000";
+    "http://localhost:3000"
+  ).trim();
   const storeIdEnv = process.env.EXPO_PUBLIC_STORE_ID ??
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.STORE_ID ??
     (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.STORE_ID;

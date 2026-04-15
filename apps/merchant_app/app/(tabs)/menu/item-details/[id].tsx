@@ -11,7 +11,12 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, TAB_BAR_HEIGHT, SCROLL_BOTTOM_SAFE } from "@/constants/theme";
+import {
+  GatiMitraMerchant,
+  H_PADDING,
+  CARD_RADIUS,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
+} from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { fetchMenuItem, type MenuItemDetail } from "@/services/menuApi";
@@ -80,8 +85,7 @@ export default function ItemDetailsScreen() {
     };
   }, [storeId, token, id, numericId]);
 
-  const scrollBottomPadding =
-    TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom + 16;
+  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING + 16;
 
   const imageUri =
     item?.images?.[0]?.image_url != null

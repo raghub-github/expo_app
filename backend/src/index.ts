@@ -284,6 +284,14 @@ process.on("uncaughtException", (error) => {
 
 process.on("unhandledRejection", (reason, promise) => {
   app.log.error({ reason, promise }, "Unhandled rejection");
+  // Statement timeout (57014) is often load/index related; don't take down the API process.
+  const code =
+    reason && typeof reason === "object" && "code" in reason
+      ? String((reason as { code?: unknown }).code)
+      : "";
+  if (code === "57014") {
+    return;
+  }
   gracefulShutdown("unhandledRejection");
 });
 

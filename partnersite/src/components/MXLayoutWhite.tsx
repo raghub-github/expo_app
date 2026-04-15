@@ -1,8 +1,9 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import UserHeader from './UserHeader'
+import { PartnerShellHeaderProvider } from '@/context/PartnerShellHeaderContext'
 import { MXSidebarWhite } from './MXSidebarWhite'
+import { MXPartnerTopBar } from './MXPartnerTopBar'
 import NeedHelpBadge from './NeedHelpBadge'
 import { ParentBlockedBanner } from './ParentBlockedBanner'
 
@@ -20,6 +21,9 @@ interface MXLayoutWhiteProps {
   sidebarFilters?: React.ReactNode
   /** When true, hides the Need Help Badge */
   hideHelpBadge?: boolean
+  /** Shown in partner top bar center (e.g. Dashboard) */
+  headerTitle?: string
+  headerSubtitle?: string
 }
 
 export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
@@ -31,6 +35,8 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
   mobileMenuExtra,
   sidebarFilters,
   hideHelpBadge = false,
+  headerTitle,
+  headerSubtitle,
 }) => {
   const isRight = sidebarPosition === 'right';
   // Small/mobile (≤767px): sidebar stays collapsed; never allow expand. Desktop: unchanged.
@@ -49,24 +55,37 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
     else setEffectiveCollapsed(false);
   }, [leftSidebarCollapsed, isSmallScreen]);
   return (
-    <div className="flex bg-white h-screen overflow-hidden">
-      <MXSidebarWhite
-        restaurantName={restaurantName}
-        restaurantId={restaurantId}
-        position={sidebarPosition}
-        collapsed={effectiveCollapsed}
-        onCollapsedChange={(v) => { if (!isSmallScreen) setEffectiveCollapsed(v); }}
-        mobileMenuExtra={mobileMenuExtra}
-        sidebarFilters={sidebarFilters}
-      />
-      <main className={`flex-1 flex flex-col overflow-hidden h-full relative z-0 transition-[margin] duration-200 ${effectiveCollapsed ? (isRight ? 'mr-0 md:mr-16' : 'ml-0 md:ml-16') : (isRight ? 'mr-0 md:mr-64' : 'ml-0 md:ml-64')}`}>
-        <ParentBlockedBanner />
-        <div className="bg-white flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-h-0 scroll-smooth">
-          {children}
+    <PartnerShellHeaderProvider>
+      <div className="flex flex-col bg-white h-screen overflow-hidden">
+        {!isRight && (
+          <MXPartnerTopBar
+            restaurantName={restaurantName}
+            restaurantId={restaurantId}
+            sidebarCollapsed={effectiveCollapsed}
+            headerTitle={headerTitle}
+            headerSubtitle={headerSubtitle}
+          />
+        )}
+        <div className="flex flex-1 min-h-0 overflow-hidden relative">
+          <MXSidebarWhite
+            restaurantName={restaurantName}
+            restaurantId={restaurantId}
+            position={sidebarPosition}
+            collapsed={effectiveCollapsed}
+            onCollapsedChange={(v) => { if (!isSmallScreen) setEffectiveCollapsed(v); }}
+            mobileMenuExtra={mobileMenuExtra}
+            sidebarFilters={sidebarFilters}
+            partnerShell={!isRight}
+          />
+          <main className={`flex-1 flex flex-col overflow-hidden h-full relative z-0 transition-[margin] duration-200 ${effectiveCollapsed ? (isRight ? 'mr-0 md:mr-14' : 'ml-0 md:ml-14') : (isRight ? 'mr-0 md:mr-52' : 'ml-0 md:ml-52')}`}>
+            <ParentBlockedBanner />
+            <div className="bg-white flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-h-0 scroll-smooth">
+              {children}
+            </div>
+          </main>
         </div>
-      </main>
-      {/* Need Help Badge (fixed, always visible unless hidden) */}
-      {!hideHelpBadge && <NeedHelpBadge />}
-    </div>
+        {!hideHelpBadge && <NeedHelpBadge />}
+      </div>
+    </PartnerShellHeaderProvider>
   )
 }

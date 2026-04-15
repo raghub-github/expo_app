@@ -6,15 +6,7 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
-import {
-  Menu,
-  X,
-  ChevronLeft,
-  ChevronRight,
-  LayoutDashboard,
-  LogOut,
-} from "lucide-react";
-import { Logo } from "@/components/brand/Logo";
+import { X, ChevronLeft, LogOut } from "lucide-react";
 import { useDashboardAccess } from "@/hooks/useDashboardAccess";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useAuth } from "@/providers/AuthProvider";
@@ -192,15 +184,15 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
   if (showSkeleton) {
     return (
       <aside className={sidebarBase} style={asideStyle}>
-        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
+        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-2.5 shrink-0">
           {isOpen ? (
-            <div className="flex items-center gap-2.5 flex-1 min-w-0">
-              <div className="h-9 w-9 rounded-xl bg-white/15 animate-pulse shrink-0" />
+            <div className="flex items-center gap-2.5 flex-1 min-w-0 pl-3">
+              <div className="h-10 w-10 rounded-full bg-white/15 animate-pulse shrink-0" />
               <div className="h-4 w-24 rounded-lg bg-white/15 animate-pulse" />
             </div>
           ) : (
-            <div className="flex items-center justify-center w-full">
-              <div className="h-9 w-9 rounded-xl bg-white/15 animate-pulse" />
+            <div className="flex w-full items-center justify-start pl-3">
+              <div className="h-10 w-10 rounded-full bg-white/15 animate-pulse shrink-0" />
             </div>
           )}
         </div>
@@ -229,12 +221,12 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
     <>
       <aside className={sidebarBase} style={asideStyle}>
         {/* LOGO - top */}
-        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-3 shrink-0">
+        <div className="flex h-14 min-h-14 items-center justify-between border-b border-white/10 px-2.5 shrink-0">
           {isOpen ? (
             <>
               <Link
                 href="/dashboard"
-                className="flex items-center gap-2.5 flex-1 min-w-0"
+                className="flex flex-1 min-w-0 items-center gap-2.5 pl-3 pr-1"
                 onMouseDown={(e) => {
                   if (e.button !== 0) return;
                   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -255,7 +247,14 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                   }
                 }}
               >
-                <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
+                <Image
+                  src="/onlylogo.png"
+                  alt="GatiMitra"
+                  width={42}
+                  height={42}
+                  className="size-[42px] shrink-0 object-contain"
+                  priority
+                />
                 <span className="text-sm font-semibold text-white truncate">GatiMitra</span>
               </Link>
               <button onClick={onToggle} className="rounded-lg p-1.5 text-white/70 hover:bg-white/10 hover:text-white lg:hidden" aria-label="Close sidebar">
@@ -265,7 +264,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
           ) : (
             <Link
               href="/dashboard"
-              className="flex items-center justify-center w-full max-lg:justify-start max-lg:gap-2.5 max-lg:px-1"
+              className="flex w-full items-center justify-start gap-2.5 pl-3 pr-2 max-lg:pl-3"
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
                 if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -286,7 +285,14 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                 }
               }}
             >
-              <Image src="/onlylogo.png" alt="GatiMitra" width={36} height={36} className="object-contain shrink-0 rounded-lg" priority />
+              <Image
+                src="/onlylogo.png"
+                alt="GatiMitra"
+                width={44}
+                height={44}
+                className="size-11 shrink-0 object-contain"
+                priority
+              />
               <span className="text-sm font-semibold text-white truncate lg:hidden">GatiMitra</span>
             </Link>
           )}
@@ -341,7 +347,7 @@ export function HierarchicalSidebar({ isOpen, onToggle, isInSpecificDashboard: p
                             ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg shadow-blue-500/25"
                             : "text-white/85 hover:bg-white/10 hover:text-white"
                         }`
-                      : `justify-center p-2.5 lg:justify-center ${
+                      : `justify-center p-2.5 lg:justify-start lg:px-3 lg:py-2.5 ${
                           isActive
                             ? "bg-gradient-to-r from-blue-500/90 to-indigo-500/90 text-white shadow-lg"
                             : "text-white/85 hover:bg-white/10 hover:text-white"

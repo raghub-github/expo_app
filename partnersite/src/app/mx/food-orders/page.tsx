@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { Toaster, toast } from 'sonner';
 import {
   Clock,
@@ -20,12 +21,12 @@ import {
   X,
   Printer,
   ChevronLeft,
-  Sparkles,
   LayoutGrid,
   List,
   Phone,
   MapPin,
-  SlidersHorizontal,
+  Search,
+  ChevronDown,
   Loader2,
   Power,
   Check,
@@ -40,6 +41,7 @@ import { MerchantStore } from '@/lib/merchantStore';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
+import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -54,16 +56,40 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: 'Cancelled',
 };
 
-const STATUS_FILTERS = [
-  { id: 'CREATED', label: 'Created', color: 'bg-red-100 text-red-800 border-red-200' },
-  { id: 'ACCEPTED', label: 'Accepted', color: 'bg-blue-100 text-blue-800 border-blue-200' },
-  { id: 'PREPARING', label: 'Preparing', color: 'bg-amber-100 text-amber-800 border-amber-200' },
-  { id: 'READY_FOR_PICKUP', label: 'Ready', color: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
-  { id: 'OUT_FOR_DELIVERY', label: 'Dispatch', color: 'bg-purple-100 text-purple-800 border-purple-200' },
-  { id: 'DELIVERED', label: 'Delivered', color: 'bg-green-100 text-green-800 border-green-200' },
-  { id: 'RTO', label: 'RTO', color: 'bg-orange-100 text-orange-800 border-orange-200' },
-  { id: 'CANCELLED', label: 'Cancelled', color: 'bg-gray-100 text-gray-700 border-gray-200' },
-];
+/** Right sidebar: pipeline “Preparing” includes new + accepted + actively preparing */
+const PREPARING_PIPELINE = new Set(['CREATED', 'NEW', 'ACCEPTED', 'PREPARING']);
+
+const FOOD_ORDERS_SIDEBAR_FILTERS = [
+  { id: 'PREPARING', label: 'Preparing' },
+  { id: 'READY_FOR_PICKUP', label: 'Ready' },
+  { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
+  { id: 'RTO', label: 'RTO' },
+] as const;
+
+type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
+
+function normOrderStatus(s: string | null | undefined) {
+  return s === 'NEW' ? 'CREATED' : s || 'CREATED';
+}
+
+function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
+  const st = normOrderStatus(order.order_status);
+  if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
+  if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
+  if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
+  if (filterId === 'RTO') return st === 'RTO';
+  return false;
+}
+
+/** Zomato-style pills: orange active, white inactive (GatiMitra partner shell) */
+const SIDEBAR_ACTIVE_CLASS = 'bg-orange-500 text-white border-orange-500 shadow-sm';
+const SIDEBAR_INACTIVE_CLASS = 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50';
+
+function prepDeadlineMs(order: OrdersFoodRow): number {
+  const base = order.accepted_at || order.created_at;
+  const mins = Number(order.preparation_time_minutes) || 30;
+  return new Date(base).getTime() + mins * 60 * 1000;
+}
 
 function formatVegNonVeg(v: string | null): string {
   if (!v || v === 'na') return '—';
@@ -151,7 +177,7 @@ function OrdersPageContent() {
   const [storeInternalId, setStoreInternalId] = useState<number | null>(null);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
-  const [filter, setFilter] = useState<string>('all');
+  const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
@@ -187,6 +213,18 @@ function OrdersPageContent() {
       .finally(() => setRidersLogLoading(false));
   }, [ridersLogModalOrderId]);
 
+  useEffect(() => {
+    if (ridersLogModalOrderId == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setRidersLogModalOrderId(null);
+        setRidersLogModalOrderLabel(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [ridersLogModalOrderId]);
+
   const [otpInput, setOtpInput] = useState('');
   const [otpVerified, setOtpVerified] = useState<Set<number>>(new Set());
   const [otpCache, setOtpCache] = useState<Record<number, { otp_code: string; otp_type: string }>>({});
@@ -207,7 +245,6 @@ function OrdersPageContent() {
   const [closeReason, setCloseReason] = useState('');
   const [closeReasonOther, setCloseReasonOther] = useState('');
   const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
-  const [openingTimeForClose, setOpeningTimeForClose] = useState('09:00');
   const [showTurnOnModal, setShowTurnOnModal] = useState(false);
   const [turnOnLoading, setTurnOnLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() => {
@@ -222,15 +259,15 @@ function OrdersPageContent() {
     } catch { return 'card'; }
   });
 
-  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  const [orderSort, setOrderSort] = useState<'remaining' | 'newest' | 'oldest'>('remaining');
+  const [orderIdSearch, setOrderIdSearch] = useState('');
   const hasNotifiedNew = useRef<Set<number>>(new Set());
 
   const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null }) => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(searchParams?.toString() || '');
     if (updates.filter !== undefined) {
-      if (updates.filter === 'all') params.delete('filter');
-      else params.set('filter', updates.filter);
+      params.set('filter', updates.filter);
     }
     if (updates.orderId !== undefined) {
       if (!updates.orderId) params.delete('orderId');
@@ -287,9 +324,9 @@ function OrdersPageContent() {
     setFilter(f);
     setRightPanelOpen(false);
     setSelectedOrder(null);
-    setFilterDrawerOpen(false);
     updateUrlParams({ filter: f, orderId: null });
   }, [updateUrlParams]);
+
   const { subscribe } = useFoodOrders(storeId, storeInternalId);
   const playNewOrderSound = useNewOrderSound(notifyEnabled);
 
@@ -302,10 +339,14 @@ function OrdersPageContent() {
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    if (f && ['all', 'active', 'CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'].includes(f)) {
-      setFilter(f === 'NEW' ? 'CREATED' : f);
+    const valid = new Set<string>(['PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
+    if (f && valid.has(f)) {
+      setFilter(f);
+    } else {
+      setFilter('PREPARING');
+      updateUrlParams({ filter: 'PREPARING' });
     }
-  }, [searchParams]);
+  }, [searchParams?.toString(), updateUrlParams]);
 
   const orderIdFromUrl = searchParams?.get('orderId') || null;
 
@@ -554,45 +595,30 @@ function OrdersPageContent() {
     setCloseClosureType(null);
     setCloseReason('');
     setCloseReasonOther('');
-    fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.today_slots?.[0]?.start) setOpeningTimeForClose(data.today_slots[0].start);
-      })
-      .catch(() => {});
   }, [showStoreCloseModal, storeId]);
-
-  const formatTimeHMS = useCallback((t: string) => {
-    if (!t) return '00:00:00';
-    const parts = t.split(':');
-    if (parts.length === 2) return `${t}:00`;
-    if (parts.length === 1) return `${t.padStart(2, '0')}:00:00`;
-    return t;
-  }, []);
 
   const confirmStoreClose = useCallback(async () => {
     if (!storeId || !closeClosureType) return;
     setCloseConfirmLoading(true);
-    const now = new Date();
-    let durationMinutes: number | undefined;
+    let manualCloseUntilIso: string | undefined;
     if (closeClosureType === 'temporary') {
       const closedUntil = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
-      durationMinutes = Math.max(1, Math.round((closedUntil.getTime() - now.getTime()) / (1000 * 60)));
-    } else if (closeClosureType === 'today') {
-      const [h, m] = openingTimeForClose.split(':').map(Number);
-      const tomorrowOpen = new Date(now);
-      tomorrowOpen.setDate(tomorrowOpen.getDate() + 1);
-      tomorrowOpen.setHours(h, m, 0, 0);
-      durationMinutes = Math.max(1, Math.round((tomorrowOpen.getTime() - now.getTime()) / (1000 * 60)));
+      manualCloseUntilIso = closedUntil.toISOString();
     }
     const reasonText = closeReason === 'Other' ? (closeReasonOther?.trim() || 'Other') : closeReason;
-    const body: { store_id: string; action: string; closure_type: string; duration_minutes?: number; close_reason?: string } = {
+    const body: {
+      store_id: string;
+      action: string;
+      closure_type: string;
+      manual_close_until?: string;
+      close_reason?: string;
+    } = {
       store_id: storeId,
       action: 'manual_close',
       closure_type: closeClosureType,
       close_reason: reasonText,
     };
-    if (durationMinutes != null) body.duration_minutes = durationMinutes;
+    if (manualCloseUntilIso) body.manual_close_until = manualCloseUntilIso;
     try {
       const res = await fetch('/api/store-operations', {
         method: 'POST',
@@ -611,7 +637,7 @@ function OrdersPageContent() {
         else if (closeClosureType === 'temporary') {
           const until = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
           toast.success(`Store closed until ${until.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}. You can also turn it ON manually anytime.`);
-        } else toast.success(`Store closed for today. Reopens tomorrow at ${openingTimeForClose}`);
+        } else toast.success('Store closed for the rest of today (IST). You can turn it ON anytime.');
       } else {
         toast.error(data.error || 'Failed to close store');
       }
@@ -620,7 +646,7 @@ function OrdersPageContent() {
     } finally {
       setCloseConfirmLoading(false);
     }
-  }, [storeId, closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, openingTimeForClose]);
+  }, [storeId, closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther]);
 
   const handleStoreCloseModalConfirm = useCallback(() => {
     if (!closeClosureType) {
@@ -695,25 +721,48 @@ function OrdersPageContent() {
     [storeId, selectedOrder, closeOrderPanel]
   );
 
-  const norm = (s: string | null | undefined) => (s === 'NEW' ? 'CREATED' : s || 'CREATED');
-  const filteredOrders =
-    filter === 'all'
-      ? orders
-      : filter === 'active'
-        ? orders.filter((o) =>
-            ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(o.order_status || 'CREATED')
-          )
-        : orders.filter((o) => norm(o.order_status) === filter);
+  const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
 
-  const counts: Record<string, number> = {};
-  orders.forEach((o) => {
-    const s = norm(o.order_status);
-    counts[s] = (counts[s] || 0) + 1;
-  });
+  const displayOrders = useMemo(() => {
+    let list = [...filteredOrders];
+    const digitsOnly = orderIdSearch.replace(/\D/g, '');
+    if (digitsOnly.length >= 4) {
+      const last4 = digitsOnly.slice(-4);
+      list = list.filter((o) => {
+        const fd = (o.formatted_order_id || '').replace(/\D/g, '');
+        if (fd.slice(-4) === last4) return true;
+        const oid = String(o.order_id).replace(/\D/g, '');
+        return oid.slice(-4) === last4;
+      });
+    }
+    if (orderSort === 'newest') {
+      list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    } else if (orderSort === 'oldest') {
+      list.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    } else {
+      list.sort((a, b) => prepDeadlineMs(a) - prepDeadlineMs(b));
+    }
+    return list;
+  }, [filteredOrders, orderIdSearch, orderSort]);
+
+  const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
+    PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
+    READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
+    OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
+    RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
+  };
+
+  const foodOrdersEmptyVariant = useMemo(() => {
+    if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search' as const;
+    if (filter === 'PREPARING' || filter === 'READY_FOR_PICKUP' || filter === 'OUT_FOR_DELIVERY' || filter === 'RTO') {
+      return filter;
+    }
+    return 'PREPARING' as const;
+  }, [filteredOrders.length, displayOrders.length, filter]);
 
   if (loading && orders.length === 0) {
     return (
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} leftSidebarCollapsed>
+      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
         <PageSkeletonOrders />
       </MXLayoutWhite>
     );
@@ -738,24 +787,19 @@ function OrdersPageContent() {
 
   return (
     <>
-    <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} leftSidebarCollapsed mobileMenuExtra={mobileStatsExtra}>
+    <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
       <Toaster position="top-right" richColors />
+      <PartnerPageHeader title="Food Orders" subtitle={store?.store_name || undefined} />
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
-        {/* Header: full width, extends over sidebar area so controls align with right sidebar */}
-        <header id="food-orders-header" className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0">
-          <div className="w-full px-3 sm:px-4 py-2 sm:py-3">
+        <header id="food-orders-header" className="sticky top-0 z-20 bg-white shrink-0">
+          <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
             {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
+            <div className="flex w-full min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
               {/* Row 1 (mobile) / Left (desktop): On mobile Today+Active on right. On desktop title + all stats on left */}
               <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar">
                 {/* Hamburger menu on left (mobile) */}
                 <div className="md:hidden mr-2">
                   <MobileHamburgerButton />
-                </div>
-                {/* Title - always visible on desktop */}
-                <div className="hidden md:flex items-center gap-2 shrink-0">
-                  <Sparkles className="w-5 h-5 text-orange-500 shrink-0" />
-                  <h1 className="text-lg font-bold text-gray-900 whitespace-nowrap">Food Orders</h1>
                 </div>
                 {stats && (
                   <div className="flex items-center gap-2 shrink-0">
@@ -771,16 +815,7 @@ function OrdersPageContent() {
                   </div>
                 )}
               </div>
-              {/* Row 2 (mobile) / Right (desktop): Filter, status button, sound (+ grid toggle on desktop) */}
-              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 lg:w-64 lg:pl-4">
-                <button
-                  onClick={() => setFilterDrawerOpen(true)}
-                  className="lg:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200 whitespace-nowrap"
-                  title="Filter orders"
-                >
-                  <SlidersHorizontal size={14} />
-                  Filter
-                </button>
+              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
               <button
                 onClick={handleStoreToggle}
                 disabled={isStoreOpen === null}
@@ -827,9 +862,56 @@ function OrdersPageContent() {
               </div>
             </div>
           </div>
+          {/* Status pills + sort + search (Zomato-style band) */}
+          <div className="border-t border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                {FOOD_ORDERS_SIDEBAR_FILTERS.map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => handleFilterChange(id)}
+                    className={`px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
+                      filter === id ? SIDEBAR_ACTIVE_CLASS : SIDEBAR_INACTIVE_CLASS
+                    }`}
+                  >
+                    {label} ({sidebarFilterCounts[id]})
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full xl:w-auto xl:shrink-0">
+                <div className="relative w-full sm:w-auto sm:min-w-[180px]">
+                  <select
+                    value={orderSort}
+                    onChange={(e) => setOrderSort(e.target.value as 'remaining' | 'newest' | 'oldest')}
+                    className="w-full appearance-none pl-3 pr-9 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-800 cursor-pointer"
+                    aria-label="Sort orders"
+                  >
+                    <optgroup label="Placed at">
+                      <option value="newest">Newest first</option>
+                      <option value="oldest">Oldest first</option>
+                    </optgroup>
+                    <option value="remaining">Prep time left</option>
+                  </select>
+                  <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 pointer-events-none" aria-hidden />
+                </div>
+                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                  <input
+                    type="search"
+                    inputMode="numeric"
+                    placeholder="Search by the 4 digit order ID"
+                    value={orderIdSearch}
+                    onChange={(e) => setOrderIdSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </header>
 
-        <div className="flex flex-1 min-h-0 lg:pr-64 overflow-hidden">
+        <div className="flex flex-1 min-h-0 overflow-hidden">
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
             {/* Desktop (lg+): When order open, split layout. Mobile: full-screen overlay on card click */}
@@ -1167,7 +1249,7 @@ function OrdersPageContent() {
                 <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4 order-2">
                   <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
                     <div className="space-y-3 pr-1">
-                      {filteredOrders.map((order) => (
+                      {displayOrders.map((order) => (
                         <OrderCard
                           key={order.id}
                           order={order}
@@ -1193,12 +1275,7 @@ function OrdersPageContent() {
                         />
                       ))}
                     </div>
-                    {filteredOrders.length === 0 && (
-                      <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                        <Package className="w-12 h-12 mb-3 opacity-50" />
-                        <p className="text-sm font-medium">No orders in this filter</p>
-                      </div>
-                    )}
+                    {displayOrders.length === 0 && <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />}
                   </div>
                 </div>
               </>
@@ -1207,179 +1284,73 @@ function OrdersPageContent() {
             {/* Main order cards / list - full width when no order open */}
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
               {viewMode === 'card' ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
-                {filteredOrders.map((order) => (
-                  <OrderCard
-                    key={order.id}
-                    order={order}
-                    selected={selectedOrder?.id === order.id}
-                    onClick={() => openOrder(order)}
-                    onAccept={() => updateStatus(order, 'ACCEPTED')}
-                    onReject={() => setRejectModal(order)}
-                    onPreparing={() => updateStatus(order, 'PREPARING')}
-                    onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
-                    onDispatch={() => {
-                      fetchOtp(order.id);
-                      setDispatchModal(order);
-                      setOtpInput('');
-                    }}
-                    onRto={() => setRtoModalOrder(order)}
-                    onComplete={() => updateStatus(order, 'DELIVERED')}
-                    loading={actionLoading === order.id}
-                    otpCode={otpCache[order.id]?.otp_code}
-                    otpType={otpCache[order.id]?.otp_type}
-                    otpVerified={otpVerified.has(order.id)}
-                    onFetchOtp={() => fetchOtp(order.id)}
-                    statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
-                  />
-                ))}
-              </div>
-              ) : (
-              // List view - only shown on large screens (lg+)
-              <div className="hidden lg:block space-y-2">
-                {filteredOrders.map((order) => (
-                  <OrderListRow
-                    key={order.id}
-                    order={order}
-                    selected={selectedOrder?.id === order.id}
-                    onClick={() => openOrder(order)}
-                    onAccept={() => updateStatus(order, 'ACCEPTED')}
-                    onReject={() => setRejectModal(order)}
-                    onPreparing={() => updateStatus(order, 'PREPARING')}
-                    onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
-                    onDispatch={() => setDispatchModal(order)}
-                    onRto={() => setRtoModalOrder(order)}
-                    onComplete={() => updateStatus(order, 'DELIVERED')}
-                    loading={actionLoading === order.id}
-                    otpCode={otpCache[order.id]?.otp_code}
-                    otpType={otpCache[order.id]?.otp_type}
-                    otpVerified={otpVerified.has(order.id)}
-                    onFetchOtp={() => fetchOtp(order.id)}
-                    statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
-                  />
-                ))}
-                {filteredOrders.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                    <Package className="w-12 h-12 mb-3 opacity-50" />
-                    <p className="text-sm font-medium">No orders in this filter</p>
+                displayOrders.length === 0 ? (
+                  <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
+                    {displayOrders.map((order) => (
+                      <OrderCard
+                        key={order.id}
+                        order={order}
+                        selected={selectedOrder?.id === order.id}
+                        onClick={() => openOrder(order)}
+                        onAccept={() => updateStatus(order, 'ACCEPTED')}
+                        onReject={() => setRejectModal(order)}
+                        onPreparing={() => updateStatus(order, 'PREPARING')}
+                        onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                        onDispatch={() => {
+                          fetchOtp(order.id);
+                          setDispatchModal(order);
+                          setOtpInput('');
+                        }}
+                        onRto={() => setRtoModalOrder(order)}
+                        onComplete={() => updateStatus(order, 'DELIVERED')}
+                        loading={actionLoading === order.id}
+                        otpCode={otpCache[order.id]?.otp_code}
+                        otpType={otpCache[order.id]?.otp_type}
+                        otpVerified={otpVerified.has(order.id)}
+                        onFetchOtp={() => fetchOtp(order.id)}
+                        statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                      />
+                    ))}
                   </div>
-                )}
-              </div>
-              )}
-              {filteredOrders.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                  <Package className="w-12 h-12 mb-3 opacity-50" />
-                  <p className="text-sm font-medium">No orders in this filter</p>
+                )
+              ) : (
+                <div className="hidden lg:block space-y-2">
+                  {displayOrders.length === 0 ? (
+                    <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />
+                  ) : (
+                    displayOrders.map((order) => (
+                      <OrderListRow
+                        key={order.id}
+                        order={order}
+                        selected={selectedOrder?.id === order.id}
+                        onClick={() => openOrder(order)}
+                        onAccept={() => updateStatus(order, 'ACCEPTED')}
+                        onReject={() => setRejectModal(order)}
+                        onPreparing={() => updateStatus(order, 'PREPARING')}
+                        onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                        onDispatch={() => setDispatchModal(order)}
+                        onRto={() => setRtoModalOrder(order)}
+                        onComplete={() => updateStatus(order, 'DELIVERED')}
+                        loading={actionLoading === order.id}
+                        otpCode={otpCache[order.id]?.otp_code}
+                        otpType={otpCache[order.id]?.otp_type}
+                        otpVerified={otpVerified.has(order.id)}
+                        onFetchOtp={() => fetchOtp(order.id)}
+                        statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                      />
+                    ))
+                  )}
                 </div>
               )}
             </div>
               </>
             )}
-
-            {/* Right filters sidebar - fixed on right, starts below header */}
-            <div className="hidden lg:flex fixed right-0 top-16 bottom-0 w-64 flex-col border-l border-gray-200 bg-white shadow-lg z-30">
-              <div className="flex-1 overflow-y-auto hide-scrollbar p-3 pb-20 space-y-1">
-                <button
-                  onClick={() => handleFilterChange('all')}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium ${
-                    filter === 'all' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  All ({orders.length})
-                </button>
-                <button
-                  onClick={() => handleFilterChange('active')}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                    filter === 'active' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  Active
-                  <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                    {orders.filter((o) =>
-                      ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(
-                        o.order_status || 'CREATED'
-                      )
-                    ).length}
-                  </span>
-                </button>
-                {STATUS_FILTERS.map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => handleFilterChange(f.id)}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                      filter === f.id ? 'bg-orange-100 text-orange-700' : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    {f.label}
-                    {(counts[f.id] || 0) > 0 && (
-                      <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-                        {counts[f.id]}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
           </div>
         </div>
       </div>
-
-      {/* Mobile filter drawer */}
-      {filterDrawerOpen && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setFilterDrawerOpen(false)} />
-          <div className="fixed top-0 right-0 bottom-0 w-64 max-w-[85vw] min-w-[240px] bg-white border-l border-gray-200 z-50 lg:hidden overflow-y-auto hide-scrollbar shadow-xl" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
-            <div className="p-4 flex items-center justify-between border-b border-gray-200 sticky top-0 bg-white">
-              <h3 className="font-semibold text-gray-900">Filter by status</h3>
-              <button onClick={() => setFilterDrawerOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="p-3 space-y-1">
-              <button
-                onClick={() => handleFilterChange('all')}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium ${
-                  filter === 'all' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                All ({orders.length})
-              </button>
-              <button
-                onClick={() => handleFilterChange('active')}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                  filter === 'active' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                Active
-                <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                  {orders.filter((o) =>
-                    ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(
-                      o.order_status || 'CREATED'
-                    )
-                  ).length}
-                </span>
-              </button>
-              {STATUS_FILTERS.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => handleFilterChange(f.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                    filter === f.id ? 'bg-orange-100 text-orange-700' : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {f.label}
-                  {(counts[f.id] || 0) > 0 && (
-                    <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-                      {counts[f.id]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Reject modal – portaled so overlay is above sidebar (z-50); backdrop-blur covers full screen */}
       {rejectModal && typeof document !== 'undefined' && createPortal(
@@ -1518,29 +1489,39 @@ function OrdersPageContent() {
         document.body
       )}
 
-      {/* Rider's log modal – all riders assigned to this order */}
+      {/* Rider's log – right sheet (all riders assigned to this order) */}
       {ridersLogModalOrderId != null && typeof document !== 'undefined' && createPortal(
-        <div
-          className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-end sm:items-center justify-center z-[100] p-3 sm:p-4"
-          onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Close modal"
-        >
-          <div
-            className="bg-white rounded-t-xl sm:rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-hidden flex flex-col"
+        <div className="fixed inset-0 z-[95] flex justify-end" role="presentation">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+            aria-label="Close rider log"
+            onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
+          />
+          <aside
+            className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="riders-log-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="shrink-0 flex items-center justify-between p-4 border-b border-gray-200">
-              <h3 className="font-semibold text-gray-900">
+            <div className="mx-sheet-header justify-between gap-3 !px-4">
+              <h3 id="riders-log-title" className="font-semibold text-gray-900 pr-2">
                 Rider&apos;s log
-                {ridersLogModalOrderLabel && <span className="text-gray-500 font-medium ml-1.5">({ridersLogModalOrderLabel})</span>}
+                {ridersLogModalOrderLabel && (
+                  <span className="text-gray-500 font-medium ml-1.5">({ridersLogModalOrderLabel})</span>
+                )}
               </h3>
-              <button type="button" onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors" aria-label="Close">
+              <button
+                type="button"
+                onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
+                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
+                aria-label="Close"
+              >
                 <X size={18} className="text-gray-500" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="flex-1 overflow-y-auto p-4 min-h-0">
               {ridersLogLoading ? (
                 <p className="text-sm text-gray-500">Loading...</p>
               ) : ridersLogList.length === 0 ? (
@@ -1548,7 +1529,8 @@ function OrdersPageContent() {
               ) : (
                 <ul className="space-y-3">
                   {ridersLogList.map((r, idx) => {
-                    const fmt = (s: string | null) => (s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—');
+                    const fmt = (s: string | null) =>
+                      s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—';
                     return (
                       <li key={`${r.rider_id}-${idx}`} className="p-3 rounded-lg border border-gray-200 bg-gray-50/50">
                         <div className="flex items-start gap-3">
@@ -1556,7 +1538,7 @@ function OrdersPageContent() {
                             <button
                               type="button"
                               onClick={() => setRiderImageModalUrl(r.selfie_url)}
-                              className="shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                              className="shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
                             >
                               <img src={r.selfie_url} alt={r.rider_name || 'Rider'} className="w-full h-full object-cover" />
                             </button>
@@ -1568,7 +1550,9 @@ function OrdersPageContent() {
                           <div className="min-w-0 flex-1 text-sm">
                             <p className="font-semibold text-gray-900">{r.rider_name || `Rider #${r.rider_id}`}</p>
                             {r.rider_mobile && (
-                              <a href={`tel:${r.rider_mobile}`} className="text-purple-600 hover:underline">{r.rider_mobile}</a>
+                              <a href={`tel:${r.rider_mobile}`} className="text-purple-600 hover:underline">
+                                {r.rider_mobile}
+                              </a>
                             )}
                             <p className="text-[10px] text-gray-500 mt-1 capitalize">{r.assignment_status?.replace(/_/g, ' ')}</p>
                             <div className="mt-2 text-[10px] text-gray-600 space-y-0.5">
@@ -1588,7 +1572,7 @@ function OrdersPageContent() {
                 </ul>
               )}
             </div>
-          </div>
+          </aside>
         </div>,
         document.body
       )}
@@ -1652,7 +1636,7 @@ function OrdersPageContent() {
                 <input type="radio" name="closureType" checked={closeClosureType === 'today'} onChange={() => setCloseClosureType('today')} className="w-4 h-4" />
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-gray-900">Close for Today</p>
-                  <p className="text-xs text-gray-600">Reopen tomorrow at {formatTimeHMS(openingTimeForClose)}</p>
+                  <p className="text-xs text-gray-600">Closed until end of today (India time). Schedule can resume tomorrow.</p>
                 </div>
               </label>
               <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${closeClosureType === 'manual_hold' ? 'bg-amber-50 border-amber-400' : 'border-gray-200 hover:border-amber-200'}`}>

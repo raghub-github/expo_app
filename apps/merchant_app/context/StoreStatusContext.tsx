@@ -14,7 +14,7 @@ import {
 const STATUS_CACHE_KEY_PREFIX = "merchant_store_status_";
 
 /** Poll interval for real-time status (schedule changes, auto open/close). */
-const STATUS_POLL_INTERVAL_MS = 3_000;
+const STATUS_POLL_INTERVAL_MS = 8_000;
 
 export type CloseStoreOptions = {
   manual_close_until?: string | null;
@@ -28,7 +28,7 @@ type StoreStatusContextValue = {
   /** Set store closed with options (e.g. "closed for today"). Use when store may already be offline. */
   closeStore: (closeOptions: CloseStoreOptions) => Promise<void>;
   refresh: () => Promise<void>;
-  /** Timestamp of last successful refresh; use to trigger dependent refetches (e.g. operating hours). */
+  /** Timestamp of last successful GET /status refresh (for UI / diagnostics). */
   lastRefreshedAt: number | null;
   autoOpenFromSchedule: boolean;
   manualActivationLock: boolean;

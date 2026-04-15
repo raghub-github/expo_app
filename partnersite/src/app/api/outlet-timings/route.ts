@@ -210,17 +210,18 @@ export async function GET(req: NextRequest) {
     .from('merchant_store_operating_hours')
     .select('*')
     .eq('store_id', store_id)
-    .single();
+    .maybeSingle();
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  if (data) {
-    for (const day of DAYS) {
-      for (const suffix of ['_slot1_start', '_slot1_end', '_slot2_start', '_slot2_end']) {
-        const field = `${day}${suffix}`;
-        if (data[field]) {
-          data[field] = normalizeTime(data[field]);
-        }
+  if (!data) {
+    return NextResponse.json(null, { status: 200 });
+  }
+  for (const day of DAYS) {
+    for (const suffix of ['_slot1_start', '_slot1_end', '_slot2_start', '_slot2_end']) {
+      const field = `${day}${suffix}`;
+      if (data[field]) {
+        data[field] = normalizeTime(data[field]);
       }
     }
   }

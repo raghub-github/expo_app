@@ -19,6 +19,67 @@ import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 
+/** Ensures JWT device_id always has a matching active row (reactivates if user logs in again). */
+async function persistMerchantDeviceSessionForMerchant(
+  sql: ReturnType<typeof getSql>,
+  args: {
+    userId: string;
+    parentStoreId: number;
+    childStoreId: number | null;
+    deviceId: string;
+    loginMethod: "google" | "phone";
+    ip: string | null;
+    location: string | null;
+  }
+): Promise<void> {
+  const { userId, parentStoreId, childStoreId, deviceId, loginMethod, ip, location } = args;
+  const updated = await sql`
+    UPDATE user_device_sessions
+    SET
+      is_active = TRUE,
+      last_active = now(),
+      parent_store_id = ${parentStoreId},
+      child_store_id = ${childStoreId},
+      device_type = 'mobile',
+      device_name = ${deviceId},
+      os = 'android',
+      ip_address = ${ip},
+      location = ${location},
+      login_method = ${loginMethod}
+    WHERE user_id = ${userId} AND device_id = ${deviceId}
+    RETURNING id
+  `;
+  const touched = Array.isArray(updated) ? updated.length : 0;
+  if (touched > 0) return;
+
+  await sql`
+    INSERT INTO user_device_sessions (
+      user_id,
+      parent_store_id,
+      child_store_id,
+      device_type,
+      device_name,
+      os,
+      ip_address,
+      location,
+      login_method,
+      device_id
+    )
+    VALUES (
+      ${userId},
+      ${parentStoreId},
+      ${childStoreId},
+      'mobile',
+      ${deviceId},
+      'android',
+      ${ip},
+      ${location},
+      ${loginMethod},
+      ${deviceId}
+    )
+  `;
+}
+
 /**
  * Auth boundary rules:
  * - Mobile app calls backend for OTP and session.
@@ -150,6 +211,34 @@ export async function authRoutes(app: FastifyInstance) {
           };
         });
 
+        const ip =
+          (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
+        const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+        const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+        const location =
+          city && country ? `${city}, ${country}` : city ?? country ?? null;
+        const firstStore = (storeRows as any[])[0];
+        const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+        const childStoreId = firstStore ? Number(firstStore.id) : null;
+
+        try {
+          await persistMerchantDeviceSessionForMerchant(sql, {
+            userId: parentMerchantId,
+            parentStoreId,
+            childStoreId,
+            deviceId,
+            loginMethod: "google",
+            ip,
+            location,
+          });
+        } catch (sessErr: any) {
+          req.log?.error?.({ err: sessErr }, "Merchant Google login: device session persist failed");
+          return reply.code(503).send({
+            error: "device_session_unavailable",
+            message: "Could not start your session on this device. Please try again.",
+          });
+        }
+
         const expiresInSec = 60 * 60 * 24 * 7;
         const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
         const accessToken = await issueSupabaseCompatibleJwt({
@@ -160,49 +249,6 @@ export async function authRoutes(app: FastifyInstance) {
           deviceId,
           exp: expiresAt,
         });
-
-        // Record device session for this merchant user (Google login).
-        try {
-          const ip =
-            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-            (req.ip ?? null);
-          const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
-          const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
-          const location =
-            city && country ? `${city}, ${country}` : city ?? country ?? null;
-
-          const firstStore = (storeRows as any[])[0];
-          const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
-          const childStoreId = firstStore ? Number(firstStore.id) : null;
-          await sql`
-            INSERT INTO user_device_sessions (
-              user_id,
-              parent_store_id,
-              child_store_id,
-              device_type,
-              device_name,
-              os,
-              ip_address,
-              location,
-              login_method,
-              device_id
-            )
-            VALUES (
-              ${parentMerchantId},
-              ${parentStoreId},
-              ${childStoreId},
-              'mobile',
-              ${deviceId},
-              'android',
-              ${ip},
-              ${location},
-              'google',
-              ${deviceId}
-            )
-          `;
-        } catch {
-          // best-effort only
-        }
 
         const parent = {
           id: parentId,
@@ -440,6 +486,34 @@ export async function authRoutes(app: FastifyInstance) {
             };
           });
 
+          const ip =
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
+          const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
+          const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
+          const location =
+            city && country ? `${city}, ${country}` : city ?? country ?? null;
+          const firstStore = (storeRows as any[])[0];
+          const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+          const childStoreId = firstStore ? Number(firstStore.id) : null;
+
+          try {
+            await persistMerchantDeviceSessionForMerchant(sql, {
+              userId: parentMerchantId,
+              parentStoreId,
+              childStoreId,
+              deviceId,
+              loginMethod: "phone",
+              ip,
+              location,
+            });
+          } catch (sessErr: any) {
+            req.log?.error?.({ err: sessErr }, "Merchant OTP login: device session persist failed");
+            return reply.code(503).send({
+              error: "device_session_unavailable",
+              message: "Could not start your session on this device. Please try again.",
+            });
+          }
+
           const expiresInSec = 60 * 60 * 24 * 7; // 7 days
           const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
           const accessToken = await issueSupabaseCompatibleJwt({
@@ -450,49 +524,6 @@ export async function authRoutes(app: FastifyInstance) {
             deviceId,
             exp: expiresAt,
           });
-
-          // Record device session for this merchant user (OTP phone login).
-          try {
-            const ip =
-              (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-              (req.ip ?? null);
-            const city = (req.headers["x-vercel-ip-city"] as string) ?? null;
-            const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
-            const location =
-              city && country ? `${city}, ${country}` : city ?? country ?? null;
-
-            const firstStore = (storeRows as any[])[0];
-            const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
-            const childStoreId = firstStore ? Number(firstStore.id) : null;
-            await sql`
-              INSERT INTO user_device_sessions (
-                user_id,
-                parent_store_id,
-                child_store_id,
-                device_type,
-                device_name,
-                os,
-                ip_address,
-                location,
-                login_method,
-                device_id
-              )
-              VALUES (
-                ${parentMerchantId},
-                ${parentStoreId},
-                ${childStoreId},
-                'mobile',
-                ${deviceId},
-                'android',
-                ${ip},
-                ${location},
-                'phone',
-                ${deviceId}
-              )
-            `;
-          } catch {
-            // ignore
-          }
 
           const parent = {
             id: parentId,

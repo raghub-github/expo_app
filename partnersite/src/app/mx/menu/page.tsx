@@ -110,6 +110,7 @@ import { useSearchParams } from 'next/navigation'
 import { Toaster, toast } from 'sonner'
 import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye } from 'lucide-react'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 import { 
   fetchStoreById, 
@@ -3097,6 +3098,13 @@ function MenuContent() {
   const imageLimitReached = planLimits != null && imageLimit != null && imageUsed >= imageLimit;
   const imageSlotsLeft = imageLimit != null ? Math.max(0, imageLimit - imageUsed) : null;
 
+  const menuPageSubtitle = useMemo(() => {
+    const base = 'Manage your menu items and categories';
+    const pn = planLimits?.planName;
+    if (pn != null && pn !== '') return `${base} · Plan: ${pn}`;
+    return base;
+  }, [planLimits?.planName]);
+
   // Show error if no store is selected
   if (storeError) {
     return (
@@ -3124,24 +3132,13 @@ function MenuContent() {
   return (
     <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId || "No ID"}>
       <Toaster richColors position="top-right" style={{ zIndex: 100002 }} />
+      <PartnerPageHeader title="Menu Management" subtitle={menuPageSubtitle} />
       <style>{globalStyles}</style>
       
-      {/* Header - compact */}
-      <div className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-4 py-2 gap-2">
-          <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
-            <MobileHamburgerButton />
-            <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold text-gray-900">Menu Management</h1>
-              <p className="text-gray-500 text-xs mt-0 flex items-center gap-2 flex-wrap">
-                <span>Manage your menu items and categories</span>
-                {planLimits?.planName != null && planLimits.planName !== '' && (
-                  <span className="text-gray-400">· Plan: {planLimits.planName}</span>
-                )}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm shrink-0">
+        <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex flex-wrap items-center gap-2 justify-between">
+          <MobileHamburgerButton />
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap flex-1 justify-end min-w-0">
             <button
               disabled
               title="Adding categories manually is disabled. Upload a menu file instead."
@@ -3177,8 +3174,7 @@ function MenuContent() {
             </button>
           </div>
         </div>
-        {/* Stats - compact row */}
-        <div className="flex flex-wrap gap-2 px-3 sm:px-4 pb-2">
+        <div className="flex flex-wrap gap-2 px-3 sm:px-4 lg:px-6 pb-2 pt-0 border-t border-gray-100">
           <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
             <div className="text-gray-500 text-xs font-medium">
               Total Items

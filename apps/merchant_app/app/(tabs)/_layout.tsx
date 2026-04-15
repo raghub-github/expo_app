@@ -1,7 +1,8 @@
+import { Platform } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { GatiMitraMerchant, TAB_BAR_HEIGHT } from "@/constants/theme";
+import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP } from "@/constants/theme";
 import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import { ActiveTabProvider } from "@/context/ActiveTabContext";
@@ -10,17 +11,17 @@ const LABEL_FONT_SIZE = 12;
 
 function TabIcon({
   name,
-  focused,
   color,
+  size = 24,
 }: {
   name: keyof typeof Ionicons.glyphMap;
-  focused: boolean;
   color: string;
+  size?: number;
 }) {
   return (
     <Ionicons
       name={name}
-      size={24}
+      size={size}
       color={color}
       style={{ marginBottom: -2 }}
     />
@@ -30,7 +31,7 @@ function TabIcon({
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const bottomInset = insets.bottom;
-  const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset;
+  const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP;
 
   return (
     <ActiveTabProvider>
@@ -47,11 +48,20 @@ export default function TabsLayout() {
         },
         tabBarStyle: {
           height: tabBarTotalHeight,
-          paddingBottom: bottomInset,
-          backgroundColor: "transparent",
+          paddingBottom: 0,
+          /** Fills native tab slot; FloatingTabBar paints the same — avoids grey default behind the floating pill (esp. Android / web). */
+          backgroundColor: GatiMitraMerchant.surfaceWarm,
           borderTopWidth: 0,
-          elevation: 0,
-          shadowOpacity: 0,
+          overflow: "hidden",
+          ...Platform.select({
+            ios: {
+              shadowColor: "transparent",
+              shadowOpacity: 0,
+              shadowRadius: 0,
+            },
+            android: { elevation: 0 },
+            default: {},
+          }),
         },
         headerShown: true,
         header: () => <MerchantCustomHeader />,
@@ -61,8 +71,8 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name={focused ? "home" : "home-outline"} focused={focused} color={color} />
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "home" : "home-outline"} color={color} size={size} />
           ),
         }}
       />
@@ -70,8 +80,8 @@ export default function TabsLayout() {
         name="orders"
         options={{
           title: "Orders",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name={focused ? "receipt" : "receipt-outline"} focused={focused} color={color} />
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "receipt" : "receipt-outline"} color={color} size={size} />
           ),
         }}
       />
@@ -79,8 +89,8 @@ export default function TabsLayout() {
         name="menu"
         options={{
           title: "Catalog",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name={focused ? "cube" : "cube-outline"} focused={focused} color={color} />
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "cube" : "cube-outline"} color={color} size={size} />
           ),
         }}
       />
@@ -88,8 +98,30 @@ export default function TabsLayout() {
         name="earnings"
         options={{
           title: "Earnings",
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name={focused ? "wallet" : "wallet-outline"} focused={focused} color={color} />
+          /** Shown only on Flow hub — see FloatingTabBar. */
+          href: null,
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "wallet" : "wallet-outline"} color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="growth"
+        options={{
+          title: "Growth",
+          href: null,
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "trending-up" : "trending-up-outline"} color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="reviews"
+        options={{
+          title: "Review",
+          href: null,
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "star" : "star-outline"} color={color} size={size} />
           ),
         }}
       />
@@ -98,8 +130,8 @@ export default function TabsLayout() {
         options={{
           title: "Profile",
           unmountOnBlur: true,
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon name={focused ? "person" : "person-outline"} focused={focused} color={color} />
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "person" : "person-outline"} color={color} size={size} />
           ),
         }}
       />

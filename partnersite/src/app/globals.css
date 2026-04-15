@@ -158,3 +158,59 @@ body.modal-open-blur aside * {
 .animate-pulse-subtle {
   animation: pulse-subtle 2s ease-in-out infinite;
 }
+
+/* Merchant shell: one band height for left sidebar store row + primary page headers + panel headers */
+:root {
+  --mx-shell-header-min-h: 3.5rem; /* 56px */
+  --mx-shell-header-pad-y: 0.5rem;
+  /* Partner top bar (Zomato-style) — keep equal to shell header band */
+  --mx-partner-topbar-h: var(--mx-shell-header-min-h);
+}
+@media (min-width: 768px) {
+  :root {
+    --mx-shell-header-min-h: 4rem; /* 64px */
+    --mx-shell-header-pad-y: 0.5625rem;
+    --mx-partner-topbar-h: var(--mx-shell-header-min-h);
+  }
+}
+
+/* Right sheets / drawers: header row matches partner top bar */
+.mx-sheet-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-height: var(--mx-partner-topbar-h);
+  height: var(--mx-partner-topbar-h);
+  flex-shrink: 0;
+  padding: 0 1rem;
+  border-bottom: 1px solid #e8e8e8;
+  background-color: #fff;
+}
+
+.mx-shell-header {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: var(--mx-shell-header-min-h);
+  border-bottom: 1px solid rgb(229 231 235);
+  background-color: #fff;
+  flex-shrink: 0;
+  padding: var(--mx-shell-header-pad-y) 1rem;
+}
+@media (min-width: 1024px) {
+  .mx-shell-header {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
+/* Same vertical band when the sidebar is icon-only — avoids layout jump vs expanded */
+.mx-shell-header--sidebar-collapsed {
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: var(--mx-shell-header-min-h);
+  padding-top: var(--mx-shell-header-pad-y);
+  padding-bottom: var(--mx-shell-header-pad-y);
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}

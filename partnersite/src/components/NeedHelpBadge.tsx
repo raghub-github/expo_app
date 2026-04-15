@@ -1,280 +1,474 @@
 "use client";
 
-import React, { useState, useRef } from 'react';
-import { X, Loader2, ImagePlus, Trash2 } from 'lucide-react';
-import { useMerchantSession } from '@/context/MerchantSessionContext';
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2 } from "lucide-react";
+import { useMerchantSession } from "@/context/MerchantSessionContext";
 
-const badgeColor = '#2ecc9b'; // Mint green
+const badgeColor = "#2ecc9b";
 
-const TITLE_LABELS: Record<string, string> = {
-  MERCHANT_APP_TECHNICAL_ISSUE: "App / technical issue",
-  VERIFICATION_ISSUE: "Verification / account verification",
-  ACCOUNT_ISSUE: "Account issue",
-  PAYOUT_DELAYED: "Payout delayed",
-  PAYOUT_NOT_RECEIVED: "Payout not received",
-  SETTLEMENT_DISPUTE: "Settlement dispute",
-  COMMISSION_DISPUTE: "Commission dispute",
-  MENU_UPDATE_ISSUE: "Menu / catalog update issue",
-  STORE_STATUS_ISSUE: "Store status issue",
-  MERCHANT_ORDER_NOT_RECEIVING: "Not receiving orders",
-  OTHER: "Other",
-  FEEDBACK: "Feedback",
-  COMPLAINT: "Complaint",
-  SUGGESTION: "Suggestion",
+type HelpSection = {
+  ticket_title_id: number;
+  parent_title_id: number | null;
+  section_id: string;
+  title: string;
+  subtitle: string | null;
+  quick_options: string[];
+  display_order: number | null;
+  help_hub_icon: string | null;
 };
 
-const ALL_TITLES = [
-  "MERCHANT_APP_TECHNICAL_ISSUE",
-  "PAYOUT_DELAYED",
-  "PAYOUT_NOT_RECEIVED",
-  "SETTLEMENT_DISPUTE",
-  "COMMISSION_DISPUTE",
-  "MENU_UPDATE_ISSUE",
-  "STORE_STATUS_ISSUE",
-  "MERCHANT_ORDER_NOT_RECEIVING",
-  "OTHER",
-  "FEEDBACK",
-  "COMPLAINT",
-  "SUGGESTION"
-];
+type SheetStep = "topics" | "options" | "compose" | "success";
 
-const MAX_ATTACHMENTS = 5;
-const MAX_FILE_SIZE_MB = 5;
-const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+type CreatedTicketSummary = { id: number; ticket_id: string };
+
+function readSelectedStoreId(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("selectedStoreId")?.trim() || "";
+}
 
 const NeedHelpBadge: React.FC = () => {
+  const router = useRouter();
   const session = useMerchantSession();
   const [open, setOpen] = useState(false);
-  const [ticketTitle, setTicketTitle] = useState("");
-  const [subject, setSubject] = useState("");
-  const [description, setDescription] = useState("");
-  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
-  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [sections, setSections] = useState<HelpSection[]>([]);
+  const [loadingSections, setLoadingSections] = useState(false);
+  const [sectionsError, setSectionsError] = useState(false);
+  const [sheetStep, setSheetStep] = useState<SheetStep>("topics");
+  const [selectedTopic, setSelectedTopic] = useState<HelpSection | null>(null);
+  const [composeText, setComposeText] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [createdTicket, setCreatedTicket] = useState<CreatedTicketSummary | null>(null);
 
-  const uploadAttachment = async (file: File): Promise<string> => {
-    const form = new FormData();
-    form.set("file", file);
-    const parent = `tickets/attachments/${Date.now()}`;
-    form.set("parent", parent);
-    form.set("filename", file.name.replace(/[^a-zA-Z0-9.-]/g, "_"));
-    const res = await fetch("/api/upload/r2", { method: "POST", body: form });
-    const data = await res.json();
-    if (!res.ok || !data?.url) throw new Error(data?.error || "Upload failed");
-    return data.url;
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ticketTitle || !subject.trim() || !description.trim()) {
-      setMessage({ type: "error", text: "Please select a topic and fill subject and description." });
-      return;
-    }
-    setLoading(true);
-    setMessage(null);
+  const loadSections = useCallback(async () => {
+    setLoadingSections(true);
+    setSectionsError(false);
     try {
-      let attachmentUrls: string[] = [];
-      if (attachmentFiles.length > 0) {
-        setUploadingAttachments(true);
-        try {
-          attachmentUrls = await Promise.all(attachmentFiles.map((f) => uploadAttachment(f)));
-        } catch (err) {
-          setMessage({ type: "error", text: "Failed to upload one or more images. Please try again." });
-          setLoading(false);
-          setUploadingAttachments(false);
-          return;
-        }
-        setUploadingAttachments(false);
-      }
-
-      const res = await fetch("/api/merchant/tickets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ticket_title: ticketTitle,
-          subject: subject.trim(),
-          description: description.trim(),
-          page_context: "dashboard",
-          ...(attachmentUrls.length ? { attachments: attachmentUrls } : {}),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setMessage({ type: "error", text: data.error || "Failed to submit. Please try again." });
-        setLoading(false);
+      const res = await fetch("/api/merchant/help-sections");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        setSections([]);
+        setSectionsError(true);
         return;
       }
-      setMessage({ type: "success", text: data.message || "Ticket raised successfully." });
-      setTicketTitle("");
-      setSubject("");
-      setDescription("");
-      setAttachmentFiles([]);
-      setTimeout(() => {
-        setOpen(false);
-        setMessage(null);
-      }, 2000);
+      const list = Array.isArray(data.sections) ? data.sections : [];
+      setSections(list as HelpSection[]);
     } catch {
-      setMessage({ type: "error", text: "Something went wrong. Please try again." });
+      setSections([]);
+      setSectionsError(true);
     } finally {
-      setLoading(false);
+      setLoadingSections(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    if (session.isAuthenticated) {
+      loadSections();
+    }
+  }, [open, session.isAuthenticated, loadSections]);
+
+  useEffect(() => {
+    if (open) {
+      setSheetStep("topics");
+      setSelectedTopic(null);
+      setComposeText("");
+      setMessage(null);
+      setCreatedTicket(null);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [open]);
+
+  const rootSections = useMemo(() => {
+    const roots = sections.filter((s) => s.parent_title_id == null);
+    if (roots.length === 0 && sections.length > 0) return [...sections].sort(sortSections);
+    return [...roots].sort(sortSections);
+  }, [sections]);
+
+  const childSections = useMemo(() => {
+    if (!selectedTopic) return [];
+    return sections
+      .filter((s) => s.parent_title_id === selectedTopic.ticket_title_id)
+      .sort(sortSections);
+  }, [sections, selectedTopic]);
+
+  const createTicket = useCallback(
+    async (ticketTitleId: number, description: string, subject: string) => {
+      const storeId = readSelectedStoreId();
+      if (!session.isAuthenticated) {
+        setMessage({ type: "error", text: "Please sign in to contact support." });
+        return;
+      }
+      if (!storeId) {
+        setMessage({
+          type: "error",
+          text: "Select a store from the header switcher first.",
+        });
+        return;
+      }
+      const desc = description.trim();
+      if (!desc) {
+        setMessage({ type: "error", text: "Please add a short description." });
+        return;
+      }
+
+      setLoading(true);
+      setMessage(null);
+      try {
+        const res = await fetch("/api/merchant/partner-store-tickets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            store_id: storeId,
+            ticket_title_id: ticketTitleId,
+            subject: subject.trim().slice(0, 500) || undefined,
+            description: desc.slice(0, 5000),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          setMessage({
+            type: "error",
+            text: typeof data?.error === "string" ? data.error : "Could not create ticket. Try again.",
+          });
+          return;
+        }
+        const t = data.ticket as { id?: unknown; ticket_id?: unknown };
+        const idNum =
+          typeof t.id === "number" && Number.isInteger(t.id)
+            ? t.id
+            : typeof t.id === "string" && /^\d+$/.test(t.id)
+              ? Number(t.id)
+              : NaN;
+        const publicId = t.ticket_id != null ? String(t.ticket_id).trim() : "";
+        if (!Number.isInteger(idNum) || idNum < 1 || !publicId) {
+          setMessage({ type: "error", text: "Ticket created but response was incomplete. Check User insights." });
+          return;
+        }
+        setCreatedTicket({ id: idNum, ticket_id: publicId });
+        setSheetStep("success");
+      } catch {
+        setMessage({ type: "error", text: "Something went wrong. Please try again." });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [session.isAuthenticated]
+  );
+
+  const onTopicClick = (topic: HelpSection) => {
+    setSelectedTopic(topic);
+    const children = sections.filter((s) => s.parent_title_id === topic.ticket_title_id);
+    const hasQuick = topic.quick_options.length > 0;
+    if (children.length > 0 || hasQuick) {
+      setSheetStep("options");
+    } else {
+      setSheetStep("compose");
+      setComposeText("");
     }
   };
 
-  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    const valid = files.filter((f) => {
-      if (!ALLOWED_TYPES.includes(f.type)) return false;
-      if (f.size > MAX_FILE_SIZE_MB * 1024 * 1024) return false;
-      return true;
-    });
-    setAttachmentFiles((prev) => [...prev, ...valid].slice(0, MAX_ATTACHMENTS));
-    if (fileInputRef.current) fileInputRef.current.value = "";
+  const onPickChild = (child: HelpSection) => {
+    const subject = `${selectedTopic?.title ?? "Support"} · ${child.title}`;
+    const description = [selectedTopic?.title, child.title, child.subtitle].filter(Boolean).join(" — ");
+    void createTicket(child.ticket_title_id, description, subject);
   };
 
-  const removeAttachment = (index: number) => {
-    setAttachmentFiles((prev) => prev.filter((_: File, i: number) => i !== index));
+  const onPickQuick = (text: string) => {
+    if (!selectedTopic) return;
+    const subject = `${selectedTopic.title} · ${text.slice(0, 80)}`;
+    void createTicket(selectedTopic.ticket_title_id, text, subject);
   };
+
+  const onComposeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTopic) return;
+    const subject = selectedTopic.title;
+    void createTicket(selectedTopic.ticket_title_id, composeText, subject);
+  };
+
+  const goBack = () => {
+    if (sheetStep === "compose" || sheetStep === "options") {
+      setSheetStep("topics");
+      setSelectedTopic(null);
+      setComposeText("");
+      setMessage(null);
+    }
+  };
+
+  const goToTicketDashboard = () => {
+    if (!createdTicket) return;
+    try {
+      localStorage.setItem("userInsights_selectedTicketId", String(createdTicket.id));
+    } catch {
+      /* ignore */
+    }
+    const sid = readSelectedStoreId();
+    const q = new URLSearchParams({ view: "inbox", ticket: String(createdTicket.id) });
+    if (sid) q.set("storeId", sid);
+    router.push(`/mx/user-insights?${q.toString()}`);
+    setOpen(false);
+  };
+
+  const showChildList = sheetStep === "options" && childSections.length > 0;
+  const showQuickList = sheetStep === "options" && childSections.length === 0 && (selectedTopic?.quick_options.length ?? 0) > 0;
 
   return (
     <>
-      {/* Floating Badge */}
       <button
+        type="button"
+        aria-label="Need help — contact support"
         onClick={() => setOpen(true)}
         style={{
-          position: 'fixed',
+          position: "fixed",
           right: -12,
           bottom: 40,
           zIndex: 1000,
           background: badgeColor,
-          color: '#010004',
-          border: 'none',
+          color: "#010004",
+          border: "none",
           borderRadius: 24,
-          padding: '8px 20px',
+          padding: "8px 20px",
           fontWeight: 600,
           fontSize: 12,
-          boxShadow: '0 4px 24px rgba(44,204,155,0.18)',
-          cursor: 'pointer',
+          boxShadow: "0 4px 24px rgba(44,204,155,0.18)",
+          cursor: "pointer",
         }}
       >
         Need a hand !
       </button>
 
-      {/* Modal Form */}
       {open && (
-        <div className="fixed inset-0 z-[2200] flex items-center justify-center p-4">
-          <div className="absolute inset-0 z-[2200] bg-black/50" onClick={() => setOpen(false)} aria-hidden="true" />
-          <div className="relative z-[2201] w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-slate-900">Need Help?</h3>
-              <button type="button" onClick={() => setOpen(false)} className="p-1 rounded-lg text-slate-500 hover:bg-slate-100">
+        <div className="fixed inset-0 z-[2200]" role="dialog" aria-modal="true" aria-labelledby="help-sheet-title">
+          {/* Backdrop: blocks clicks to the app but does NOT close the sheet */}
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" aria-hidden />
+
+          <div className="absolute inset-y-0 right-0 z-[2201] flex h-full w-full max-w-md flex-col bg-white shadow-2xl border-l border-slate-200 animate-in slide-in-from-right duration-300">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div className="flex min-w-0 items-center gap-2">
+                {(sheetStep === "options" || sheetStep === "compose") && (
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    className="shrink-0 rounded-lg p-2 text-slate-600 hover:bg-slate-100"
+                    aria-label="Back"
+                  >
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
+                )}
+                <h3 id="help-sheet-title" className="truncate text-lg font-bold text-slate-900">
+                  {sheetStep === "success" ? "Ticket created" : "Help &amp; support"}
+                </h3>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">What do you need help with? *</label>
-                <select
-                  value={ticketTitle}
-                  onChange={(e) => setTicketTitle(e.target.value)}
-                  required
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">Select</option>
-                  {ALL_TITLES.map((t) => (
-                    <option key={t} value={t}>
-                      {TITLE_LABELS[t] || t}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Subject *</label>
-                <input
-                  type="text"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  placeholder="Brief summary"
-                  maxLength={500}
-                  required
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Description *</label>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Describe your issue in detail..."
-                  rows={4}
-                  maxLength={5000}
-                  required
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Images (optional)</label>
-                <p className="text-xs text-slate-500 mb-1">You can add up to {MAX_ATTACHMENTS} images (JPEG, PNG, GIF, WebP, max {MAX_FILE_SIZE_MB} MB each).</p>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={ALLOWED_TYPES.join(",")}
-                  multiple
-                  onChange={onFileChange}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={attachmentFiles.length >= MAX_ATTACHMENTS}
-                  className="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <ImagePlus className="h-4 w-4" />
-                  Add images
-                </button>
-                {attachmentFiles.length > 0 && (
-                  <ul className="mt-2 space-y-1">
-                    {attachmentFiles.map((f, i) => (
-                      <li key={i} className="flex items-center justify-between text-sm text-slate-600 bg-slate-50 rounded-lg px-2 py-1">
-                        <span className="truncate flex-1">{f.name}</span>
-                        <button type="button" onClick={() => removeAttachment(i)} className="p-1 text-red-600 hover:bg-red-50 rounded" aria-label="Remove">
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              {message && (
-                <p className={`text-sm ${message.type === "success" ? "text-green-700" : "text-red-600"}`}>{message.text}</p>
+
+            <div className="min-h-0 flex-1 overflow-y-auto hide-scrollbar px-5 py-3">
+              {session.isLoading ? (
+                <div className="flex justify-center py-12">
+                  <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
+                </div>
+              ) : !session.isAuthenticated ? (
+                <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  Please{" "}
+                  <a href="/auth/login" className="font-semibold underline">
+                    sign in
+                  </a>{" "}
+                  to create a support ticket.
+                </p>
+              ) : sheetStep === "success" && createdTicket ? (
+                <div className="flex flex-col items-center py-6 text-center">
+                  <CheckCircle2 className="mb-4 h-14 w-14 text-emerald-500" aria-hidden />
+                  <p className="mb-2 text-sm font-semibold text-slate-900">Your support ticket is ready</p>
+                  <p className="mb-1 text-xs text-slate-500">Ticket ID</p>
+                  <p className="mb-6 font-mono text-lg font-bold tracking-tight text-slate-900">{createdTicket.ticket_id}</p>
+                  <p className="mb-6 max-w-sm text-sm leading-relaxed text-slate-600">
+                    You can view and reply to this ticket anytime under{" "}
+                    <span className="font-medium text-slate-800">User insights</span> → support inbox (support tickets).
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {readSelectedStoreId() ? (
+                    <p className="mb-3 text-xs text-slate-500">
+                      Store: <span className="font-mono font-medium text-slate-700">{readSelectedStoreId()}</span>
+                    </p>
+                  ) : (
+                    <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      Select a store from the header switcher.
+                    </p>
+                  )}
+
+                  {message && message.type === "error" && (
+                    <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{message.text}</p>
+                  )}
+
+                  {loadingSections ? (
+                    <div className="flex items-center gap-2 py-8 text-slate-500">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      <span className="text-sm">Loading topics…</span>
+                    </div>
+                  ) : sectionsError ? (
+                    <div className="space-y-2 py-4">
+                      <p className="text-sm text-red-600">Could not load help topics.</p>
+                      <button type="button" onClick={() => loadSections()} className="text-sm font-medium text-blue-600 hover:underline">
+                        Retry
+                      </button>
+                    </div>
+                  ) : rootSections.length === 0 ? (
+                    <p className="rounded-xl border border-amber-200 bg-amber-50 py-4 text-sm text-amber-900">
+                      No help topics yet. Email{" "}
+                      <a href="mailto:support@gatimitra.com" className="font-medium underline">
+                        support@gatimitra.com
+                      </a>
+                      .
+                    </p>
+                  ) : sheetStep === "topics" ? (
+                    <ul className="divide-y divide-slate-100">
+                      {rootSections.map((s) => (
+                        <li key={s.ticket_title_id}>
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => onTopicClick(s)}
+                            className="flex w-full items-start gap-3 py-4 pr-1 text-left transition hover:bg-slate-50 disabled:opacity-50"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-slate-900">{s.title}</p>
+                              {s.subtitle ? <p className="mt-0.5 text-sm text-slate-500">{s.subtitle}</p> : null}
+                            </div>
+                            <ChevronRight className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" aria-hidden />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : sheetStep === "options" && selectedTopic ? (
+                    <div className="overflow-hidden rounded-lg border border-slate-200">
+                      <div className="bg-slate-100 px-3 py-2.5">
+                        <p className="text-sm font-semibold text-slate-800">Select an option to proceed</p>
+                      </div>
+                      <ul className="divide-y divide-slate-200 bg-white">
+                        {showChildList
+                          ? childSections.map((c) => (
+                              <li key={c.ticket_title_id}>
+                                <button
+                                  type="button"
+                                  disabled={loading}
+                                  onClick={() => onPickChild(c)}
+                                  className="flex w-full items-center justify-between gap-2 px-3 py-3.5 text-left hover:bg-slate-50 disabled:opacity-50"
+                                >
+                                  <span className="min-w-0">
+                                    <span className="block text-sm font-medium text-slate-800">{c.title}</span>
+                                    {c.subtitle ? (
+                                      <span className="mt-0.5 block text-xs text-slate-500">{c.subtitle}</span>
+                                    ) : null}
+                                  </span>
+                                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                                </button>
+                              </li>
+                            ))
+                          : showQuickList
+                            ? selectedTopic.quick_options.map((q, idx) => (
+                                <li key={`${idx}-${q.slice(0, 24)}`}>
+                                  <button
+                                    type="button"
+                                    disabled={loading}
+                                    onClick={() => onPickQuick(q)}
+                                    className="flex w-full items-center justify-between gap-2 px-3 py-3.5 text-left text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                                  >
+                                    <span className="min-w-0 truncate">{q}</span>
+                                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                                  </button>
+                                </li>
+                              ))
+                            : null}
+                      </ul>
+                    </div>
+                  ) : sheetStep === "compose" && selectedTopic ? (
+                    <form onSubmit={onComposeSubmit} className="space-y-3 pb-4">
+                      <p className="text-sm text-slate-600">{selectedTopic.title}</p>
+                      <label className="block text-sm font-medium text-slate-700">Describe your issue</label>
+                      <textarea
+                        value={composeText}
+                        onChange={(e) => setComposeText(e.target.value)}
+                        rows={5}
+                        maxLength={5000}
+                        required
+                        className="w-full resize-y rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        placeholder="Tell us what you need help with…"
+                      />
+                      <button
+                        type="submit"
+                        disabled={loading || !composeText.trim()}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create ticket"}
+                      </button>
+                    </form>
+                  ) : null}
+                </>
               )}
-              <div className="flex gap-2 pt-2">
+            </div>
+
+            {session.isAuthenticated && !session.isLoading && sheetStep === "topics" && (
+              <div className="shrink-0 border-t border-slate-200 bg-white px-5 py-4">
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
-                  className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-medium hover:bg-slate-50"
+                  className="w-full rounded-xl border border-slate-300 py-2.5 font-medium text-slate-700 hover:bg-slate-50"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={loading || uploadingAttachments}
-                  className="flex-1 py-2.5 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {loading || uploadingAttachments ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    "Submit"
-                  )}
+                  Close
                 </button>
               </div>
-            </form>
+            )}
+
+            {session.isAuthenticated && !session.isLoading && sheetStep === "success" && createdTicket && (
+              <div className="shrink-0 space-y-2 border-t border-slate-200 bg-white px-5 py-4">
+                <button
+                  type="button"
+                  onClick={goToTicketDashboard}
+                  className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                >
+                  Go to ticket dashboard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="w-full rounded-xl border border-slate-300 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+
           </div>
         </div>
       )}
     </>
   );
 };
+
+function sortSections(a: HelpSection, b: HelpSection) {
+  const ao = a.display_order ?? 999999;
+  const bo = b.display_order ?? 999999;
+  if (ao !== bo) return ao - bo;
+  return a.title.localeCompare(b.title);
+}
 
 export default NeedHelpBadge;

@@ -65,21 +65,15 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
       submenu: [
         {
           id: 'active-orders',
-          label: 'Active Orders',
+          label: 'Active orders',
           icon: <UtensilsCrossed size={16} />,
-          href: '/mx/food-orders?filter=active',
+          href: '/mx/food-orders',
         },
         {
-          id: 'completed-orders',
-          label: 'Completed',
+          id: 'order-history',
+          label: 'Order history',
           icon: <UtensilsCrossed size={16} />,
-          href: '/mx/food-orders?filter=DELIVERED',
-        },
-        {
-          id: 'cancelled-orders',
-          label: 'Cancelled',
-          icon: <UtensilsCrossed size={16} />,
-          href: '/mx/food-orders?filter=CANCELLED',
+          href: '/mx/order-history',
         },
       ],
     },

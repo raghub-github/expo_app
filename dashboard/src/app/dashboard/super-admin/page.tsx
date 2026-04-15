@@ -85,10 +85,10 @@ const adminOptions: AdminOption[] = [
     bgColor: "bg-green-50 hover:bg-green-100",
   },
   {
-    name: "Offers",
+    name: "Subscription Plans",
     href: "/dashboard/offers",
     Icon: OffersIcon,
-    description: "Manage offers, incentives, and banners for all apps",
+    description: "Manage subscription plans for merchants, users, and riders",
     color: "text-purple-600",
     bgColor: "bg-purple-50 hover:bg-purple-100",
   },

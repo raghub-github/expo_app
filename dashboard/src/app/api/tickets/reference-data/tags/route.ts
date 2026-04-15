@@ -41,17 +41,26 @@ export async function GET() {
   if (err) return err;
   try {
     const sql = getSql();
-    const rows = await sql`
-      SELECT id, tag_code, tag_name, tag_description, tag_color, is_active, created_at
-      FROM ticket_tags
-      ORDER BY tag_name ASC
-    `;
+    const sqlClient = sql as any;
+    let rows: any[] = [];
+    try {
+      rows = await sqlClient.unsafe(
+        `SELECT id, tag_code, tag_name, tag_description, tag_color, tag_light_color, is_active, created_at
+         FROM ticket_tags ORDER BY tag_name ASC`
+      );
+    } catch {
+      rows = await sqlClient.unsafe(
+        `SELECT id, tag_code, tag_name, tag_description, tag_color, is_active, created_at
+         FROM ticket_tags ORDER BY tag_name ASC`
+      );
+    }
     const tags = (rows || []).map((r: any) => ({
       id: Number(r.id),
       tagCode: r.tag_code ?? "",
       tagName: r.tag_name ?? "",
       tagDescription: r.tag_description ?? null,
       tagColor: r.tag_color ?? null,
+      tagLightColor: r.tag_light_color ?? null,
       isActive: Boolean(r.is_active),
       createdAt: r.created_at,
     }));
