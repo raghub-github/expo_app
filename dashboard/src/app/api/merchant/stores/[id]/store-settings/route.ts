@@ -171,6 +171,19 @@ export async function PATCH(
         SELECT platform_delivery, self_delivery FROM merchant_store_settings WHERE store_id = ${storeId} LIMIT 1
       `;
       const curRow = Array.isArray(cur) ? cur[0] : cur;
+      const currentSelf = curRow ? (curRow as Record<string, unknown>).self_delivery === true : false;
+      const wantsSelfOn = typeof body.self_delivery === "boolean" && body.self_delivery === true;
+      const isSuper = await isSuperAdmin(user.id, user.email);
+      if (wantsSelfOn && !currentSelf && !isSuper) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "Self delivery cannot be turned on from the merchant portal once it is off. Contact support if you need it enabled.",
+          },
+          { status: 403 }
+        );
+      }
       const nextPlatform = typeof body.platform_delivery === "boolean" ? body.platform_delivery : (curRow ? (curRow as Record<string, unknown>).platform_delivery !== false : true);
       const nextSelf = typeof body.self_delivery === "boolean" ? body.self_delivery : (curRow ? (curRow as Record<string, unknown>).self_delivery === true : false);
       await sql`
@@ -195,7 +208,8 @@ export async function PATCH(
         console.warn("[PATCH store-settings] delivery activity log failed:", logErr);
       }
     }
-    if (Object.keys(updates).length === 0 && typeof body.platform_delivery !== "boolean" && typeof body.self_delivery !== "boolean") {
+    // Delivery toggles are persisted above on merchant_store_settings; merchant_stores row may be unchanged.
+    if (Object.keys(updates).length === 0) {
       return NextResponse.json({ success: true });
     }
     // Persist delivery_radius_km to merchant_stores (same access control as getMerchantStoreById). Only return success if a row was updated.

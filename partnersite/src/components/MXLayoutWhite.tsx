@@ -1,11 +1,11 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useSyncExternalStore } from 'react'
 import { PartnerShellHeaderProvider } from '@/context/PartnerShellHeaderContext'
 import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
-import NeedHelpBadge from './NeedHelpBadge'
 import { ParentBlockedBanner } from './ParentBlockedBanner'
+import { PartnerIncomingOrderModal } from './PartnerIncomingOrderModal'
 
 interface MXLayoutWhiteProps {
   children: React.ReactNode
@@ -39,21 +39,18 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
   headerSubtitle,
 }) => {
   const isRight = sidebarPosition === 'right';
-  // Small/mobile (≤767px): sidebar stays collapsed; never allow expand. Desktop: unchanged.
-  const [isSmallScreen, setIsSmallScreen] = useState(false);
+  const isSmallScreen = useSyncExternalStore(
+    (cb) => {
+      if (typeof window === 'undefined') return () => {};
+      const mq = window.matchMedia('(max-width: 767px)');
+      mq.addEventListener('change', cb);
+      return () => mq.removeEventListener('change', cb);
+    },
+    () => (typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false),
+    () => false
+  );
   const [effectiveCollapsed, setEffectiveCollapsed] = useState(leftSidebarCollapsed);
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 767px)');
-    setIsSmallScreen(mq.matches);
-    const h = () => setIsSmallScreen(mq.matches);
-    mq.addEventListener('change', h);
-    return () => mq.removeEventListener('change', h);
-  }, []);
-  useEffect(() => {
-    if (isSmallScreen) setEffectiveCollapsed(true); // always collapsed on small/mobile
-    else if (leftSidebarCollapsed) setEffectiveCollapsed(true);
-    else setEffectiveCollapsed(false);
-  }, [leftSidebarCollapsed, isSmallScreen]);
+  const collapsed = isSmallScreen ? true : effectiveCollapsed;
   return (
     <PartnerShellHeaderProvider>
       <div className="flex flex-col bg-white h-screen overflow-hidden">
@@ -61,9 +58,10 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
           <MXPartnerTopBar
             restaurantName={restaurantName}
             restaurantId={restaurantId}
-            sidebarCollapsed={effectiveCollapsed}
+            sidebarCollapsed={collapsed}
             headerTitle={headerTitle}
             headerSubtitle={headerSubtitle}
+            hideHelpBadge={hideHelpBadge}
           />
         )}
         <div className="flex flex-1 min-h-0 overflow-hidden relative">
@@ -71,20 +69,20 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
             restaurantName={restaurantName}
             restaurantId={restaurantId}
             position={sidebarPosition}
-            collapsed={effectiveCollapsed}
+            collapsed={collapsed}
             onCollapsedChange={(v) => { if (!isSmallScreen) setEffectiveCollapsed(v); }}
             mobileMenuExtra={mobileMenuExtra}
             sidebarFilters={sidebarFilters}
             partnerShell={!isRight}
           />
-          <main className={`flex-1 flex flex-col overflow-hidden h-full relative z-0 transition-[margin] duration-200 ${effectiveCollapsed ? (isRight ? 'mr-0 md:mr-14' : 'ml-0 md:ml-14') : (isRight ? 'mr-0 md:mr-52' : 'ml-0 md:ml-52')}`}>
+          <main className={`flex-1 flex flex-col overflow-hidden h-full relative z-0 transition-[margin] duration-200 ${collapsed ? (isRight ? 'mr-0 md:mr-14' : 'ml-0 md:ml-14') : (isRight ? 'mr-0 md:mr-52' : 'ml-0 md:ml-52')}`}>
             <ParentBlockedBanner />
             <div className="bg-white flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-h-0 scroll-smooth">
               {children}
             </div>
           </main>
         </div>
-        {!hideHelpBadge && <NeedHelpBadge />}
+        <PartnerIncomingOrderModal restaurantId={restaurantId} />
       </div>
     </PartnerShellHeaderProvider>
   )

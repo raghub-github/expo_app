@@ -129,7 +129,16 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { isOnline, manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
+  const {
+    isOnline,
+    manualCloseUntil,
+    restrictionType,
+    scheduledClosure,
+    upcomingScheduledClosure,
+    unavailableReason,
+    statusReason,
+    refresh,
+  } = useStoreStatus();
   const [dismissedRecentIds, setDismissedRecentIds] = useState<Set<string>>(new Set());
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -147,12 +156,21 @@ export default function DashboardScreen() {
   // Show the yellow banner ONLY when store is closed AND closure is manual/scheduled
   // (temp close, closed for today, schedule off, permanent shut). Never show when store is online;
   // hide instantly when store goes online. Do not show for auto/schedule-only closure (outside hours).
+  const unavail = unavailableReason != null ? String(unavailableReason).trim().toLowerCase() : "";
+  const status = statusReason != null ? String(statusReason).trim().toLowerCase() : "";
+  const restriction = restrictionType != null ? String(restrictionType).trim().toLowerCase() : "";
   const hasManualOrScheduledClosure =
     scheduledClosure != null ||
     restrictionType === "PERMANENT_SHUT" ||
     (manualCloseUntil != null &&
       manualCloseUntil !== "" &&
-      new Date(manualCloseUntil).getTime() > Date.now());
+      new Date(manualCloseUntil).getTime() > Date.now()) ||
+    unavail === "manual_close" ||
+    unavail === "manual_indefinite" ||
+    status === "manual_close" ||
+    status === "manual_indefinite" ||
+    restriction === "manual" ||
+    restriction === "manual_hold";
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
   const recentOrders = useMemo(() => {
@@ -226,8 +244,10 @@ export default function DashboardScreen() {
               : scheduledClosure
                 ? `Store is closed from ${formatScheduledOffDateAndTime(scheduledClosure.from)} to ${formatScheduledOffDateAndTime(scheduledClosure.to)}.\nReason: ${scheduledClosure.reason}`
                 : manualCloseUntil
-                  ? `Store closed on ${formatScheduledOffDateAndTime(manualCloseUntil)}`
-                  : "Store is scheduled off."}
+                  ? `Store closed until ${formatScheduledOffDateAndTime(manualCloseUntil)}`
+                  : unavail === "manual_indefinite" || status === "manual_indefinite"
+                    ? "Store is closed until you turn it back ON from Store status."
+                    : "Store is scheduled off."}
           </Text>
           <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textSecondary} />
         </Pressable>

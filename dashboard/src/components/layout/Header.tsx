@@ -574,6 +574,18 @@ function HeaderComponent() {
             </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
+        ) : cleanPathname.startsWith("/dashboard/super-admin/push") ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
         ) : (
           <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg flex-shrink">{pageName}</h2>
         )}

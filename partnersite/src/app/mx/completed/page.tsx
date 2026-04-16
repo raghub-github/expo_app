@@ -7,7 +7,7 @@ import { OrderTable } from '@/components/OrderTable'
 import { FiltersBar } from '@/components/FiltersBar'
 import { supabase } from '@/lib/supabase'
 import { Order } from '@/lib/types'
-import { Toaster } from 'sonner'
+// Toaster mounted globally in /mx/layout
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
 const DEMO_MERCHANT_ID = 'merchant_001'
@@ -61,7 +61,6 @@ export default function CompletedPage() {
 
   return (
     <>
-      <Toaster />
       <MXHeader restaurantName={DEMO_MERCHANT_NAME} />
       <TabNavigation />
 

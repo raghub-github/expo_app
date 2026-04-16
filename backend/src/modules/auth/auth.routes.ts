@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ulid } from "ulid";
+import { Webhook, WebhookVerificationError } from "standardwebhooks";
 import {
   OtpRequestSchema,
   OtpRequestResponseSchema,
@@ -12,12 +13,22 @@ import {
 } from "@gatimitra/contracts";
 import { getEnv } from "../../config/env.js";
 import { sendOtpViaMsg91 } from "../../services/otp/msg91.js";
+import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import { verifyFirebaseIdToken } from "./firebaseAdmin.js";
 import { getDb, getSql } from "../../db/client.js";
 import { riders, userProfiles, customers } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
+
+function headersToRecord(headers: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v === undefined) continue;
+    out[k] = Array.isArray(v) ? v.join(", ") : String(v);
+  }
+  return out;
+}
 
 /** Ensures JWT device_id always has a matching active row (reactivates if user logs in again). */
 async function persistMerchantDeviceSessionForMerchant(
@@ -98,6 +109,91 @@ export async function authRoutes(app: FastifyInstance) {
   >();
 
   /**
+   * Supabase Auth "Send SMS" hook — same contract as partnersite `/api/auth/send-sms`.
+   * Point Supabase Dashboard → Auth → Hooks → Send SMS to:
+   * `https://<your-public-api-host>/v1/auth/supabase-send-sms` (use ngrok in local dev).
+   * Requires `MSG91_*` and optional `SUPABASE_SEND_SMS_HOOK_SECRET` (must match Supabase).
+   */
+  app.post(
+    "/supabase-send-sms",
+    {
+      config: { rawBody: true },
+    },
+    async (request, reply) => {
+      try {
+        const rawBody = (request as { rawBody?: string }).rawBody;
+        const raw = typeof rawBody === "string" ? rawBody : "";
+        if (!raw) {
+          return reply.code(400).send({ error: "empty_body" });
+        }
+
+        if (!env.MSG91_AUTH_KEY) {
+          request.log.error("[supabase-send-sms] MSG91_AUTH_KEY not configured");
+          return reply.code(503).send({ error: "SMS not configured" });
+        }
+
+        let body: Record<string, unknown>;
+        const hasWebhookHeaders = Boolean(
+          request.headers["webhook-id"] &&
+            request.headers["webhook-signature"] &&
+            request.headers["webhook-timestamp"]
+        );
+        const headerMap = headersToRecord(request.headers as Record<string, unknown>);
+
+        if (env.SUPABASE_SEND_SMS_HOOK_SECRET && hasWebhookHeaders) {
+          try {
+            const secret = env.SUPABASE_SEND_SMS_HOOK_SECRET.trim().replace(/^v1,/i, "");
+            const wh = new Webhook(secret);
+            body = wh.verify(raw, headerMap) as Record<string, unknown>;
+          } catch (err) {
+            if (err instanceof WebhookVerificationError) {
+              request.log.warn({ err: err.message }, "[supabase-send-sms] webhook verify failed");
+              return reply.code(401).send({ error: "Unauthorized" });
+            }
+            throw err;
+          }
+        } else if (env.SUPABASE_SEND_SMS_HOOK_SECRET && !hasWebhookHeaders) {
+          return reply.code(401).send({ error: "Hook requires Standard Webhooks headers" });
+        } else {
+          try {
+            body = JSON.parse(raw) as Record<string, unknown>;
+          } catch {
+            return reply.code(400).send({ error: "Invalid JSON" });
+          }
+        }
+
+        const phone =
+          (body.user as { phone?: string } | undefined)?.phone ??
+          (body.phone as string | undefined) ??
+          "";
+        const otp =
+          (body.sms as { otp?: string } | undefined)?.otp ??
+          (body.otp as string | undefined) ??
+          (body.token as string | undefined) ??
+          "";
+
+        const phoneTrimmed = String(phone).trim();
+        const otpTrimmed = String(otp).trim();
+        if (!phoneTrimmed || !otpTrimmed) {
+          return reply.code(400).send({ error: "Missing phone or otp" });
+        }
+
+        const delivered = await deliverSupabaseOtpViaMsg91(env, phoneTrimmed, otpTrimmed);
+        if (!delivered.ok) {
+          request.log.error({ err: delivered.error }, "[supabase-send-sms] MSG91 delivery failed");
+          return reply.code(502).send({ error: "sms_delivery_failed", message: delivered.error });
+        }
+
+        request.log.info({ phoneTail: phoneTrimmed.slice(-4) }, "[supabase-send-sms] delivered");
+        return reply.send({ success: true });
+      } catch (e) {
+        request.log.error({ err: e }, "[supabase-send-sms] internal error");
+        return reply.code(500).send({ error: "Internal error" });
+      }
+    },
+  );
+
+  /**
    * Merchant partner Google sign-in: verify Google id_token, lookup by owner_email, return JWT + partner.
    */
   app.post(
@@ -119,6 +215,7 @@ export async function authRoutes(app: FastifyInstance) {
           400: z.object({ error: z.string(), message: z.string().optional() }),
           404: z.object({ error: z.string(), message: z.string().optional() }),
           500: z.object({ error: z.string(), message: z.string() }),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
     },
@@ -384,6 +481,7 @@ export async function authRoutes(app: FastifyInstance) {
           404: z.object({ error: z.string(), message: z.string() }).optional(),
           429: z.object({ error: z.string() }),
           500: z.object({ error: z.string(), message: z.string().optional() }).optional(),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
     },
@@ -893,6 +991,7 @@ export async function authRoutes(app: FastifyInstance) {
           400: z.object({ error: z.string(), message: z.string().optional() }),
           401: z.object({ error: z.string(), message: z.string().optional() }),
           404: z.object({ error: z.string(), message: z.string().optional() }),
+          503: z.object({ error: z.string(), message: z.string().optional() }),
         },
       },
     },

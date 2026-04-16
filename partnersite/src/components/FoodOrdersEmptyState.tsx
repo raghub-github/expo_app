@@ -4,6 +4,7 @@ import React from 'react';
 import { Search } from 'lucide-react';
 
 export type FoodOrdersEmptyVariant =
+  | 'NEW_ORDERS'
   | 'PREPARING'
   | 'READY_FOR_PICKUP'
   | 'OUT_FOR_DELIVERY'
@@ -14,6 +15,10 @@ const COPY: Record<
   Exclude<FoodOrdersEmptyVariant, 'search'>,
   { line1: string; line2: string }
 > = {
+  NEW_ORDERS: {
+    line1: 'No new orders waiting for acceptance',
+    line2: 'Incoming orders you haven’t accepted yet will appear here',
+  },
   PREPARING: {
     line1: 'Orders you’re preparing on GatiMitra',
     line2: 'will show up here',
@@ -160,7 +165,7 @@ export function FoodOrdersEmptyState({ variant }: { variant: FoodOrdersEmptyVari
 
   const { line1, line2 } = COPY[variant];
   const ill =
-    variant === 'PREPARING' ? (
+    variant === 'NEW_ORDERS' || variant === 'PREPARING' ? (
       <IllustrationPreparing />
     ) : variant === 'READY_FOR_PICKUP' ? (
       <IllustrationReady />

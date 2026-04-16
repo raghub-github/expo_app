@@ -106,7 +106,7 @@ function operatingHoursDiff(
   return { oldValue: oldParts.join("; "), newValue: newParts.join("; ") };
 }
 
-/** Normalize day values so DB check constraints (slot_order, slot_overlap, slot_pair) pass. Keeps slot values for closed days. */
+/** Normalize day values so DB writes use consistent null/time formats. */
 function normalizeDayValues(
   dayValues: { open: boolean; s1Start: string | null; s1End: string | null; s2Start: string | null; s2End: string | null }[]
 ): void {
@@ -115,32 +115,44 @@ function normalizeDayValues(
     d.s1End = parseTimeInput(d.s1End);
     d.s2Start = parseTimeInput(d.s2Start);
     d.s2End = parseTimeInput(d.s2End);
-    // Closed day: ensure all slots are null to satisfy DB constraints consistently.
-    if (!d.open) {
-      d.s1Start = d.s1End = d.s2Start = d.s2End = null;
-      continue;
-    }
+  }
+}
 
-    // Slot 1 must be a valid pair and end must be after start.
-    const hasS1Pair = d.s1Start != null && d.s1End != null;
-    if (!hasS1Pair || !timeGt(d.s1End, d.s1Start)) {
-      d.s1Start = d.s1End = null;
-    }
+function validateDayValues(
+  dayValues: { open: boolean; s1Start: string | null; s1End: string | null; s2Start: string | null; s2End: string | null }[]
+): string | null {
+  for (let i = 0; i < DAYS.length; i += 1) {
+    const day = DAYS[i];
+    const d = dayValues[i];
+    if (!d.open) continue;
 
-    // Slot 2 must be a valid pair, and slot 1 must be valid if slot 2 is set.
-    const hasS2Pair = d.s2Start != null && d.s2End != null;
-    if (!hasS2Pair) {
-      d.s2Start = d.s2End = null;
-      continue;
+    const hasS1Start = d.s1Start != null;
+    const hasS1End = d.s1End != null;
+    const hasS2Start = d.s2Start != null;
+    const hasS2End = d.s2End != null;
+
+    if (hasS1Start !== hasS1End) {
+      return `${day}: Slot 1 start and end time must both be set`;
     }
-    if (d.s1Start == null || d.s1End == null) {
-      d.s2Start = d.s2End = null;
-      continue;
+    if (hasS1Start && hasS1End && !timeGt(d.s1End, d.s1Start)) {
+      return `${day}: Slot 1 end time must be after start time`;
     }
-    if (!timeGt(d.s2End, d.s2Start) || !timeGt(d.s2Start, d.s1End)) {
-      d.s2Start = d.s2End = null;
+    if (hasS2Start !== hasS2End) {
+      return `${day}: Slot 2 start and end time must both be set`;
+    }
+    if (hasS2Start || hasS2End) {
+      if (!hasS1Start || !hasS1End) {
+        return `${day}: Fill Slot 1 before saving Slot 2`;
+      }
+      if (!timeGt(d.s2End, d.s2Start)) {
+        return `${day}: Slot 2 end time must be after start time`;
+      }
+      if (!timeGt(d.s2Start, d.s1End)) {
+        return `${day}: Slot 2 must start after Slot 1 ends`;
+      }
     }
   }
+  return null;
 }
 
 export async function GET(
@@ -291,6 +303,10 @@ export async function PATCH(
     }
 
     normalizeDayValues(dayValues);
+    const validationError = validateDayValues(dayValues);
+    if (validationError) {
+      return NextResponse.json({ success: false, error: validationError }, { status: 400 });
+    }
 
     // Always derive closed_days from per-day open toggles to avoid drift between UI and DB.
     const closedDays = is24Hours ? [] : DAYS.filter((_, i) => !dayValues[i].open);

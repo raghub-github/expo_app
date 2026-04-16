@@ -385,6 +385,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                                 {Boolean(doc.pan_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.pan_document_number)}</span></div>
+                              {doc.pan_expiry_date && (
+                                <div className="text-xs mt-1">
+                                  <span className="text-gray-600">Expiry:</span>{" "}
+                                  <span className="text-gray-900">{formatDate(String(doc.pan_expiry_date))}</span>
+                                </div>
+                              )}
                               {!!doc.pan_document_url && (                                <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -397,6 +403,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                                 {Boolean(doc.gst_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.gst_document_number)}</span></div>
+                              {doc.gst_expiry_date && (
+                                <div className="text-xs mt-1">
+                                  <span className="text-gray-600">Expiry:</span>{" "}
+                                  <span className="text-gray-900">{formatDate(String(doc.gst_expiry_date))}</span>
+                                </div>
+                              )}
                               {!!doc.gst_document_url && (                                <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -409,6 +421,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                                 {Boolean(doc.fssai_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.fssai_document_number)}</span></div>
+                              {doc.fssai_expiry_date && (
+                                <div className="text-xs mt-1">
+                                  <span className="text-gray-600">Expiry:</span>{" "}
+                                  <span className="text-gray-900">{formatDate(String(doc.fssai_expiry_date))}</span>
+                                </div>
+                              )}
                               {!!doc.fssai_document_url && (                                <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -555,6 +573,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                                 {Boolean(doc.pan_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.pan_document_number)}</span></div>
+                              {doc.pan_expiry_date && (
+                                <div className="text-xs mt-1">
+                                  <span className="text-gray-600">Expiry:</span>{" "}
+                                  <span className="text-gray-900">{formatDate(String(doc.pan_expiry_date))}</span>
+                                </div>
+                              )}
                               {!!doc.pan_document_url && (                                <a href={String(doc.pan_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -567,6 +591,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                                 {Boolean(doc.gst_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.gst_document_number)}</span></div>
+                              {doc.gst_expiry_date && (
+                                <div className="text-xs mt-1">
+                                  <span className="text-gray-600">Expiry:</span>{" "}
+                                  <span className="text-gray-900">{formatDate(String(doc.gst_expiry_date))}</span>
+                                </div>
+                              )}
                               {!!doc.gst_document_url && (                                <a href={String(doc.gst_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>
@@ -579,6 +609,12 @@ export function StoreProfileClient({ storeId }: { storeId: string }) {
                                 {Boolean(doc.fssai_is_verified) ? "Verified" : "Pending"}
                               </span>
                               <div className="text-xs mt-1"><span className="text-gray-600">Number:</span> <span className="text-gray-900">{String(doc.fssai_document_number)}</span></div>
+                              {doc.fssai_expiry_date && (
+                                <div className="text-xs mt-1">
+                                  <span className="text-gray-600">Expiry:</span>{" "}
+                                  <span className="text-gray-900">{formatDate(String(doc.fssai_expiry_date))}</span>
+                                </div>
+                              )}
                               {!!doc.fssai_document_url && (                                <a href={String(doc.fssai_document_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-1.5 text-blue-600 text-[11px] font-medium hover:text-blue-800">
                                   <ExternalLink size={12} /> View document
                                 </a>

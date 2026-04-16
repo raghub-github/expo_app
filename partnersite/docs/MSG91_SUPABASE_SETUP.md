@@ -24,10 +24,12 @@ This app uses **Supabase Auth** for phone OTP. Supabase generates the 6-digit OT
 
 ## 3. Send SMS Hook (This App)
 
-This app provides an API route: **`POST /api/auth/send-sms`**
+Use **one** public HTTPS endpoint (Supabase’s servers must reach it — not `localhost` unless tunneled, e.g. ngrok):
 
-- Supabase Dashboard → **Authentication** → **Hooks** → **Send SMS**
-- Hook URL: `https://your-domain.com/api/auth/send-sms`
+- **Partnersite:** `POST /api/auth/send-sms` → e.g. `https://your-domain.com/api/auth/send-sms`
+- **Monorepo API (Fastify):** `POST /v1/auth/supabase-send-sms` → e.g. `https://your-api-host/v1/auth/supabase-send-sms` (same MSG91 + `SUPABASE_SEND_SMS_HOOK_SECRET` as below)
+
+Supabase Dashboard → **Authentication** → **Hooks** → **Send SMS** → set the URL to whichever you deploy.
 
 The hook:
 

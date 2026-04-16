@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { Dialog } from '@headlessui/react'
 import Link from 'next/link'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
@@ -31,9 +31,11 @@ import {
   Download,
   Funnel,
 } from 'lucide-react'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 import { Suspense } from 'react'
 
+import { UI_STRINGS, useLocalStoreStatusEngineStore } from '@/lib/localStoreStatusEngineStore'
+import { formatCloseReasonForCard } from '@/lib/formatCloseReasonForCard'
 
 import { PageSkeletonDashboard } from '@/components/PageSkeleton';
 import { createClient } from '@/lib/supabase/client';
@@ -140,15 +142,15 @@ function DashboardContent() {
   const [isLoading, setIsLoading] = useState(true)
   const [storeId, setStoreId] = useState<string | null>(null)
   
-  // Store Status & Delivery Mode (synced with store-operations API / merchant_store_availability)
-  const [isStoreOpen, setIsStoreOpen] = useState(true)
+  // Store Status & Delivery Mode — card follows GET /api/store-operations (same effective OPEN as dashboard); engine for modals + persistence.
+  const engine = useLocalStoreStatusEngineStore()
+  const [isStoreOpen, setIsStoreOpen] = useState(false)
   const [mxDeliveryEnabled, setMxDeliveryEnabled] = useState(false)
   const { data: selfDeliveryRidersData = [], isLoading: selfDeliveryRidersLoading } = useSelfDeliveryRiders(storeId, mxDeliveryEnabled)
   const selfDeliveryRiders = selfDeliveryRidersData
-  const [openingTime, setOpeningTime] = useState('09:00')
-  const [closingTime, setClosingTime] = useState('23:00')
-  const [todayDate, setTodayDate] = useState('')
   const [todaySlots, setTodaySlots] = useState<{ start: string; end: string }[]>([])
+  const [openingTime, setOpeningTime] = useState<string | null>(null)
+  const [closingTime, setClosingTime] = useState<string | null>(null)
   const [lastToggleBy, setLastToggleBy] = useState<string | null>(null)
   const [lastToggleType, setLastToggleType] = useState<string | null>(null)
   const [lastToggledByName, setLastToggledByName] = useState<string | null>(null)
@@ -159,7 +161,13 @@ function DashboardContent() {
   const [opensAt, setOpensAt] = useState<string | null>(null)
   const [countdownTick, setCountdownTick] = useState(0)
   const [manualActivationLock, setManualActivationLock] = useState(false)
-  const [isTodayScheduledClosed, setIsTodayScheduledClosed] = useState(false)
+  /** From GET /api/store-operations — close reason line (dashboard parity). */
+  const [closeReasonFromOps, setCloseReasonFromOps] = useState<string | null>(null)
+
+  const closeReasonDisplay = useMemo(() => {
+    const r = closeReasonFromOps != null && String(closeReasonFromOps).trim() !== '' ? String(closeReasonFromOps).trim() : null
+    return formatCloseReasonForCard(r)
+  }, [closeReasonFromOps])
 
   // Store close: popup modal (no in-card expansion)
   const [showClosePopup, setShowClosePopup] = useState(false)
@@ -357,6 +365,15 @@ function DashboardContent() {
     loadStore()
   }, [storeId])
 
+  // Local engine hydration + tick (independent engine; identical spec across platforms)
+  useEffect(() => {
+    if (!storeId) return;
+    engine.hydrate(String(storeId));
+    engine.startTick();
+    return () => engine.stopTick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeId])
+
   // Fetch store operations (same API as Food Orders header) – open/closed, today's slots, activity
   const fetchStoreOperations = React.useCallback(async () => {
     if (!storeId) return
@@ -374,22 +391,41 @@ function DashboardContent() {
         })
         setIsStoreOpen(data.operational_status === 'OPEN')
         setOpensAt(data.opens_at ?? null)
-        setTodayDate(data.today_date || '')
-        setTodaySlots(data.today_slots || [])
+        const slots = (data.today_slots || []) as { start: string; end: string }[]
+        setTodaySlots(slots)
+        if (slots.length > 0) {
+          setOpeningTime(slots[0].start ?? null)
+          setClosingTime(slots[0].end ?? null)
+        } else {
+          setOpeningTime(null)
+          setClosingTime(null)
+        }
         setLastToggleBy(data.last_toggled_by_email || null)
         setLastToggleType(data.last_toggle_type || null)
         setLastToggledByName(data.last_toggled_by_name || null)
         setLastToggledById(data.last_toggled_by_id || null)
-        setRestrictionType(data.restriction_type || null)
+        const rt = data.restriction_type != null ? String(data.restriction_type).toLowerCase() : ''
+        setRestrictionType(rt === 'manual_hold' ? 'MANUAL_HOLD' : data.restriction_type || null)
         setWithinHoursButRestricted(data.within_hours_but_restricted === true)
         setLastToggledAt(data.last_toggled_at || null)
         setManualActivationLock(data.block_auto_open === true)
-        setIsTodayScheduledClosed(data.is_today_scheduled_closed === true)
-        if ((data.today_slots?.length ?? 0) > 0) {
-          const first = data.today_slots[0]
-          setOpeningTime(first.start || '09:00')
-          setClosingTime(first.end || '23:00')
-        }
+        setCloseReasonFromOps(
+          typeof data.close_reason === 'string' && data.close_reason.trim() !== '' ? data.close_reason.trim() : null
+        )
+        const manualUntil =
+          typeof data.manual_close_until === 'string' && data.manual_close_until.trim() !== ''
+            ? data.manual_close_until.trim()
+            : null
+        const closeReason =
+          typeof data.close_reason === 'string' && data.close_reason.trim() !== '' ? data.close_reason.trim() : null
+        useLocalStoreStatusEngineStore.getState().syncFromStoreOperations({
+          operationalOpen: data.operational_status === 'OPEN',
+          manualCloseUntil: manualUntil,
+          manualCloseReason: closeReason,
+        })
+      } else {
+        setTodaySlots([])
+        setCloseReasonFromOps(null)
       }
     } catch {
       // keep current state
@@ -615,13 +651,13 @@ function DashboardContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ store_id: storeId, action: 'manual_open' }),
       })
-      const data = await res.json()
-      if (res.ok && data.success) {
-        await fetchStoreOperations()
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && (data as { success?: boolean }).success) {
         setShowToggleOnWarning(false)
         toast.success('Store is now OPEN. Orders are being accepted!')
+        await fetchStoreOperations()
       } else {
-        toast.error(data.error || 'Failed to open store')
+        toast.error((data as { error?: string }).error || 'Failed to open store')
       }
     } catch {
       toast.error('Failed to open store')
@@ -688,20 +724,16 @@ function DashboardContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      const data = await res.json()
-      if (res.ok && data.success) {
-        await fetchStoreOperations()
+      const result = await res.json().catch(() => ({}))
+      if (res.ok && (result as { success?: boolean }).success) {
         setShowClosePopup(false)
         setToggleClosureType(null)
         setCloseReason('')
         setCloseReasonOther('')
-        if (toggleClosureType === 'manual_hold') toast.success('Store closed. It will only open when you turn it ON.')
-        else if (toggleClosureType === 'temporary') {
-          const until = new Date(`${closureDate}T${closureTime}:00`)
-          toast.success(`Store closed until ${until.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}. You can also turn it ON manually anytime.`)
-        } else toast.success('Store closed for the rest of today (IST). You can turn it ON anytime.')
+        toast.success('Store closed.')
+        await fetchStoreOperations()
       } else {
-        toast.error(data.error || 'Failed to close store')
+        toast.error((result as { error?: string }).error || 'Failed to close store')
       }
     } catch {
       toast.error('Failed to close store')
@@ -740,24 +772,34 @@ function DashboardContent() {
     }
   }
 
-  if (isLoading) {
-    return (
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
-        <PageSkeletonDashboard />
-      </MXLayoutWhite>
-    )
-  }
-
   return (
     <>
-      <Toaster 
-        position="top-right"
-        toastOptions={{
-          className: 'backdrop-blur-sm bg-white/95',
-          duration: 4000,
-        }}
-      />
       <StatusModal />
+      {engine.scheduleEndModalOpen && (
+        <Dialog open={engine.scheduleEndModalOpen} onClose={() => {}} className="relative z-[120]">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" aria-hidden="true" />
+          <div className="fixed inset-0 flex items-center justify-center p-4">
+            <Dialog.Panel className="mx-auto w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl border border-gray-200">
+              <Dialog.Title className="text-base font-bold text-gray-900">{UI_STRINGS.scheduleEndTitle}</Dialog.Title>
+              <p className="mt-2 text-sm text-gray-700">{UI_STRINGS.scheduleEndBody}</p>
+              <div className="mt-5 flex items-center justify-end gap-2">
+                <button
+                  className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-100"
+                  onClick={() => engine.scheduleEndRespond('stay_online')}
+                >
+                  Stay Online
+                </button>
+                <button
+                  className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700"
+                  onClick={() => engine.scheduleEndRespond('go_offline')}
+                >
+                  Go Offline
+                </button>
+              </div>
+            </Dialog.Panel>
+          </div>
+        </Dialog>
+      )}
       {/* Store close options – popup; z-[100] so overlay covers and blurs sidebar */}
       {showClosePopup && (
         <Dialog open={showClosePopup} onClose={handleCancelClosePopup} className="relative z-[100]">
@@ -916,6 +958,10 @@ function DashboardContent() {
         restaurantName={store?.store_name || 'Dashboard'}
         restaurantId={storeId || DEMO_STORE_ID}
       >
+        {isLoading ? (
+          <PageSkeletonDashboard />
+        ) : (
+          <>
         <PartnerPageHeader title="Dashboard" subtitle="GatiMitra · Operations command center" />
         <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
           <div className="dashboard-scroll hide-scrollbar flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-5 lg:px-8 py-3 sm:py-4">
@@ -993,7 +1039,11 @@ function DashboardContent() {
                           <h2 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Store status</h2>
                         </div>
                         <p className="text-sm font-semibold text-slate-900 tabular-nums leading-tight">
-                          {formatTimeHMS(openingTime)} – {formatTimeHMS(closingTime)}
+                          {openingTime && closingTime
+                            ? `${formatTimeHMS(openingTime)} – ${formatTimeHMS(closingTime)}`
+                            : todaySlots.length
+                              ? todaySlots.map((s) => `${s.start}–${s.end}`).join(', ')
+                              : '—'}
                         </p>
                       </div>
                       <button
@@ -1026,56 +1076,57 @@ function DashboardContent() {
                           {isStoreOpen ? 'Open' : restrictionType === 'MANUAL_HOLD' ? 'Waiting manual activation' : 'Closed'}
                         </span>
                       </div>
-                      {!isStoreOpen && restrictionType && (
-                        <p className="text-[11px] font-medium text-slate-600">
-                          {restrictionType === 'TEMPORARY' && <span className="text-orange-700">Temporarily closed</span>}
-                          {restrictionType === 'CLOSED_TODAY' && <span className="text-red-700">Closed for today</span>}
-                          {restrictionType === 'MANUAL_HOLD' && <span className="text-amber-800">Waiting manual activation</span>}
-                        </p>
-                      )}
-                      {!isStoreOpen && (() => {
-                        const lastClosed = statusLog.find((l) => l.action === 'CLOSED' || l.action === 'Store closed')
-                        return lastClosed?.close_reason ? (
-                          <p className="text-[11px] text-slate-600 pl-2 border-l-2 border-slate-300">
-                            <span className="text-slate-500">Reason</span>{' '}
-                            <span className="font-semibold text-slate-900">{lastClosed.close_reason}</span>
-                          </p>
-                        ) : null
-                      })()}
-                      {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
-                        <p className="text-[11px] text-slate-500 leading-snug">
-                          Last: {lastToggleType === 'AUTO_OPEN' ? 'Auto on' : lastToggleType === 'AUTO_CLOSE' ? 'Auto closed' : (
-                            <>{isStoreOpen ? 'Opened' : 'Closed'} by {lastToggledByName || lastToggleBy || 'Merchant'}
-                              {lastToggledById ? ` (ID: ${lastToggledById})` : ''} ·{' '}
-                              {new Date(lastToggledAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
-                            </>
-                          )}
-                        </p>
-                      )}
-                      {withinHoursButRestricted && (
-                        <p className="text-[11px] text-amber-900 font-medium pl-2 border-l-2 border-amber-400/80">
-                          Store is within operating hours but remains OFF due to manual restriction.
-                        </p>
-                      )}
-                      {!isStoreOpen && isTodayScheduledClosed && (
-                        <p className="text-[11px] text-slate-700 font-medium pl-2 border-l-2 border-slate-300">Today closed (scheduled)</p>
-                      )}
-                      {!isStoreOpen && !isTodayScheduledClosed && opensAt && !withinHoursButRestricted && (() => {
+                      {!isStoreOpen && opensAt && !withinHoursButRestricted && (() => {
+                        void countdownTick
                         const ms = new Date(opensAt).getTime() - Date.now()
-                        if (ms <= 0) return <p className="text-[11px] text-red-600 font-medium">Opens now</p>
+                        if (ms <= 0) {
+                          return <p className="text-[11px] font-medium text-red-600">Opens now</p>
+                        }
                         const h = Math.floor(ms / 3600000)
                         const m = Math.floor((ms % 3600000) / 60000)
                         const s = Math.floor((ms % 60000) / 1000)
-                        if (h === 0 && m === 0 && s === 0) return <p className="text-[11px] text-red-600 font-medium">Opens now</p>
+                        if (h === 0 && m === 0 && s === 0) {
+                          return <p className="text-[11px] font-medium text-red-600">Opens now</p>
+                        }
                         return (
-                          <p className="text-[11px] text-red-700 font-medium" title="Updates every second. Store will open automatically at zero.">
+                          <p
+                            className="text-[11px] font-medium text-red-700"
+                            title="Updates every second. Store will open automatically at zero."
+                          >
                             Opens in {h}h {m}m {s}s
                           </p>
                         )
                       })()}
-                      {todayDate && (isStoreOpen || !opensAt) && !withinHoursButRestricted && (
-                        <p className="text-[11px] text-slate-400 truncate tabular-nums">
-                          {todaySlots.length > 0 ? todaySlots.map((s) => `${formatTimeHMS(s.start)}–${formatTimeHMS(s.end)}`).join(', ') : 'No slots'}
+                      {!isStoreOpen && closeReasonDisplay && (
+                        <p className="text-[11px] text-slate-600 leading-snug line-clamp-3" title={closeReasonDisplay}>
+                          <span className="font-semibold text-slate-700">Close reason: </span>
+                          {closeReasonDisplay}
+                        </p>
+                      )}
+                      {(lastToggledByName || lastToggleBy || lastToggleType) && lastToggledAt && (
+                        <p className="text-[11px] text-slate-500 leading-snug">
+                          Last:{' '}
+                          {(() => {
+                            const typeUp = String(lastToggleType || '').toUpperCase()
+                            const timeStr = new Date(lastToggledAt).toLocaleTimeString('en-IN', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit',
+                              hour12: true,
+                            })
+                            const email = lastToggleBy || ''
+                            const emailNorm = String(email).toLowerCase()
+                            const isGatiMitraAgent =
+                              emailNorm.includes('gatimitra') || emailNorm.endsWith('@gatimitra.in') || emailNorm.endsWith('@gatimitra.com')
+                            if (typeUp.startsWith('AUTO')) {
+                              return `${isStoreOpen ? 'Auto on' : 'Auto closed'} · ${timeStr}`
+                            }
+                            if (isGatiMitraAgent) {
+                              return `${isStoreOpen ? 'Opened' : 'Closed'} by GatiMitra (agent: ${email || 'unknown'}) · ${timeStr}`
+                            }
+                            const who = lastToggledByName || lastToggleBy || 'Owner'
+                            return `${isStoreOpen ? 'Opened' : 'Closed'} by ${who}${storeId ? ` (ID: ${storeId})` : ''} · ${timeStr}`
+                          })()}
                         </p>
                       )}
                     </div>
@@ -1569,6 +1620,8 @@ function DashboardContent() {
             </div>
           </div>
         </div>
+          </>
+        )}
 
       </MXLayoutWhite>
 

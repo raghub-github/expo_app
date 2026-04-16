@@ -16,8 +16,53 @@
 import { getSql } from "../../db/client.js";
 
 const STORE_TIMEZONE = "Asia/Kolkata";
+
+/**
+ * Keeps `merchant_stores` online flags and `operational_status` aligned whenever the store is
+ * considered online vs offline — any path (merchant app PATCH, Partner Site, auto schedule).
+ * Dashboard / Partner GET treat OPEN only when `operational_status` is OPEN and triple is true;
+ * previously PATCH only flipped booleans, so the app looked online while portal stayed CLOSED.
+ */
+export async function syncMerchantStoresOnlineTriple(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  online: boolean,
+  opts?: { parentId?: number }
+): Promise<void> {
+  const parentId = opts?.parentId;
+  if (parentId != null && Number.isInteger(parentId) && parentId >= 1) {
+    await sql`
+      UPDATE merchant_stores
+      SET
+        is_active = ${online},
+        is_accepting_orders = ${online},
+        is_available = ${online},
+        operational_status = CASE
+          WHEN ${online} THEN 'OPEN'::store_operational_status
+          ELSE 'CLOSED'::store_operational_status
+        END,
+        updated_at = NOW()
+      WHERE id = ${storeId} AND parent_id = ${parentId}
+    `;
+  } else {
+    await sql`
+      UPDATE merchant_stores
+      SET
+        is_active = ${online},
+        is_accepting_orders = ${online},
+        is_available = ${online},
+        operational_status = CASE
+          WHEN ${online} THEN 'OPEN'::store_operational_status
+          ELSE 'CLOSED'::store_operational_status
+        END,
+        updated_at = NOW()
+      WHERE id = ${storeId}
+    `;
+  }
+}
 const GRACE_BUFFER_SECONDS = 30;
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+const SCHEDULE_END_PROMPT_GRACE_MS = 5 * 60 * 1000; // X minutes fallback → AUTO OFF
 
 const UPDATED_BY_SYSTEM = "system";
 const UPDATED_BY_ID_SYSTEM: number | null = null;
@@ -42,6 +87,20 @@ export async function emitStoreStatusChanged(
       INSERT INTO merchant_store_status_change (store_id, previous_status, new_status, reason, trigger_type)
       VALUES (${storeId}, ${previousStatus}, ${newStatus}, ${reason}, ${triggerType})
     `;
+    // Realtime fanout: LISTEN/NOTIFY channel consumed by websocket hub (multi-instance safe).
+    await sql`
+      SELECT pg_notify(
+        'store_status_changed',
+        ${JSON.stringify({
+          store_id: storeId,
+          previous_status: previousStatus,
+          new_status: newStatus,
+          reason,
+          trigger_type: triggerType,
+          timestamp,
+        })}
+      )
+    `;
   } catch (e) {
     log.info({ storeId, err: e }, "store_status_change_insert_failed");
   }
@@ -56,9 +115,29 @@ async function ensureAvailabilityRow(
     INSERT INTO merchant_store_availability (
       store_id, is_available, is_accepting_orders,
       auto_open_from_schedule, block_auto_open, updated_at,
-      updated_by, unavailable_reason, close_reason, last_toggle_type
+      updated_by, unavailable_reason, close_reason, last_toggle_type,
+      is_manual_override, manual_override_at,
+      schedule_end_prompted_at, schedule_end_prompt_expires_at,
+      last_auto_action_at, auto_off_reason
     )
-    VALUES (${storeId}, TRUE, TRUE, TRUE, FALSE, NOW(), ${UPDATED_BY_SYSTEM}, NULL, NULL, NULL)
+    VALUES (
+      ${storeId},
+      TRUE,
+      TRUE,
+      TRUE,
+      FALSE,
+      NOW(),
+      ${UPDATED_BY_SYSTEM},
+      NULL,
+      NULL,
+      NULL,
+      FALSE,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      NULL
+    )
     ON CONFLICT (store_id) DO NOTHING
   `;
 }
@@ -80,6 +159,11 @@ async function applyScheduleClosed(
       auto_unavailable_at = ${nowIso},
       auto_available_at = NULL,
       manual_close_until = NULL,
+      is_manual_override = FALSE,
+      manual_override_at = NULL,
+      schedule_end_prompted_at = NULL,
+      schedule_end_prompt_expires_at = NULL,
+      auto_off_reason = NULL,
       last_toggle_type = 'AUTO_CLOSE',
       restriction_type = 'schedule',
       updated_by = ${UPDATED_BY_SYSTEM},
@@ -113,6 +197,11 @@ async function applyScheduleOpen(
       auto_unavailable_at = NULL,
       auto_available_at = ${nowIso},
       manual_close_until = NULL,
+      is_manual_override = FALSE,
+      manual_override_at = NULL,
+      schedule_end_prompted_at = NULL,
+      schedule_end_prompt_expires_at = NULL,
+      auto_off_reason = NULL,
       last_toggle_type = 'AUTO_OPEN',
       restriction_type = 'schedule',
       updated_by = ${UPDATED_BY_SYSTEM},
@@ -146,6 +235,12 @@ async function applyForcedLock(
       auto_unavailable_at = ${nowIso},
       auto_available_at = NULL,
       manual_close_until = NULL,
+      is_manual_override = FALSE,
+      manual_override_at = NULL,
+      schedule_end_prompted_at = NULL,
+      schedule_end_prompt_expires_at = NULL,
+      auto_off_reason = 'forced_lock',
+      last_auto_action_at = ${nowIso},
       last_toggle_type = 'LOCK_APPLIED',
       restriction_type = 'lock',
       updated_by = ${UPDATED_BY_SYSTEM},
@@ -179,6 +274,12 @@ async function applyScheduleExpired(
       auto_unavailable_at = ${nowIso},
       auto_available_at = NULL,
       manual_close_until = NULL,
+      is_manual_override = FALSE,
+      manual_override_at = NULL,
+      schedule_end_prompted_at = NULL,
+      schedule_end_prompt_expires_at = NULL,
+      auto_off_reason = 'schedule_expired',
+      last_auto_action_at = ${nowIso},
       last_toggle_type = 'AUTO_CLOSE',
       restriction_type = 'schedule',
       updated_by = ${UPDATED_BY_SYSTEM},
@@ -212,6 +313,11 @@ async function applyAutoReopen(
       auto_unavailable_at = NULL,
       auto_available_at = ${nowIso},
       manual_close_until = NULL,
+      is_manual_override = FALSE,
+      manual_override_at = NULL,
+      schedule_end_prompted_at = NULL,
+      schedule_end_prompt_expires_at = NULL,
+      auto_off_reason = NULL,
       last_toggle_type = 'AUTO_REOPEN',
       restriction_type = NULL,
       updated_by = ${UPDATED_BY_SYSTEM},
@@ -225,11 +331,73 @@ async function applyAutoReopen(
   await emitStoreStatusChanged(sql, storeId, "CLOSED", "OPEN", "auto_reopen", "AUTO", log);
 }
 
+async function applyScheduleEndPromptStart(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  nowIso: string
+): Promise<void> {
+  const expiresAtIso = new Date(Date.now() + SCHEDULE_END_PROMPT_GRACE_MS).toISOString();
+  await sql`
+    UPDATE merchant_store_availability
+    SET schedule_end_prompted_at = ${nowIso},
+        schedule_end_prompt_expires_at = ${expiresAtIso},
+        updated_by = ${UPDATED_BY_SYSTEM},
+        updated_by_id = ${UPDATED_BY_ID_SYSTEM},
+        updated_at = NOW()
+    WHERE store_id = ${storeId}
+  `;
+}
+
+async function applyScheduleEndAutoOff(
+  sql: ReturnType<typeof getSql>,
+  storeId: number,
+  log: { info: (o: object, msg?: string) => void }
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await sql`
+    UPDATE merchant_store_availability
+    SET
+      is_available = FALSE,
+      is_accepting_orders = FALSE,
+      unavailable_reason = 'auto_off',
+      close_reason = 'Auto-off after schedule end',
+      auto_unavailable_at = ${nowIso},
+      auto_available_at = NULL,
+      manual_close_until = NULL,
+      is_manual_override = FALSE,
+      manual_override_at = NULL,
+      schedule_end_prompted_at = NULL,
+      schedule_end_prompt_expires_at = NULL,
+      auto_off_reason = 'schedule_end_timeout',
+      last_auto_action_at = ${nowIso},
+      last_toggle_type = 'AUTO_OFF',
+      restriction_type = 'schedule',
+      updated_by = ${UPDATED_BY_SYSTEM},
+      updated_by_id = ${UPDATED_BY_ID_SYSTEM},
+      last_toggled_at = ${nowIso},
+      updated_at = NOW()
+    WHERE store_id = ${storeId}
+  `;
+  await sql`
+    INSERT INTO merchant_store_status_log (store_id, action, restriction_type, close_reason)
+    VALUES (${storeId}, 'store_closed_auto', 'AUTO_OFF', 'schedule_end_timeout')
+  `;
+  log.info({ storeId, trigger: "schedule_end_timeout" }, "store_auto_off");
+  await emitStoreStatusChanged(sql, storeId, "OPEN", "CLOSED", "schedule_end_timeout", "AUTO", log);
+}
+
 /** Parse manual_close_until to ms; invalid or null => 0. */
 function parseManualCloseUntilMs(raw: Date | string | null | undefined): number {
   if (raw == null) return 0;
   try {
-    const s = typeof raw === "string" ? raw.trim().replace(" ", "T") : "";
+    let s = typeof raw === "string" ? raw.trim().replace(" ", "T") : "";
+    // Normalize timezone offsets for consistent parsing:
+    // - "+0530" -> "+05:30"
+    // - "+00" / "+0000" -> "+00:00"
+    if (s && !/[zZ]$/.test(s)) {
+      s = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+      s = s.replace(/([+-]\d{2})$/, "$1:00");
+    }
     const d = raw instanceof Date ? raw : new Date(s || String(raw));
     const ms = d.getTime();
     return Number.isFinite(ms) ? ms : 0;
@@ -247,6 +415,7 @@ async function hasNoActiveManualClose(
     SELECT 1 FROM merchant_store_availability
     WHERE store_id = ${storeId}
       AND (manual_close_until IS NULL OR manual_close_until <= NOW())
+      AND (unavailable_reason IS NULL OR unavailable_reason <> 'manual_indefinite')
     LIMIT 1
   `;
   return rows.length > 0;
@@ -437,6 +606,83 @@ export function getNextOpenIso(
   return null;
 }
 
+/**
+ * Legacy "close for the day" stored as end-of-day IST on the same calendar day as `ref`.
+ * In that case countdown should target the next real opening from schedule, not the EOD timestamp.
+ */
+export function isLikelyLegacyEndOfDayIstClose(untilIso: string, ref: Date): boolean {
+  const until = new Date(untilIso);
+  if (Number.isNaN(until.getTime())) return false;
+  const dFmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: STORE_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const tFmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: STORE_TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const du = dFmt.format(until);
+  const dr = dFmt.format(ref);
+  if (du !== dr) return false;
+  const tp = tFmt.formatToParts(until);
+  const hh = Number(tp.find((p) => p.type === "hour")?.value ?? 0);
+  const mm = Number(tp.find((p) => p.type === "minute")?.value ?? 0);
+  return hh > 23 || (hh === 23 && mm >= 59);
+}
+
+/**
+ * First opening moment on a future IST calendar day only (never a slot later "today").
+ * Used for "Close for today" so merchants do not see reopen at today's next slot (e.g. 11:30 same day).
+ */
+export function getNextOpenIsoAfterIstCalendarDay(
+  row: Record<string, unknown>,
+  dayOfWeek: number,
+  refDate: Date
+): string | null {
+  if (row.is_24_hours === true) return null;
+  const closedDays = (row.closed_days as string[] | null) ?? [];
+  const sameForAll = row.same_for_all_days === true;
+  const formatIstDate = (d: Date) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: STORE_TIMEZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(d);
+    const y = parts.find((p) => p.type === "year")?.value ?? "0";
+    const mo = parts.find((p) => p.type === "month")?.value ?? "01";
+    const day = parts.find((p) => p.type === "day")?.value ?? "01";
+    return { y, m: mo.padStart(2, "0"), d: day.padStart(2, "0") };
+  };
+  const addDaysInIst = (dateStr: string, days: number): string => {
+    const d = new Date(dateStr + "T00:00:00+05:30");
+    d.setTime(d.getTime() + days * 86400 * 1000);
+    const p = formatIstDate(d);
+    return `${p.y}-${p.m}-${p.d}`;
+  };
+  const refIst = formatIstDate(refDate);
+  const todayStr = `${refIst.y}-${refIst.m}-${refIst.d}`;
+
+  for (let dayOffset = 1; dayOffset <= 7; dayOffset++) {
+    const checkDay = (dayOfWeek + dayOffset) % 7;
+    const dayKey = DAY_NAMES[checkDay];
+    if (closedDays.some((d) => String(d).toLowerCase() === dayKey)) continue;
+    const slots = getSlotsForDay(row, dayKey, sameForAll).sort((a, b) => a.startMin - b.startMin);
+    if (slots.length === 0) continue;
+    const firstStart = slots[0].startMin;
+    const dateStr = addDaysInIst(todayStr, dayOffset);
+    const timeStr = minutesToTimeStr(firstStart);
+    const isoInIst = `${dateStr}T${timeStr}:00+05:30`;
+    const dt = new Date(isoInIst);
+    return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+  }
+  return null;
+}
+
 /** Next open day (skip closed days) at 00:00 IST as ISO. For fallback when getNextOpenIso returns null. */
 export function getNextOpenDayStartIso(
   row: Record<string, unknown>,
@@ -486,8 +732,12 @@ type StoreRow = {
   auto_open_from_schedule: boolean | null;
   block_auto_open: boolean | null;
   manual_close_until: Date | string | null;
+  unavailable_reason?: string | null;
+  restriction_type?: string | null;
   is_available: boolean | null;
   avail_accepting: boolean | null;
+  is_manual_override: boolean | null;
+  schedule_end_prompt_expires_at: Date | string | null;
 };
 
 export async function runStoreScheduleTick(log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }): Promise<void> {
@@ -504,8 +754,12 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
         msa.auto_open_from_schedule,
         msa.block_auto_open,
         msa.manual_close_until,
+        msa.unavailable_reason,
+        msa.restriction_type,
         msa.is_available,
-        msa.is_accepting_orders AS avail_accepting
+        msa.is_accepting_orders AS avail_accepting,
+        msa.is_manual_override,
+        msa.schedule_end_prompt_expires_at
       FROM merchant_stores ms
       LEFT JOIN merchant_store_availability msa ON msa.store_id = ms.id
       WHERE ms.deleted_at IS NULL
@@ -531,6 +785,40 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
       if (Number.isFinite(sid)) hoursByStore.set(sid, r);
     }
 
+    const rushRows =
+      storeIds.length === 0
+        ? []
+        : await sql`
+            SELECT store_id
+            FROM merchant_store_rush_windows
+            WHERE store_id IN ${sql(storeIds)}
+              AND is_active = TRUE
+              AND ends_at > NOW()
+          `;
+    const rushActiveStoreIds = new Set<number>(
+      (rushRows as unknown as Array<{ store_id: number | string }>).map((r) => Number((r as any).store_id)).filter((n) => Number.isFinite(n))
+    );
+
+    const closureRows =
+      storeIds.length === 0
+        ? []
+        : await sql`
+            SELECT store_id, ends_at
+            FROM merchant_store_scheduled_closures
+            WHERE store_id IN ${sql(storeIds)}
+              AND status IN ('scheduled', 'active')
+              AND starts_at <= NOW()
+              AND ends_at > NOW()
+          `;
+    const activeClosureEndByStore = new Map<number, string>();
+    for (const r of closureRows as unknown as Array<{ store_id: number | string; ends_at: Date | string }>) {
+      const sid = Number((r as any).store_id);
+      if (!Number.isFinite(sid)) continue;
+      const endsAt = new Date(r.ends_at instanceof Date ? r.ends_at.toISOString() : String(r.ends_at));
+      if (Number.isNaN(endsAt.getTime())) continue;
+      activeClosureEndByStore.set(sid, endsAt.toISOString());
+    }
+
     for (const store of storeRows as unknown as StoreRow[]) {
       const storeId = store.store_id;
       if (!Number.isInteger(storeId) || storeId < 1) continue;
@@ -548,6 +836,13 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
       const manualCloseUntilMs = parseManualCloseUntilMs(store.manual_close_until);
       const nowMs = now.getTime();
       const isManualCloseActive = manualCloseUntilMs > 0 && nowMs < manualCloseUntilMs;
+      const unavailableReasonNorm =
+        store.unavailable_reason != null && String(store.unavailable_reason).trim() !== ""
+          ? String(store.unavailable_reason).trim().toLowerCase()
+          : "";
+      const isManualIndefinite = unavailableReasonNorm === "manual_indefinite";
+      const isManualOverride = store.is_manual_override === true;
+      const promptExpiresMs = parseManualCloseUntilMs(store.schedule_end_prompt_expires_at);
       const currentlyOpen =
         store.is_accepting_orders === true &&
         store.avail_accepting !== false &&
@@ -560,10 +855,39 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
       }
 
       try {
+        // Vacation mode (scheduled closure active): force OFFLINE and ignore manual toggles/schedule.
+        const closureEndsAtIso = activeClosureEndByStore.get(storeId) ?? null;
+        if (closureEndsAtIso) {
+          if (currentlyOpen) {
+            await syncMerchantStoresOnlineTriple(sql, storeId, false);
+          }
+          await sql`
+            UPDATE merchant_store_availability
+            SET
+              is_available = FALSE,
+              is_accepting_orders = FALSE,
+              unavailable_reason = 'vacation',
+              close_reason = 'Vacation mode active',
+              manual_close_until = ${closureEndsAtIso},
+              restriction_type = 'VACATION',
+              is_manual_override = FALSE,
+              manual_override_at = NULL,
+              schedule_end_prompted_at = NULL,
+              schedule_end_prompt_expires_at = NULL,
+              updated_by = ${UPDATED_BY_SYSTEM},
+              updated_by_id = ${UPDATED_BY_ID_SYSTEM},
+              last_toggle_type = 'AUTO_CLOSE',
+              last_toggled_at = ${new Date().toISOString()},
+              updated_at = NOW()
+            WHERE store_id = ${storeId}
+          `;
+          continue;
+        }
+
         // Fail-safe: no hours config => treat as closed (1. Schedule closed)
         if (!hoursRow) {
           if (currentlyOpen && autoOpen) {
-            await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+            await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await applyScheduleExpired(sql, storeId, log);
           }
           continue;
@@ -572,13 +896,16 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
         // 5. Forced lock
         if (blockAutoOpen) {
           if (currentlyOpen) {
-            await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+            await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await applyForcedLock(sql, storeId, log);
           }
           continue;
         }
 
-        if (isManualCloseActive) continue;
+        // Manual closure:
+        // - temp close uses manual_close_until window
+        // - manual_indefinite should also block auto-open during operating hours
+        if (isManualCloseActive || isManualIndefinite) continue;
         if (!autoOpen) continue;
 
         // 2. Schedule open / 7. Auto reopen after manual close — only if DB says no active manual close
@@ -587,26 +914,35 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
             const safeToOpen = await hasNoActiveManualClose(sql, storeId);
             if (!safeToOpen) continue;
             const manualCloseJustExpired = manualCloseUntilMs > 0 && nowMs >= manualCloseUntilMs;
-            await sql`UPDATE merchant_stores SET is_accepting_orders = TRUE, updated_at = NOW() WHERE id = ${storeId}`;
+            await syncMerchantStoresOnlineTriple(sql, storeId, true);
             await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
           }
         } else {
-          // 1. Schedule closed (outside hours)
+          // 3. Schedule end: show prompt then AUTO OFF (unless manual override / rush hours)
           if (currentlyOpen) {
-            const recentManualOpen = await sql`
-              SELECT 1 FROM merchant_store_status_log
-              WHERE store_id = ${storeId} AND action = 'manual_open'
-                AND created_at > NOW() - INTERVAL '2 minutes'
-            LIMIT 1
-            `;
-            if (recentManualOpen.length > 0) continue;
-            await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
-            await applyScheduleClosed(sql, storeId, log);
+            if (isManualOverride) continue;
+            if (rushActiveStoreIds.has(storeId)) continue;
+
+            if (!promptExpiresMs) {
+              const nowIso = new Date().toISOString();
+              await applyScheduleEndPromptStart(sql, storeId, nowIso);
+              continue;
+            }
+            if (nowMs < promptExpiresMs) continue;
+
+            await syncMerchantStoresOnlineTriple(sql, storeId, false);
+            await applyScheduleEndAutoOff(sql, storeId, log);
           } else {
             // Clear stale manual_close_until so status shows schedule_closed
             await sql`
               UPDATE merchant_store_availability
-              SET manual_close_until = NULL, close_reason = NULL, unavailable_reason = NULL, last_toggle_type = NULL, updated_at = NOW()
+              SET manual_close_until = NULL,
+                  close_reason = NULL,
+                  unavailable_reason = NULL,
+                  last_toggle_type = NULL,
+                  schedule_end_prompted_at = NULL,
+                  schedule_end_prompt_expires_at = NULL,
+                  updated_at = NOW()
               WHERE store_id = ${storeId}
                 AND (manual_close_until IS NULL OR manual_close_until < NOW())
             `;
@@ -645,8 +981,12 @@ export async function runStoreScheduleTickForStore(
         msa.auto_open_from_schedule,
         msa.block_auto_open,
         msa.manual_close_until,
+        msa.unavailable_reason,
+        msa.restriction_type,
         msa.is_available,
-        msa.is_accepting_orders AS avail_accepting
+        msa.is_accepting_orders AS avail_accepting,
+        msa.is_manual_override,
+        msa.schedule_end_prompt_expires_at
       FROM merchant_stores ms
       LEFT JOIN merchant_store_availability msa ON msa.store_id = ms.id
       WHERE ms.id = ${storeId} AND ms.deleted_at IS NULL
@@ -660,6 +1000,13 @@ export async function runStoreScheduleTickForStore(
     const manualCloseUntilMs = parseManualCloseUntilMs(store.manual_close_until);
     const nowMs = now.getTime();
     const isManualCloseActive = manualCloseUntilMs > 0 && nowMs < manualCloseUntilMs;
+    const unavailableReasonNorm =
+      (store as any).unavailable_reason != null && String((store as any).unavailable_reason).trim() !== ""
+        ? String((store as any).unavailable_reason).trim().toLowerCase()
+        : "";
+    const isManualIndefinite = unavailableReasonNorm === "manual_indefinite";
+    const isManualOverride = store.is_manual_override === true;
+    const promptExpiresMs = parseManualCloseUntilMs(store.schedule_end_prompt_expires_at);
     const currentlyOpen =
       store.is_accepting_orders === true &&
       store.avail_accepting !== false &&
@@ -668,46 +1015,103 @@ export async function runStoreScheduleTickForStore(
     let withinHours = false;
     if (hoursRow) withinHours = isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
 
+    // Vacation mode (scheduled closure active): force OFFLINE.
+    const activeSchedRows = await sql`
+      SELECT ends_at
+      FROM merchant_store_scheduled_closures
+      WHERE store_id = ${storeId}
+        AND status IN ('scheduled', 'active')
+        AND starts_at <= NOW()
+        AND ends_at > NOW()
+      ORDER BY starts_at ASC
+      LIMIT 1
+    `;
+    if (activeSchedRows.length > 0) {
+      const endsAtRaw = (activeSchedRows[0] as any)?.ends_at;
+      const endsAt = new Date(endsAtRaw instanceof Date ? endsAtRaw.toISOString() : String(endsAtRaw));
+      const endsAtIso = Number.isNaN(endsAt.getTime()) ? null : endsAt.toISOString();
+      if (endsAtIso) {
+        if (currentlyOpen) await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        await sql`
+          UPDATE merchant_store_availability
+          SET
+            is_available = FALSE,
+            is_accepting_orders = FALSE,
+            unavailable_reason = 'vacation',
+            close_reason = 'Vacation mode active',
+            manual_close_until = ${endsAtIso},
+            restriction_type = 'VACATION',
+            is_manual_override = FALSE,
+            manual_override_at = NULL,
+            schedule_end_prompted_at = NULL,
+            schedule_end_prompt_expires_at = NULL,
+            updated_by = ${UPDATED_BY_SYSTEM},
+            updated_by_id = ${UPDATED_BY_ID_SYSTEM},
+            last_toggle_type = 'AUTO_CLOSE',
+            last_toggled_at = ${new Date().toISOString()},
+            updated_at = NOW()
+          WHERE store_id = ${storeId}
+        `;
+        return;
+      }
+    }
+
     if (!hoursRow) {
       if (currentlyOpen && autoOpen) {
-        await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+        await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyScheduleExpired(sql, storeId, log);
       }
       return;
     }
     if (blockAutoOpen) {
       if (currentlyOpen) {
-        await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+        await syncMerchantStoresOnlineTriple(sql, storeId, false);
         await applyForcedLock(sql, storeId, log);
       }
       return;
     }
-    if (isManualCloseActive) return;
+    if (isManualCloseActive || isManualIndefinite) return;
     if (!autoOpen) return;
     if (withinHours) {
       if (!currentlyOpen) {
         const safeToOpen = await hasNoActiveManualClose(sql, storeId);
         if (!safeToOpen) return;
         const manualCloseJustExpired = manualCloseUntilMs > 0 && nowMs >= manualCloseUntilMs;
-        await sql`UPDATE merchant_stores SET is_accepting_orders = TRUE, updated_at = NOW() WHERE id = ${storeId}`;
+        await syncMerchantStoresOnlineTriple(sql, storeId, true);
         await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
       }
     } else {
       if (currentlyOpen) {
-        const recentManualOpen = await sql`
-          SELECT 1 FROM merchant_store_status_log
-          WHERE store_id = ${storeId} AND action = 'manual_open'
-            AND created_at > NOW() - INTERVAL '2 minutes'
-        LIMIT 1
+        if (isManualOverride) return;
+        const rushRows = await sql`
+          SELECT 1
+          FROM merchant_store_rush_windows
+          WHERE store_id = ${storeId}
+            AND is_active = TRUE
+            AND ends_at > NOW()
+          LIMIT 1
         `;
-        if (recentManualOpen.length === 0) {
-          await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
-          await applyScheduleClosed(sql, storeId, log);
+        if (rushRows.length > 0) return;
+
+        if (!promptExpiresMs) {
+          const nowIso = new Date().toISOString();
+          await applyScheduleEndPromptStart(sql, storeId, nowIso);
+          return;
         }
+        if (nowMs < promptExpiresMs) return;
+
+        await syncMerchantStoresOnlineTriple(sql, storeId, false);
+        await applyScheduleEndAutoOff(sql, storeId, log);
       } else {
         await sql`
           UPDATE merchant_store_availability
-          SET manual_close_until = NULL, close_reason = NULL, unavailable_reason = NULL, last_toggle_type = NULL, updated_at = NOW()
+          SET manual_close_until = NULL,
+              close_reason = NULL,
+              unavailable_reason = NULL,
+              last_toggle_type = NULL,
+              schedule_end_prompted_at = NULL,
+              schedule_end_prompt_expires_at = NULL,
+              updated_at = NOW()
           WHERE store_id = ${storeId}
             AND (manual_close_until IS NULL OR manual_close_until < NOW())
         `;

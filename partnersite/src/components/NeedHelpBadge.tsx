@@ -27,7 +27,11 @@ function readSelectedStoreId(): string {
   return localStorage.getItem("selectedStoreId")?.trim() || "";
 }
 
-const NeedHelpBadge: React.FC = () => {
+const NeedHelpBadge: React.FC<{
+  inline?: boolean;
+  variant?: "pill" | "headerLink";
+  className?: string;
+}> = ({ inline = false, variant = "pill", className }) => {
   const router = useRouter();
   const session = useMerchantSession();
   const [open, setOpen] = useState(false);
@@ -233,21 +237,30 @@ const NeedHelpBadge: React.FC = () => {
         type="button"
         aria-label="Need help — contact support"
         onClick={() => setOpen(true)}
-        style={{
-          position: "fixed",
-          right: -12,
-          bottom: 40,
-          zIndex: 1000,
-          background: badgeColor,
-          color: "#010004",
-          border: "none",
-          borderRadius: 24,
-          padding: "8px 20px",
-          fontWeight: 600,
-          fontSize: 12,
-          boxShadow: "0 4px 24px rgba(44,204,155,0.18)",
-          cursor: "pointer",
-        }}
+        style={
+          variant === "headerLink"
+            ? undefined
+            : {
+                position: inline ? "relative" : "fixed",
+                right: inline ? undefined : -12,
+                bottom: inline ? undefined : 40,
+                zIndex: 1000,
+                background: badgeColor,
+                color: "#010004",
+                border: "none",
+                borderRadius: 24,
+                padding: "8px 20px",
+                fontWeight: 600,
+                fontSize: 12,
+                boxShadow: "0 4px 24px rgba(44,204,155,0.18)",
+                cursor: "pointer",
+              }
+        }
+        className={
+          variant === "headerLink"
+            ? `hidden text-sm text-gray-700 underline decoration-gray-400 underline-offset-2 hover:text-gray-900 lg:inline ${className || ""}`.trim()
+            : className
+        }
       >
         Need a hand !
       </button>

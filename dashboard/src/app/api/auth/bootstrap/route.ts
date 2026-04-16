@@ -10,7 +10,7 @@ import {
   getUserPermissions,
   getUserDashboardAccess,
 } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { toPermissionKeys } from "@/lib/permissions/constants";
 import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { getRedisClient } from "@/lib/redis";
@@ -120,12 +120,39 @@ export async function GET(request: NextRequest) {
     const cached = await getCachedBootstrap(user.id);
     if (cached) return NextResponse.json(cached);
 
-    const systemUser = await getSystemUserByEmail(user.email!);
-    if (!systemUser) {
-      return NextResponse.json(
-        { success: false, error: "User not found in system" },
-        { status: 404 }
-      );
+    const mapped = await resolveSystemUserForSupabaseAuth(user.id, user.email);
+    if (!mapped) {
+      // Authenticated in Supabase but no `system_users` row (yet). Return 200 so clients
+      // seed cache and show setup messaging — not HTTP 404 (that breaks devtools and retries).
+      const unlinkedBody = {
+        success: true as const,
+        data: {
+          session: { user },
+          permissions: {
+            exists: false,
+            systemUserId: null,
+            isSuperAdmin: false,
+            canTogglePortal: false,
+            roles: [] as const,
+            permissions: [] as const,
+            permissionStrings: [] as const,
+            message: "User not found in system_users table",
+          },
+          dashboardAccess: { dashboards: [], accessPoints: [] },
+          systemUser: null as null,
+          status: "pending_system_user" as const,
+        },
+      };
+      await setCachedBootstrap(user.id, unlinkedBody);
+      const response = NextResponse.json(unlinkedBody);
+      response.cookies.set("gm_portal_toggle_access", "0", {
+        path: "/",
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        maxAge: 60 * 60 * 24 * 7,
+      });
+      return response;
     }
 
     // Single permissions call (engine caches per-request)
@@ -171,7 +198,7 @@ export async function GET(request: NextRequest) {
       }));
       accessPoints = [];
     } else {
-      const dashboardRows = await getUserDashboardAccess(systemUser.id);
+      const dashboardRows = await getUserDashboardAccess(mapped.id);
       dashboards = dashboardRows.map((d) => ({
         dashboardType: d.dashboardType,
         accessLevel: d.accessLevel,
@@ -183,7 +210,7 @@ export async function GET(request: NextRequest) {
         .from(dashboardAccessPoints)
         .where(
           and(
-            eq(dashboardAccessPoints.systemUserId, systemUser.id),
+            eq(dashboardAccessPoints.systemUserId, mapped.id),
             eq(dashboardAccessPoints.isActive, true)
           )
         );
@@ -203,10 +230,10 @@ export async function GET(request: NextRequest) {
         permissions: permissionsPayload,
         dashboardAccess: { dashboards, accessPoints },
         systemUser: {
-          id: systemUser.id,
-          systemUserId: systemUser.systemUserId,
-          fullName: systemUser.fullName,
-          email: systemUser.email,
+          id: mapped.id,
+          systemUserId: mapped.system_user_id,
+          fullName: mapped.full_name,
+          email: mapped.email,
         },
         status: "active" as const,
       },

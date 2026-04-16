@@ -53,6 +53,18 @@ export async function markStoreNotificationRead(
   }
 }
 
+export async function markAllStoreNotificationsRead(storeId: number, token: string): Promise<void> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/notifications/read-all`,
+    token,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || res.statusText || "Failed to mark all as read");
+  }
+}
+
 export async function deleteStoreNotification(
   storeId: number,
   notificationId: string,
@@ -67,4 +79,38 @@ export async function deleteStoreNotification(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { error?: string }).error || res.statusText || "Failed to delete notification");
   }
+}
+
+/** In-app title for idle pipeline reminder — must match backend `WAITING_FOR_ORDER_TITLE`. */
+export const WAITING_FOR_ORDER_TITLE = "Waiting for Order";
+
+export async function ensureWaitingForOrderNotification(
+  storeId: number,
+  token: string
+): Promise<{ id: string; created: boolean }> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/notifications/waiting-for-order/ensure`,
+    token,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || res.statusText || "Failed to ensure notification");
+  }
+  const data = (await res.json()) as { id?: string; created?: boolean };
+  return { id: String(data.id ?? ""), created: data.created === true };
+}
+
+export async function deleteWaitingForOrderNotifications(storeId: number, token: string): Promise<number> {
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/notifications/waiting-for-order`,
+    token,
+    { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error || res.statusText || "Failed to delete waiting notification");
+  }
+  const data = (await res.json()) as { deleted?: number };
+  return Number(data.deleted ?? 0);
 }

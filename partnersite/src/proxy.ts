@@ -212,6 +212,11 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(new URL("/auth/post-login", request.url));
     }
 
+    // If already logged in, never show the /auth landing page; always go to post-login.
+    if (session && pathname === "/auth") {
+      return NextResponse.redirect(new URL("/auth/post-login", request.url));
+    }
+
     if (session && isProtected) {
       const deviceId = request.cookies.get(deviceIdCookie())?.value?.trim();
       let deviceSessionValid = false;

@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getUserDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
-import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getDb } from "@/lib/db/client";
 import { dashboardAccessPoints } from "@/lib/db/schema";
 import { apiErrorResponse } from "@/lib/api-errors";
@@ -61,17 +61,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get system user
-    const systemUser = await getSystemUserByEmail(user.email!);
-    if (!systemUser) {
-      return NextResponse.json(
-        { success: false, error: "User not found in system" },
-        { status: 404 }
-      );
+    const mapped = await resolveSystemUserForSupabaseAuth(user.id, user.email);
+    if (!mapped) {
+      return NextResponse.json({
+        success: true,
+        data: { dashboards: [], accessPoints: [] },
+      });
     }
 
     // Check if super admin - they have access to all dashboards
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email!);
+    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? mapped.email);
 
     if (userIsSuperAdmin) {
       // Super admin has access to all dashboards
@@ -96,7 +95,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get dashboard access for regular users
-    const dashboards = await getUserDashboardAccess(systemUser.id);
+    const dashboards = await getUserDashboardAccess(mapped.id);
 
     // Fetch all active access points directly for the user.
     // Do not rely on dashboard_access rows only, because legacy/mixed dashboard types
@@ -107,7 +106,7 @@ export async function GET(request: NextRequest) {
       .from(dashboardAccessPoints)
       .where(
         and(
-          eq(dashboardAccessPoints.systemUserId, systemUser.id),
+          eq(dashboardAccessPoints.systemUserId, mapped.id),
           eq(dashboardAccessPoints.isActive, true)
         )
       );
@@ -119,7 +118,7 @@ export async function GET(request: NextRequest) {
         (ap.allowedActions as unknown[]).some((a) => String(a).trim().toUpperCase() === "UPDATE")
     );
     console.info("[GET /api/auth/dashboard-access] resolved access points", {
-      systemUserId: systemUser.id,
+      systemUserId: mapped.id,
       count: allAccessPoints.length,
       hasStatusToggleInAccessPoints,
     });

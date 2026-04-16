@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -26,7 +26,15 @@ import { usePartnerShellHeader } from '@/context/PartnerShellHeaderContext';
 import LogoutConfirmModal from '@/components/LogoutConfirmModal';
 import { PartnerToggleConfirmModal } from '@/components/PartnerToggleConfirmModal';
 import { StoreOperationalFlowModals } from '@/components/StoreOperationalFlowModals';
+import { RadarLiveIndicator } from '@/components/RadarLiveIndicator';
+import {
+  PartnerWaitingOrderSync,
+  notificationListHasWaiting,
+} from '@/components/PartnerWaitingOrderSync';
+import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
+import { toStoredDocumentUrl } from '@/lib/r2';
+import NeedHelpBadge from '@/components/NeedHelpBadge';
 
 export type PartnerHeaderSheet = 'notifications' | 'settings' | 'status';
 
@@ -88,11 +96,10 @@ function CompactSwitch({
 
 /** Store banner thumbnail for outlet rows (merchant_stores.banner_url — proxy or R2 URL). */
 function OutletBannerThumb({ url }: { url: string | null | undefined }) {
-  const [broken, setBroken] = useState(false);
-  useEffect(() => {
-    setBroken(false);
-  }, [url]);
-  if (!url?.trim() || broken) {
+  const trimmed = typeof url === 'string' ? url.trim() : '';
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  const isBroken = !!trimmed && brokenUrl === trimmed;
+  if (!trimmed || isBroken) {
     return (
       <div
         className="h-12 w-14 shrink-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200/90"
@@ -103,10 +110,10 @@ function OutletBannerThumb({ url }: { url: string | null | undefined }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={url}
+      src={trimmed}
       alt=""
       className="h-12 w-14 shrink-0 rounded-lg border border-slate-200/80 bg-slate-100 object-cover"
-      onError={() => setBroken(true)}
+      onError={() => setBrokenUrl(trimmed)}
     />
   );
 }
@@ -118,6 +125,8 @@ interface MXPartnerTopBarProps {
   /** Page heading in the top bar (replaces in-content title on some pages) */
   headerTitle?: string;
   headerSubtitle?: string;
+  /** When true, hides the Need a hand link in header */
+  hideHelpBadge?: boolean;
 }
 
 export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
@@ -126,6 +135,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   sidebarCollapsed,
   headerTitle,
   headerSubtitle,
+  hideHelpBadge = false,
 }) => {
   const router = useRouter();
   const pathname = usePathname();
@@ -140,6 +150,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [ownerName, setOwnerName] = useState<string | null>(null);
   const [parentName, setParentName] = useState<string | null>(null);
   const [ownerEmailResolved, setOwnerEmailResolved] = useState<string | null>(null);
+  const [brokenAvatarSrc, setBrokenAvatarSrc] = useState<string | null>(null);
 
   const [sheet, setSheet] = useState<PartnerHeaderSheet | null>(null);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -154,6 +165,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const profilePanelRef = useRef<HTMLDivElement>(null);
   const profilePhotoInputRef = useRef<HTMLInputElement>(null);
   const partnerShellHeader = usePartnerShellHeader();
+  const topbarRef = useRef<HTMLElement | null>(null);
   const [statusTab, setStatusTab] = useState<'manage' | 'schedule'>('manage');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -188,6 +200,176 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     null
   );
   const [operationalOpenModal, setOperationalOpenModal] = useState<{ storeId: string; storeName: string } | null>(null);
+
+  const [partnerNotifications, setPartnerNotifications] = useState<
+    Array<{ id: string; title: string; body: string; read: boolean; created_at?: string }>
+  >([]);
+  const [partnerNotifLoading, setPartnerNotifLoading] = useState(false);
+  const [storeSettingsLoading, setStoreSettingsLoading] = useState(false);
+  const [storeSettingsSaving, setStoreSettingsSaving] = useState(false);
+  const [storeSettings, setStoreSettings] = useState<{
+    // Keep a subset needed by other parts too
+    show_floating_orders: boolean;
+    // Manage communications (merchant app parity)
+    communication_settings: {
+      whatsapp_notifications: boolean;
+      reports: {
+        daily_whatsapp: boolean;
+        daily_email: boolean;
+        weekly_whatsapp: boolean;
+        weekly_email: boolean;
+      };
+      order_notifications: {
+        enabled: boolean;
+        ring_volume: number; // 0..1
+        ring_in_silent: boolean;
+      };
+      live_complaint_notifications: boolean;
+      rider_notifications: boolean;
+    };
+  } | null>(null);
+
+  const loadStoreSettings = useCallback(async () => {
+    if (!resolvedStoreId) return;
+    setStoreSettingsLoading(true);
+    try {
+      const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(resolvedStoreId)}`, {
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStoreSettings(null);
+        return;
+      }
+      const comm = (data.communication_settings ?? {}) as any;
+      const reports = (comm.reports ?? {}) as any;
+      const orderNotifs = (comm.order_notifications ?? {}) as any;
+      setStoreSettings({
+        show_floating_orders: data.show_floating_orders === true,
+        communication_settings: {
+          whatsapp_notifications: comm.whatsapp_notifications === true,
+          reports: {
+            daily_whatsapp: reports.daily_whatsapp === true,
+            daily_email: reports.daily_email === true,
+            weekly_whatsapp: reports.weekly_whatsapp === true,
+            weekly_email: reports.weekly_email === true,
+          },
+          order_notifications: {
+            enabled: orderNotifs.enabled !== false,
+            ring_volume:
+              typeof orderNotifs.ring_volume === 'number'
+                ? Math.min(1, Math.max(0, orderNotifs.ring_volume))
+                : 0.6,
+            ring_in_silent: orderNotifs.ring_in_silent !== false,
+          },
+          live_complaint_notifications: comm.live_complaint_notifications === true,
+          rider_notifications: comm.rider_notifications === true,
+        },
+      });
+    } finally {
+      setStoreSettingsLoading(false);
+    }
+  }, [resolvedStoreId]);
+
+  useEffect(() => {
+    if (sheet === 'settings') void loadStoreSettings();
+  }, [sheet, loadStoreSettings]);
+
+  const saveStoreSettings = useCallback(async () => {
+    if (!resolvedStoreId || !storeSettings) return;
+    setStoreSettingsSaving(true);
+    try {
+      const res = await fetch('/api/merchant/store-settings', {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId: resolvedStoreId, show_floating_orders: storeSettings.show_floating_orders, communication_settings: storeSettings.communication_settings }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Could not save settings');
+        return;
+      }
+      toast.success('Settings saved');
+      await loadStoreSettings();
+    } catch {
+      toast.error('Could not save settings');
+    } finally {
+      setStoreSettingsSaving(false);
+    }
+  }, [resolvedStoreId, storeSettings, loadStoreSettings]);
+
+  const fetchPartnerNotifications = useCallback(async () => {
+    if (!resolvedStoreId) {
+      setPartnerNotifications([]);
+      return;
+    }
+    setPartnerNotifLoading(true);
+    try {
+      const res = await fetch(
+        `/api/merchant/store-notifications?store_id=${encodeURIComponent(resolvedStoreId)}`,
+        { credentials: 'include' }
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        notifications?: Array<{ id: string; title: string; body: string; read: boolean; created_at?: string }>;
+      };
+      if (res.ok && Array.isArray(data.notifications)) {
+        setPartnerNotifications(data.notifications);
+      } else {
+        setPartnerNotifications([]);
+      }
+    } catch {
+      setPartnerNotifications([]);
+    } finally {
+      setPartnerNotifLoading(false);
+    }
+  }, [resolvedStoreId]);
+
+  const hasWaitingPartner = useMemo(
+    () => notificationListHasWaiting(partnerNotifications),
+    [partnerNotifications]
+  );
+  const partnerUnreadCount = useMemo(
+    () => partnerNotifications.filter((n) => !n.read).length,
+    [partnerNotifications]
+  );
+
+  const markPartnerNotificationRead = useCallback(
+    async (n: { id: string; read: boolean }) => {
+      if (!resolvedStoreId || n.read) return;
+      try {
+        const res = await fetch('/api/merchant/store-notifications', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            store_id: resolvedStoreId,
+            action: 'mark_read',
+            notification_id: n.id,
+          }),
+        });
+        if (res.ok) await fetchPartnerNotifications();
+      } catch {
+        /* ignore */
+      }
+    },
+    [resolvedStoreId, fetchPartnerNotifications]
+  );
+
+  const markAllPartnerNotificationsRead = useCallback(async () => {
+    if (!resolvedStoreId) return;
+    try {
+      const res = await fetch('/api/merchant/store-notifications', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: resolvedStoreId, action: 'mark_all_read' }),
+      });
+      if (res.ok) await fetchPartnerNotifications();
+    } catch {
+      /* ignore */
+    }
+  }, [resolvedStoreId, fetchPartnerNotifications]);
 
   useEffect(() => {
     const fromStorage =
@@ -237,8 +419,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     'Account';
 
   const sessionAvatarUrl = merchantSession?.user?.avatar_url?.trim() || null;
-  const parentBrandLogo = merchantSession?.parent?.store_logo?.trim() || null;
+  const parentBrandLogoRaw = merchantSession?.parent?.store_logo?.trim() || null;
+  const parentBrandLogo = parentBrandLogoRaw ? (toStoredDocumentUrl(parentBrandLogoRaw) ?? parentBrandLogoRaw) : null;
   const effectiveAvatarUrl = localAvatarDataUrl || sessionAvatarUrl || parentBrandLogo;
+  const avatarSrc = effectiveAvatarUrl && effectiveAvatarUrl !== brokenAvatarSrc ? effectiveAvatarUrl : null;
 
   useLayoutEffect(() => {
     if (!profileDropdownOpen || !profileTriggerRef.current) {
@@ -371,6 +555,17 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [refreshStoreOperations, resolvedStoreId]);
 
   useEffect(() => {
+    if (!resolvedStoreId) return;
+    void fetchPartnerNotifications();
+    const t = window.setInterval(() => void fetchPartnerNotifications(), 60_000);
+    return () => window.clearInterval(t);
+  }, [resolvedStoreId, fetchPartnerNotifications]);
+
+  useEffect(() => {
+    if (sheet === 'notifications' && resolvedStoreId) void fetchPartnerNotifications();
+  }, [sheet, resolvedStoreId, fetchPartnerNotifications]);
+
+  useEffect(() => {
     if (sheet !== 'status') return;
     void refetchAllStoreOps();
   }, [sheet, refetchAllStoreOps]);
@@ -381,6 +576,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
     prevSheetRef.current = sheet;
   }, [sheet, resolvedStoreId]);
+
+  // Keep a global CSS var in sync with header height so Sonner toasts never overlap it.
+  useLayoutEffect(() => {
+    const el = topbarRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const setVars = () => {
+      const h = Math.max(0, Math.ceil(el.getBoundingClientRect().height));
+      root.style.setProperty('--mx-partner-topbar-h', `${h}px`);
+      root.style.setProperty('--mx-toast-top', `${h + 12}px`);
+    };
+    setVars();
+    const ro = new ResizeObserver(() => setVars());
+    ro.observe(el);
+    window.addEventListener('resize', setVars);
+    return () => {
+      window.removeEventListener('resize', setVars);
+      ro.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     if (sheet !== 'status') {
@@ -717,7 +932,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
   const settingsHref = `/mx/store-settings${q}`;
-  const insightsHref = `/mx/user-insights${q}`;
   const profileHref = `/mx/profile${q}`;
 
   const resolvedHeaderTitle = (
@@ -776,35 +990,365 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     switch (sheet) {
       case 'notifications':
         return (
-          <div className="flex flex-col items-center justify-center py-16 text-center text-sm text-gray-500">
-            <Bell size={40} className="mb-3 text-gray-300" strokeWidth={1.25} />
-            <p>No notifications yet</p>
+          <div className="space-y-0">
+            {partnerNotifLoading && partnerNotifications.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-sm text-gray-500">
+                <Loader2 className="mb-2 h-8 w-8 animate-spin text-sky-600" />
+                Loading notifications…
+              </div>
+            ) : partnerNotifications.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center text-sm text-gray-500">
+                <Bell size={40} className="mb-3 text-gray-300" strokeWidth={1.25} />
+                <p>No notifications yet</p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-gray-100">
+                {partnerNotifications.map((n) => (
+                  <li
+                    key={n.id}
+                    className={`flex gap-1 py-3 ${n.read ? 'bg-white' : 'bg-slate-50/90'}`}
+                  >
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                      onClick={() => void markPartnerNotificationRead(n)}
+                    >
+                      <div className="mt-0.5 shrink-0">
+                        {n.title.trim() === WAITING_FOR_ORDER_TITLE ? (
+                          <RadarLiveIndicator compact />
+                        ) : (
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-50 text-sky-700">
+                            <Bell size={18} strokeWidth={1.75} />
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1 pr-1">
+                        <div className="flex items-start gap-2">
+                          <p className="text-sm font-semibold text-gray-900">{n.title}</p>
+                          {!n.read ? (
+                            <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sky-500" aria-hidden />
+                          ) : null}
+                        </div>
+                        <p className="mt-0.5 text-xs leading-snug text-gray-600">{n.body}</p>
+                        {n.created_at ? (
+                          <p className="mt-1 text-[10px] text-gray-400">
+                            {new Date(n.created_at).toLocaleString()}
+                          </p>
+                        ) : null}
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      className="shrink-0 self-start rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                      title="Delete"
+                      aria-label="Delete notification"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!resolvedStoreId) return;
+                        try {
+                          const res = await fetch(
+                            `/api/merchant/store-notifications?store_id=${encodeURIComponent(resolvedStoreId)}&notification_id=${encodeURIComponent(n.id)}`,
+                            { method: 'DELETE', credentials: 'include' }
+                          );
+                          if (res.ok) await fetchPartnerNotifications();
+                        } catch {
+                          /* ignore */
+                        }
+                      }}
+                    >
+                      <X size={16} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         );
       case 'settings':
         return (
-          <div className="space-y-2">
-            <Link
-              href={settingsHref}
-              className="block rounded-lg border border-gray-200 px-4 py-3 text-sm font-medium text-gray-800 hover:bg-gray-50"
-              onClick={() => setSheet(null)}
-            >
-              Store settings
-            </Link>
-            <Link
-              href={profileHref}
-              className="block rounded-lg border border-gray-200 px-4 py-3 text-sm font-medium text-gray-800 hover:bg-gray-50"
-              onClick={() => setSheet(null)}
-            >
-              Merchant profile
-            </Link>
-            <Link
-              href={insightsHref}
-              className="block rounded-lg border border-gray-200 px-4 py-3 text-sm font-medium text-gray-800 hover:bg-gray-50"
-              onClick={() => setSheet(null)}
-            >
-              Share feedback
-            </Link>
+          <div className="space-y-3">
+            {storeSettingsLoading || !storeSettings ? (
+              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
+                Loading settings…
+              </div>
+            ) : (
+              <>
+                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">WhatsApp notifications</p>
+                  <p className="text-[10px] text-gray-500">
+                    Receive updates and reminders related to your restaurant on WhatsApp.
+                  </p>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-900">WhatsApp notifications</span>
+                    <CompactSwitch
+                      on={storeSettings.communication_settings.whatsapp_notifications}
+                      ariaLabel="WhatsApp notifications"
+                      onToggle={() =>
+                        setStoreSettings((p) =>
+                          p
+                            ? {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  whatsapp_notifications: !p.communication_settings.whatsapp_notifications,
+                                },
+                              }
+                            : p
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Business reports</p>
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-gray-900">Daily reports</p>
+                    <p className="text-[10px] text-gray-500">Every morning for previous day</p>
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-gray-900">Share on WhatsApp</span>
+                      <CompactSwitch
+                        on={storeSettings.communication_settings.reports.daily_whatsapp}
+                        ariaLabel="Daily WhatsApp report"
+                        onToggle={() =>
+                          setStoreSettings((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  communication_settings: {
+                                    ...p.communication_settings,
+                                    reports: { ...p.communication_settings.reports, daily_whatsapp: !p.communication_settings.reports.daily_whatsapp },
+                                  },
+                                }
+                              : p
+                          )
+                        }
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-gray-900">Share on Email</span>
+                      <CompactSwitch
+                        on={storeSettings.communication_settings.reports.daily_email}
+                        ariaLabel="Daily email report"
+                        onToggle={() =>
+                          setStoreSettings((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  communication_settings: {
+                                    ...p.communication_settings,
+                                    reports: { ...p.communication_settings.reports, daily_email: !p.communication_settings.reports.daily_email },
+                                  },
+                                }
+                              : p
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                  <div className="h-px bg-gray-100" />
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-gray-900">Weekly reports</p>
+                    <p className="text-[10px] text-gray-500">Every Monday for previous week</p>
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-gray-900">Share on WhatsApp</span>
+                      <CompactSwitch
+                        on={storeSettings.communication_settings.reports.weekly_whatsapp}
+                        ariaLabel="Weekly WhatsApp report"
+                        onToggle={() =>
+                          setStoreSettings((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  communication_settings: {
+                                    ...p.communication_settings,
+                                    reports: { ...p.communication_settings.reports, weekly_whatsapp: !p.communication_settings.reports.weekly_whatsapp },
+                                  },
+                                }
+                              : p
+                          )
+                        }
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-gray-900">Share on Email</span>
+                      <CompactSwitch
+                        on={storeSettings.communication_settings.reports.weekly_email}
+                        ariaLabel="Weekly email report"
+                        onToggle={() =>
+                          setStoreSettings((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  communication_settings: {
+                                    ...p.communication_settings,
+                                    reports: { ...p.communication_settings.reports, weekly_email: !p.communication_settings.reports.weekly_email },
+                                  },
+                                }
+                              : p
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Order notifications</p>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-900">Order notifications</span>
+                    <CompactSwitch
+                      on={storeSettings.communication_settings.order_notifications.enabled}
+                      ariaLabel="Order notifications"
+                      onToggle={() =>
+                        setStoreSettings((p) =>
+                          p
+                            ? {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  order_notifications: {
+                                    ...p.communication_settings.order_notifications,
+                                    enabled: !p.communication_settings.order_notifications.enabled,
+                                  },
+                                },
+                              }
+                            : p
+                        )
+                      }
+                    />
+                  </label>
+                  <p className="text-[10px] text-gray-500">Receive order notifications on this device.</p>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">Ring volume</p>
+                      <p className="text-[10px] text-gray-500">
+                        {Math.round(storeSettings.communication_settings.order_notifications.ring_volume * 100)}%
+                      </p>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(storeSettings.communication_settings.order_notifications.ring_volume * 100)}
+                      onChange={(e) => {
+                        const v = Math.max(0, Math.min(100, Math.floor(Number(e.target.value || 0))));
+                        setStoreSettings((p) =>
+                          p
+                            ? {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  order_notifications: {
+                                    ...p.communication_settings.order_notifications,
+                                    ring_volume: v / 100,
+                                  },
+                                },
+                              }
+                            : p
+                        );
+                      }}
+                      className="w-40"
+                    />
+                  </div>
+
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-900">Ring in silent mode</span>
+                    <CompactSwitch
+                      on={storeSettings.communication_settings.order_notifications.ring_in_silent}
+                      ariaLabel="Ring in silent mode"
+                      onToggle={() =>
+                        setStoreSettings((p) =>
+                          p
+                            ? {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  order_notifications: {
+                                    ...p.communication_settings.order_notifications,
+                                    ring_in_silent: !p.communication_settings.order_notifications.ring_in_silent,
+                                  },
+                                },
+                              }
+                            : p
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Other notifications</p>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-900">Live complaint notifications</span>
+                    <CompactSwitch
+                      on={storeSettings.communication_settings.live_complaint_notifications}
+                      ariaLabel="Live complaint notifications"
+                      onToggle={() =>
+                        setStoreSettings((p) =>
+                          p
+                            ? {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  live_complaint_notifications: !p.communication_settings.live_complaint_notifications,
+                                },
+                              }
+                            : p
+                        )
+                      }
+                    />
+                  </label>
+                  <p className="text-[10px] text-gray-500">
+                    Receive a notification whenever a customer raises a complaint on an order.
+                  </p>
+                  <div className="h-px bg-gray-100" />
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-900">Rider notifications</span>
+                    <CompactSwitch
+                      on={storeSettings.communication_settings.rider_notifications}
+                      ariaLabel="Rider notifications"
+                      onToggle={() =>
+                        setStoreSettings((p) =>
+                          p
+                            ? {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  rider_notifications: !p.communication_settings.rider_notifications,
+                                },
+                              }
+                            : p
+                        )
+                      }
+                    />
+                  </label>
+                  <p className="text-[10px] text-gray-500">Get alerts when your rider is assigned, delayed or changes status.</p>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">UI</p>
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-gray-900">Show floating orders</span>
+                    <CompactSwitch
+                      on={storeSettings.show_floating_orders}
+                      ariaLabel="Show floating orders"
+                      onToggle={() => setStoreSettings((p) => (p ? { ...p, show_floating_orders: !p.show_floating_orders } : p))}
+                    />
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={storeSettingsSaving}
+                  onClick={() => void saveStoreSettings()}
+                  className="w-full rounded-lg bg-sky-600 py-3 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
+                >
+                  {storeSettingsSaving ? 'Saving…' : 'Save settings'}
+                </button>
+              </>
+            )}
           </div>
         );
       case 'status':
@@ -1162,7 +1706,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   return (
     <>
-      <header className="relative flex h-[var(--mx-partner-topbar-h)] min-h-[var(--mx-partner-topbar-h)] w-full shrink-0 border-b border-[#e8e8e8] bg-white z-[60]">
+      <PartnerWaitingOrderSync
+        storeId={resolvedStoreId || null}
+        isOnline={storeOpen === true}
+        hasWaitingInList={hasWaitingPartner}
+        onListChange={fetchPartnerNotifications}
+      />
+      <header
+        ref={(n) => { topbarRef.current = n; }}
+        className="relative flex w-full shrink-0 border-b border-[#e8e8e8] bg-white z-[60]"
+      >
         {/* Left: logo — contained so artwork cannot overlap the title column */}
         <div
           className={`flex h-full shrink-0 items-center justify-start gap-1.5 overflow-hidden border-r border-[#e8e8e8] px-2 md:px-2.5 ${leftW}`}
@@ -1201,15 +1754,25 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
         {/* Right actions → open sheets */}
         <div className="flex shrink-0 items-center gap-1 sm:gap-2 md:gap-4 px-2 sm:px-3 md:px-5">
+          {storeOpen === true ? (
+            <div className="flex items-center pr-0.5" title="Live" aria-hidden>
+              <RadarLiveIndicator />
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={() => setSheet((s) => (s === 'notifications' ? null : 'notifications'))}
-            className="rounded-lg p-2 text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+            className="relative rounded-lg p-2 text-gray-600 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
             title="Notifications"
             aria-label="Notifications"
             aria-expanded={sheet === 'notifications'}
           >
             <Bell size={20} strokeWidth={1.75} className="text-gray-700" />
+            {partnerUnreadCount > 0 ? (
+              <span className="absolute -top-0.5 -right-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white shadow">
+                {partnerUnreadCount > 99 ? '99+' : partnerUnreadCount}
+              </span>
+            ) : null}
           </button>
           <button
             type="button"
@@ -1221,12 +1784,10 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           >
             <Settings size={20} strokeWidth={1.75} className="text-gray-700" />
           </button>
-          <Link
-            href={insightsHref}
-            className="hidden text-sm text-gray-700 underline decoration-gray-400 underline-offset-2 hover:text-gray-900 lg:inline"
-          >
-            Share feedback
-          </Link>
+
+          {!hideHelpBadge ? (
+            <NeedHelpBadge inline variant="headerLink" />
+          ) : null}
 
           <button
             type="button"
@@ -1252,9 +1813,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               aria-haspopup="dialog"
             >
               <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-sky-500 to-blue-600 text-xs font-bold text-white sm:h-8 sm:w-8 sm:text-sm">
-                {effectiveAvatarUrl ? (
+                {avatarSrc ? (
                   // eslint-disable-next-line @next/next/no-img-element -- session or local data URL
-                  <img src={effectiveAvatarUrl} alt="" className="h-full w-full object-cover" />
+                  <img
+                    src={avatarSrc}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    onError={() => {
+                      if (avatarSrc) setBrokenAvatarSrc(avatarSrc);
+                    }}
+                  />
                 ) : (
                   displayName.charAt(0).toUpperCase()
                 )}
@@ -1293,9 +1861,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                 }`}
               >
                 <div className="min-w-0 flex-1 pr-2">
-                  <h2 id="partner-sheet-title" className="truncate text-sm font-semibold text-gray-900 sm:text-base">
-                    {sheetTitle[sheet]}
-                  </h2>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 id="partner-sheet-title" className="truncate text-sm font-semibold text-gray-900 sm:text-base">
+                      {sheetTitle[sheet]}
+                    </h2>
+                    {sheet === 'notifications' && partnerUnreadCount > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => void markAllPartnerNotificationsRead()}
+                        className="shrink-0 text-xs font-semibold text-sky-600 hover:text-sky-800"
+                      >
+                        Mark all read
+                      </button>
+                    ) : null}
+                  </div>
                   {sheet === 'status' && activeOutletSummary ? (
                     <p className="mt-1 line-clamp-2 text-xs leading-snug text-gray-600">
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
@@ -1316,7 +1895,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   <X size={20} />
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">{sheetBody()}</div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-4 hide-scrollbar">{sheetBody()}</div>
             </aside>
           </div>,
           document.body
@@ -1408,9 +1987,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                       setPhotoActionMenuOpen((v) => !v);
                     }}
                   >
-                    {effectiveAvatarUrl ? (
+                    {avatarSrc ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={effectiveAvatarUrl} alt="" className="h-full w-full object-cover" />
+                      <img
+                        src={avatarSrc}
+                        alt=""
+                        className="h-full w-full object-cover"
+                        onError={() => {
+                          if (avatarSrc) setBrokenAvatarSrc(avatarSrc);
+                        }}
+                      />
                     ) : (
                       displayName.charAt(0).toUpperCase()
                     )}

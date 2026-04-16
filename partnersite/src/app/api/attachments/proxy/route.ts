@@ -435,7 +435,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Missing key or url parameter" }, { status: 400 });
     }
 
-    key = normalizeR2ObjectKey(key.trim());
+    // Some DB rows accidentally store double-encoded keys like `docs%252Fmerchants%252F...`.
+    // Decode repeatedly so both `docs%2F...` and `docs%252F...` work.
+    key = key.trim();
+    for (let i = 0; i < 3; i++) {
+      if (!/%2f/i.test(key)) break;
+      try {
+        const decoded = decodeURIComponent(key);
+        if (decoded === key) break;
+        key = decoded;
+      } catch {
+        break;
+      }
+    }
+    key = normalizeR2ObjectKey(key);
 
     const bucket = process.env.R2_BUCKET_NAME;
     if (!bucket || !process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || !process.env.R2_ENDPOINT) {
@@ -466,11 +479,12 @@ export async function GET(request: NextRequest) {
           headers.set("Content-Length", String(response.ContentLength));
         }
         headers.set("Access-Control-Allow-Origin", "*");
-        return new NextResponse(response.Body as any, { status: 200, headers });
-      } catch (e: any) {
+        return new NextResponse(response.Body as unknown as BodyInit, { status: 200, headers });
+      } catch (e: unknown) {
         lastError = e;
-        if (e?.name === "NoSuchKey") continue;
-        if (e?.name === "NotFound") continue;
+        const name = (e && typeof e === "object" && "name" in e) ? String((e as { name?: unknown }).name) : "";
+        if (name === "NoSuchKey") continue;
+        if (name === "NotFound") continue;
         console.error("[attachments/proxy] GetObject:", objectKey, e);
         throw e;
       }
@@ -494,10 +508,11 @@ export async function GET(request: NextRequest) {
               headers.set("Content-Length", String(response.ContentLength));
             }
             headers.set("Access-Control-Allow-Origin", "*");
-            return new NextResponse(response.Body as any, { status: 200, headers });
+            return new NextResponse(response.Body as unknown as BodyInit, { status: 200, headers });
           }
-        } catch (e: any) {
-          if (e?.name !== "NoSuchKey" && e?.name !== "NotFound") console.error("[attachments/proxy] Retry:", e);
+        } catch (e: unknown) {
+          const name = (e && typeof e === "object" && "name" in e) ? String((e as { name?: unknown }).name) : "";
+          if (name !== "NoSuchKey" && name !== "NotFound") console.error("[attachments/proxy] Retry:", e);
         }
       }
     }
@@ -506,7 +521,7 @@ export async function GET(request: NextRequest) {
       console.error("[attachments/proxy] Exhausted keys for:", key.slice(0, 120), lastError);
     }
     return NextResponse.json({ error: "Not found" }, { status: 404 });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[attachments/proxy] Error:", err);
     return NextResponse.json(
       { error: "Failed to load attachment" },

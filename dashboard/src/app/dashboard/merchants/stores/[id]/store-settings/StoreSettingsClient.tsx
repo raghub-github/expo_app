@@ -7,6 +7,7 @@ import {
   Power,
   Package,
   Save,
+  Copy,
   Crown,
   ChefHat,
   Users,
@@ -21,8 +22,17 @@ import {
   Star,
   AlertTriangle,
   Loader2,
+  ChevronDown,
+  ChevronUp,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { Toaster, toast } from "sonner";
+import { UI_STRINGS, useLocalStoreStatusEngineStore } from "@/lib/localStoreStatusEngineStore";
+import {
+  MERCHANT_PORTAL_CLOSE_REASONS,
+  merchantPortalCloseReasonWithSuffix,
+} from "@/lib/merchantPortalCloseReasons";
 import { SettingsNavBar } from "./SettingsSidebar";
 import { useStoreContext } from "../StoreContext";
 import { useStore } from "@/hooks/useStore";
@@ -121,17 +131,41 @@ function formatDuration(minutes: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
+function getCurrentDayKey(): DayType {
+  const current = new Date().getDay();
+  const map: DayType[] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  return map[current] ?? "monday";
+}
+
+function formatTimeForMerchCard(value: string): string {
+  if (!value) return "--:--";
+  const [hourStr, minuteStr] = value.split(":");
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return value;
+  const period = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${String(minute).padStart(2, "0")} ${period}`;
+}
+
 function Toggle({
   checked,
   onChange,
   disabled,
-}: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  title,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  title?: string;
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       disabled={disabled}
+      title={title}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-1 disabled:opacity-50 ${
         checked
@@ -240,7 +274,12 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   const [force24Hours, setForce24Hours] = useState(false);
   const lastSavedTimingsRef = useRef<string | null>(null);
   const [savingDay, setSavingDay] = useState<DayType | null>(null);
-  const [isStoreOpen, setIsStoreOpen] = useState(true);
+  const [expandedTimingDay, setExpandedTimingDay] = useState<DayType | null>(getCurrentDayKey);
+  const [copyMondayConfirmOpen, setCopyMondayConfirmOpen] = useState(false);
+  const [copyMondayConfirmLoading, setCopyMondayConfirmLoading] = useState(false);
+  const engine = useLocalStoreStatusEngineStore();
+  const isStoreOpen = engine.state.store_status === "ONLINE";
+  const setIsStoreOpen = (_: boolean) => {};
   const [manualActivationLock, setManualActivationLock] = useState(false);
   const [delistReasonCategory, setDelistReasonCategory] = useState("");
   const [delistType, setDelistType] = useState<"temporary_delisted" | "permanently_delisted" | "compliance_hold" | null>(
@@ -252,6 +291,15 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   const [relistLoading, setRelistLoading] = useState(false);
   const [relistModalOpen, setRelistModalOpen] = useState(false);
   const [relistReason, setRelistReason] = useState("");
+
+  /** Store close options (parity with Partner Site mx dashboard). */
+  const [showClosePopup, setShowClosePopup] = useState(false);
+  const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
+  const [toggleClosureType, setToggleClosureType] = useState<"temporary" | "today" | "manual_hold" | null>(null);
+  const [closureDate, setClosureDate] = useState("");
+  const [closureTime, setClosureTime] = useState("12:00");
+  const [closeReason, setCloseReason] = useState("");
+  const [closeReasonOther, setCloseReasonOther] = useState("");
 
   const [plans, setPlans] = useState<
     Array<{
@@ -309,6 +357,28 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   }, [effectivePlans, currentSubscription, freePlan]);
 
   const base = `/api/merchant/stores/${storeId}`;
+
+  useEffect(() => {
+    if (!storeId) return;
+    engine.hydrate(String(storeId));
+    engine.startTick();
+    return () => engine.stopTick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeId]);
+
+  // When close popup opens, default date (today) and time (now + 10 min) for Temporary Closed
+  useEffect(() => {
+    if (!showClosePopup) return;
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = (now.getMonth() + 1).toString().padStart(2, "0");
+    const d = now.getDate().toString().padStart(2, "0");
+    setClosureDate(`${y}-${m}-${d}`);
+    const in10 = new Date(now.getTime() + 10 * 60 * 1000);
+    setClosureTime(
+      `${in10.getHours().toString().padStart(2, "0")}:${in10.getMinutes().toString().padStart(2, "0")}`
+    );
+  }, [showClosePopup]);
 
   const lastSavedTimings = useMemo(() => {
     try {
@@ -791,12 +861,43 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
         });
         toast.success("Saved");
         loadOperatingHours();
+        return true;
       } else {
         toast.error(data.error || "Failed to save.");
+        return false;
       }
     },
     [base, buildTimingsPayload, loadOperatingHours]
   );
+
+  const handleConfirmCopyMondayToAll = useCallback(async () => {
+    const previousSlots = daySlots;
+    const previousClosedDays = closedDays;
+    const previousApplyMondayToAll = applyMondayToAll;
+    const source = applyMondayToAll ? daySlots.monday : daySlots.monday;
+    const newSlots = DAYS.reduce((acc, dayKey) => {
+      acc[dayKey] = { ...source, open: true };
+      return acc;
+    }, {} as Record<DayType, DaySlots>);
+
+    setCopyMondayConfirmLoading(true);
+    setApplyMondayToAll(true);
+    setDaySlots(newSlots);
+    setClosedDays([]);
+
+    try {
+      const saved = await saveTimingsToServer({ same_for_all_days: true, daySlots: newSlots, closed_days: [] });
+      if (saved) {
+        setCopyMondayConfirmOpen(false);
+      } else {
+        setApplyMondayToAll(previousApplyMondayToAll);
+        setDaySlots(previousSlots);
+        setClosedDays(previousClosedDays);
+      }
+    } finally {
+      setCopyMondayConfirmLoading(false);
+    }
+  }, [applyMondayToAll, closedDays, daySlots, saveTimingsToServer]);
 
   const effectiveStore = (store ?? layoutStore ?? queryStore) as StoreDetail | null;
   const isDelisted = (effectiveStore?.approval_status || "").toUpperCase() === "DELISTED";
@@ -842,19 +943,71 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
       toast.error("This store is delisted. Relist the store before opening it.");
       return;
     }
-    const action = isStoreOpen ? "manual_close" : "manual_open";
-    const res = await fetch(`${base}/store-operations`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.success) {
-      setIsStoreOpen(!isStoreOpen);
-      toast.success(isStoreOpen ? "Store closed temporarily." : "Store opened.");
-      loadStoreOperations();
-    } else {
-      toast.error(data.error || "Failed to update.");
+    if (isStoreOpen) {
+      setShowClosePopup(true);
+      return;
+    }
+    engine.manualOn();
+    toast.success("Store opened.");
+    if (engine.state.is_manual_override) toast.message(UI_STRINGS.manualOnBeforeSchedule);
+  };
+
+  const handleCancelClosePopup = () => {
+    if (closeConfirmLoading) return;
+    setShowClosePopup(false);
+    setToggleClosureType(null);
+    setClosureDate("");
+    setClosureTime("12:00");
+    setCloseReason("");
+    setCloseReasonOther("");
+  };
+
+  const handleClosePopupConfirm = () => {
+    if (!toggleClosureType) {
+      toast.error("Please select closure type");
+      return;
+    }
+    if (toggleClosureType === "temporary") {
+      if (!closureDate || !closureTime) {
+        toast.error("Please select date and time for reopening");
+        return;
+      }
+      const closedUntil = new Date(`${closureDate}T${closureTime}:00`);
+      if (closedUntil.getTime() <= Date.now()) {
+        toast.error("Reopening date and time must be in the future");
+        return;
+      }
+    }
+    if (!closeReason?.trim()) {
+      toast.error("Please select a reason for closing");
+      return;
+    }
+    if (closeReason === "Other" && !closeReasonOther?.trim()) {
+      toast.error('Please enter the reason in "Other"');
+      return;
+    }
+    void handleFinalCloseConfirm();
+  };
+
+  const handleFinalCloseConfirm = async () => {
+    if (!toggleClosureType) return;
+    setCloseConfirmLoading(true);
+    try {
+      const baseReason = closeReason === "Other" ? (closeReasonOther?.trim() || "Other") : closeReason;
+      const reasonText = merchantPortalCloseReasonWithSuffix(baseReason);
+      if (toggleClosureType === "temporary") {
+        const closedUntil = new Date(`${closureDate}T${closureTime}:00`);
+        engine.tempClose(closedUntil.toISOString(), reasonText);
+      } else {
+        engine.manualOff(reasonText);
+      }
+      setShowClosePopup(false);
+      setToggleClosureType(null);
+      setCloseReason("");
+      setCloseReasonOther("");
+      toast.success("Store closed.");
+    } finally {
+      setCloseConfirmLoading(false);
     }
   };
   if (loading && !effectiveStore) {
@@ -892,190 +1045,449 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
   return (
     <div className="flex flex-col min-h-0 w-full">
       <Toaster position="top-right" richColors />
+      {engine.scheduleEndModalOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl border border-gray-200">
+            <p className="text-base font-bold text-gray-900">{UI_STRINGS.scheduleEndTitle}</p>
+            <p className="mt-2 text-sm text-gray-700">{UI_STRINGS.scheduleEndBody}</p>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-700 hover:bg-gray-100"
+                onClick={() => engine.scheduleEndRespond("stay_online")}
+              >
+                Stay Online
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-red-600 hover:bg-red-700"
+                onClick={() => engine.scheduleEndRespond("go_offline")}
+              >
+                Go Offline
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {copyMondayConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-md p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dashboard-copy-monday-title"
+          onClick={() => !copyMondayConfirmLoading && setCopyMondayConfirmOpen(false)}
+        >
+          <div
+            className="mx-auto w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="flex-1">
+                <h2 id="dashboard-copy-monday-title" className="text-lg font-bold text-gray-900">
+                  Copy Monday timing to all days?
+                </h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  This will replace the timings for every day with Monday&apos;s current timings and save the change to the database.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setCopyMondayConfirmOpen(false)}
+                disabled={copyMondayConfirmLoading}
+                className="flex-1 rounded-xl border border-gray-300 px-4 py-2.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmCopyMondayToAll()}
+                disabled={copyMondayConfirmLoading}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {copyMondayConfirmLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  "OK, Copy"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showClosePopup && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-md p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dashboard-close-store-title"
+          onClick={handleCancelClosePopup}
+        >
+          <div
+            className="mx-auto w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="dashboard-close-store-title" className="mb-4 text-lg font-bold text-gray-900">
+              How would you like to close your store?
+            </h2>
+            <div className="space-y-3">
+              <label
+                className={`flex cursor-pointer items-center gap-3 rounded-lg border-2 p-3 ${
+                  toggleClosureType === "temporary"
+                    ? "border-orange-400 bg-orange-50"
+                    : "border-gray-200 hover:border-orange-200"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="closureType"
+                  checked={toggleClosureType === "temporary"}
+                  onChange={() => setToggleClosureType("temporary")}
+                  className="h-4 w-4"
+                />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-gray-900">Temporary Closed</p>
+                  <p className="text-xs text-gray-600">
+                    Close until a specific date and time. Reopens automatically then, or turn ON manually anytime.
+                  </p>
+                </div>
+              </label>
+              {toggleClosureType === "temporary" && (
+                <div className="ml-7 space-y-3 rounded-lg border border-orange-200 bg-orange-50/50 p-3">
+                  <p className="text-xs font-semibold text-gray-700">Reopen on (date and time):</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1 block text-[10px] font-medium text-gray-500">Date</label>
+                      <input
+                        type="date"
+                        value={closureDate}
+                        onChange={(e) => setClosureDate(e.target.value)}
+                        min={(() => {
+                          const n = new Date();
+                          return `${n.getFullYear()}-${(n.getMonth() + 1).toString().padStart(2, "0")}-${n.getDate().toString().padStart(2, "0")}`;
+                        })()}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[10px] font-medium text-gray-500">Time</label>
+                      <input
+                        type="time"
+                        value={closureTime}
+                        onChange={(e) => setClosureTime(e.target.value)}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-gray-600">
+                    Store stays closed until this date and time, or until you turn it ON manually.
+                  </p>
+                </div>
+              )}
+              <label
+                className={`flex cursor-pointer items-center gap-3 rounded-lg border-2 p-3 ${
+                  toggleClosureType === "today" ? "border-red-400 bg-red-50" : "border-gray-200 hover:border-red-200"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="closureType"
+                  checked={toggleClosureType === "today"}
+                  onChange={() => setToggleClosureType("today")}
+                  className="h-4 w-4"
+                />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-gray-900">Close for Today</p>
+                  <p className="text-xs text-gray-600">
+                    Closed until end of today (India time). Schedule can resume tomorrow.
+                  </p>
+                </div>
+              </label>
+              <label
+                className={`flex cursor-pointer items-center gap-3 rounded-lg border-2 p-3 ${
+                  toggleClosureType === "manual_hold"
+                    ? "border-amber-400 bg-amber-50"
+                    : "border-gray-200 hover:border-amber-200"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="closureType"
+                  checked={toggleClosureType === "manual_hold"}
+                  onChange={() => setToggleClosureType("manual_hold")}
+                  className="h-4 w-4"
+                />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-gray-900">Until I manually turn it ON</p>
+                  <p className="text-xs text-gray-600">
+                    Store stays OFF even during operating hours until you turn it ON
+                  </p>
+                </div>
+              </label>
+            </div>
+            <div className="mt-4 space-y-2">
+              <label className="block text-xs font-semibold text-gray-700">
+                Reason for closing <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={closeReason}
+                onChange={(e) => setCloseReason(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+              >
+                <option value="">Select reason</option>
+                {MERCHANT_PORTAL_CLOSE_REASONS.map((r) => (
+                  <option key={r} value={r}>
+                    {merchantPortalCloseReasonWithSuffix(r)}
+                  </option>
+                ))}
+              </select>
+              {closeReason === "Other" && (
+                <input
+                  type="text"
+                  value={closeReasonOther}
+                  onChange={(e) => setCloseReasonOther(e.target.value)}
+                  placeholder="Enter reason"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                />
+              )}
+            </div>
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={handleCancelClosePopup}
+                disabled={closeConfirmLoading}
+                className="flex-1 rounded-xl border border-gray-300 px-4 py-2.5 font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleClosePopupConfirm}
+                disabled={
+                  !toggleClosureType ||
+                  !closeReason?.trim() ||
+                  (closeReason === "Other" && !closeReasonOther?.trim()) ||
+                  (toggleClosureType === "temporary" && (!closureDate || !closureTime)) ||
+                  closeConfirmLoading
+                }
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {closeConfirmLoading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Confirming...
+                  </>
+                ) : (
+                  "Confirm"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <SettingsNavBar activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="flex-1 min-w-0 pt-4">
         <div className="rounded-xl border border-gray-200 bg-white p-4 sm:p-6 space-y-6">
 
           {activeTab === "timings" && (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                <h2 className="text-base font-semibold text-gray-900 flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-gray-800" />
-                  Outlet timings
-                </h2>
-                <p className="text-sm text-gray-600 font-medium" title="Weekly operating hours">
-                  {weeklyOperatingSummary}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-3 mb-3">
-                <div className="flex items-center gap-2">
-                  <Toggle
-                    checked={applyMondayToAll}
-                    onChange={(v) => {
-                      if (v) {
-                        const newSlots = DAYS.reduce((acc, day) => {
-                          acc[day] = { ...daySlots.monday };
-                          return acc;
-                        }, {} as Record<DayType, DaySlots>);
-                        setApplyMondayToAll(true);
-                        setDaySlots(newSlots);
-                        const newClosed = daySlots.monday.open ? [] : closedDays;
-                        setClosedDays(newClosed);
-                        saveTimingsToServer({ same_for_all_days: true, daySlots: newSlots, closed_days: newClosed });
-                      } else {
-                        setApplyMondayToAll(false);
-                        saveTimingsToServer({ same_for_all_days: false });
-                      }
-                    }}
-                  />
-                  <span className="text-sm font-medium text-gray-900">Same for all days</span>
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-4 shadow-sm">
+                  <h2 className="flex items-center gap-2 text-base font-semibold text-gray-900">
+                    <Clock className="h-4 w-4 text-emerald-700" />
+                    GatiMitra Operations
+                  </h2>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Toggle
-                    checked={force24Hours}
-                    onChange={(v) => {
-                      setForce24Hours(v);
-                      if (v) {
-                        const newSlots = { ...daySlots };
-                        for (const day of DAYS) {
-                          if (newSlots[day].open) {
-                            newSlots[day] = {
-                              ...newSlots[day],
-                              slot1_start: "00:00",
-                              slot1_end: "23:59",
-                              slot2_start: "",
-                              slot2_end: "",
-                            };
-                          }
-                        }
-                        setDaySlots(newSlots);
-                        saveTimingsToServer({ is_24_hours: true, daySlots: newSlots });
-                      } else {
-                        saveTimingsToServer({ is_24_hours: false });
+
+                <div className="space-y-2.5">
+                  {DAYS.map((day) => {
+                    const d = day as DayType;
+                    const s = applyMondayToAll ? daySlots.monday : daySlots[d];
+                    const isCurrentDay = d === getCurrentDayKey();
+                    const isExpanded = expandedTimingDay === d;
+                    const hasSlot2 = !!(s.slot2_start || s.slot2_end);
+                    const isClosed = closedDays.includes(d) || !s.open;
+
+                    const updateDaySlots = (updater: (base: DaySlots) => DaySlots) => {
+                      if (applyMondayToAll) {
+                        setDaySlots((prev) => {
+                          const nextMonday = updater(prev.monday);
+                          const next = { ...prev };
+                          for (const dd of DAYS) next[dd] = { ...nextMonday };
+                          return next;
+                        });
+                        return;
                       }
-                    }}
-                  />
-                  <span className="text-sm font-medium text-gray-900">Open 24 hours</span>
-                </div>
-              </div>
-              {force24Hours && (
-                <p className="text-sm text-gray-600 mb-2">Slot 1 set to 00:00–23:59 for open days. Toggle states unchanged.</p>
-              )}
-              <div className="overflow-x-auto rounded-lg border border-gray-200">
-                <table className="w-full min-w-[680px] text-sm">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-200">
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Day</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Open</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Slot 1 start</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Slot 1 end</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Slot 2 start</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Slot 2 end</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Duration</th>
-                      <th className="text-left py-1.5 px-2 font-medium text-gray-900">Save</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {DAYS.map((day) => {
-                        const d = day as DayType;
-                        const s = applyMondayToAll ? daySlots.monday : daySlots[d];
-                        const setSlot = (field: keyof DaySlots, value: string | boolean) => {
-                          if (applyMondayToAll) {
-                            setDaySlots((prev) => {
-                              const newMonday = { ...prev.monday, [field]: value };
-                              const next = { ...prev };
-                              DAYS.forEach((dd) => { next[dd] = { ...newMonday }; });
-                              return next;
-                            });
-                          } else {
-                            setDaySlots((prev) => ({ ...prev, [d]: { ...prev[d], [field]: value } }));
-                          }
-                        };
-                        const rowOpen = s.open;
-                        return (
-                          <tr
-                            key={day}
-                            className={`border-b border-gray-100 last:border-0 ${rowOpen ? "text-gray-900" : "text-gray-600"}`}
-                          >
-                            <td className="py-1.5 px-2 font-medium capitalize">{day}</td>
-                            <td className="py-1.5 px-2">
-                              <Toggle
-                                checked={s.open}
-                                onChange={(v) => {
-                                  if (applyMondayToAll && !v) {
-                                    setApplyMondayToAll(false);
-                                    const newSlots = { ...daySlots };
-                                    newSlots[d] = { ...newSlots[d], open: false };
-                                    const newClosed = closedDays.includes(d) ? closedDays : [...closedDays, d];
-                                    setClosedDays(newClosed);
-                                    setDaySlots(newSlots);
-                                    const turnOff24h = force24Hours && newClosed.length >= 3;
-                                    if (turnOff24h) setForce24Hours(false);
-                                    saveTimingsToServer({
-                                      same_for_all_days: false,
-                                      daySlots: newSlots,
-                                      closed_days: newClosed,
-                                      ...(turnOff24h ? { is_24_hours: false } : {}),
-                                    });
-                                    return;
-                                  }
-                                  setSlot("open", v);
-                                  const newSlots = applyMondayToAll
-                                    ? DAYS.reduce((acc, day) => {
-                                        acc[day] = { ...daySlots.monday, open: v };
-                                        return acc;
-                                      }, {} as Record<DayType, DaySlots>)
-                                    : { ...daySlots, [d]: { ...daySlots[d], open: v } };
-                                  const newClosed = v
-                                    ? closedDays.filter((x) => x !== d)
-                                    : (closedDays.includes(d) ? closedDays : [...closedDays, d]);
-                                  setClosedDays(newClosed);
-                                  const turnOff24h = force24Hours && newClosed.length >= 3;
-                                  if (turnOff24h) setForce24Hours(false);
-                                  saveTimingsToServer({
-                                    daySlots: newSlots,
-                                    closed_days: newClosed,
-                                    ...(turnOff24h ? { is_24_hours: false } : {}),
-                                  });
-                                }}
-                              />
-                            </td>
-                            <td className="py-1.5 px-2">
-                              <input
-                                type="time"
-                                value={s.slot1_start}
-                                onChange={(e) => setSlot("slot1_start", e.target.value)}
-                                className={`rounded border px-1.5 py-0.5 w-24 text-sm ${rowOpen ? "border-gray-300 text-gray-900 bg-white" : "border-gray-200 text-gray-600 bg-gray-50"}`}
-                              />
-                            </td>
-                            <td className="py-1.5 px-2">
-                              <input
-                                type="time"
-                                value={s.slot1_end}
-                                onChange={(e) => setSlot("slot1_end", e.target.value)}
-                                className={`rounded border px-1.5 py-0.5 w-24 text-sm ${rowOpen ? "border-gray-300 text-gray-900 bg-white" : "border-gray-200 text-gray-600 bg-gray-50"}`}
-                              />
-                            </td>
-                            <td className="py-1.5 px-2">
-                              <input
-                                type="time"
-                                value={s.slot2_start}
-                                onChange={(e) => setSlot("slot2_start", e.target.value)}
-                                className={`rounded border px-1.5 py-0.5 w-24 text-sm ${rowOpen ? "border-gray-300 text-gray-900 bg-white" : "border-gray-200 text-gray-600 bg-gray-50"}`}
-                              />
-                            </td>
-                            <td className="py-1.5 px-2">
-                              <input
-                                type="time"
-                                value={s.slot2_end}
-                                onChange={(e) => setSlot("slot2_end", e.target.value)}
-                                className={`rounded border px-1.5 py-0.5 w-24 text-sm ${rowOpen ? "border-gray-300 text-gray-900 bg-white" : "border-gray-200 text-gray-600 bg-gray-50"}`}
-                              />
-                            </td>
-                            <td className="py-1.5 px-2 text-gray-700 tabular-nums">
-                              {formatDuration(dayDurationMinutes(d, daySlots, force24Hours, applyMondayToAll))}
-                            </td>
-                            <td className="py-1.5 px-2">
+                      setDaySlots((prev) => ({ ...prev, [d]: updater(prev[d]) }));
+                    };
+
+                    return (
+                      <div
+                        key={day}
+                        className={`overflow-hidden rounded-xl border shadow-sm transition ${
+                          isExpanded ? "border-emerald-300 bg-white" : "border-gray-200 bg-white"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setExpandedTimingDay((prev) => (prev === d ? null : d))}
+                          className={`flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left ${
+                            isExpanded ? "bg-gradient-to-r from-emerald-500 to-teal-500 text-white" : "bg-white text-gray-900 hover:bg-emerald-50/50"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                              isExpanded ? "bg-white/20 text-white" : isClosed ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
+                            }`}>
+                              {isClosed ? "Closed" : force24Hours ? "24 Hours" : "Open"}
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold capitalize">{day}</p>
+                              <p className={`text-xs ${isExpanded ? "text-emerald-50" : "text-gray-500"}`}>
+                                {isClosed
+                                  ? "No service"
+                                  : `${formatTimeForMerchCard(s.slot1_start)} - ${formatTimeForMerchCard(s.slot1_end)}${
+                                      hasSlot2 ? `, ${formatTimeForMerchCard(s.slot2_start)} - ${formatTimeForMerchCard(s.slot2_end)}` : ""
+                                    }`}
+                              </p>
+                            </div>
+                            {isCurrentDay ? (
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isExpanded ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"}`}>
+                                Today
+                              </span>
+                            ) : null}
+                          </div>
+                          {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        </button>
+
+                        {isExpanded ? (
+                          <div className="space-y-3 bg-white p-3">
+                            <div className={`${!s.open ? "pointer-events-none opacity-50" : ""} space-y-2.5`}>
+                              <div className="py-1">
+                                <div className="grid gap-3 lg:grid-cols-[72px_minmax(0,1fr)_28px_minmax(0,1fr)_24px_72px_minmax(0,1fr)_28px_minmax(0,1fr)_48px] lg:items-end">
+                                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 1</div>
+                                  <div>
+                                    <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
+                                    <input
+                                      type="time"
+                                      value={s.slot1_start}
+                                      onChange={(e) => updateDaySlots((base) => ({ ...base, slot1_start: e.target.value }))}
+                                      disabled={!s.open || force24Hours}
+                                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
+                                    />
+                                  </div>
+                                  <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
+                                  <div>
+                                    <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
+                                    <input
+                                      type="time"
+                                      value={s.slot1_end}
+                                      onChange={(e) => updateDaySlots((base) => ({ ...base, slot1_end: e.target.value }))}
+                                      disabled={!s.open || force24Hours}
+                                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
+                                    />
+                                  </div>
+                                  <div className="hidden lg:block" />
+                                  {hasSlot2 ? (
+                                    <>
+                                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 2</div>
+                                      <div>
+                                        <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
+                                        <input
+                                          type="time"
+                                          value={s.slot2_start}
+                                          onChange={(e) => updateDaySlots((base) => ({ ...base, slot2_start: e.target.value }))}
+                                          disabled={!s.open || force24Hours}
+                                          className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
+                                        />
+                                      </div>
+                                      <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
+                                      <div>
+                                        <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
+                                        <input
+                                          type="time"
+                                          value={s.slot2_end}
+                                          onChange={(e) => updateDaySlots((base) => ({ ...base, slot2_end: e.target.value }))}
+                                          disabled={!s.open || force24Hours}
+                                          className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100 disabled:bg-gray-50 disabled:text-gray-400"
+                                        />
+                                      </div>
+                                      <div className="flex items-end justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => updateDaySlots((base) => ({ ...base, slot2_start: "", slot2_end: "" }))}
+                                          className="rounded-xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                        >
+                                          <Trash2 className="h-4 w-4" />
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="lg:col-start-6 lg:col-end-10 flex items-end justify-end pb-1">
+                                      {s.open && !force24Hours ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => updateDaySlots((base) => ({ ...base, slot2_start: "14:00", slot2_end: "18:00" }))}
+                                          className="inline-flex items-center justify-end gap-2 px-1 text-sm font-medium text-emerald-700 transition hover:text-emerald-800"
+                                        >
+                                          <Plus className="h-4 w-4" />
+                                          Add time slot
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-2.5">
+                              <div className="flex items-center gap-3 text-sm">
+                                <button
+                                  type="button"
+                                  onClick={() => setCopyMondayConfirmOpen(true)}
+                                  className="inline-flex items-center gap-2 text-gray-700"
+                                >
+                                  <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
+                                    <Copy className="h-3 w-3 text-gray-500" />
+                                  </span>
+                                  <span className="text-sm">Copy Monday timing to all days</span>
+                                </button>
+                                <span className="hidden sm:block h-4 w-px bg-gray-200" />
+                                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                  <Toggle
+                                    checked={s.open}
+                                    onChange={(v) => {
+                                      const newSlots = applyMondayToAll
+                                        ? DAYS.reduce((acc, dayKey) => {
+                                            acc[dayKey] = { ...daySlots.monday, open: v };
+                                            return acc;
+                                          }, {} as Record<DayType, DaySlots>)
+                                        : { ...daySlots, [d]: { ...daySlots[d], open: v } };
+                                      const newClosed = v
+                                        ? closedDays.filter((x) => x !== d)
+                                        : closedDays.includes(d) ? closedDays : [...closedDays, d];
+                                      setClosedDays(newClosed);
+                                      setDaySlots(newSlots);
+                                      if (!v && force24Hours) setForce24Hours(false);
+                                      saveTimingsToServer({
+                                        ...(applyMondayToAll && !v ? { same_for_all_days: false } : {}),
+                                        daySlots: newSlots,
+                                        closed_days: newClosed,
+                                        ...(force24Hours && !v ? { is_24_hours: false } : {}),
+                                      });
+                                    }}
+                                  />
+                                  Outlet open
+                                </label>
+                              </div>
+
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -1087,57 +1499,17 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                                   }
                                 }}
                                 disabled={savingDay !== null || !isRowDirty(d)}
-                                className="rounded bg-gradient-to-r from-emerald-500 to-blue-500 px-2 py-1 text-xs font-medium text-white shadow-sm hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed min-w-[52px]"
+                                className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                {savingDay === d ? (
-                                  <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                                ) : (
-                                  "Save"
-                                )}
+                                {savingDay === d ? <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : <Save className="h-4 w-4" />}
+                                {savingDay === d ? "Saving..." : "Save"}
                               </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              <div className="mt-3">
-                <p className="text-sm font-medium text-gray-900 mb-1.5">Closed days (no service)</p>
-                <div className="flex flex-wrap gap-3">
-                  {DAYS.map((day) => (
-                    <div key={day} className="flex items-center gap-2">
-                      <Toggle
-                        checked={closedDays.includes(day)}
-                        onChange={(on) => {
-                          const d = day as DayType;
-                          if (on && applyMondayToAll) {
-                            setApplyMondayToAll(false);
-                          }
-                          const newClosed = on
-                            ? (closedDays.includes(d) ? closedDays : [...closedDays, d])
-                            : closedDays.filter((x) => x !== d);
-                          setClosedDays(newClosed);
-                          const newSlots = { ...daySlots };
-                          if (on) {
-                            newSlots[d] = { ...newSlots[d], open: false };
-                          } else {
-                            newSlots[d] = { ...newSlots[d], open: true };
-                          }
-                          setDaySlots(newSlots);
-                          const turnOff24h = on && force24Hours && newClosed.length >= 3;
-                          if (turnOff24h) setForce24Hours(false);
-                          saveTimingsToServer({
-                            same_for_all_days: on && applyMondayToAll ? false : undefined,
-                            closed_days: newClosed,
-                            daySlots: newSlots,
-                            ...(turnOff24h ? { is_24_hours: false } : {}),
-                          });
-                        }}
-                      />
-                      <span className="text-sm capitalize text-gray-900">{day}</span>
-                    </div>
-                  ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </>
@@ -1498,8 +1870,9 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                           setPendingDeliveryMode({ gatimitra: true, self: false });
                           setDeliveryModeWarningOpen(true);
                         } else {
-                          setPendingDeliveryMode({ gatimitra: false, self: true });
-                          setDeliveryModeWarningOpen(true);
+                          toast.error(
+                            "Self delivery cannot be turned on from the merchant portal. Contact support if you need it enabled."
+                          );
                         }
                       }}
                     />
@@ -1532,17 +1905,29 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
                     )}
                   </div>
                   <p className="text-xs text-gray-600 mb-3 line-clamp-2">Your own riders deliver orders. Turn off to use GatiMitra.</p>
+                  {!selfDelivery && (
+                    <p className="text-[11px] text-amber-800 bg-amber-50/80 border border-amber-200/80 rounded-lg px-2 py-1.5 mb-2">
+                      Self delivery cannot be turned back on from settings once disabled. Contact support to enable it again.
+                    </p>
+                  )}
                   <div className="mt-auto pt-2 border-t border-gray-100">
                     <Toggle
                       checked={selfDelivery}
+                      disabled={!selfDelivery}
+                      title={
+                        selfDelivery
+                          ? "Turn off self delivery to use GatiMitra riders"
+                          : "Self delivery cannot be enabled from the merchant portal"
+                      }
                       onChange={(on) => {
                         if (on) {
-                          setPendingDeliveryMode({ gatimitra: false, self: true });
-                          setDeliveryModeWarningOpen(true);
-                        } else {
-                          setPendingDeliveryMode({ gatimitra: true, self: false });
-                          setDeliveryModeWarningOpen(true);
+                          toast.error(
+                            "Self delivery cannot be turned on from the merchant portal. Contact support if you need it enabled."
+                          );
+                          return;
                         }
+                        setPendingDeliveryMode({ gatimitra: true, self: false });
+                        setDeliveryModeWarningOpen(true);
                       }}
                     />
                     <span className="ml-2 text-xs text-gray-500">Use own riders</span>

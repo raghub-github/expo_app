@@ -1362,6 +1362,8 @@ export async function updateMerchantStore(
     is_active?: boolean | null;
     is_accepting_orders?: boolean | null;
     is_available?: boolean | null;
+    /** `OPEN` | `CLOSED` — Postgres enum `store_operational_status` */
+    operational_status?: string | null;
     deleted_at?: Date | null;
     onboarding_completed?: boolean | null;
     onboarding_completed_at?: Date | null;
@@ -1427,6 +1429,13 @@ export async function updateMerchantStore(
   if (data.is_active !== undefined) setClauses.push(sql`is_active = ${data.is_active}`);
   if (data.is_accepting_orders !== undefined) setClauses.push(sql`is_accepting_orders = ${data.is_accepting_orders}`);
   if (data.is_available !== undefined) setClauses.push(sql`is_available = ${data.is_available}`);
+  if (data.operational_status !== undefined) {
+    setClauses.push(
+      data.operational_status === null
+        ? sql`operational_status = NULL`
+        : sql`operational_status = ${data.operational_status}::store_operational_status`
+    );
+  }
   if (data.deleted_at !== undefined) setClauses.push(sql`deleted_at = ${data.deleted_at instanceof Date ? data.deleted_at.toISOString() : data.deleted_at}`);
   if (data.onboarding_completed !== undefined) setClauses.push(sql`onboarding_completed = ${data.onboarding_completed}`);
   if (data.onboarding_completed_at !== undefined) setClauses.push(sql`onboarding_completed_at = ${data.onboarding_completed_at instanceof Date ? data.onboarding_completed_at.toISOString() : data.onboarding_completed_at}`);

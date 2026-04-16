@@ -80,11 +80,16 @@ export async function POST(req: NextRequest) {
 
     const { data, error } = await db.rpc('enforce_plan_limits', { p_store_id: store.id });
     if (error) {
+      // Backwards-compat: some environments removed plan-locking columns/functions.
+      const msg = String(error.message || '').toLowerCase();
+      if (error.code === '42703' || msg.includes('is_locked_by_plan')) {
+        return NextResponse.json({ success: true, skipped: true, reason: 'plan_locking_not_supported' });
+      }
       console.error('[enforce-limits] error:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, result: data });
+    return NextResponse.json({ success: true, result: data, skipped: false });
   } catch (e: any) {
     console.error('[enforce-limits] unexpected:', e);
     return NextResponse.json({ error: e?.message || 'Internal error' }, { status: 500 });
@@ -151,12 +156,8 @@ export async function GET(req: NextRequest) {
       .eq('store_id', store.id)
       .eq('is_deleted', false);
 
-    const { count: lockedItems } = await db
-      .from('merchant_menu_items')
-      .select('id', { count: 'exact', head: true })
-      .eq('store_id', store.id)
-      .eq('is_deleted', false)
-      .eq('is_locked_by_plan', true);
+    // Plan-locking removed in some schemas; treat as 0 locked.
+    const lockedItems = 0;
 
     const { count: totalCategories } = await db
       .from('merchant_menu_categories')
@@ -164,12 +165,7 @@ export async function GET(req: NextRequest) {
       .eq('store_id', store.id)
       .eq('is_deleted', false);
 
-    const { count: lockedCategories } = await db
-      .from('merchant_menu_categories')
-      .select('id', { count: 'exact', head: true })
-      .eq('store_id', store.id)
-      .eq('is_deleted', false)
-      .eq('is_locked_by_plan', true);
+    const lockedCategories = 0;
 
     return NextResponse.json({
       plan: {

@@ -3894,3 +3894,38 @@ export const agentBreakLogsRelations = relations(agentBreakLogs, ({ one }) => ({
   }),
 }));
 
+// ============================================================================
+// EXPO PUSH (unified device tokens for customer / merchant / rider apps)
+// ============================================================================
+
+export const expoPushTokens = pgTable(
+  "expo_push_tokens",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull(),
+    deviceType: text("device_type").notNull(),
+    expoPushToken: text("expo_push_token").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userRoleIdx: index("expo_push_tokens_user_id_role_idx").on(t.userId, t.role),
+    roleIdx: index("expo_push_tokens_role_idx").on(t.role),
+  })
+);
+
+export const expoPushNotificationLogs = pgTable("expo_push_notification_logs", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  notificationType: text("notification_type").notNull(),
+  targetRole: text("target_role").notNull(),
+  targetUserIds: jsonb("target_user_ids"),
+  tokensTargeted: integer("tokens_targeted").notNull().default(0),
+  expoTicketsOk: integer("expo_tickets_ok").notNull().default(0),
+  expoTicketsError: integer("expo_tickets_error").notNull().default(0),
+  detail: jsonb("detail"),
+});
+

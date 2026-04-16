@@ -51,8 +51,8 @@ export default function DashboardHome() {
 
   return (
     <div className="w-full max-w-full overflow-x-hidden">
-      {/* Only show error when we have no cached data (avoids "signal aborted" on nav/timeout) */}
-      {isError && error && !userPerms && (
+      {/* Defer until mount: React Query may restore persisted permissions only on client (SSR has no cache). */}
+      {hasMounted && isError && error && !userPerms && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="flex flex-start">
@@ -75,8 +75,8 @@ export default function DashboardHome() {
         </div>
       )}
 
-      {/* Account setup warning – only when we have data and user is not in system */}
-      {userPerms && !userPerms.exists && (
+      {/* Account setup warning – defer until mount to avoid hydration mismatch vs SSR (no query cache on server). */}
+      {hasMounted && userPerms && !userPerms.exists && (
         <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 p-4">
           <div className="flex flex-start">
             <AlertCircle className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />

@@ -13,9 +13,6 @@ export type StoreInfoCardData = {
   store_id: string;
   full_address?: string | null;
   approval_status?: string | null;
-  /** Primary = [0], Alternate = [1]. Shown in Store Info card. */
-  store_phones?: string[] | null;
-  store_email?: string | null;
   created_at?: string | null;
 };
 
@@ -120,8 +117,6 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
         {row("Display name", store.store_display_name as string)}
         {row("Description", store.store_description as string)}
         {row("Store type", store.store_type as string)}
-        {row("Email", store.store_email as string)}
-        {row("Phones", Array.isArray(store.store_phones) ? (store.store_phones as string[]).join(", ") : null)}
         {(bannerUrl || gallery.length > 0) && (
           <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
             <p className="text-[10px] font-semibold uppercase text-gray-500">Banner & gallery</p>
@@ -166,12 +161,12 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
   }
   if (stepNum === 4) {
     const doc = documents ?? {};
-    const entries: Array<{ label: string; numberKey: string; urlKey: string; verifiedKey: string }> = [
-      { label: "PAN number", numberKey: "pan_document_number", urlKey: "pan_document_url", verifiedKey: "pan_is_verified" },
-      { label: "GST number", numberKey: "gst_document_number", urlKey: "gst_document_url", verifiedKey: "gst_is_verified" },
-      { label: "Aadhaar number", numberKey: "aadhaar_document_number", urlKey: "aadhaar_document_url", verifiedKey: "aadhaar_is_verified" },
-      { label: "FSSAI number", numberKey: "fssai_document_number", urlKey: "fssai_document_url", verifiedKey: "fssai_is_verified" },
-      { label: "Drug license", numberKey: "drug_license_document_number", urlKey: "drug_license_document_url", verifiedKey: "drug_license_is_verified" },
+    const entries: Array<{ label: string; numberKey: string; urlKey: string; verifiedKey: string; expiryKey?: string }> = [
+      { label: "PAN number", numberKey: "pan_document_number", urlKey: "pan_document_url", verifiedKey: "pan_is_verified", expiryKey: "pan_expiry_date" },
+      { label: "GST number", numberKey: "gst_document_number", urlKey: "gst_document_url", verifiedKey: "gst_is_verified", expiryKey: "gst_expiry_date" },
+      { label: "Aadhaar number", numberKey: "aadhaar_document_number", urlKey: "aadhaar_document_url", verifiedKey: "aadhaar_is_verified", expiryKey: "aadhaar_expiry_date" },
+      { label: "FSSAI number", numberKey: "fssai_document_number", urlKey: "fssai_document_url", verifiedKey: "fssai_is_verified", expiryKey: "fssai_expiry_date" },
+      { label: "Drug license", numberKey: "drug_license_document_number", urlKey: "drug_license_document_url", verifiedKey: "drug_license_is_verified", expiryKey: "drug_license_expiry_date" },
     ];
     const dynamicEntries = entries.filter(
       (e) =>
@@ -205,9 +200,15 @@ function StepDetailContent({ stepNum, data }: { stepNum: number; data: Verificat
                 )}
               </div>
             ))}
-            {!!doc.fssai_expiry_date &&
-              dynamicEntries.some((e) => e.numberKey === "fssai_document_number") &&
-              row("FSSAI expiry", new Date(doc.fssai_expiry_date as string).toLocaleDateString())}
+            {dynamicEntries
+              .map((e) => {
+                if (!e.expiryKey) return null;
+                const v = doc[e.expiryKey];
+                if (v == null || String(v).trim() === "") return null;
+                const label = `${e.label.replace(/ number$/i, "").replace(/ license$/i, "")} expiry`;
+                return row(label, new Date(String(v)).toLocaleDateString());
+              })
+              .filter(Boolean)}
           </>
         )}
       </div>
@@ -427,23 +428,6 @@ export function StoreInfoCard({ store, className = "" }: StoreInfoCardProps) {
             <p className="text-[10px] text-gray-600 break-words leading-snug line-clamp-2" title={store.full_address}>{store.full_address}</p>
           )}
           <p className="text-[10px] font-mono text-gray-500 truncate pt-0.5" title={store.store_id}>{store.store_id}</p>
-          {store.store_email && (
-            <p className="text-[10px] text-gray-600 truncate pt-0.5" title={store.store_email}>Email: {store.store_email}</p>
-          )}
-          {store.store_phones && store.store_phones.length > 0 && (
-            <div className="space-y-0.5 pt-0.5 min-w-0">
-              <div className="flex min-w-0 gap-1 text-[10px]">
-                <span className="shrink-0 font-medium text-gray-500">Primary:</span>
-                <span className="text-gray-900 truncate" title={store.store_phones[0]}>{store.store_phones[0]}</span>
-              </div>
-              {store.store_phones.length > 1 && store.store_phones[1] && (
-                <div className="flex min-w-0 gap-1 text-[10px]">
-                  <span className="shrink-0 font-medium text-gray-500">Alt:</span>
-                  <span className="text-gray-900 truncate" title={store.store_phones[1]}>{store.store_phones[1]}</span>
-                </div>
-              )}
-            </div>
-          )}
           {store.created_at && (
             <p className="text-[10px] text-gray-500 pt-0.5">
               Created: {new Date(store.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}

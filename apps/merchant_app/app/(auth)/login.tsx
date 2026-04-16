@@ -16,13 +16,15 @@ import {
   ScrollView,
   Image,
   useWindowDimensions,
+  BackHandler,
+  InteractionManager,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
-import { useAuth } from "@/context/AuthContext";
+import { useAuth, type PartnerData } from "@/context/AuthContext";
 import {
   merchantAuthService,
   isMerchantAuthError,
@@ -30,6 +32,23 @@ import {
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
 import { GatiMitraMerchant, H_PADDING, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import LoginHeroBubbles from "./LoginHeroBubbles";
+
+const OTP_LEN = 6;
+
+/** Narrow exchange API partner payload to PartnerData after minimal structural checks. */
+function partnerDataFromExchange(partner: { parent: unknown; childStores: unknown[] }): PartnerData {
+  if (typeof partner.parent !== "object" || partner.parent === null) {
+    throw new Error("Invalid partner data from server.");
+  }
+  const pr = partner.parent as Record<string, unknown>;
+  if (typeof pr.parent_merchant_id !== "string" || typeof pr.id !== "number") {
+    throw new Error("Invalid partner data from server.");
+  }
+  if (!Array.isArray(partner.childStores)) {
+    throw new Error("Invalid partner data from server.");
+  }
+  return partner as PartnerData;
+}
 
 const useAndroidSmsOtp = (step: "phone" | "otp", setOtp: Dispatch<SetStateAction<string>>) => {
   useEffect(() => {
@@ -51,7 +70,7 @@ const useAndroidSmsOtp = (step: "phone" | "otp", setOtp: Dispatch<SetStateAction
         ReadSMS.startReadSMS((status: string, sms: string) => {
           if (cancelled || status !== "success" || !sms) return;
           const code = parseOtpFromSms(sms);
-          if (code) setOtp((prev) => (prev.length === 6 ? prev : code));
+          if (code) setOtp((prev) => (prev.length === OTP_LEN ? prev : code));
         });
       } catch (_) {
         // Native module not available (e.g. Expo Go)
@@ -74,6 +93,7 @@ const SHEET_HEIGHT_RATIO = 0.62;
 
 export default function LoginScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
   const { setTokenAndPartner } = useAuth();
@@ -90,6 +110,7 @@ export default function LoginScreen() {
   const phoneInputRef = useRef<TextInput>(null);
   const sheetScrollRef = useRef<ScrollView>(null);
   const [phoneFieldFocused, setPhoneFieldFocused] = useState(false);
+  const [otpFieldFocused, setOtpFieldFocused] = useState(false);
   const [phoneKeyboardVisible, setPhoneKeyboardVisible] = useState(false);
   const [otpKeyboardVisible, setOtpKeyboardVisible] = useState(false);
   const otpAutoSubmittedRef = useRef<string | null>(null);
@@ -119,11 +140,69 @@ export default function LoginScreen() {
     return () => clearInterval(id);
   }, [step, resendSeconds]);
 
+  /** OTP step: open keyboard immediately and keep refocusing until all digits are entered. */
   useEffect(() => {
     if (step !== "otp") return;
-    const t = setTimeout(() => otpInputRef.current?.focus(), 300);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    const focusOtp = () => {
+      if (cancelled) return;
+      otpInputRef.current?.focus();
+    };
+    focusOtp();
+    const raf = requestAnimationFrame(focusOtp);
+    const t0 = setTimeout(focusOtp, 50);
+    const t1 = setTimeout(focusOtp, 200);
+    const t2 = setTimeout(focusOtp, 500);
+    const task = InteractionManager.runAfterInteractions(focusOtp);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(t0);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      void task;
+    };
   }, [step]);
+
+  /** If the keyboard is dismissed while OTP is incomplete, open it again (blur / outside tap). */
+  useEffect(() => {
+    if (step !== "otp") return;
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const sub = Keyboard.addListener(hideEvt, () => {
+      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
+      setTimeout(() => otpInputRef.current?.focus(), 40);
+    });
+    return () => sub.remove();
+  }, [step, otp.length, loading, deviceSessionMode]);
+
+  /** Android back: return to phone step when OTP is incomplete (intentional exit). */
+  useEffect(() => {
+    if (step !== "otp") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (otp.length >= OTP_LEN) return false;
+      setStep("phone");
+      setOtp("");
+      setError("");
+      setDeviceSessionMode(false);
+      setLastExchange(null);
+      return true;
+    });
+    return () => sub.remove();
+  }, [step, otp.length]);
+
+  /** Block backward navigation (e.g. iOS swipe-back) until OTP is complete; forward links (e.g. signup) still work. */
+  useEffect(() => {
+    if (step !== "otp") return;
+    const unsub = navigation.addListener("beforeRemove", (e) => {
+      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
+      const act = e.data.action;
+      const actionType = typeof act === "object" && act !== null && "type" in act ? String((act as { type: string }).type) : "";
+      if (actionType !== "GO_BACK" && actionType !== "POP") return;
+      e.preventDefault();
+      requestAnimationFrame(() => otpInputRef.current?.focus());
+    });
+    return unsub;
+  }, [navigation, step, otp.length, loading, deviceSessionMode]);
 
   useAndroidSmsOtp(step, setOtp);
 
@@ -167,7 +246,7 @@ export default function LoginScreen() {
       otpAutoSubmittedRef.current = null;
       return;
     }
-    if (otp.length < 6) otpAutoSubmittedRef.current = null;
+    if (otp.length < OTP_LEN) otpAutoSubmittedRef.current = null;
   }, [step, otp]);
 
   useEffect(() => {
@@ -176,7 +255,7 @@ export default function LoginScreen() {
   }, [step, otpKeyboardVisible, scrollPhoneFormIntoView]);
 
   useEffect(() => {
-    if (step !== "otp" || otp.length !== 6 || loading || deviceSessionMode) return;
+    if (step !== "otp" || otp.length !== OTP_LEN || loading || deviceSessionMode) return;
     if (otpAutoSubmittedRef.current === otp) return;
     otpAutoSubmittedRef.current = otp;
     const t = setTimeout(() => {
@@ -232,11 +311,14 @@ export default function LoginScreen() {
       setError(msg);
     } finally {
       setResending(false);
+      if (step === "otp") {
+        setTimeout(() => otpInputRef.current?.focus(), 60);
+      }
     }
   };
 
   const handleVerifyOtp = async () => {
-    if (!otp || otp.length !== 6) {
+    if (!otp || otp.length !== OTP_LEN) {
       setError("Enter the 6-digit code from SMS");
       return;
     }
@@ -250,7 +332,8 @@ export default function LoginScreen() {
         otp,
         deviceId,
       });
-      await setTokenAndPartner(session.accessToken, session.partner as any, session.userId);
+      const partner = partnerDataFromExchange(session.partner);
+      await setTokenAndPartner(session.accessToken, partner, session.userId);
       setDeviceSessionMode(false);
       setLastExchange(null);
       router.replace("/(auth)/partner-home");
@@ -282,7 +365,8 @@ export default function LoginScreen() {
           phoneE164,
           deviceId,
         });
-        await setTokenAndPartner(session.accessToken, session.partner as any, session.userId);
+        const partner = partnerDataFromExchange(session.partner);
+        await setTokenAndPartner(session.accessToken, partner, session.userId);
         setLastExchange(null);
         router.replace("/(auth)/partner-home");
       }
@@ -311,7 +395,8 @@ export default function LoginScreen() {
   const sheetImeOpen =
     (step === "phone" && phoneKeyboardVisible) || (step === "otp" && otpKeyboardVisible);
   const sheetPadApplied = 0;
-  const scrollBottomInset = sheetImeOpen ? 12 : sheetPadBottom + 8;
+  const scrollBottomInset =
+    sheetImeOpen && step === "otp" ? 4 : sheetImeOpen ? 12 : sheetPadBottom + 8;
 
   return (
     <View style={styles.root}>
@@ -382,10 +467,12 @@ export default function LoginScreen() {
               ]}
               contentContainerStyle={[
                 styles.sheetScrollContent,
-                sheetImeOpen && styles.sheetScrollContentKb,
+                /* OTP + keyboard: avoid flexGrow so footer sits just above IME (no empty stretch). */
+                sheetImeOpen && step === "phone" && styles.sheetScrollContentKb,
                 { paddingBottom: scrollBottomInset },
               ]}
               keyboardShouldPersistTaps="always"
+              keyboardDismissMode={step === "otp" ? "none" : "on-drag"}
               showsVerticalScrollIndicator={false}
             >
               {(() => {
@@ -559,50 +646,52 @@ export default function LoginScreen() {
               <View style={[styles.sheetInputCluster, styles.sheetInputClusterOtp]}>
                 <Text style={styles.sheetLabel}>Verification</Text>
                 <Text style={styles.fieldLabel}>Enter 6-digit code</Text>
-                <View style={styles.otpRow}>
+                <Pressable
+                  onPress={() => otpInputRef.current?.focus()}
+                  accessibilityLabel="One-time code, six digits"
+                  style={({ pressed }) => [
+                    styles.phoneFieldShell,
+                    styles.phoneFieldUnifiedLook,
+                    otpFieldFocused && styles.phoneFieldUnifiedFocus,
+                    pressed && styles.phoneFieldShellPressed,
+                  ]}
+                >
+                  <View style={styles.phoneEmptyIconWrap} importantForAccessibility="no">
+                    <Ionicons name="keypad-outline" size={20} color={GatiMitraMerchant.primary} />
+                  </View>
                   <TextInput
                     ref={otpInputRef}
-                    style={styles.otpHiddenInput}
+                    style={styles.otpInputPlain}
+                    placeholder={otp.length === 0 ? "• • • • • •" : ""}
+                    placeholderTextColor={GatiMitraMerchant.textTertiary}
                     value={otp}
                     onChangeText={(t) => {
                       clearErrors();
-                      setOtp(t.replace(/\D/g, "").slice(0, 6));
+                      setOtp(t.replace(/\D/g, "").slice(0, OTP_LEN));
+                    }}
+                    onFocus={() => {
+                      setOtpFieldFocused(true);
+                      scrollPhoneFormIntoView();
+                    }}
+                    onBlur={() => {
+                      setOtpFieldFocused(false);
+                      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
+                      requestAnimationFrame(() => otpInputRef.current?.focus());
                     }}
                     keyboardType="number-pad"
-                    maxLength={6}
+                    maxLength={OTP_LEN}
                     editable={!loading && !deviceSessionMode}
                     textContentType="oneTimeCode"
                     autoComplete="sms-otp"
                     autoCapitalize="none"
                     autoCorrect={false}
                     importantForAutofill="yes"
-                    caretHidden
                     showSoftInputOnFocus
+                    blurOnSubmit={false}
+                    selectionColor={GatiMitraMerchant.primary}
                   />
-                  {Array.from({ length: 6 }).map((_, index) => {
-                    const char = otp[index] ?? "";
-                    const isFilled = Boolean(char);
-                    const isActive = !isFilled && index === otp.length;
-                    return (
-                      <Pressable
-                        key={index}
-                        accessibilityLabel={`OTP digit ${index + 1}`}
-                        accessibilityRole="button"
-                        onPress={focusOtpFromSheetTap}
-                        hitSlop={{ top: 12, bottom: 12, left: 2, right: 2 }}
-                        style={({ pressed }) => [
-                          styles.otpCell,
-                          isFilled && styles.otpCellFilled,
-                          isActive && styles.otpCellActive,
-                          pressed && styles.otpCellPressed,
-                        ]}
-                      >
-                        <Text style={[styles.otpChar, isFilled && styles.otpCharFilled]}>{char}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-                <Text style={styles.helper}>
+                </Pressable>
+                <Text style={[styles.helper, otpKeyboardVisible && styles.helperOtpKb]}>
                   {Platform.OS === "ios"
                     ? "Use the code suggestion above the keyboard when available."
                     : "Allow SMS permission to auto-fill, or type the code manually."}
@@ -654,7 +743,7 @@ export default function LoginScreen() {
                   )}
                 </Pressable>
 
-                <View style={styles.otpFooter}>
+                <View style={[styles.otpFooter, otpKeyboardVisible && styles.otpFooterKb]}>
                   <Pressable
                     onPress={handleResendOtp}
                     disabled={resendSeconds > 0 || loading || resending}
@@ -690,7 +779,12 @@ export default function LoginScreen() {
             )}
               </View>
 
-              <View style={styles.registerBlock}>
+              <View
+                style={[
+                  styles.registerBlock,
+                  step === "otp" && otpKeyboardVisible && styles.registerBlockOtpKb,
+                ]}
+              >
                 <Text style={styles.registerMuted}>New partner? </Text>
                 <Pressable onPress={() => router.push("/(auth)/signup-webview")} hitSlop={8}>
                   <Text style={styles.registerLink}>Create account</Text>
@@ -700,7 +794,7 @@ export default function LoginScreen() {
                 );
                 return step === "otp" ? (
                   <Pressable
-                    style={styles.otpSheetPressable}
+                    style={otpKeyboardVisible ? styles.otpSheetPressableKb : styles.otpSheetPressable}
                     onPress={focusOtpFromSheetTap}
                     accessibilityRole="none"
                   >
@@ -1080,6 +1174,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
   },
+  helperOtpKb: {
+    marginTop: 6,
+    marginBottom: 6,
+  },
   primaryBtn: {
     height: 56,
     borderRadius: 14,
@@ -1100,59 +1198,26 @@ const styles = StyleSheet.create({
   btnIcon: {
     marginLeft: 4,
   },
-  /** OTP step: tap empty sheet area still focuses hidden input (nested buttons/cells keep their own handlers). */
+  /** OTP step: tap empty sheet focuses input; flexGrow fills sheet when keyboard closed. */
   otpSheetPressable: {
     flexGrow: 1,
     width: "100%",
   },
-  otpRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-    position: "relative",
-    minHeight: 56,
+  otpSheetPressableKb: {
+    flexGrow: 0,
+    width: "100%",
   },
-  otpCell: {
+  /** Same shell as phone row; single visible numeric field for the 6-digit code. */
+  otpInputPlain: {
     flex: 1,
-    maxWidth: 52,
-    height: 56,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    backgroundColor: GatiMitraMerchant.surfaceWarm,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 2,
-  },
-  otpCellFilled: {
-    borderWidth: 2.5,
-    borderColor: GatiMitraMerchant.primary,
-    backgroundColor: "#ECFDF5",
-  },
-  otpCellActive: {
-    borderWidth: 3,
-    borderColor: GatiMitraMerchant.primaryDark,
-    backgroundColor: "#F0FDF4",
-  },
-  otpCellPressed: {
-    opacity: 0.92,
-  },
-  otpChar: {
-    fontSize: 22,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textTertiary,
-  },
-  otpCharFilled: {
-    fontWeight: "800",
+    minHeight: 46,
+    paddingHorizontal: 8,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+    fontSize: 20,
+    fontWeight: "700",
+    letterSpacing: 10,
     color: GatiMitraMerchant.textPrimary,
-  },
-  /** Behind cells (lower z-index); cells receive taps, focus() still opens keyboard. */
-  otpHiddenInput: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0,
-    zIndex: 0,
+    backgroundColor: "transparent",
   },
   otpFooter: {
     flexDirection: "row",
@@ -1160,6 +1225,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginTop: 18,
     gap: 10,
+  },
+  otpFooterKb: {
+    marginTop: 10,
   },
   linkText: {
     fontSize: 15,
@@ -1247,6 +1315,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
     borderTopWidth: 1,
     borderTopColor: GatiMitraMerchant.divider,
+  },
+  registerBlockOtpKb: {
+    paddingTop: 6,
+    paddingBottom: 2,
+    marginTop: 2,
   },
   registerMuted: {
     fontSize: 14,

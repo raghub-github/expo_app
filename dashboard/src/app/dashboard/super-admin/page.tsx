@@ -67,6 +67,16 @@ const StoreOnboardingIcon = dynamic(async () => {
   return (props: { className?: string }) => <IndianRupee {...props} />;
 });
 
+const PushIcon = dynamic(async () => {
+  const { BellRing } = await import("lucide-react");
+  return (props: { className?: string }) => <BellRing {...props} />;
+});
+
+const OrderAcceptanceIcon = dynamic(async () => {
+  const { TimerReset } = await import("lucide-react");
+  return (props: { className?: string }) => <TimerReset {...props} />;
+});
+
 const adminOptions: AdminOption[] = [
   {
     name: "Users",
@@ -115,6 +125,22 @@ const adminOptions: AdminOption[] = [
     description: "Manage customer app categories",
     color: "text-cyan-600",
     bgColor: "bg-cyan-50 hover:bg-cyan-100",
+  },
+  {
+    name: "Push Notification",
+    href: "/dashboard/super-admin/push",
+    Icon: PushIcon,
+    description: "Push notification to the Rider, Customer & Merchant app",
+    color: "text-emerald-700",
+    bgColor: "bg-emerald-50 hover:bg-emerald-100",
+  },
+  {
+    name: "Order acceptance",
+    href: "/dashboard/super-admin/order-acceptance",
+    Icon: OrderAcceptanceIcon,
+    description: "Acceptance window + incoming sound per store",
+    color: "text-slate-700",
+    bgColor: "bg-slate-50 hover:bg-slate-100",
   },
 
   // ✅ YOUR MODULES

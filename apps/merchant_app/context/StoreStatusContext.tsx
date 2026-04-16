@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Alert } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { useAuth } from "@/context/AuthContext";
@@ -8,9 +8,9 @@ import {
   updateStoreStatus,
   updateAutoOpenFromSchedule,
   updateManualActivationLock,
+  respondScheduleEndPrompt,
   type ScheduledClosure,
 } from "@/services/storeStatusApi";
-
 const STATUS_CACHE_KEY_PREFIX = "merchant_store_status_";
 
 /** Poll interval for real-time status (schedule changes, auto open/close). */
@@ -50,10 +50,22 @@ type StoreStatusContextValue = {
   unavailableReason: string | null;
   nextOpenTime: string | null;
   nextCloseTime: string | null;
+  /** Auto reopen instant from backend (`merchant_store_availability.auto_available_at`). */
+  autoAvailableAt: string | null;
   /** Next reopen time (ISO) for countdown when closed by schedule or manual temp close */
   reopenAtIso: string | null;
   /** Next open time from schedule (API next_open_iso); use as fallback for "Reopen at" when closed */
   nextOpenIso: string | null;
+  /** Inside operating hours but store held closed (manual lock / temp) — hide slot countdown like dashboard. */
+  withinHoursButRestricted: boolean;
+  /** Last status toggle (for "Last: Opened by ..." line). */
+  lastToggleType: string | null;
+  lastToggledAt: string | null;
+  lastToggledByName: string | null;
+  lastToggledById: string | null;
+  lastToggledByEmail: string | null;
+  scheduleEndPromptActive: boolean;
+  scheduleEndPromptExpiresAt: string | null;
 };
 
 const StoreStatusContext = createContext<StoreStatusContextValue | null>(null);
@@ -78,6 +90,15 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
   const [nextOpenTime, setNextOpenTime] = useState<string | null>(null);
   const [nextCloseTime, setNextCloseTime] = useState<string | null>(null);
   const [nextOpenIso, setNextOpenIso] = useState<string | null>(null);
+  const [autoAvailableAt, setAutoAvailableAt] = useState<string | null>(null);
+  const [withinHoursButRestricted, setWithinHoursButRestricted] = useState(false);
+  const [lastToggleType, setLastToggleType] = useState<string | null>(null);
+  const [lastToggledAt, setLastToggledAt] = useState<string | null>(null);
+  const [lastToggledByName, setLastToggledByName] = useState<string | null>(null);
+  const [lastToggledById, setLastToggledById] = useState<string | null>(null);
+  const [lastToggledByEmail, setLastToggledByEmail] = useState<string | null>(null);
+  const [scheduleEndPromptExpiresAt, setScheduleEndPromptExpiresAt] = useState<string | null>(null);
+  const scheduleEndPromptShownRef = useRef<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
 
   const storeId = selectedStore?.id ?? null;
@@ -104,6 +125,13 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
             if (c.unavailable_reason != null) setUnavailableReason(c.unavailable_reason as string | null);
             if (c.status_reason != null) setStatusReason(c.status_reason as string | null);
             if (c.next_open_iso != null) setNextOpenIso(c.next_open_iso as string | null);
+            if (c.auto_available_at != null) setAutoAvailableAt(c.auto_available_at as string | null);
+            if (c.within_hours_but_restricted != null) setWithinHoursButRestricted(!!c.within_hours_but_restricted);
+            if (c.last_toggle_type != null) setLastToggleType(c.last_toggle_type as string | null);
+            if (c.last_toggled_at != null) setLastToggledAt(c.last_toggled_at as string | null);
+            if (c.last_toggled_by_name != null) setLastToggledByName(c.last_toggled_by_name as string | null);
+            if (c.last_toggled_by_id != null) setLastToggledById(c.last_toggled_by_id as string | null);
+            if (c.last_toggled_by_email != null) setLastToggledByEmail(c.last_toggled_by_email as string | null);
             if (c.closed_by != null) setClosedBy(c.closed_by as string | null);
             if (c.closed_by_id != null) setClosedById(c.closed_by_id as string | null);
             if (c.scheduled_closure != null) setScheduledClosure(c.scheduled_closure as ScheduledClosure | null);
@@ -136,6 +164,13 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       setNextOpenTime(null);
       setNextCloseTime(null);
       setNextOpenIso(null);
+      setAutoAvailableAt(null);
+      setWithinHoursButRestricted(false);
+      setLastToggleType(null);
+      setLastToggledAt(null);
+      setLastToggledByName(null);
+      setLastToggledById(null);
+      setLastToggledByEmail(null);
       return;
     }
     const myRefreshId = ++refreshIdRef.current;
@@ -148,45 +183,45 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         return;
       }
       const fromApiUntil =
-        status.manual_close_until != null
-          ? typeof status.manual_close_until === "string"
-            ? status.manual_close_until.trim()
-            : status.manual_close_until instanceof Date
-              ? status.manual_close_until.toISOString()
-              : String(status.manual_close_until).trim()
+        status.manual_close_until != null && String(status.manual_close_until).trim() !== ""
+          ? String(status.manual_close_until).trim()
           : null;
       const fromApiReason = status.manual_close_reason ?? null;
-      const apiUntilMs = fromApiUntil ? new Date(fromApiUntil).getTime() : 0;
-      const apiIsFutureTempClose = Number.isFinite(apiUntilMs) && apiUntilMs > Date.now();
+      const unavailNorm =
+        (status as { unavailable_reason?: string | null }).unavailable_reason != null
+          ? String((status as { unavailable_reason?: string | null }).unavailable_reason).trim().toLowerCase()
+          : "";
+      const statusNorm = status.status_reason != null ? String(status.status_reason).trim().toLowerCase() : "";
+
+      // Guard: avoid dropping a future manual_close_until due to transient API nulls.
+      // If we are in a manual closure state and the previous until is still in the future, keep it.
       const prevUntil = manualCloseUntilRef.current;
-      const prevUntilMs = prevUntil ? new Date(prevUntil).getTime() : 0;
-      const prevIsFutureTempClose = Number.isFinite(prevUntilMs) && prevUntilMs > Date.now();
-      const keepTempCloseFromPrev = !apiIsFutureTempClose && prevIsFutureTempClose;
+      const prevUntilMs = prevUntil ? new Date(prevUntil).getTime() : NaN;
+      const prevStillFuture = Number.isFinite(prevUntilMs) && prevUntilMs > Date.now();
+      const apiSaysManual =
+        unavailNorm === "manual_close" ||
+        unavailNorm === "manual_indefinite" ||
+        statusNorm === "manual_close" ||
+        statusNorm === "manual_indefinite";
+      const effectiveUntil = fromApiUntil == null && prevStillFuture && apiSaysManual ? prevUntil : fromApiUntil;
+      const effectiveReason =
+        fromApiReason == null &&
+        manualCloseReasonRef.current != null &&
+        String(manualCloseReasonRef.current).trim() !== "" &&
+        apiSaysManual
+          ? manualCloseReasonRef.current
+          : fromApiReason;
 
       setIsOnline(status.is_open);
       setAutoOpenFromSchedule(status.auto_open_from_schedule);
       setManualActivationLock(status.block_auto_open);
-      if (apiIsFutureTempClose) {
-        setManualCloseUntil(fromApiUntil);
-        setManualCloseReason(fromApiReason);
-        manualCloseUntilRef.current = fromApiUntil;
-        manualCloseReasonRef.current = fromApiReason;
-      } else if (keepTempCloseFromPrev) {
-        setManualCloseUntil(prevUntil);
-        setManualCloseReason(manualCloseReasonRef.current);
-      } else {
-        setManualCloseUntil(fromApiUntil);
-        setManualCloseReason(fromApiReason);
-        manualCloseUntilRef.current = fromApiUntil;
-        manualCloseReasonRef.current = fromApiReason;
-      }
+      setManualCloseUntil(effectiveUntil);
+      setManualCloseReason(effectiveReason);
+      manualCloseUntilRef.current = effectiveUntil;
+      manualCloseReasonRef.current = effectiveReason;
       setManualCloseStartAt(
-        status.manual_close_start_at != null
-          ? typeof status.manual_close_start_at === "string"
-            ? status.manual_close_start_at
-            : status.manual_close_start_at instanceof Date
-              ? status.manual_close_start_at.toISOString()
-              : String(status.manual_close_start_at)
+        status.manual_close_start_at != null && String(status.manual_close_start_at).trim() !== ""
+          ? String(status.manual_close_start_at).trim()
           : null
       );
       setClosedBy(status.closed_by ?? null);
@@ -199,6 +234,14 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
       setNextOpenTime(status.next_open_time ?? null);
       setNextCloseTime(status.next_close_time ?? null);
       setNextOpenIso(status.next_open_iso ?? null);
+      setAutoAvailableAt((status as any).auto_available_at ?? null);
+      setWithinHoursButRestricted(status.within_hours_but_restricted === true);
+      setLastToggleType(status.last_toggle_type ?? null);
+      setLastToggledAt(status.last_toggled_at ?? null);
+      setLastToggledByName(status.last_toggled_by_name ?? null);
+      setLastToggledById(status.last_toggled_by_id ?? null);
+      setLastToggledByEmail(status.last_toggled_by_email ?? null);
+      setScheduleEndPromptExpiresAt((status as any).schedule_end_prompt_expires_at ?? null);
       setLastRefreshedAt(Date.now());
       initialLoadDoneRef.current = true;
       // Cache so next app open shows status instantly.
@@ -208,18 +251,51 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         JSON.stringify({
           is_open: status.is_open,
           auto_open_from_schedule: status.auto_open_from_schedule,
-          manual_close_until: status.manual_close_until,
-          manual_close_reason: status.manual_close_reason,
+          manual_close_until: effectiveUntil,
+          manual_close_reason: effectiveReason,
           manual_close_start_at: status.manual_close_start_at,
           unavailable_reason: (status as { unavailable_reason?: string | null }).unavailable_reason,
           status_reason: status.status_reason,
           next_open_iso: status.next_open_iso,
+          auto_available_at: (status as any).auto_available_at ?? null,
+          within_hours_but_restricted: status.within_hours_but_restricted === true,
+          last_toggle_type: status.last_toggle_type ?? null,
+          last_toggled_at: status.last_toggled_at ?? null,
+          last_toggled_by_name: status.last_toggled_by_name ?? null,
+          last_toggled_by_id: status.last_toggled_by_id ?? null,
+          last_toggled_by_email: status.last_toggled_by_email ?? null,
+          schedule_end_prompt_expires_at: (status as any).schedule_end_prompt_expires_at ?? null,
           closed_by: status.closed_by,
           closed_by_id: (status as { closed_by_id?: string | null }).closed_by_id,
           scheduled_closure: status.scheduled_closure,
           scheduled_closure_upcoming: status.scheduled_closure_upcoming,
         })
       ).catch(() => {});
+
+      const promptExp = (status as any).schedule_end_prompt_expires_at as string | null | undefined;
+      const promptActive = (status as any).schedule_end_prompt_active === true;
+      if (promptActive && promptExp && scheduleEndPromptShownRef.current !== promptExp) {
+        scheduleEndPromptShownRef.current = promptExp;
+        Alert.alert(
+          "Scheduled time ended",
+          "Your scheduled time has ended. Do you want to stay online?",
+          [
+            {
+              text: "Go Offline",
+              style: "destructive",
+              onPress: () => {
+                respondScheduleEndPrompt(storeId, token, "go_offline").then(() => refresh()).catch(() => {});
+              },
+            },
+            {
+              text: "Stay Online",
+              onPress: () => {
+                respondScheduleEndPrompt(storeId, token, "stay_online").then(() => refresh()).catch(() => {});
+              },
+            },
+          ]
+        );
+      }
     } catch {
       // keep existing state on failure
     } finally {
@@ -240,25 +316,44 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id);
   }, [token, storeId, refresh]);
 
-  // Next reopening time for countdown and auto-open. Prefer user-set temp close time (manualCloseUntil) so
-  // "Reopen at" shows the exact countdown the user set when marking temp closed.
-  const reopenAtIsoRaw =
-    (manualCloseUntil && String(manualCloseUntil).trim() ? manualCloseUntil : null) ??
-    scheduledClosure?.to ??
-    (nextOpenIso && String(nextOpenIso).trim() ? nextOpenIso : null) ??
-    upcomingScheduledClosure?.from ??
-    null;
-  const reopenAtIso =
-    reopenAtIsoRaw == null
-      ? null
-      : (() => {
-          const s = typeof reopenAtIsoRaw === "string"
-            ? reopenAtIsoRaw.trim()
-            : reopenAtIsoRaw instanceof Date
-              ? reopenAtIsoRaw.toISOString()
-              : String(reopenAtIsoRaw).trim();
-          return s.length > 0 ? s : null;
-        })();
+  /**
+   * Countdown target:
+   * - temp close: `merchant_store_availability.manual_close_until`
+   * - schedule auto reopen: `merchant_store_availability.auto_available_at`
+   * Fallback: backend `next_open_iso` when present.
+   */
+  const reopenAtIso = useMemo(() => {
+    if (isOnline) return null;
+    if (manualActivationLock) return null;
+
+    const inFuture = (iso: string | null | undefined): string | null => {
+      if (iso == null) return null;
+      const s = String(iso).trim();
+      if (!s) return null;
+      const ms = new Date(s).getTime();
+      if (!Number.isFinite(ms) || ms <= Date.now()) return null;
+      return s;
+    };
+
+    // 1) Temp close / holiday window (server-derived): manual_close_until is authoritative.
+    const temp = inFuture(manualCloseUntil);
+    if (temp) return temp;
+
+    // 2) Schedule-closed: use schedule engine's computed auto_available_at (single source, no client recompute).
+    // Avoid countdown for manual_indefinite cases where backend intentionally omits a reopen time.
+    const scheduleSignal = (statusReason ?? unavailableReason) ?? null;
+    const isScheduleish =
+      autoOpenFromSchedule &&
+      !withinHoursButRestricted &&
+      (scheduleSignal === "schedule_closed" || scheduleSignal === "outside_operating_hours");
+    if (isScheduleish) {
+      const auto = inFuture(autoAvailableAt);
+      if (auto) return auto;
+    }
+
+    // 3) Last-resort: backend next_open_iso (already normalized in API).
+    return inFuture(nextOpenIso);
+  }, [isOnline, manualActivationLock, manualCloseUntil, autoAvailableAt, autoOpenFromSchedule, withinHoursButRestricted, statusReason, unavailableReason, nextOpenIso]);
 
   // When countdown reaches zero (temp close or schedule reopen): do NOT force OPEN.
   // Backend is source of truth: GET runs schedule evaluation (and temp-close expiry logic).
@@ -428,8 +523,18 @@ export function StoreStatusProvider({ children }: { children: ReactNode }) {
         unavailableReason,
         nextOpenTime,
         nextCloseTime,
+        autoAvailableAt,
         reopenAtIso,
         nextOpenIso,
+        withinHoursButRestricted,
+        lastToggleType,
+        lastToggledAt,
+        lastToggledByName,
+        lastToggledById,
+        lastToggledByEmail,
+        scheduleEndPromptActive:
+          scheduleEndPromptExpiresAt != null && new Date(scheduleEndPromptExpiresAt).getTime() > Date.now(),
+        scheduleEndPromptExpiresAt,
       }}
     >
       {children}

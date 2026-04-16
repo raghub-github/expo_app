@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
-import { Toaster, toast } from 'sonner';
+import { toast } from 'sonner';
 import {
   Clock,
   CheckCircle2,
@@ -34,7 +34,7 @@ import {
   Bike,
   MoreVertical,
 } from 'lucide-react';
-import { useFoodOrders, type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
+import { type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
@@ -42,6 +42,7 @@ import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
+import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -56,10 +57,11 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: 'Cancelled',
 };
 
-/** Right sidebar: pipeline “Preparing” includes new + accepted + actively preparing */
-const PREPARING_PIPELINE = new Set(['CREATED', 'NEW', 'ACCEPTED', 'PREPARING']);
+/** Accepted by merchant and in kitchen prep (excludes unaccepted “new” rows). */
+const PREPARING_PIPELINE = new Set(['ACCEPTED', 'PREPARING']);
 
 const FOOD_ORDERS_SIDEBAR_FILTERS = [
+  { id: 'NEW_ORDERS', label: 'New orders' },
   { id: 'PREPARING', label: 'Preparing' },
   { id: 'READY_FOR_PICKUP', label: 'Ready' },
   { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
@@ -68,12 +70,16 @@ const FOOD_ORDERS_SIDEBAR_FILTERS = [
 
 type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
 
+/** Normalize any backend/food string (incl. PLACED) to tab filter codes. */
 function normOrderStatus(s: string | null | undefined) {
-  return s === 'NEW' ? 'CREATED' : s || 'CREATED';
+  const mapped = mapStateMachineStatusToPartnerUi(s);
+  if (mapped) return mapped;
+  return normFoodStatus(s);
 }
 
 function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
   const st = normOrderStatus(order.order_status);
+  if (filterId === 'NEW_ORDERS') return st === 'CREATED';
   if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
   if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
   if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
@@ -109,19 +115,6 @@ function formatTimeAgo(dateStr: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   return d.toLocaleDateString();
-}
-
-function useNewOrderSound(enabled: boolean) {
-  const play = useCallback(() => {
-    if (!enabled || typeof window === 'undefined') return;
-    try {
-      const audio = new Audio('/notification.wav');
-      audio.volume = 0.8;
-      audio.play().catch(() => {});
-    } catch {}
-  }, [enabled]);
-
-  return play;
 }
 
 const ORDERS_STORAGE_KEY = 'food-orders-ui';
@@ -188,6 +181,8 @@ function OrdersPageContent() {
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
   const [ridersLogList, setRidersLogList] = useState<Array<{ rider_id: number; rider_name: string | null; rider_mobile: string | null; selfie_url: string | null; assignment_status: string; assigned_at: string | null; accepted_at: string | null; rejected_at: string | null; reached_merchant_at: string | null; picked_up_at: string | null; delivered_at: string | null; cancelled_at: string | null }>>([]);
   const [ridersLogLoading, setRidersLogLoading] = useState(false);
+  const [acceptanceSettings, setAcceptanceSettings] = useState<{ acceptance_window_minutes: number } | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [headerRtoMenuOpen, setHeaderRtoMenuOpen] = useState(false);
   const headerRtoMenuRef = useRef<HTMLDivElement>(null);
@@ -212,6 +207,12 @@ function OrdersPageContent() {
       .catch(() => setRidersLogList([]))
       .finally(() => setRidersLogLoading(false));
   }, [ridersLogModalOrderId]);
+
+  useEffect(() => {
+    // Tick for countdown labels (accept window).
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (ridersLogModalOrderId == null) return;
@@ -261,8 +262,6 @@ function OrdersPageContent() {
 
   const [orderSort, setOrderSort] = useState<'remaining' | 'newest' | 'oldest'>('remaining');
   const [orderIdSearch, setOrderIdSearch] = useState('');
-  const hasNotifiedNew = useRef<Set<number>>(new Set());
-
   const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null }) => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(searchParams?.toString() || '');
@@ -327,9 +326,6 @@ function OrdersPageContent() {
     updateUrlParams({ filter: f, orderId: null });
   }, [updateUrlParams]);
 
-  const { subscribe } = useFoodOrders(storeId, storeInternalId);
-  const playNewOrderSound = useNewOrderSound(notifyEnabled);
-
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
     if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId');
@@ -339,7 +335,7 @@ function OrdersPageContent() {
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    const valid = new Set<string>(['PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
+    const valid = new Set<string>(['NEW_ORDERS', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
     if (f && valid.has(f)) {
       setFilter(f);
     } else {
@@ -464,34 +460,57 @@ function OrdersPageContent() {
   }, [fetchStats]);
 
   useEffect(() => {
-    if (!storeInternalId || !storeId) return;
-    const unsub = subscribe(
-      (row) => {
-        setOrders((prev) => {
-          const exists = prev.some((o) => o.id === row.id);
-          if (exists) return prev.map((o) => (o.id === row.id ? row : o));
-          if (row.order_status === 'CREATED' || row.order_status === 'NEW' || !row.order_status) {
-            if (notifyEnabled) {
-              const displayId = row.formatted_order_id || `#${row.order_id}`;
-              toast.success(`New Order ${displayId}`, { duration: 5000 });
-              if (!hasNotifiedNew.current.has(row.id)) {
-                hasNotifiedNew.current.add(row.id);
-                playNewOrderSound();
-              }
-            }
-          }
-          return [row, ...prev];
-        });
-      },
-      (row) => {
-        setOrders((prev) =>
-          prev.map((o) => (o.id === row.id ? row : o))
-        );
-        if (selectedOrder?.id === row.id) setSelectedOrder(row);
+    if (!storeId) return;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/merchant/order-acceptance-settings?store_id=${encodeURIComponent(storeId)}`);
+        const data = (await res.json().catch(() => ({}))) as { settings?: { acceptance_window_minutes?: number } };
+        if (res.ok && data.settings && typeof data.settings.acceptance_window_minutes === 'number') {
+          setAcceptanceSettings({ acceptance_window_minutes: data.settings.acceptance_window_minutes });
+        } else {
+          setAcceptanceSettings({ acceptance_window_minutes: 5 });
+        }
+      } catch {
+        setAcceptanceSettings({ acceptance_window_minutes: 5 });
       }
-    );
-    return unsub;
-  }, [storeInternalId, storeId, subscribe, notifyEnabled, playNewOrderSound, selectedOrder?.id]);
+    })();
+  }, [storeId]);
+
+  /** Source of truth is orders_core; refetch when core or kitchen row changes. */
+  useEffect(() => {
+    if (!storeInternalId || !storeId) return;
+    const supabase = createClient();
+    const reload = () => {
+      void fetchOrders();
+      void fetchStats();
+    };
+    const ch = supabase
+      .channel(`partner_store_orders:${storeInternalId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders_core',
+          filter: `merchant_store_id=eq.${storeInternalId}`,
+        },
+        reload
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders_food',
+          filter: `merchant_store_id=eq.${storeInternalId}`,
+        },
+        reload
+      )
+      .subscribe();
+    return () => {
+      ch.unsubscribe();
+    };
+  }, [storeInternalId, storeId, fetchOrders, fetchStats]);
 
   const fetchOtp = useCallback(
     async (orderId: number) => {
@@ -507,9 +526,9 @@ function OrdersPageContent() {
     [storeId]
   );
 
-  // Auto-fetch OTP for all orders when they're loaded (always visible)
+  // Auto-fetch OTP for all orders when they're loaded (always visible) — OTP rows are on orders_food only
   useEffect(() => {
-    const orderIds = orders.map(o => o.id).filter(Boolean) as number[];
+    const orderIds = orders.filter((o) => !o.core_only).map((o) => o.id);
     orderIds.forEach((orderId) => {
       if (!otpCache[orderId]) {
         fetchOtp(orderId);
@@ -520,10 +539,11 @@ function OrdersPageContent() {
 
   // Auto-fetch OTP when order is selected (for header display)
   useEffect(() => {
-    if (selectedOrder?.id && !otpCache[selectedOrder.id]) {
+    if (!selectedOrder?.id || selectedOrder.core_only) return;
+    if (!otpCache[selectedOrder.id]) {
       fetchOtp(selectedOrder.id);
     }
-  }, [selectedOrder?.id, fetchOtp]);
+  }, [selectedOrder?.id, selectedOrder?.core_only, fetchOtp]);
 
   const validateOtp = useCallback(
     async (orderId: number) => {
@@ -677,48 +697,194 @@ function OrdersPageContent() {
 
   const updateStatus = useCallback(
     async (order: OrdersFoodRow, newStatus: string, extra?: { rejected_reason?: string }) => {
+      if (!storeId || !String(storeId).trim()) {
+        console.debug('[food-orders-ui] updateStatus blocked: missing storeId', {
+          order_id: order?.order_id,
+          orders_food_id: order?.id,
+          core_only: (order as any)?.core_only,
+          newStatus,
+        });
+        toast.error('Store not selected. Please refresh and select your store again.');
+        return;
+      }
       setActionLoading(order.id);
       const payload = { store_id: storeId, status: newStatus, ...extra };
 
-      const tryUpdate = async (): Promise<{ ok: boolean; data: unknown }> => {
-        const res = await fetch(`/api/food-orders/${order.id}`, {
+      const safeReadBody = async (res: Response): Promise<unknown> => {
+        try {
+          return await res.json();
+        } catch {
+          try {
+            const txt = await res.text();
+            return { error: txt || 'Non-JSON response' };
+          } catch {
+            return { error: 'Could not read response body' };
+          }
+        }
+      };
+
+      const tryUpdateFood = async (): Promise<{ ok: boolean; data: unknown; status: number }> => {
+        const url = `/api/food-orders/${order.id}`;
+        console.debug('[food-orders-ui] PATCH start', {
+          kind: 'orders_food',
+          url,
+          payload,
+          order_id: order.order_id,
+          orders_food_id: order.id,
+        });
+        const res = await fetch(url, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        const data = await res.json();
-        return { ok: res.ok, data };
+        const data = await safeReadBody(res);
+        console.debug('[food-orders-ui] PATCH done', {
+          kind: 'orders_food',
+          url,
+          httpStatus: res.status,
+          ok: res.ok,
+          data,
+        });
+        return { ok: res.ok, data, status: res.status };
+      };
+
+      const tryUpdateCore = async (): Promise<{ ok: boolean; data: unknown; status: number }> => {
+        const url = `/api/merchant/orders-core/${order.order_id}`;
+        console.debug('[food-orders-ui] PATCH start', {
+          kind: 'orders_core',
+          url,
+          payload,
+          core_id: order.order_id,
+        });
+        const res = await fetch(url, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await safeReadBody(res);
+        console.debug('[food-orders-ui] PATCH done', {
+          kind: 'orders_core',
+          url,
+          httpStatus: res.status,
+          ok: res.ok,
+          data,
+        });
+        return { ok: res.ok, data, status: res.status };
       };
 
       try {
-        let result = await tryUpdate();
-        if (!result.ok) {
+        const coreOnly = order.core_only === true;
+        let result = coreOnly ? await tryUpdateCore() : await tryUpdateFood();
+        if (!result.ok && result.status >= 500) {
           await new Promise((r) => setTimeout(r, 1500));
-          result = await tryUpdate();
+          result = coreOnly ? await tryUpdateCore() : await tryUpdateFood();
         }
         if (!result.ok) {
+          console.debug('[food-orders-ui] updateStatus failed', {
+            coreOnly,
+            result,
+            payload,
+            order_id: order.order_id,
+            orders_food_id: order.id,
+          });
           toast.error((result.data as { error?: string })?.error || 'Failed to update');
           return;
         }
-        const data = result.data as { order?: OrdersFoodRow };
-        if (data?.order) {
-          setOrders((prev) => prev.map((o) => (o.id === order.id ? (data.order as OrdersFoodRow) : o)));
-          if (selectedOrder?.id === order.id) {
-            setSelectedOrder(data.order);
-            if (newStatus === 'DELIVERED') {
-              closeOrderPanel();
+        if (coreOnly) {
+          await fetchOrders();
+          toast.success(`Order status updated to ${newStatus}`);
+          // If the currently-open order moved out of this tab, auto-open next matching order.
+          if (selectedOrder?.id === order.id && !orderMatchesFoodOrdersSidebar({ ...order, order_status: newStatus } as any, filter)) {
+            setTimeout(() => {
+              setOrders((prev) => {
+                const next = prev.find((o) => orderMatchesFoodOrdersSidebar(o, filter));
+                if (next) {
+                  setSelectedOrder(next);
+                  setRightPanelOpen(true);
+                } else {
+                  setSelectedOrder(null);
+                  setRightPanelOpen(false);
+                }
+                return prev;
+              });
+            }, 0);
+          }
+        } else {
+          const data = result.data as { order?: OrdersFoodRow };
+          if (data?.order) {
+            setOrders((prev) => prev.map((o) => (o.id === order.id ? (data.order as OrdersFoodRow) : o)));
+            if (selectedOrder?.id === order.id) {
+              setSelectedOrder(data.order);
+              if (newStatus === 'DELIVERED') {
+                closeOrderPanel();
+              }
+            }
+            if (newStatus === 'OUT_FOR_DELIVERY') setDispatchModal(null);
+          }
+          toast.success(`Order status updated to ${newStatus}`);
+          if (selectedOrder?.id === order.id && data?.order) {
+            if (!orderMatchesFoodOrdersSidebar(data.order as OrdersFoodRow, filter)) {
+              setTimeout(() => {
+                setOrders((prev) => {
+                  const next = prev.find((o) => orderMatchesFoodOrdersSidebar(o, filter));
+                  if (next) {
+                    setSelectedOrder(next);
+                    setRightPanelOpen(true);
+                  } else {
+                    setSelectedOrder(null);
+                    setRightPanelOpen(false);
+                  }
+                  return prev;
+                });
+              }, 0);
             }
           }
-          if (newStatus === 'OUT_FOR_DELIVERY') setDispatchModal(null);
         }
-        toast.success(`Order status updated to ${newStatus}`);
-      } catch {
-        toast.error('Failed to update order');
+      } catch (e) {
+        console.debug('[food-orders-ui] updateStatus exception', {
+          message: e instanceof Error ? e.message : String(e),
+          order_id: order?.order_id,
+          orders_food_id: order?.id,
+          newStatus,
+        });
+        toast.error(e instanceof Error ? e.message : 'Failed to update order');
       } finally {
         setActionLoading(null);
       }
     },
-    [storeId, selectedOrder, closeOrderPanel]
+    [storeId, selectedOrder, closeOrderPanel, fetchOrders]
+  );
+
+  const acceptCountdown = useMemo(() => {
+    if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
+    const st = normOrderStatus(selectedOrder.order_status);
+    if (st !== 'CREATED') return { label: undefined, disabled: false };
+    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+    const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
+    const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
+    const m = Math.floor(secondsLeft / 60);
+    const s = secondsLeft % 60;
+    return {
+      label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
+      disabled: secondsLeft <= 0,
+    };
+  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick]);
+
+  const acceptCountdownFor = useCallback(
+    (order: OrdersFoodRow) => {
+      const st = normOrderStatus(order.order_status);
+      if (st !== 'CREATED') return { label: undefined as string | undefined, disabled: false };
+      const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
+      const m = Math.floor(secondsLeft / 60);
+      const s = secondsLeft % 60;
+      return {
+        label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
+        disabled: secondsLeft <= 0,
+      };
+    },
+    [acceptanceSettings?.acceptance_window_minutes, nowTick]
   );
 
   const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
@@ -746,6 +912,7 @@ function OrdersPageContent() {
   }, [filteredOrders, orderIdSearch, orderSort]);
 
   const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
+    NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
     PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
     READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
     OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
@@ -754,7 +921,13 @@ function OrdersPageContent() {
 
   const foodOrdersEmptyVariant = useMemo(() => {
     if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search' as const;
-    if (filter === 'PREPARING' || filter === 'READY_FOR_PICKUP' || filter === 'OUT_FOR_DELIVERY' || filter === 'RTO') {
+    if (
+      filter === 'NEW_ORDERS' ||
+      filter === 'PREPARING' ||
+      filter === 'READY_FOR_PICKUP' ||
+      filter === 'OUT_FOR_DELIVERY' ||
+      filter === 'RTO'
+    ) {
       return filter;
     }
     return 'PREPARING' as const;
@@ -788,7 +961,6 @@ function OrdersPageContent() {
   return (
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
-      <Toaster position="top-right" richColors />
       <PartnerPageHeader title="Food Orders" subtitle={store?.store_name || undefined} />
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
         <header id="food-orders-header" className="sticky top-0 z-20 bg-white shrink-0">
@@ -803,8 +975,16 @@ function OrdersPageContent() {
                 </div>
                 {stats && (
                   <div className="flex items-center gap-2 shrink-0">
-                    <StatBadge label="Today" value={String(stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(stats.activeOrders)} accent />
+                    <StatBadge
+                      label="Today"
+                      value={String(stats.ordersTodayActive ?? stats.ordersToday)}
+                      title="Orders placed today that are still active (not delivered or cancelled)"
+                    />
+                    <StatBadge
+                      label="Active"
+                      value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)}
+                      accent
+                    />
                   </div>
                 )}
                 {stats && (
@@ -1142,6 +1322,8 @@ function OrdersPageContent() {
                               otpVerified={otpVerified.has(selectedOrder.id)}
                               topRightLayout
                               hideRtoMenu
+                              acceptLabel={acceptCountdown.label}
+                              acceptDisabled={acceptCountdown.disabled}
                             />
                           </div>
                           {/* Items - compact premium with QTY | Price | Amount */}
@@ -1242,6 +1424,8 @@ function OrdersPageContent() {
                     actionLoading={actionLoading === selectedOrder.id}
                     onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
+                    acceptLabel={acceptCountdown.label}
+                    acceptDisabled={acceptCountdown.disabled}
                   />
                 </div>
 
@@ -1272,6 +1456,9 @@ function OrdersPageContent() {
                           otpVerified={otpVerified.has(order.id)}
                           onFetchOtp={() => fetchOtp(order.id)}
                           statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                          acceptLabel={acceptCountdownFor(order).label}
+                          acceptDisabled={acceptCountdownFor(order).disabled}
+                          hideDetails
                         />
                       ))}
                     </div>
@@ -1311,6 +1498,8 @@ function OrdersPageContent() {
                         otpVerified={otpVerified.has(order.id)}
                         onFetchOtp={() => fetchOtp(order.id)}
                         statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                        acceptLabel={acceptCountdownFor(order).label}
+                        acceptDisabled={acceptCountdownFor(order).disabled}
                       />
                     ))}
                   </div>
@@ -1339,6 +1528,8 @@ function OrdersPageContent() {
                         otpVerified={otpVerified.has(order.id)}
                         onFetchOtp={() => fetchOtp(order.id)}
                         statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                        acceptLabel={acceptCountdownFor(order).label}
+                        acceptDisabled={acceptCountdownFor(order).disabled}
                       />
                     ))
                   )}
@@ -1735,13 +1926,16 @@ function StatBadge({
   label,
   value,
   accent,
+  title,
 }: {
   label: string;
   value: string;
   accent?: boolean;
+  title?: string;
 }) {
   return (
     <div
+      title={title}
       className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
         accent ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700'
       }`}
@@ -2028,6 +2222,8 @@ function OrderDetailMobile({
   actionLoading,
   onOpenRidersLog,
   onOpenRiderImage,
+  acceptLabel,
+  acceptDisabled,
 }: {
   order: OrdersFoodRow;
   onClose: () => void;
@@ -2048,6 +2244,8 @@ function OrderDetailMobile({
   actionLoading: boolean;
   onOpenRidersLog?: () => void;
   onOpenRiderImage?: (url: string) => void;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const statusColor =
@@ -2333,6 +2531,8 @@ function OrderDetailMobile({
             onRto={onRto}
             loading={actionLoading}
             otpVerified={otpVerified}
+            acceptLabel={acceptLabel}
+            acceptDisabled={acceptDisabled}
           />
         </div>
       </div>
@@ -2357,6 +2557,9 @@ function OrderCard({
   otpVerified,
   onFetchOtp,
   statusLabel,
+  acceptLabel,
+  acceptDisabled,
+  hideDetails,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -2374,6 +2577,10 @@ function OrderCard({
   otpVerified?: boolean;
   onFetchOtp?: () => void;
   statusLabel?: string;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
+  /** Hide the "Details" CTA (used in right slider list) */
+  hideDetails?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const isNew = status === 'CREATED' || status === 'NEW';
@@ -2401,7 +2608,7 @@ function OrderCard({
             fallbackOrderId={order.order_id}
             size="sm"
           />
-          <p className="text-xs text-gray-600 truncate">{order.restaurant_name || '—'}</p>
+      <p className="text-xs text-gray-600 truncate">{order.customer_name || '—'}</p>
         </div>
         <span
           className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
@@ -2472,29 +2679,39 @@ function OrderCard({
           {otpVerified && <span className="text-green-600 text-[10px]">✓ Verified</span>}
         </div>
       )}
-      <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
-        >
-          Details <ChevronRight size={14} />
-        </button>
-        <ActionBtns
-          order={order}
-          onAccept={onAccept}
-          onReject={onReject}
-          onPreparing={onPreparing}
-          onReady={onReady}
-          onDispatch={onDispatch}
-          onComplete={onComplete}
-          onRto={onRto}
-          loading={loading}
-          otpVerified={otpVerified}
-          compact
-        />
+      <div className="mt-2 pt-2 border-t border-gray-100 flex flex-col gap-2">
+        {/* Actions always in one row (no overlap) */}
+        <div className="w-full" onClick={(e) => e.stopPropagation()}>
+          <ActionBtns
+            order={order}
+            onAccept={onAccept}
+            onReject={onReject}
+            onPreparing={onPreparing}
+            onReady={onReady}
+            onDispatch={onDispatch}
+            onComplete={onComplete}
+            onRto={onRto}
+            loading={loading}
+            otpVerified={otpVerified}
+            compact
+            topRightLayout
+            hideRtoMenu
+            acceptLabel={acceptLabel}
+            acceptDisabled={acceptDisabled}
+          />
+        </div>
+
+        {!hideDetails ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick();
+            }}
+            className="self-start text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
+          >
+            Details <ChevronRight size={14} />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -2517,6 +2734,8 @@ function OrderListRow({
   otpVerified,
   onFetchOtp,
   statusLabel,
+  acceptLabel,
+  acceptDisabled,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -2534,6 +2753,8 @@ function OrderListRow({
   otpVerified?: boolean;
   onFetchOtp?: () => void;
   statusLabel?: string;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const value = Number(order.food_items_total_value || 0);
@@ -2583,7 +2804,7 @@ function OrderListRow({
 
       {/* Restaurant Name */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-gray-900 truncate">{order.restaurant_name || '—'}</p>
+        <p className="text-sm font-semibold text-gray-900 truncate">{order.customer_name || '—'}</p>
         <div className="flex items-center gap-3 mt-1">
           <span className="text-xs text-gray-500 flex items-center gap-1">
             <Clock size={11} />
@@ -2637,6 +2858,8 @@ function OrderListRow({
           loading={loading}
           otpVerified={otpVerified}
           compact
+          acceptLabel={acceptLabel}
+          acceptDisabled={acceptDisabled}
         />
       </div>
 
@@ -2669,6 +2892,8 @@ function ActionBtns({
   otpVerified,
   topRightLayout,
   hideRtoMenu,
+  acceptLabel,
+  acceptDisabled,
 }: {
   order: OrdersFoodRow;
   onAccept: () => void;
@@ -2685,6 +2910,10 @@ function ActionBtns({
   topRightLayout?: boolean;
   /** When true: do not render 3-dot RTO menu (e.g. when RTO is in header) */
   hideRtoMenu?: boolean;
+  /** Optional: show accept countdown label */
+  acceptLabel?: string;
+  /** Optional: disable accept when window expired */
+  acceptDisabled?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const dis = loading;
@@ -2707,10 +2936,10 @@ function ActionBtns({
       <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full flex-1' : 'flex-wrap'}`}>
         <button
           onClick={(e) => { e.stopPropagation(); onAccept(); }}
-          disabled={dis}
+          disabled={dis || acceptDisabled}
           className={`${btnBase} ${compact ? 'px-4 py-2 text-sm font-semibold' : 'px-5 py-2.5 text-base font-semibold'} ${primaryFull} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
         >
-          Accept
+          {acceptLabel || 'Accept'}
         </button>
         {onReject && (
           <button

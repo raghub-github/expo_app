@@ -16,6 +16,9 @@ export type MenuCategory = {
   cuisine_id?: number | null;
   display_order: number;
   is_active: boolean;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
+  out_of_stock_active?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -31,6 +34,12 @@ export type MenuItemRow = {
   base_price: string;
   selling_price: string;
   in_stock: boolean;
+  /** Backend-computed: considers item + category out-of-stock. */
+  effective_in_stock?: boolean;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
+  category_out_of_stock_manual?: boolean;
+  category_out_of_stock_until?: string | null;
   is_active: boolean;
   is_deleted: boolean | null;
   display_order: number;
@@ -525,6 +534,75 @@ export async function patchItemStock(
   }
 }
 
+export type OutOfStockMode = "CLEAR" | "MANUAL" | "HOURS" | "NEXT_OPEN" | "CUSTOM";
+
+function normalizeOutOfStockBody(body: {
+  mode: OutOfStockMode;
+  hours?: number;
+  until?: unknown;
+}): { mode: OutOfStockMode; hours?: number; until?: string } {
+  const untilRaw = (body as any).until;
+  const until =
+    untilRaw instanceof Date
+      ? untilRaw.toISOString()
+      : typeof untilRaw === "string"
+        ? untilRaw
+        : untilRaw == null
+          ? undefined
+          : String(untilRaw);
+  return {
+    mode: body.mode,
+    hours: body.hours,
+    until,
+  };
+}
+
+export async function patchItemOutOfStock(
+  storeId: string,
+  itemId: number,
+  token: string,
+  body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
+): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
+  const base = getApiBaseUrl();
+  const normalized = normalizeOutOfStockBody(body);
+  const bodyJson = JSON.stringify(normalized, (_k, v) => (v instanceof Date ? v.toISOString() : v));
+  const storeIdStr = String(storeId);
+  const tokenStr = String(token);
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/items/${itemId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
+    tokenStr,
+    { method: "PATCH", body: bodyJson }
+  );
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
+  }
+  return json as any;
+}
+
+export async function patchCategoryOutOfStock(
+  storeId: string,
+  categoryId: number,
+  token: string,
+  body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
+): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
+  const base = getApiBaseUrl();
+  const normalized = normalizeOutOfStockBody(body);
+  const bodyJson = JSON.stringify(normalized, (_k, v) => (v instanceof Date ? v.toISOString() : v));
+  const storeIdStr = String(storeId);
+  const tokenStr = String(token);
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/categories/${categoryId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
+    tokenStr,
+    { method: "PATCH", body: bodyJson }
+  );
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
+  }
+  return json as any;
+}
+
 export type MenuItemDetail = MenuItemRow & {
   short_name: string | null;
   spice_level: string | null;
@@ -920,6 +998,10 @@ export type ComboRow = {
   is_active: boolean;
   is_deleted: boolean;
   display_order: number;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
+  out_of_stock_active?: boolean;
+  effective_in_stock?: boolean;
 };
 
 export type ComboDetail = ComboRow & {
@@ -981,6 +1063,29 @@ export async function updateCombo(
     { method: "PUT", body: JSON.stringify(body) }
   );
   if (!res.ok) throw new Error("Failed to update combo");
+}
+
+export async function patchComboOutOfStock(
+  storeId: string,
+  comboId: number,
+  token: string,
+  body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
+): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
+  const base = getApiBaseUrl();
+  const normalized = normalizeOutOfStockBody(body);
+  const bodyJson = JSON.stringify(normalized, (_k, v) => (v instanceof Date ? v.toISOString() : v));
+  const storeIdStr = String(storeId);
+  const tokenStr = String(token);
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/combos/${comboId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
+    tokenStr,
+    { method: "PATCH", body: bodyJson }
+  );
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
+  }
+  return json as any;
 }
 
 export async function deleteCombo(storeId: string, comboId: number, token: string): Promise<void> {
