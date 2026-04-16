@@ -99,6 +99,21 @@ function bucketAov(sales: number, orders: number): number {
   return sales / orders;
 }
 
+/** Remove float noise and flat segments so empty / all-zero trends draw as a straight horizontal line. */
+function flattenSparkSeries(values: number[], len: number): number[] {
+  const a = Array.from({ length: len }, (_, i) => values[i] ?? 0);
+  if (a.length === 0) return a;
+  const minV = Math.min(...a);
+  const maxV = Math.max(...a);
+  const range = maxV - minV;
+  const scaleTol = Math.max(1e-9, 1e-7 * Math.max(1, Math.abs(maxV), Math.abs(minV)));
+  if (range <= scaleTol) {
+    const v = (minV + maxV) / 2;
+    return a.map(() => v);
+  }
+  return a;
+}
+
 function DualSparkline({
   current,
   compare,
@@ -115,8 +130,15 @@ function DualSparkline({
   const plotH = h - pad * 2;
 
   const len = Math.max(current.length, compare.length, 2);
-  const cur = Array.from({ length: len }, (_, i) => current[i] ?? 0);
-  const cmp = Array.from({ length: len }, (_, i) => compare[i] ?? 0);
+  let cur = Array.from({ length: len }, (_, i) => current[i] ?? 0);
+  let cmp = Array.from({ length: len }, (_, i) => compare[i] ?? 0);
+  cur = flattenSparkSeries(cur, len);
+  cmp = flattenSparkSeries(cmp, len);
+  const globalMaxRaw = Math.max(0, ...cur, ...cmp);
+  if (globalMaxRaw < 1e-9) {
+    cur = cur.map(() => 0);
+    cmp = cmp.map(() => 0);
+  }
 
   const max = Math.max(1, ...cur, ...cmp);
   const denom = Math.max(1, len - 1);

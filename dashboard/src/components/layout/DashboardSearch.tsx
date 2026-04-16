@@ -149,6 +149,9 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
 
           const params = new URLSearchParams(searchParams.toString());
           params.set("search", normalized);
+          // Ensure filter is unambiguous: never keep stale parent/child flag from previous searches.
+          params.delete("parent");
+          params.delete("child");
           if (merchantType === "parent") params.set("parent", "true");
           else params.set("child", "true");
           if (currentPortal === "merchant") params.set("portal", "merchant");

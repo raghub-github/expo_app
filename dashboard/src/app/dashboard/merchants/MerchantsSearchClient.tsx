@@ -351,8 +351,9 @@ export function MerchantsSearchClient() {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [parentItems, setParentItems] = useState<ParentRow[]>([]);
-  const [childItems, setChildItems] = useState<ChildRow[]>([]);
+  // null = not loaded yet (prevents premature "no results" UI on slow networks)
+  const [parentItems, setParentItems] = useState<ParentRow[] | null>(null);
+  const [childItems, setChildItems] = useState<ChildRow[] | null>(null);
   const [dateFromInput, setDateFromInput] = useState("");
   const [dateToInput, setDateToInput] = useState("");
 
@@ -407,8 +408,8 @@ export function MerchantsSearchClient() {
     setLoading(true);
     setHasSearched(false);
     setError(null);
-    setParentItems([]);
-    setChildItems([]);
+    setParentItems(null);
+    setChildItems(null);
   }, [lastSearchTrigger, shouldFetchList]);
 
   const returnTo = useMemo(
@@ -458,13 +459,13 @@ export function MerchantsSearchClient() {
       isLoading: effectiveLoading,
       hasSearched,
       searchResultStore:
-        !loading && hasSearched && filter === "child" && childItems.length === 1
+        !loading && hasSearched && filter === "child" && childItems != null && childItems.length === 1
           ? {
-              storeId: childItems[0].id,
-              name: childItems[0].name,
-              store_id: childItems[0].store_id,
+              storeId: childItems[0]!.id,
+              name: childItems[0]!.name,
+              store_id: childItems[0]!.store_id,
               full_address: null,
-              approval_status: childItems[0].approval_status,
+              approval_status: childItems[0]!.approval_status,
               store_phones: null,
             }
           : null,
@@ -482,8 +483,8 @@ export function MerchantsSearchClient() {
 
   useEffect(() => {
     if (!shouldFetchList) {
-      setParentItems([]);
-      setChildItems([]);
+      setParentItems(null);
+      setChildItems(null);
       setError(null);
       setLoading(false);
       setHasSearched(false);
@@ -493,8 +494,8 @@ export function MerchantsSearchClient() {
     setLoading(true);
     setHasSearched(false);
     setError(null);
-    setParentItems([]);
-    setChildItems([]);
+    setParentItems(null);
+    setChildItems(null);
 
     const ac = new AbortController();
     const params = new URLSearchParams();
@@ -520,6 +521,9 @@ export function MerchantsSearchClient() {
         }
         if (portal === "merchant" && data.filter === "child" && data.items.length === 1) {
           const child = data.items[0];
+          // Populate list state so main + context stay in sync until `router.replace` runs (avoids empty "Child store" shell + sidebar mismatch).
+          setParentItems(null);
+          setChildItems([child]);
           const params = new URLSearchParams();
           params.set("returnTo", returnTo);
           params.set("portal", "merchant");
@@ -534,9 +538,9 @@ export function MerchantsSearchClient() {
         }
         if (data.filter === "parent") {
           setParentItems(data.items);
-          setChildItems([]);
+          setChildItems(null);
         } else {
-          setParentItems([]);
+          setParentItems(null);
           setChildItems(data.items);
         }
       })
@@ -547,10 +551,10 @@ export function MerchantsSearchClient() {
         setError("Failed to fetch merchants");
       })
       .finally(() => {
-        if (!didRedirect) {
-          setLoading(false);
-          setHasSearched(true);
-        }
+        // Always mark request finished (including single-child redirect) so loaders/empty states never get stuck,
+        // and context can expose `searchResultStore` for the sidebar while navigation is pending.
+        setLoading(false);
+        setHasSearched(true);
       });
 
     return () => ac.abort();
@@ -791,13 +795,13 @@ export function MerchantsSearchClient() {
                       ? "Drafted Store"
                       : category === "new"
                         ? "New (30d)"
-                        : "Rejected"} ({childItems.length})
+                        : "Rejected"} ({childItems?.length ?? 0})
             </p>
-            {hasSearched && !loading && childItems.length === 0 ? (
+            {hasSearched && !loading && childItems != null && childItems.length === 0 ? (
               <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
                 <p className="text-xs text-gray-600">No stores in this category.</p>
               </div>
-              ) : childItems.length > 0 ? (
+              ) : childItems != null && childItems.length > 0 ? (
               <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
                 {childItems.map((child) => (
                   <ChildStoreRow
@@ -822,17 +826,17 @@ export function MerchantsSearchClient() {
           <p className="mt-2 text-xs text-gray-500">Loading...</p>
         </div>
       ) : filter === "parent" ? (
-        hasSearched && !loading && parentItems.length === 0 ? (
+        hasSearched && !loading && parentItems != null && parentItems.length === 0 ? (
           <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
             {error ? (
               <p className="text-xs text-red-600">{error}</p>
             ) : (
-              <p className="text-xs text-gray-600">No parent found. Try different search or Child.</p>
+              <p className="text-xs text-gray-600">No parent partner found for this search.</p>
             )}
           </div>
         ) : (
           <div className="space-y-3">
-            {parentItems.map((parent) => (
+            {(parentItems ?? []).map((parent) => (
               <div
                 key={`parent-${parent.id}`}
                 className="overflow-hidden rounded-lg border border-gray-200 bg-white"
@@ -886,17 +890,19 @@ export function MerchantsSearchClient() {
             ))}
           </div>
         )
-      ) : portal === "merchant" && filter === "child" && hasSearched && !loading && childItems.length === 0 ? (
+      ) : portal === "merchant" && filter === "child" && hasSearched && !loading && childItems != null && childItems.length === 0 ? (
         // Merchant portal + child: API confirmed no results (never show before loading finishes)
-        <div className="rounded-lg border-0 bg-gray-50/80 py-4 text-center">
-          <p className="text-xs text-gray-600">No child store found. Try different search or Parent.</p>
+        <div className="rounded-xl border border-gray-200 bg-white px-5 py-10 text-center shadow-sm">
+          <Store className="mx-auto h-8 w-8 text-gray-400" />
+          <p className="mt-2 text-sm font-medium text-gray-800">No child store found.</p>
+          <p className="mt-1 text-xs text-gray-500">Check the ID (e.g. GMMC1001) or switch the dropdown to Parent Merchant.</p>
         </div>
-      ) : portal === "merchant" && filter === "child" && childItems.length > 1 ? (
+      ) : portal === "merchant" && filter === "child" && childItems != null && childItems.length > 1 ? (
         // Merchant portal + child: multiple results – ask to use Admin
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 py-4 text-center">
           <p className="text-xs text-gray-600">Multiple child stores found. Use Admin portal to select one.</p>
         </div>
-      ) : portal === "merchant" && filter === "child" && childItems.length === 1 ? (
+      ) : portal === "merchant" && filter === "child" && childItems != null && childItems.length === 1 ? (
         // Merchant portal + child: single result – show child details (redirect already handled in fetch for verified)
         <div>
           <p className="text-[10px] font-medium uppercase text-gray-500 mb-1">Child store</p>
@@ -912,15 +918,17 @@ export function MerchantsSearchClient() {
             ))}
           </div>
         </div>
-      ) : hasSearched && !loading && childItems.length === 0 ? (
-        <div className="rounded-lg border-0 bg-gray-50/80 py-4 text-center">
-          <p className="text-xs text-gray-600">No child store found. Try different search or Parent.</p>
+      ) : hasSearched && !loading && childItems != null && childItems.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-5 py-10 text-center shadow-sm">
+          <Store className="mx-auto h-8 w-8 text-gray-400" />
+          <p className="mt-2 text-sm font-medium text-gray-800">No child store found.</p>
+          <p className="mt-1 text-xs text-gray-500">Check the ID (e.g. GMMC1001) or switch the dropdown to Parent Merchant.</p>
         </div>
       ) : (
         <div>
           <p className="text-[10px] font-medium uppercase text-gray-500 mb-1">Child store</p>
           <div className="rounded-lg border border-gray-200 bg-white max-h-[520px] overflow-y-auto">
-            {childItems.map((child) => (
+            {(childItems ?? []).map((child) => (
               <ChildStoreRow
                 key={child.id}
                 child={child}

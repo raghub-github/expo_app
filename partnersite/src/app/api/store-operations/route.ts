@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
+import {
+  getNextOpenDayStartIso,
+  getNextOpenIso,
+  getNextOpenIsoAfterIstCalendarDay,
+  isLikelyLegacyEndOfDayIstClose,
+  nowInStoreTz,
+} from '@/lib/merchantStoreNextOpenIso';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -24,6 +31,43 @@ function getSupabase() {
   return createClient(supabaseUrl, supabaseServiceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+}
+
+/** Align merchant_stores booleans when store goes online vs offline (same rule as Fastify merchant-partner API). */
+function merchantStoresOnlineFlags(online: boolean): {
+  is_active: boolean;
+  is_available: boolean;
+  is_accepting_orders: boolean;
+} {
+  return { is_active: online, is_available: online, is_accepting_orders: online };
+}
+
+type MerchantStoreGateRow = {
+  operational_status?: string | null;
+  is_active?: boolean | null;
+  is_accepting_orders?: boolean | null;
+  is_available?: boolean | null;
+  approval_status?: string | null;
+  deleted_at?: string | null;
+  delisted_at?: string | null;
+};
+
+/** Dashboard parity: a store is only OPEN when approval + triple flags + operational OPEN, and not deleted/delisted. */
+function effectiveOpenFromMerchantStoreRow(storeRow: MerchantStoreGateRow | null | undefined): 'OPEN' | 'CLOSED' {
+  if (!storeRow) return 'CLOSED';
+  const approval = String(storeRow.approval_status || '').toUpperCase();
+  const rawOperational = String(storeRow.operational_status || 'CLOSED').toUpperCase();
+  const isDelisted = approval === 'DELISTED';
+  const ok =
+    !isDelisted &&
+    approval === 'APPROVED' &&
+    storeRow.is_active === true &&
+    storeRow.is_accepting_orders === true &&
+    storeRow.is_available === true &&
+    rawOperational === 'OPEN' &&
+    !storeRow.deleted_at &&
+    !storeRow.delisted_at;
+  return ok ? 'OPEN' : 'CLOSED';
 }
 
 /** Build today's date and slots for the store's timezone from operating_hours */
@@ -132,53 +176,6 @@ function isWithinOperatingHours(
   return false;
 }
 
-/** Next open time (ISO) when store is closed: from manual_close_until or next slot from schedule. */
-function getNextOpenAt(
-  oh: Record<string, unknown> | null,
-  storeTz: string,
-  now: Date
-): string | null {
-  if (!oh) return null;
-  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-  const { dayIndex, nowMinutes } = getStoreLocalTime(now, storeTz);
-  const timeToMinutes = (t: string) => {
-    const [h, m] = t.split(':').map(Number);
-    return (h ?? 0) * 60 + (m ?? 0);
-  };
-  
-  // Get closed_days array
-  const closedDays = oh.closed_days as string[] | null;
-  
-  for (let offset = 0; offset < 8; offset++) {
-    const dayIdx = (dayIndex + offset) % 7;
-    const day = dayNames[dayIdx];
-    
-    // Skip if day is explicitly closed
-    if (closedDays && Array.isArray(closedDays) && closedDays.includes(day)) {
-      continue;
-    }
-    
-    // Skip if day is not open
-    if (oh[`${day}_open`] !== true) continue;
-    const s1 = oh[`${day}_slot1_start`] as string | null;
-    const s2 = oh[`${day}_slot2_start`] as string | null;
-    for (const startStr of [s1, s2]) {
-      if (!startStr) continue;
-      const startMins = timeToMinutes(startStr);
-      const isToday = offset === 0;
-      if (isToday && startMins <= nowMinutes) continue;
-      const addDays = offset === 0 ? 0 : offset;
-      const d = new Date(now);
-      d.setDate(d.getDate() + addDays);
-      const h = Math.floor(startMins / 60) % 24;
-      const m = startMins % 60;
-      d.setHours(h, m, 0, 0);
-      return d.toISOString();
-    }
-  }
-  return null;
-}
-
 async function ensureAvailabilityRow(db: ReturnType<typeof getSupabase>, storeInternalId: number) {
   const { data } = await db.from('merchant_store_availability').select('id').eq('store_id', storeInternalId).single();
   if (data) return;
@@ -257,14 +254,16 @@ export async function GET(req: NextRequest) {
 
     const { data: store } = await db
       .from('merchant_stores')
-      .select('operational_status, is_accepting_orders, timezone')
+      .select(
+        'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at, timezone'
+      )
       .eq('id', storeInternalId)
       .single();
 
     const { data: avail } = await db
       .from('merchant_store_availability')
       .select(
-        'manual_close_until, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
+        'manual_close_until, close_reason, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
       )
       .eq('store_id', storeInternalId)
       .single();
@@ -322,7 +321,7 @@ export async function GET(req: NextRequest) {
         const { data: availRecheck } = await db
           .from('merchant_store_availability')
           .select(
-            'manual_close_until, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
+            'manual_close_until, close_reason, auto_open_from_schedule, block_auto_open, restriction_type, unavailable_reason, last_toggled_by_email, last_toggled_by_name, last_toggled_by_id, last_toggle_type, last_toggled_at'
           )
           .eq('store_id', storeInternalId)
           .single();
@@ -330,7 +329,7 @@ export async function GET(req: NextRequest) {
       } else {
         await db.from('merchant_stores').update({
           operational_status: 'OPEN',
-          is_accepting_orders: true,
+          ...merchantStoresOnlineFlags(true),
         }).eq('id', storeInternalId);
         await db.from('merchant_store_availability').update({
           is_available: true,
@@ -354,7 +353,7 @@ export async function GET(req: NextRequest) {
         if (oh && isWithinOperatingHours(oh as Record<string, unknown>, now, storeTz)) {
           await db.from('merchant_stores').update({
             operational_status: 'OPEN',
-            is_accepting_orders: true,
+            ...merchantStoresOnlineFlags(true),
           }).eq('id', storeInternalId);
           await db.from('merchant_store_availability').update({
             manual_close_until: null,
@@ -369,7 +368,14 @@ export async function GET(req: NextRequest) {
         } else {
           await db.from('merchant_store_availability').update({ manual_close_until: null, restriction_type: null }).eq('store_id', storeInternalId);
           manualCloseUntil = null;
-          effectiveStatus = (store?.operational_status as string) || 'CLOSED';
+          const { data: storeAfterExpiry } = await db
+            .from('merchant_stores')
+            .select(
+              'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at'
+            )
+            .eq('id', storeInternalId)
+            .single();
+          effectiveStatus = effectiveOpenFromMerchantStoreRow(storeAfterExpiry as MerchantStoreGateRow);
         }
       } else {
         await db.from('merchant_store_availability').update({ manual_close_until: null }).eq('store_id', storeInternalId);
@@ -449,7 +455,7 @@ export async function GET(req: NextRequest) {
     ) {
       await db
         .from('merchant_stores')
-        .update({ operational_status: 'CLOSED', is_accepting_orders: false })
+        .update({ operational_status: 'CLOSED', ...merchantStoresOnlineFlags(false) })
         .eq('id', storeInternalId);
       await db
         .from('merchant_store_availability')
@@ -484,19 +490,54 @@ export async function GET(req: NextRequest) {
     const isTodayClosedBySchedule = isTodayScheduledClosed || isTodayOpenFlagFalse;
 
     const nowAfterLogic = new Date();
-    // If today is scheduled closed, don't show opens_at - show null to indicate scheduled closure
-    const opens_at: string | null =
-      effectiveStatus === 'CLOSED'
-        ? (isTodayClosedBySchedule 
-            ? null // Scheduled closed - no auto-open countdown
-            : (manualCloseUntil 
-                ? manualCloseUntil.toISOString() 
-                : getNextOpenAt(oh as Record<string, unknown> | null, storeTz, nowAfterLogic)))
+    const ohRecord = (oh ?? null) as Record<string, unknown> | null;
+    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+    const nextOpenIso =
+      ohRecord && Object.keys(ohRecord).length > 0
+        ? getNextOpenIso(ohRecord, dayOfWeek, minutesSinceMidnight, nowAfterLogic) ??
+          getNextOpenDayStartIso(ohRecord, dayOfWeek, nowAfterLogic)
+        : null;
+    const nextOpenIsoAfterToday =
+      ohRecord && Object.keys(ohRecord).length > 0
+        ? getNextOpenIsoAfterIstCalendarDay(ohRecord, dayOfWeek, nowAfterLogic) ??
+          getNextOpenDayStartIso(ohRecord, dayOfWeek, nowAfterLogic)
         : null;
 
-    const withinHoursButRestricted = withinHours && effectiveStatus === 'CLOSED' && (blockAutoOpen || manualCloseUntil);
+    const { data: storeGated } = await db
+      .from('merchant_stores')
+      .select(
+        'operational_status, is_active, is_accepting_orders, is_available, approval_status, deleted_at, delisted_at'
+      )
+      .eq('id', storeInternalId)
+      .single();
+    const displayOperational = effectiveOpenFromMerchantStoreRow(storeGated as MerchantStoreGateRow);
 
     const rawAvail = availFinal ?? avail;
+    const unavailNorm =
+      rawAvail?.unavailable_reason != null ? String(rawAvail.unavailable_reason).trim().toLowerCase() : '';
+
+    const manualIso = manualCloseUntil ? manualCloseUntil.toISOString() : null;
+    let opens_at: string | null =
+      displayOperational === 'CLOSED'
+        ? manualIso
+          ? isLikelyLegacyEndOfDayIstClose(manualIso, nowAfterLogic)
+            ? (nextOpenIsoAfterToday ?? nextOpenIso ?? manualIso)
+            : manualIso
+          : nextOpenIso
+        : null;
+
+    if (displayOperational === 'CLOSED') {
+      if (blockAutoOpen) {
+        opens_at = null;
+      } else if (!manualIso && unavailNorm === 'manual_indefinite') {
+        opens_at = null;
+      }
+    }
+
+    // UI flag: within-hours but held OFF without a countdown target (manual lock / manual indefinite).
+    // TEMP close (manual_close_until future) must still show countdown.
+    const withinHoursButRestricted =
+      withinHours && displayOperational === 'CLOSED' && (blockAutoOpen || unavailNorm === 'manual_indefinite');
     const displayRestriction = deriveDisplayRestrictionType({
       restriction_type: rawAvail?.restriction_type as string | null | undefined,
       unavailable_reason: rawAvail?.unavailable_reason as string | null | undefined,
@@ -504,9 +545,13 @@ export async function GET(req: NextRequest) {
     });
 
     const responseBody: Record<string, unknown> = {
-      operational_status: effectiveStatus,
-      is_accepting_orders: effectiveStatus === 'OPEN',
+      operational_status: displayOperational,
+      approval_status: (storeGated as MerchantStoreGateRow | null)?.approval_status ?? null,
+      is_active: (storeGated as MerchantStoreGateRow | null)?.is_active ?? null,
+      is_accepting_orders: displayOperational === 'OPEN',
+      is_available: (storeGated as MerchantStoreGateRow | null)?.is_available ?? null,
       manual_close_until: manualCloseUntil ? manualCloseUntil.toISOString() : null,
+      close_reason: (rawAvail?.close_reason as string | null | undefined) ?? null,
       opens_at,
       auto_open_from_schedule: availFinal?.auto_open_from_schedule ?? avail?.auto_open_from_schedule ?? true,
       block_auto_open: blockAutoOpen,
@@ -540,7 +585,7 @@ export async function GET(req: NextRequest) {
  * POST /api/store-operations
  * Body: { store_id, action, closure_type?, duration_minutes?, manual_close_until?, close_reason? }
  * - manual_open: same as mobile PATCH /merchant-partner/stores/:id/status (is_open true): holidays from today, scheduled closures completed, availability + notification.
- * - manual_close: same as mobile — unavailable_reason manual_close | manual_indefinite, restriction_type `manual`, optional manual_close_until ISO; `today` = end of day IST.
+ * - manual_close: same as mobile — unavailable_reason manual_close | manual_indefinite, restriction_type `manual`, optional manual_close_until ISO; `today` = next scheduled open (IST), aligned with backend schedule engine.
  * Records who toggled and inserts into merchant_store_status_log.
  */
 export async function POST(req: NextRequest) {
@@ -679,7 +724,7 @@ export async function POST(req: NextRequest) {
         .from('merchant_stores')
         .update({
           operational_status: 'OPEN',
-          is_accepting_orders: true,
+          ...merchantStoresOnlineFlags(true),
         })
         .eq('id', storeInternalId);
       if (storeUpErr) {
@@ -705,6 +750,8 @@ export async function POST(req: NextRequest) {
           auto_unavailable_at: null,
           auto_available_at: nowIso,
           manual_close_until: null,
+          // When opening manually, always clear manual activation lock so merchant isn't stuck.
+          block_auto_open: false,
           last_toggle_type: 'MANUAL_OPEN',
           restriction_type: null,
           updated_by: toggledByEmail ?? 'Store owner',
@@ -780,7 +827,19 @@ export async function POST(req: NextRequest) {
       } else if (type === 'manual_hold') {
         mergedManualCloseUntil = null;
       } else if (type === 'today') {
-        mergedManualCloseUntil = endOfTodayIst().toISOString();
+        const { data: ohToday } = await db
+          .from('merchant_store_operating_hours')
+          .select('*')
+          .eq('store_id', storeInternalId)
+          .single();
+        const ohRec = (ohToday ?? null) as Record<string, unknown> | null;
+        const { dayOfWeek } = nowInStoreTz();
+        const next =
+          ohRec && Object.keys(ohRec).length > 0
+            ? getNextOpenIsoAfterIstCalendarDay(ohRec, dayOfWeek, now) ??
+              getNextOpenDayStartIso(ohRec, dayOfWeek, now)
+            : null;
+        mergedManualCloseUntil = next ?? endOfTodayIst().toISOString();
       } else {
         const mins = typeof durationMinutes === 'number' ? durationMinutes : parseInt(String(durationMinutes || 30), 10);
         if (mins < 1 || mins > 10080) {
@@ -807,7 +866,7 @@ export async function POST(req: NextRequest) {
         .from('merchant_stores')
         .update({
           operational_status: 'CLOSED',
-          is_accepting_orders: false,
+          ...merchantStoresOnlineFlags(false),
         })
         .eq('id', storeInternalId);
 
@@ -821,6 +880,7 @@ export async function POST(req: NextRequest) {
           auto_unavailable_at: nowIso,
           auto_available_at: null,
           manual_close_until: mergedManualCloseUntil,
+          block_auto_open: type === 'manual_hold',
           last_toggle_type: 'MANUAL_CLOSE',
           restriction_type: 'manual',
           updated_by: toggledByEmail ?? 'Store owner',

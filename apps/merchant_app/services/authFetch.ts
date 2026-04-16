@@ -5,15 +5,38 @@ export async function authFetch(
   token: string,
   opts: RequestInit = {}
 ): Promise<Response> {
+  // Normalize body for React Native fetch:
+  // Some callers may accidentally pass non-string bodies (e.g. Date/object),
+  // which can crash fetch internals ("string argument must be of type string...").
+  let normalizedBody = opts.body as any;
+  const isFormData =
+    typeof FormData !== "undefined" && normalizedBody instanceof FormData;
+  if (normalizedBody instanceof Date) {
+    normalizedBody = normalizedBody.toISOString();
+  } else if (
+    normalizedBody != null &&
+    !isFormData &&
+    typeof normalizedBody !== "string" &&
+    typeof normalizedBody !== "number" &&
+    typeof normalizedBody !== "boolean"
+  ) {
+    try {
+      normalizedBody = JSON.stringify(normalizedBody);
+    } catch {
+      // leave as-is; fetch will throw a clearer error
+    }
+  }
+
   const shouldSetJsonContentType =
-    opts.body != null &&
+    normalizedBody != null &&
     // If caller passes FormData, let fetch set the correct multipart boundary.
-    !(typeof FormData !== "undefined" && opts.body instanceof FormData);
+    !(typeof FormData !== "undefined" && normalizedBody instanceof FormData);
 
   let res: Response;
   try {
     res = await fetch(url, {
       ...opts,
+      body: normalizedBody,
       headers: {
         ...(shouldSetJsonContentType ? { "Content-Type": "application/json" } : {}),
         Authorization: `Bearer ${token}`,

@@ -22,7 +22,7 @@ import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
-import { Toaster, toast } from 'sonner';
+import { toast } from 'sonner';
 import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 
@@ -422,7 +422,6 @@ function OrderHistoryInner() {
 
   return (
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
-      <Toaster position="top-right" richColors />
       <PartnerPageHeader title="Order History" subtitle={store?.store_name || undefined} />
       <div className="flex flex-col h-full min-h-0 bg-gray-50">
         <header className="mx-shell-header sticky top-0 z-30 !px-3 sm:!px-4 lg:!px-6">

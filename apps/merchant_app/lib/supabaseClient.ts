@@ -1,39 +1,39 @@
 /**
- * Supabase client for merchant app – used for phone OTP auth (Send SMS hook → MSG91).
+ * Supabase client for merchant app – Google OAuth and optional phone OTP via Send SMS hook.
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import Constants from "expo-constants";
+import { getConfig } from "@/config/env";
 
 let _client: SupabaseClient | null = null;
 
-function asNonEmptyString(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  return s.length ? s : null;
-}
-
-function getSupabaseConfig(): { supabaseUrl: string | null; supabaseAnonKey: string | null } {
-  const supabaseUrl =
-    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_URL) ??
-    asNonEmptyString(
-      (Constants.expoConfig?.extra as Record<string, unknown> | undefined)
-        ?.EXPO_PUBLIC_SUPABASE_URL as string,
-    ) ??
-    null;
-  const supabaseAnonKey =
-    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY) ??
-    asNonEmptyString(
-      (Constants.expoConfig?.extra as Record<string, unknown> | undefined)
-        ?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string,
-    ) ??
-    null;
-  return { supabaseUrl, supabaseAnonKey };
+/** Dev-only diagnostics (no secrets). */
+export function getSupabaseOtpEnvDebugInfo(): {
+  hasUrl: boolean;
+  hasAnonKey: boolean;
+  urlHost: string | null;
+  phoneOtpUseBackendOnly: boolean;
+} {
+  const { supabaseUrl, supabaseAnonKey, phoneOtpUseBackendOnly } = getConfig();
+  let urlHost: string | null = null;
+  if (supabaseUrl) {
+    try {
+      urlHost = new URL(supabaseUrl).host;
+    } catch {
+      urlHost = "(invalid URL)";
+    }
+  }
+  return {
+    hasUrl: Boolean(supabaseUrl),
+    hasAnonKey: Boolean(supabaseAnonKey),
+    urlHost,
+    phoneOtpUseBackendOnly,
+  };
 }
 
 export function getSupabaseAuth(): SupabaseClient | null {
   if (_client) return _client;
-  const { supabaseUrl, supabaseAnonKey } = getSupabaseConfig();
+  const { supabaseUrl, supabaseAnonKey } = getConfig();
   if (!supabaseUrl || !supabaseAnonKey) return null;
   _client = createClient(supabaseUrl, supabaseAnonKey, {
     auth: { persistSession: false },

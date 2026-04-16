@@ -8,7 +8,7 @@ import { fetchStoreById, fetchStoreByName, fetchAllOffers, fetchMenuCategories }
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
 import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, Copy, Search, Check, Sparkles, Truck, Layers, Package } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
 export const dynamic = 'force-dynamic'
@@ -913,7 +913,6 @@ function OffersContent() {
 
   return (
     <>
-      <Toaster position="top-right" richColors />
       <MXLayoutWhite restaurantName={store?.store_name || "Offers"} restaurantId={storeId || ""}>
         <PartnerPageHeader
           title="Offers & Promotions"

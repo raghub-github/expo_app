@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useToast } from '@/context/ToastContext';
@@ -18,6 +18,7 @@ import {
   BellOff,
   X,
   Printer,
+  Calendar,
   ChevronLeft,
   Sparkles,
   LayoutGrid,
@@ -25,6 +26,8 @@ import {
   Phone,
   MapPin,
   SlidersHorizontal,
+  Search,
+  ChevronDown,
   Loader2,
   Power,
   Check,
@@ -34,12 +37,16 @@ import {
   Wallet,
 } from 'lucide-react';
 import { useStoreFoodOrders } from '@/hooks/useStoreFoodOrders';
-import { useRightSidebar } from '@/context/RightSidebarContext';
 import { WalletAdjustmentModal } from '@/components/merchants/WalletAdjustmentModal';
 import type { OrdersFoodRow, FoodOrderStats } from '@/lib/types/food-orders';
 import { PageSkeletonOrders } from './PageSkeletonOrders';
 import { supabase } from '@/lib/supabase/client';
 import { useStore } from '@/hooks/useStore';
+import {
+  MERCHANT_PORTAL_CLOSE_REASONS,
+  merchantPortalCloseReasonWithSuffix,
+} from '@/lib/merchantPortalCloseReasons';
+import { FoodOrdersEmptyState, type FoodOrdersEmptyVariant } from '@/components/orders/FoodOrdersEmptyState';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -64,6 +71,232 @@ const STATUS_FILTERS = [
   { id: 'RTO', label: 'RTO', color: 'bg-orange-100 text-orange-800 border-orange-200' },
   { id: 'CANCELLED', label: 'Cancelled', color: 'bg-gray-100 text-gray-700 border-gray-200' },
 ];
+
+// Tabs shown in the Orders page header (matches the portal UI).
+const ORDERS_TABS = [
+  { id: 'CREATED', label: 'New orders' },
+  { id: 'PREPARING', label: 'Preparing' },
+  { id: 'READY_FOR_PICKUP', label: 'Ready' },
+  { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
+  { id: 'RTO', label: 'RTO' },
+] as const;
+
+const FILTER_STATUS_OPTIONS = [
+  'CREATED',
+  'ACCEPTED',
+  'PREPARING',
+  'READY_FOR_PICKUP',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'RTO',
+  'CANCELLED',
+] as const;
+
+/** UI filter keys (reference modal) → DB statuses (partnersite parity). */
+const UI_STATUS_DEF: { key: string; label: string; statuses: string[] }[] = [
+  { key: 'preparing', label: 'Preparing', statuses: ['CREATED', 'ACCEPTED', 'PREPARING'] },
+  { key: 'ready', label: 'Ready', statuses: ['READY_FOR_PICKUP'] },
+  { key: 'picked_up', label: 'Picked up', statuses: ['OUT_FOR_DELIVERY'] },
+  { key: 'delivered', label: 'Delivered', statuses: ['DELIVERED'] },
+  { key: 'timed_out', label: 'Timed out', statuses: ['RTO'] },
+  { key: 'rejected', label: 'Rejected', statuses: ['CANCELLED'] },
+];
+
+type FilterCategory = 'status' | 'type' | 'ratings';
+
+function statusSetFromUiKeys(keys: Set<string>): Set<string> {
+  const s = new Set<string>();
+  for (const def of UI_STATUS_DEF) {
+    if (keys.has(def.key)) def.statuses.forEach((x) => s.add(x));
+  }
+  return s;
+}
+
+function uiKeysFromStatusSet(sf: Set<string>): Set<string> {
+  const u = new Set<string>();
+  for (const def of UI_STATUS_DEF) {
+    if (def.statuses.some((st) => sf.has(st))) u.add(def.key);
+  }
+  return u;
+}
+
+function storeOrdersTitle(storeType: string | null | undefined) {
+  const t = (storeType || '').trim().toUpperCase();
+  if (!t) return 'Food Orders';
+  if (t.includes('GROCERY')) return 'Grocery Orders';
+  if (t.includes('PHARM')) return 'Pharmacy Orders';
+  if (t.includes('MEAT')) return 'Meat Orders';
+  if (t.includes('FLOWER')) return 'Flower Orders';
+  if (t.includes('STORE') || t.includes('RETAIL')) return 'Store Orders';
+  return 'Food Orders';
+}
+
+function toYmd(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function endOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
+function parseYmd(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function formatDdMmYyyy(ymd: string) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  if (!y || !m || !d) return ymd;
+  return `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`;
+}
+
+function formatRangeSummary(fromYmd: string, toYmd: string) {
+  const a = parseYmd(fromYmd);
+  const b = parseYmd(toYmd);
+  const o: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
+  return `${a.toLocaleDateString('en-IN', o)} to ${b.toLocaleDateString('en-IN', o)}`;
+}
+
+function DateRangePopover({
+  calMonth,
+  setCalMonth,
+  rangeSel,
+  setRangeSel,
+  onClose,
+  onApply,
+}: {
+  calMonth: Date;
+  setCalMonth: (d: Date) => void;
+  rangeSel: { a: string | null; b: string | null };
+  setRangeSel: React.Dispatch<React.SetStateAction<{ a: string | null; b: string | null }>>;
+  onClose: () => void;
+  onApply: () => void;
+}) {
+  const y = calMonth.getFullYear();
+  const m = calMonth.getMonth();
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysInM = new Date(y, m + 1, 0).getDate();
+  const prevMonthLast = new Date(y, m, 0).getDate();
+
+  const inRange = (ymd: string) => {
+    if (!rangeSel.a || !rangeSel.b) return false;
+    const t = parseYmd(ymd).getTime();
+    const t1 = parseYmd(rangeSel.a).getTime();
+    const t2 = parseYmd(rangeSel.b).getTime();
+    const lo = Math.min(t1, t2);
+    const hi = Math.max(t1, t2);
+    return t >= lo && t <= hi;
+  };
+
+  const isEndpoint = (ymd: string) => rangeSel.a === ymd || rangeSel.b === ymd;
+
+  const pickYmd = (ymd: string) => {
+    setRangeSel((prev) => {
+      if (!prev.a || (prev.a && prev.b)) return { a: ymd, b: null };
+      return { ...prev, b: ymd };
+    });
+  };
+
+  const labelA = rangeSel.a
+    ? parseYmd(rangeSel.a).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'Start';
+  const labelB = rangeSel.b
+    ? parseYmd(rangeSel.b).toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'End';
+
+  const cells: { ymd: string; label: string; muted: boolean }[] = [];
+  for (let i = 0; i < firstDow; i++) {
+    const day = prevMonthLast - firstDow + i + 1;
+    cells.push({ ymd: toYmd(new Date(y, m - 1, day)), label: String(day), muted: true });
+  }
+  for (let d = 1; d <= daysInM; d++) cells.push({ ymd: toYmd(new Date(y, m, d)), label: String(d), muted: false });
+  let pad = 0;
+  while (cells.length % 7 !== 0) {
+    pad++;
+    cells.push({ ymd: toYmd(new Date(y, m + 1, pad)), label: String(pad), muted: true });
+  }
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-start justify-center pt-20 sm:pt-24 px-3 bg-black/40" role="presentation">
+      <button type="button" className="absolute inset-0 cursor-default" aria-label="Close" onClick={onClose} />
+      <div
+        className="relative bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-sm overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex border-b border-gray-200">
+          <div className="flex-1 px-3 py-2.5 text-center text-xs font-medium text-gray-900 border-r border-gray-100">
+            {labelA}
+          </div>
+          <div className="flex-1 px-3 py-2.5 text-center text-xs font-medium text-gray-900">{labelB}</div>
+        </div>
+        <div className="flex items-center justify-between px-2 py-2 border-b border-gray-100">
+          <button type="button" onClick={() => setCalMonth(new Date(y, m - 1, 1))} className="p-2 rounded-lg hover:bg-gray-100" aria-label="Previous month">
+            <ChevronLeft size={18} />
+          </button>
+          <div className="flex items-center gap-1 text-sm font-semibold text-gray-900">
+            {calMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+          </div>
+          <button type="button" onClick={() => setCalMonth(new Date(y, m + 1, 1))} className="p-2 rounded-lg hover:bg-gray-100" aria-label="Next month">
+            <ChevronRight size={18} />
+          </button>
+        </div>
+        <div className="p-2">
+          <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] text-gray-500 mb-1">
+            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
+              <div key={d} className="py-1">
+                {d}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-0.5">
+            {cells.map((c) => {
+              const range = inRange(c.ymd);
+              const end = isEndpoint(c.ymd);
+              return (
+                <button
+                  key={`${c.ymd}-${c.label}-${c.muted}`}
+                  type="button"
+                  onClick={() => pickYmd(c.ymd)}
+                  className={`aspect-square max-h-9 text-xs rounded-full transition-colors ${
+                    c.muted ? 'text-gray-300 hover:bg-gray-50' : ''
+                  } ${
+                    end ? 'bg-blue-600 text-white font-semibold' : range ? 'bg-blue-100 text-blue-900' : !c.muted ? 'text-gray-800 hover:bg-gray-100' : ''
+                  }`}
+                >
+                  {c.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 px-3 py-2.5 border-t border-gray-200 bg-gray-50">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onApply}
+            disabled={!rangeSel.a || !rangeSel.b}
+            className="px-4 py-1.5 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function formatVegNonVeg(v: string | null): string {
   if (!v || v === 'na') return '—';
@@ -99,6 +332,12 @@ function useNewOrderSound(enabled: boolean) {
 }
 
 const ORDERS_STORAGE_KEY = 'food-orders-ui';
+
+function prepDeadlineMs(order: OrdersFoodRow): number {
+  const base = order.accepted_at || order.created_at;
+  const mins = Number(order.preparation_time_minutes) || 30;
+  return new Date(base).getTime() + mins * 60 * 1000;
+}
 
 // Helper function to format order ID display with last 4 digits in increasing size
 function FormattedOrderId({ 
@@ -146,13 +385,13 @@ function FormattedOrderId({
 function OrdersPageContent({ storeId }: { storeId: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const rightSidebar = useRightSidebar();
   const storeInternalId = parseInt(storeId, 10);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
-  const [filter, setFilter] = useState<string>('all');
+  const [filter, setFilter] = useState<string>('CREATED');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  // Partnersite-style: show full-width list by default, open details panel only after selecting an order.
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
@@ -221,15 +460,45 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       return v === 'list' || v === 'card' ? v : 'card';
     } catch { return 'card'; }
   });
+  const [orderSort, setOrderSort] = useState<'remaining' | 'newest' | 'oldest'>('remaining');
+  const [orderIdSearch, setOrderIdSearch] = useState('');
+  const [ordersSection, setOrdersSection] = useState<'live' | 'history'>(() => {
+    const sec = searchParams?.get('section');
+    return sec === 'history' ? 'history' : 'live';
+  });
+  const [historyDateFrom, setHistoryDateFrom] = useState(() => {
+    const t = new Date();
+    t.setDate(t.getDate() - 1);
+    return toYmd(t);
+  });
+  const [historyDateTo, setHistoryDateTo] = useState(() => toYmd(new Date()));
+  const [historyStatuses, setHistoryStatuses] = useState<Set<string>>(
+    () => new Set(['CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'])
+  );
+  const [datePopoverOpen, setDatePopoverOpen] = useState(false);
+  const [calMonth, setCalMonth] = useState(() => {
+    const d = parseYmd(historyDateFrom);
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const [rangeSel, setRangeSel] = useState<{ a: string | null; b: string | null }>({ a: null, b: null });
 
-  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [filterCategory, setFilterCategory] = useState<FilterCategory>('status');
+  const [draftUiStatus, setDraftUiStatus] = useState<Set<string>>(() => uiKeysFromStatusSet(new Set(FILTER_STATUS_OPTIONS)));
+  const [draftOrderType, setDraftOrderType] = useState<'all' | 'gatimitra' | 'self'>('all');
+  const [draftRatingCap, setDraftRatingCap] = useState<number | null>(null);
+
+  const downloadBtnRef = useRef<HTMLButtonElement>(null);
+  const [downloadMenuPos, setDownloadMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const [downloadOpen, setDownloadOpen] = useState(false);
+
   const hasNotifiedNew = useRef<Set<number>>(new Set());
 
   const { store: storeMeta } = useStore(storeId);
   const isDelisted =
     ((storeMeta as { approval_status?: string } | null)?.approval_status || '').toUpperCase() === 'DELISTED';
 
-  const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null }) => {
+  const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null; section?: 'live' | 'history' }) => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(searchParams?.toString() || '');
     if (updates.filter !== undefined) {
@@ -239,6 +508,10 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     if (updates.orderId !== undefined) {
       if (!updates.orderId) params.delete('orderId');
       else params.set('orderId', updates.orderId);
+    }
+    if (updates.section !== undefined) {
+      if (updates.section === 'live') params.delete('section');
+      else params.set('section', updates.section);
     }
     const q = params.toString();
     const path = `${window.location.pathname}${q ? `?${q}` : ''}`;
@@ -287,13 +560,90 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
     updateUrlParams({ orderId: null });
   }, [updateUrlParams]);
 
+  // Ensure the "sidebar" never shows without a selected order.
+  useEffect(() => {
+    if (!selectedOrder && rightPanelOpen) setRightPanelOpen(false);
+  }, [rightPanelOpen, selectedOrder]);
+
   const handleFilterChange = useCallback((f: string) => {
     setFilter(f);
     setRightPanelOpen(false);
     setSelectedOrder(null);
-    setFilterDrawerOpen(false);
-    updateUrlParams({ filter: f, orderId: null });
+    updateUrlParams({ filter: f, orderId: null, section: 'live' });
   }, [updateUrlParams]);
+
+  const handleSectionChange = useCallback((sec: 'live' | 'history') => {
+    setOrdersSection(sec);
+    setRightPanelOpen(false);
+    setSelectedOrder(null);
+    setOrderIdSearch('');
+    updateUrlParams({ orderId: null, section: sec });
+  }, [updateUrlParams]);
+
+  useEffect(() => {
+    if (!downloadOpen) return;
+    const update = () => {
+      const el = downloadBtnRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const menuWidth = 208;
+      const left = Math.max(8, Math.min(r.right - menuWidth, window.innerWidth - menuWidth - 8));
+      setDownloadMenuPos({ top: r.bottom + 6, left });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [downloadOpen]);
+
+  const openDatePopover = () => {
+    setRangeSel({ a: historyDateFrom, b: historyDateTo });
+    setCalMonth(new Date(parseYmd(historyDateFrom).getFullYear(), parseYmd(historyDateFrom).getMonth(), 1));
+    setDatePopoverOpen(true);
+  };
+
+  const applyDateRange = () => {
+    if (rangeSel.a && rangeSel.b) {
+      const t1 = parseYmd(rangeSel.a).getTime();
+      const t2 = parseYmd(rangeSel.b).getTime();
+      const [from, to] = t1 <= t2 ? [rangeSel.a, rangeSel.b] : [rangeSel.b, rangeSel.a];
+      setHistoryDateFrom(from);
+      setHistoryDateTo(to);
+    }
+    setDatePopoverOpen(false);
+  };
+
+  const openFilterModal = () => {
+    setDraftUiStatus(uiKeysFromStatusSet(historyStatuses));
+    setDraftOrderType('all');
+    setDraftRatingCap(null);
+    setFilterCategory('status');
+    setFilterModalOpen(true);
+  };
+
+  const applyFilterModal = () => {
+    const next = statusSetFromUiKeys(draftUiStatus);
+    setHistoryStatuses(next.size === 0 ? new Set(FILTER_STATUS_OPTIONS) : next);
+    setFilterModalOpen(false);
+  };
+
+  const clearFilterModal = () => {
+    setDraftUiStatus(new Set());
+    setDraftOrderType('all');
+    setDraftRatingCap(null);
+  };
+
+  const toggleDraftUiStatus = (key: string) => {
+    setDraftUiStatus((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
   const { toast } = useToast();
   const { subscribe } = useStoreFoodOrders(storeId, storeInternalId);
   const playNewOrderSound = useNewOrderSound(notifyEnabled);
@@ -592,7 +942,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       tomorrowOpen.setHours(h, m, 0, 0);
       durationMinutes = Math.max(1, Math.round((tomorrowOpen.getTime() - now.getTime()) / (1000 * 60)));
     }
-    const reasonText = closeReason === 'Other' ? (closeReasonOther?.trim() || 'Other') : closeReason;
+    const baseReason = closeReason === 'Other' ? (closeReasonOther?.trim() || 'Other') : closeReason;
+    const reasonText = merchantPortalCloseReasonWithSuffix(baseReason);
     const body: { action: string; closure_type: string; duration_minutes?: number; close_reason?: string } = {
       action: 'manual_close',
       closure_type: closeClosureType,
@@ -711,11 +1062,123 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           )
         : orders.filter((o) => norm(o.order_status) === filter);
 
+  const displayOrders = useMemo(() => {
+    let rows = [...filteredOrders];
+    const q = orderIdSearch.trim();
+    if (q) {
+      rows = rows.filter((o) => {
+        const idStr = String(o.formatted_order_id ?? o.order_id ?? o.id ?? '').replace(/\s+/g, '');
+        const digits = idStr.replace(/\D/g, '');
+        if (!digits) return false;
+        // Match last 4 digits (partner UI behavior)
+        if (q.length <= 4) return digits.endsWith(q);
+        return digits.includes(q);
+      });
+    }
+    if (orderSort === 'newest') {
+      rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    } else if (orderSort === 'oldest') {
+      rows.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    } else {
+      rows.sort((a, b) => prepDeadlineMs(a) - prepDeadlineMs(b));
+    }
+    return rows;
+  }, [filteredOrders, orderIdSearch, orderSort]);
+
+  const historyOrders = useMemo(() => {
+    const q = orderIdSearch.trim().replace(/\D/g, '');
+    const from = startOfDay(parseYmd(historyDateFrom));
+    const to = endOfDay(parseYmd(historyDateTo));
+    let rows = [...orders].filter((o) => {
+      const st = norm(o.order_status);
+      if (!historyStatuses.has(st)) return false;
+      const created = new Date(o.created_at);
+      if (created < from || created > to) return false;
+      return true;
+    });
+    rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    if (q) {
+      rows = rows.filter((o) => {
+        const idStr = String(o.formatted_order_id ?? o.order_id ?? o.id ?? '').replace(/\s+/g, '');
+        const digits = idStr.replace(/\D/g, '');
+        return digits.includes(q);
+      });
+    }
+    return rows;
+  }, [historyDateFrom, historyDateTo, historyStatuses, orderIdSearch, orders]);
+
+  const downloadOrderHistoryCsv = useCallback(
+    (scope: 'visible' | 'all') => {
+      const rows = scope === 'visible' ? historyOrders : orders;
+      const header = ['order_id', 'formatted_id', 'status', 'created_at', 'customer', 'total'];
+      const lines = [
+        header.join(','),
+        ...rows.map((o) => {
+          const cells = [
+            o.order_id,
+            o.formatted_order_id || '',
+            norm(o.order_status),
+            o.created_at,
+            (o.customer_name || '').replace(/,/g, ' '),
+            String((o as any).food_items_total_value ?? ''),
+          ];
+          return cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',');
+        }),
+      ];
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `order-history-${storeId || 'store'}-${historyDateFrom}-${historyDateTo}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDownloadOpen(false);
+    },
+    [historyOrders, historyDateFrom, historyDateTo, orders, storeId]
+  );
+
+  const downloadCustomerDetailsCsv = useCallback(() => {
+    const rows = historyOrders;
+    const header = ['order_id', 'formatted_id', 'created_at', 'customer_name', 'customer_phone', 'customer_email'];
+    const lines = [
+      header.join(','),
+      ...rows.map((o) => {
+        const cells = [
+          o.order_id,
+          o.formatted_order_id || '',
+          o.created_at,
+          (o.customer_name || '').replace(/,/g, ' '),
+          ((o as any).customer_phone || '').replace(/,/g, ' '),
+          ((o as any).customer_email || '').replace(/,/g, ' '),
+        ];
+        return cells.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',');
+      }),
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `customer-details-${storeId || 'store'}-${historyDateFrom}-${historyDateTo}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setDownloadOpen(false);
+  }, [historyOrders, historyDateFrom, historyDateTo, storeId]);
+
   const counts: Record<string, number> = {};
   orders.forEach((o) => {
     const s = norm(o.order_status);
     counts[s] = (counts[s] || 0) + 1;
   });
+
+  const emptyVariant: FoodOrdersEmptyVariant = useMemo(() => {
+    if (orderIdSearch.trim() && displayOrders.length === 0) return 'search';
+    if (filter === 'CREATED') return 'NEW_ORDERS';
+    if (filter === 'PREPARING') return 'PREPARING';
+    if (filter === 'READY_FOR_PICKUP') return 'READY_FOR_PICKUP';
+    if (filter === 'OUT_FOR_DELIVERY') return 'OUT_FOR_DELIVERY';
+    if (filter === 'RTO') return 'RTO';
+    return 'NEW_ORDERS';
+  }, [displayOrders.length, filter, orderIdSearch]);
 
   if (loading && orders.length === 0) {
     return <><PageSkeletonOrders /></>;
@@ -741,8 +1204,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   return (
     <>
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
-        {/* Header: reserve right space for filter sidebar (lg:pr-64) so Store / Grid / Sound buttons don't overlap */}
-        <header id="food-orders-header" className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0 lg:pr-64">
+        <header id="food-orders-header" className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0">
           <div className="w-full min-w-0 px-3 sm:px-4 py-2 sm:py-3">
             {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0 min-w-0">
@@ -755,15 +1217,17 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {/* Title - always visible on desktop */}
                 <div className="hidden md:flex items-center gap-2 shrink-0">
                   <Sparkles className="w-5 h-5 text-orange-500 shrink-0" />
-                  <h1 className="text-lg font-bold text-gray-900 whitespace-nowrap">Food Orders</h1>
+                  <h1 className="text-lg font-bold text-gray-900 whitespace-nowrap">
+                    {ordersSection === 'history' ? 'Order History' : storeOrdersTitle((storeMeta as any)?.store_type)}
+                  </h1>
                 </div>
-                {stats && (
+                {ordersSection === 'live' && stats && (
                   <div className="flex items-center gap-2 shrink-0">
                     <StatBadge label="Today" value={String(stats.ordersToday)} />
                     <StatBadge label="Active" value={String(stats.activeOrders)} accent />
                   </div>
                 )}
-                {stats && (
+                {ordersSection === 'live' && stats && (
                   <div className="hidden md:flex items-center gap-2 sm:gap-3 shrink-0">
                     <StatBadge label="Avg Prep" value={`${stats.avgPreparationTimeMinutes}m`} />
                     <StatBadge label="Revenue" value={`₹${stats.totalRevenueToday.toFixed(0)}`} />
@@ -773,14 +1237,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               </div>
               {/* Row 2 (mobile) / Right (desktop): Filter, Store, grid/list, sound - shrink so never overlaps sidebar */}
               <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 min-w-0 lg:pl-4">
-                <button
-                  onClick={() => setFilterDrawerOpen(true)}
-                  className="lg:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200 whitespace-nowrap"
-                  title="Filter orders"
-                >
-                  <SlidersHorizontal size={14} />
-                  Filter
-                </button>
               <button
                 onClick={handleStoreToggle}
                 disabled={isStoreOpen === null}
@@ -827,10 +1283,364 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               </div>
             </div>
           </div>
+          {/* Status pills + section + search (partnersite-style band) */}
+          <div className="border-t border-gray-200 bg-white px-3 sm:px-4 py-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              {ordersSection === 'live' ? (
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  {ORDERS_TABS.map(({ id, label }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => handleFilterChange(id)}
+                      className={`px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
+                        filter === id ? 'bg-orange-500 text-white border-orange-500 shadow-sm' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      {label} ({counts[id] || 0})
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  <div className="min-w-0 overflow-x-auto hide-scrollbar flex items-center gap-1.5 sm:gap-2 py-0.5">
+                    <button
+                      type="button"
+                      onClick={openDatePopover}
+                      className="inline-flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-[11px] sm:text-xs text-gray-800 whitespace-nowrap hover:bg-gray-50 shrink-0"
+                    >
+                      <Calendar size={14} className="text-gray-500 shrink-0" />
+                      <span className="font-medium tabular-nums">{formatDdMmYyyy(historyDateFrom)}</span>
+                      <span className="text-gray-400">–</span>
+                      <span className="font-medium tabular-nums">{formatDdMmYyyy(historyDateTo)}</span>
+                      <Calendar size={14} className="text-gray-500 shrink-0" />
+                    </button>
+                    <span className="hidden sm:inline text-xs text-gray-500 whitespace-nowrap shrink-0">
+                      {formatRangeSummary(historyDateFrom, historyDateTo)}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openFilterModal}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                  >
+                    <SlidersHorizontal size={14} className="text-gray-600" />
+                    Filter
+                  </button>
+                </div>
+              )}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full xl:w-auto xl:shrink-0">
+                <div className="relative w-full sm:w-auto sm:min-w-[200px]">
+                  <select
+                    value={ordersSection}
+                    onChange={(e) => handleSectionChange(e.target.value as 'live' | 'history')}
+                    className="w-full appearance-none pl-3 pr-9 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-900 cursor-pointer"
+                    aria-label="Orders section"
+                  >
+                    <option value="live">Live Orders</option>
+                    <option value="history">Orders History</option>
+                  </select>
+                  <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 pointer-events-none" aria-hidden />
+                </div>
+                {ordersSection === 'history' && (
+                  <button
+                    ref={downloadBtnRef}
+                    type="button"
+                    onClick={() => setDownloadOpen((v) => !v)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+                  >
+                    <Printer size={14} className="text-gray-600" />
+                    Download
+                    <ChevronDown size={14} className="text-gray-500" />
+                  </button>
+                )}
+                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                  <input
+                    type="search"
+                    inputMode="numeric"
+                    placeholder={ordersSection === 'history' ? 'Search by order ID' : 'Search by the 4 digit order ID'}
+                    value={orderIdSearch}
+                    onChange={(e) => setOrderIdSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </header>
 
-        <div className="flex flex-1 min-h-0 lg:pr-64 overflow-hidden">
+        {downloadOpen && downloadMenuPos && typeof document !== 'undefined' && createPortal(
+          <>
+            <button
+              type="button"
+              className="fixed inset-0 z-[190] cursor-default bg-transparent"
+              aria-label="Close menu"
+              onClick={() => setDownloadOpen(false)}
+            />
+            <div
+              className="fixed z-[200] w-[min(100vw-1rem,13rem)] rounded-lg border border-gray-200 bg-white shadow-lg py-0.5"
+              style={{ top: downloadMenuPos.top, left: downloadMenuPos.left }}
+              role="menu"
+            >
+              <button
+                type="button"
+                className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 border-b border-gray-100"
+                onClick={() => downloadOrderHistoryCsv('visible')}
+              >
+                Order history
+              </button>
+              <button
+                type="button"
+                className="w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                onClick={() => downloadCustomerDetailsCsv()}
+              >
+                Customer details
+              </button>
+            </div>
+          </>,
+          document.body
+        )}
+
+        {datePopoverOpen && typeof document !== 'undefined' && createPortal(
+          <DateRangePopover
+            calMonth={calMonth}
+            setCalMonth={setCalMonth}
+            rangeSel={rangeSel}
+            setRangeSel={setRangeSel}
+            onClose={() => setDatePopoverOpen(false)}
+            onApply={applyDateRange}
+          />,
+          document.body
+        )}
+
+        {filterModalOpen && typeof document !== 'undefined' && createPortal(
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" role="presentation">
+            <button type="button" className="absolute inset-0 cursor-default" aria-label="Close" onClick={() => setFilterModalOpen(false)} />
+            <div
+              className="relative bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
+                <h2 className="text-base font-bold text-gray-900">Filters</h2>
+                <button type="button" onClick={() => setFilterModalOpen(false)} className="p-1.5 rounded-lg hover:bg-gray-100" aria-label="Close">
+                  <X size={18} className="text-gray-600" />
+                </button>
+              </div>
+              <div className="flex flex-1 min-h-0 overflow-hidden">
+                <div className="w-[38%] sm:w-[40%] border-r border-gray-200 bg-gray-100 flex flex-col shrink-0">
+                  {(
+                    [
+                      { id: 'status' as const, label: 'Order status' },
+                      { id: 'type' as const, label: 'Order type' },
+                      { id: 'ratings' as const, label: 'Ratings' },
+                    ]
+                  ).map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setFilterCategory(cat.id)}
+                      className={`text-left px-3 py-3 text-sm font-medium border-r-[3px] transition-colors ${
+                        filterCategory === cat.id
+                          ? 'bg-white text-gray-900 border-orange-500'
+                          : 'bg-transparent text-gray-600 border-transparent hover:bg-gray-50'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex-1 overflow-y-auto min-h-0 p-4 bg-white">
+                  {filterCategory === 'status' && (
+                    <div className="space-y-3">
+                      {UI_STATUS_DEF.map((def) => (
+                        <label key={def.key} className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={draftUiStatus.has(def.key)}
+                            onChange={() => toggleDraftUiStatus(def.key)}
+                            className="rounded border-gray-300 w-4 h-4 accent-orange-600"
+                          />
+                          {def.label}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {filterCategory === 'type' && (
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="orderType"
+                          checked={draftOrderType === 'all'}
+                          onChange={() => setDraftOrderType('all')}
+                          className="border-gray-300 w-4 h-4 accent-orange-600"
+                        />
+                        All order types
+                      </label>
+                      {(
+                        [
+                          { v: 'gatimitra' as const, label: 'GatiMitra Delivery' },
+                          { v: 'self' as const, label: 'Self Delivery' },
+                        ]
+                      ).map((opt) => (
+                        <label key={opt.v} className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="orderType"
+                            checked={draftOrderType === opt.v}
+                            onChange={() => setDraftOrderType(opt.v)}
+                            className="border-gray-300 w-4 h-4 accent-orange-600"
+                          />
+                          {opt.label}
+                        </label>
+                      ))}
+                      <p className="text-xs text-gray-500 mt-4">
+                        Order type filtering will apply when delivery channel is available on orders.
+                      </p>
+                    </div>
+                  )}
+                  {filterCategory === 'ratings' && (
+                    <div className="space-y-3">
+                      {([5, 4, 3, 2, 1] as const).map((n) => (
+                        <label key={n} className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="ratingCap"
+                            checked={draftRatingCap === n}
+                            onChange={() => setDraftRatingCap(n)}
+                            className="border-gray-300 w-4 h-4 accent-orange-600"
+                          />
+                          {n === 1 ? '1' : `${n} or less`}
+                        </label>
+                      ))}
+                      <label className="flex items-center gap-3 text-sm text-gray-800 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="ratingCap"
+                          checked={draftRatingCap === null}
+                          onChange={() => setDraftRatingCap(null)}
+                          className="border-gray-300 w-4 h-4 accent-orange-600"
+                        />
+                        Any rating
+                      </label>
+                      <p className="text-xs text-gray-500 mt-4">
+                        Customer rating filters apply when rating data is linked to orders.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-3 px-4 py-3 border-t border-gray-200 bg-white shrink-0">
+                <button type="button" onClick={clearFilterModal} className="text-sm font-medium text-gray-500 hover:text-gray-800">
+                  Clear all
+                </button>
+                <button
+                  type="button"
+                  onClick={applyFilterModal}
+                  className="px-5 py-2 rounded-lg bg-gray-700 text-white text-sm font-semibold hover:bg-gray-800"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        <div className="flex flex-1 min-h-0 overflow-hidden">
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+          {ordersSection === 'history' ? (
+            <div className="flex flex-1 min-h-0 flex-col lg:flex-row overflow-hidden">
+              <aside className="w-full lg:w-[380px] shrink-0 border-b lg:border-b-0 lg:border-r border-gray-200 bg-white flex flex-col min-h-0 max-h-[45vh] lg:max-h-none">
+                <div className="px-3 sm:px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-gray-900">Order history</p>
+                  <span className="text-xs text-gray-500 tabular-nums">{historyOrders.length} orders</span>
+                </div>
+                <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 hide-scrollbar">
+                  {!loading && historyOrders.length === 0 && (
+                    <p className="text-sm text-gray-500 text-center py-8">No orders found.</p>
+                  )}
+                  {historyOrders.map((o) => {
+                    const active = selectedOrder?.id === o.id;
+                    return (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => openOrder(o)}
+                        className={`w-full text-left rounded-xl border p-3 transition-colors ${
+                          active ? 'border-blue-300 bg-blue-50/80' : 'border-gray-200 bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-700 text-white">
+                            {(STATUS_LABEL[norm(o.order_status)] || norm(o.order_status)).toUpperCase()}
+                          </span>
+                          <span className="text-[10px] text-gray-500 text-right shrink-0">
+                            {new Date(o.created_at).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })}{' '}
+                            | {new Date(o.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                          </span>
+                        </div>
+                        <p className="text-xs font-semibold text-gray-900">ID: {o.formatted_order_id || o.order_id}</p>
+                        {o.customer_name && <p className="text-xs text-gray-600 mt-0.5">By {o.customer_name}</p>}
+                        <p className="text-sm font-bold text-gray-900 text-right mt-2">
+                          ₹{Number((o as any).food_items_total_value || (o as any).total_amount || 0).toFixed(0)}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </aside>
+              <main className="flex-1 min-w-0 overflow-y-auto min-h-0 bg-gray-50 p-3 sm:p-5">
+                {!selectedOrder ? (
+                  <div className="h-full flex items-center justify-center">
+                    {orderIdSearch.trim() ? (
+                      <FoodOrdersEmptyState variant="search" />
+                    ) : historyOrders.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center">
+                        <p className="text-base sm:text-lg font-medium text-slate-700">No orders in this range.</p>
+                        <p className="mt-1 text-sm sm:text-base text-slate-500">Try changing date range or filters.</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center">
+                        <p className="text-base sm:text-lg font-medium text-slate-700">No order selected</p>
+                        <p className="mt-1 text-sm sm:text-base text-slate-500">Select an order from the left list to view details.</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                    <div className="border-b border-gray-200 px-4 py-3 flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-base font-bold text-gray-900">
+                          ID: {selectedOrder.formatted_order_id || selectedOrder.order_id}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">{new Date(selectedOrder.created_at).toLocaleString('en-IN')}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={closeOrderPanel}
+                        className="p-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600"
+                        aria-label="Close"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="p-4 text-sm text-gray-700">
+                      <p className="font-semibold text-gray-900 mb-2">Status</p>
+                      <p className="mb-4">{STATUS_LABEL[norm(selectedOrder.order_status)] || norm(selectedOrder.order_status)}</p>
+                      {selectedOrder.customer_name && (
+                        <>
+                          <p className="font-semibold text-gray-900 mb-2">Customer</p>
+                          <p>{selectedOrder.customer_name}</p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </main>
+            </div>
+          ) : (
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
             {/* Desktop (lg+): When panel open, split layout. Card shows placeholder until an order is selected. */}
             {rightPanelOpen ? (
@@ -1178,7 +1988,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4 order-2">
                   <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
                     <div className="space-y-3 pr-1">
-                      {filteredOrders.map((order) => (
+                      {displayOrders.map((order) => (
                         <OrderCard
                           key={order.id}
                           order={order}
@@ -1205,11 +2015,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                         />
                       ))}
                     </div>
-                    {filteredOrders.length === 0 && (
-                      <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                        <Package className="w-12 h-12 mb-3 opacity-50" />
-                        <p className="text-sm font-medium">No orders in this filter</p>
-                      </div>
+                    {displayOrders.length === 0 && (
+                      <FoodOrdersEmptyState variant={emptyVariant} />
                     )}
                   </div>
                 </div>
@@ -1220,7 +2027,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
               {viewMode === 'card' ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
-                {filteredOrders.map((order) => (
+                {displayOrders.map((order) => (
                   <OrderCard
                     key={order.id}
                     order={order}
@@ -1250,7 +2057,7 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               ) : (
               // List view - only shown on large screens (lg+)
               <div className="hidden lg:block space-y-2">
-                {filteredOrders.map((order) => (
+                {displayOrders.map((order) => (
                   <OrderListRow
                     key={order.id}
                     order={order}
@@ -1272,132 +2079,22 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                     statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
                   />
                 ))}
-                {filteredOrders.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                    <Package className="w-12 h-12 mb-3 opacity-50" />
-                    <p className="text-sm font-medium">No orders in this filter</p>
-                  </div>
+                {displayOrders.length === 0 && (
+                  <FoodOrdersEmptyState variant={emptyVariant} />
                 )}
               </div>
               )}
-              {filteredOrders.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                  <Package className="w-12 h-12 mb-3 opacity-50" />
-                  <p className="text-sm font-medium">No orders in this filter</p>
-                </div>
+              {viewMode === 'card' && displayOrders.length === 0 && (
+                <FoodOrdersEmptyState variant={emptyVariant} />
               )}
             </div>
               </>
             )}
-
-            {/* Right filters sidebar - fixed; align with header (top-14 = 56px); when layout right sidebar open sit to its left (right-56), when closed sit left of icon bar (right-14) */}
-            <div
-              className={`hidden lg:flex fixed top-14 bottom-0 w-64 flex-col border-l border-gray-200 bg-white shadow-lg z-30 transition-[right] duration-300 ease-out ${
-                rightSidebar?.isOpen ? 'right-56' : 'right-14'
-              }`}
-            >
-              <div className="flex-1 overflow-y-auto hide-scrollbar p-3 pb-20 space-y-1">
-                <button
-                  onClick={() => handleFilterChange('all')}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium ${
-                    filter === 'all' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  All ({orders.length})
-                </button>
-                <button
-                  onClick={() => handleFilterChange('active')}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                    filter === 'active' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  Active
-                  <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                    {orders.filter((o) =>
-                      ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(
-                        o.order_status || 'CREATED'
-                      )
-                    ).length}
-                  </span>
-                </button>
-                {STATUS_FILTERS.map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => handleFilterChange(f.id)}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                      filter === f.id ? 'bg-orange-100 text-orange-700' : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    {f.label}
-                    {(counts[f.id] || 0) > 0 && (
-                      <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-                        {counts[f.id]}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
+          )}
           </div>
         </div>
       </div>
-
-      {/* Mobile filter drawer */}
-      {filterDrawerOpen && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setFilterDrawerOpen(false)} />
-          <div className="fixed top-0 right-0 bottom-0 w-64 max-w-[85vw] min-w-[240px] bg-white border-l border-gray-200 z-50 lg:hidden overflow-y-auto hide-scrollbar shadow-xl" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
-            <div className="p-4 flex items-center justify-between border-b border-gray-200 sticky top-0 bg-white">
-              <h3 className="font-semibold text-gray-900">Filter by status</h3>
-              <button onClick={() => setFilterDrawerOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="p-3 space-y-1">
-              <button
-                onClick={() => handleFilterChange('all')}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium ${
-                  filter === 'all' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                All ({orders.length})
-              </button>
-              <button
-                onClick={() => handleFilterChange('active')}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                  filter === 'active' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                Active
-                <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                  {orders.filter((o) =>
-                    ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(
-                      o.order_status || 'CREATED'
-                    )
-                  ).length}
-                </span>
-              </button>
-              {STATUS_FILTERS.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => handleFilterChange(f.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                    filter === f.id ? 'bg-orange-100 text-orange-700' : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {f.label}
-                  {(counts[f.id] || 0) > 0 && (
-                    <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-                      {counts[f.id]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Reject modal – portaled so overlay is above sidebar (z-50); backdrop-blur covers full screen */}
       {rejectModal && typeof document !== 'undefined' && createPortal(
@@ -1691,19 +2388,11 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
               <label className="text-xs font-semibold text-gray-700 block">Reason for closing <span className="text-red-500">*</span></label>
               <select value={closeReason} onChange={(e) => setCloseReason(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white">
                 <option value="">Select reason</option>
-                <option value="Staff shortage">Staff shortage</option>
-                <option value="Inventory restock">Inventory restock</option>
-                <option value="Device issue / electricity">Device issue / electricity</option>
-                <option value="Run out of Gas">Run out of Gas</option>
-                <option value="Payment issue">Payment issue</option>
-                <option value="Rush of offline orders">Rush of offline orders</option>
-                <option value="Equipment issue">Equipment issue</option>
-                <option value="Holiday / Off">Holiday / Off</option>
-                <option value="Maintenance">Maintenance</option>
-                <option value="Personal / Emergency">Personal / Emergency</option>
-                <option value="Kitchen / Prep area issue">Kitchen / Prep area issue</option>
-                <option value="Supplier delay">Supplier delay</option>
-                <option value="Other">Other</option>
+                {MERCHANT_PORTAL_CLOSE_REASONS.map((r) => (
+                  <option key={r} value={r}>
+                    {merchantPortalCloseReasonWithSuffix(r)}
+                  </option>
+                ))}
               </select>
               {closeReason === 'Other' && (
                 <input type="text" value={closeReasonOther} onChange={(e) => setCloseReasonOther(e.target.value)} placeholder="Enter reason" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900" />

@@ -20,6 +20,13 @@ import { useActiveTab } from "@/context/ActiveTabContext";
 import { useAuth } from "@/context/AuthContext";
 import { useNotifications } from "@/context/NotificationContext";
 import { getOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
+import {
+  getNextOpenDayStartIso,
+  getNextOpenIsoAfterIstCalendarDay,
+  nowInStoreTz,
+  operatingHoursToFlatRow,
+} from "@/lib/merchantStoreNextOpenIso";
+import { formatCloseReasonForCard } from "@/lib/formatCloseReasonForCard";
 import type { ChildStore } from "@/context/AuthContext";
 
 const DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
@@ -313,31 +320,38 @@ function MainHeader({
   );
 }
 
-/** Returns "02h 15m 30s" for "Reopen in - **02h 15m 30s**" (updates every second). */
+/** Parse API / schedule ISO; bare calendar times are IST (same as backend schedule), not device-local. */
+function parseCountdownTarget(isoStr: string): Date {
+  let normalized = isoStr.replace(" ", "T");
+  if (!/[zZ]$/.test(normalized)) {
+    normalized = normalized.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"); // +hhmm -> +hh:mm
+    normalized = normalized.replace(/([+-]\d{2})$/, "$1:00"); // +hh -> +hh:00
+  }
+  if (!/[zZ]$/.test(normalized) && !/[+-]\d{2}:\d{2}$/.test(normalized) && /^\d{4}-\d{2}-\d{2}T/.test(normalized)) {
+    return new Date(`${normalized}+05:30`);
+  }
+  return new Date(normalized);
+}
+
+/** Same segment format as dashboard / Partner Site: `{h}h {m}m {s}s` (updates every second). */
 function formatNextReopenCountdown(iso: string | Date | null | undefined): string | null {
   if (iso == null) return null;
   const isoStr = typeof iso === "string" ? iso.trim() : iso instanceof Date ? iso.toISOString() : String(iso).trim();
   if (!isoStr || isoStr.length === 0) return null;
-  const normalized = isoStr.replace(" ", "T");
-  const target = new Date(normalized);
+  const target = parseCountdownTarget(isoStr);
   const now = new Date();
   const diffMs = target.getTime() - now.getTime();
   if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
-  const totalSeconds = Math.floor(diffMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const parts: string[] = [];
-  if (hours > 0) parts.push(`${String(hours).padStart(2, "0")}h`);
-  parts.push(`${String(minutes).padStart(2, "0")}m`);
-  parts.push(`${String(seconds).padStart(2, "0")}s`);
-  return parts.join(" ");
+  const h = Math.floor(diffMs / 3600000);
+  const m = Math.floor((diffMs % 3600000) / 60000);
+  const s = Math.floor((diffMs % 60000) / 1000);
+  return `${h}h ${m}m ${s}s`;
 }
 
 function formatReopenAtLabel(iso: string | null | undefined): string | null {
   if (iso == null || String(iso).trim() === "") return null;
-  const s = String(iso).trim().replace(" ", "T");
-  const d = new Date(s);
+  const s = String(iso).trim();
+  const d = parseCountdownTarget(s);
   if (!Number.isFinite(d.getTime())) return null;
   return new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
@@ -365,10 +379,7 @@ function StoreStatusCard({
   reopenAtIso: reopenAtIsoProp,
   reopenAtFormatted,
   reopenCountdownLabelPrefix,
-  manualCloseUntil,
-  nextOpenIso,
-  scheduledClosureTo,
-  upcomingScheduledClosureFrom,
+  lastOpenedLine,
   lastClosedLine,
 }: {
   onToggleRequest: () => void;
@@ -381,21 +392,14 @@ function StoreStatusCard({
   reopenAtFormatted?: string | null;
   /** When temp close: "Opens in" else "Reopen at:" */
   reopenCountdownLabelPrefix?: string;
-  manualCloseUntil?: string | null;
-  nextOpenIso?: string | null;
-  scheduledClosureTo?: string | null;
-  upcomingScheduledClosureFrom?: string | null;
+  /** "Last: Opened by ..." when store is online */
+  lastOpenedLine?: string | null;
   /** "Last: Closed by Name (ID: id) · 11:56:12 am" when temp close */
   lastClosedLine?: string | null;
 }) {
   const { isOnline } = useStoreStatus();
   const countdownPrefix = reopenCountdownLabelPrefix ?? "Reopen at:";
-  const reopenAtIso =
-    normalizeIso(reopenAtIsoProp) ??
-    normalizeIso(manualCloseUntil) ??
-    normalizeIso(nextOpenIso) ??
-    normalizeIso(scheduledClosureTo) ??
-    normalizeIso(upcomingScheduledClosureFrom);
+  const reopenAtIso = normalizeIso(reopenAtIsoProp);
   const [countdownTime, setCountdownTime] = useState<string | null>(() =>
     reopenAtIso ? formatNextReopenCountdown(reopenAtIso) : null
   );
@@ -436,6 +440,11 @@ function StoreStatusCard({
           <Text style={styles.statusCardSubtitle} numberOfLines={2}>
             {isOnline ? "You are receiving orders" : (offlineSubtitle ?? "Closed: Manual close")}
           </Text>
+          {isOnline && lastOpenedLine && (
+            <Text style={styles.statusCardMeta} numberOfLines={1}>
+              {lastOpenedLine}
+            </Text>
+          )}
           {!isOnline && lastClosedLine && (
             <Text style={styles.statusCardMeta} numberOfLines={1}>
               {lastClosedLine}
@@ -501,6 +510,11 @@ export function MerchantCustomHeader() {
     manualCloseStartAt,
     closedBy,
     closedById,
+    lastToggleType,
+    lastToggledAt,
+    lastToggledByName,
+    lastToggledById,
+    lastToggledByEmail,
   } = useStoreStatus();
   const hasScheduledClosure =
     scheduledClosure != null ||
@@ -532,6 +546,7 @@ export function MerchantCustomHeader() {
   const [showCloseDatePicker, setShowCloseDatePicker] = useState(false);
   const [showCloseTimePicker, setShowCloseTimePicker] = useState(false);
   const [todayHoursLabel, setTodayHoursLabel] = useState<string | null>(null);
+  const [operatingHours, setOperatingHours] = useState<OperatingHours | null>(null);
 
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
@@ -552,6 +567,7 @@ export function MerchantCustomHeader() {
   useEffect(() => {
     if (!selectedStore?.id || !token) {
       setTodayHoursLabel(null);
+      setOperatingHours(null);
       return;
     }
     let cancelled = false;
@@ -559,11 +575,13 @@ export function MerchantCustomHeader() {
       .then((hours) => {
         if (cancelled) return;
         const h = hours ?? null;
+        setOperatingHours(h);
         setTodayHoursLabel(getTodayHoursLabel(h));
       })
       .catch(() => {
         if (!cancelled) {
           setTodayHoursLabel(null);
+          setOperatingHours(null);
         }
       });
     return () => {
@@ -601,6 +619,15 @@ export function MerchantCustomHeader() {
   const getCloseUntilIso = (): string | null => {
     if (closeMode === "MANUAL") return null;
     if (closeMode === "TODAY") {
+      if (operatingHours) {
+        const row = operatingHoursToFlatRow(operatingHours);
+        const { dayOfWeek } = nowInStoreTz();
+        const ref = new Date();
+        const next =
+          getNextOpenIsoAfterIstCalendarDay(row, dayOfWeek, ref) ??
+          getNextOpenDayStartIso(row, dayOfWeek, ref);
+        if (next) return next;
+      }
       const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" });
       const parts = formatter.formatToParts(new Date());
       const y = parts.find((p) => p.type === "year")?.value ?? "";
@@ -650,7 +677,7 @@ export function MerchantCustomHeader() {
       closeWarningModal();
       if (warningModal.goingOffline) {
         const opts = {
-          manual_close_until: getCloseUntilIso() ?? undefined,
+          manual_close_until: closeMode === "MANUAL" ? null : (getCloseUntilIso() ?? undefined),
           manual_close_reason: (closeReason === "Other" ? closeReasonOtherText.trim() : closeReason) ?? undefined,
         };
         closeStore(opts).catch(() => {});
@@ -726,6 +753,9 @@ export function MerchantCustomHeader() {
     manualCloseUntil != null &&
     manualCloseUntil !== "" &&
     new Date(manualCloseUntil).getTime() > Date.now();
+
+  /** Single source: `StoreStatusContext.reopenAtIso` (aligned with dashboard `opens_at`). */
+  const primaryReopenIso = reopenAtIsoFromContext;
   // Map backend status_reason / unavailable_reason to required UI labels.
   const statusReasonToLabel: Record<string, string> = {
     manual_lock: "Store locked manually",
@@ -738,7 +768,10 @@ export function MerchantCustomHeader() {
   // Priority: Manual Lock > Temporary Close > Manual Close > Schedule. Prefer exact API reason (manualCloseReason / close_reason) on card.
   const closedLabelFromApi = ((): string | null => {
     if (manualActivationLock) return "Store locked manually";
-    if (isTempClose) return manualCloseReason && String(manualCloseReason).trim() !== "" ? `Temporarily closed – ${String(manualCloseReason).trim()}` : "Temporarily closed";
+    if (isTempClose)
+      return manualCloseReason && String(manualCloseReason).trim() !== ""
+        ? `Temporarily closed – ${formatCloseReasonForCard(String(manualCloseReason).trim()) ?? String(manualCloseReason).trim()}`
+        : "Temporarily closed";
     if (statusReason != null && statusReasonToLabel[statusReason]) return statusReasonToLabel[statusReason];
     if (unavailableReason != null && statusReasonToLabel[unavailableReason]) return statusReasonToLabel[unavailableReason];
     if (!isOnline && autoOpenFromSchedule && reopenAtIsoFromContext != null) return "Outside operating hours";
@@ -758,10 +791,12 @@ export function MerchantCustomHeader() {
   // Card subtitle: always "Closed: {exact reason}" – prefer API close_reason (manualCloseReason) when available
   const exactClosedReason =
     manualCloseReason != null && String(manualCloseReason).trim() !== ""
-      ? String(manualCloseReason).trim()
+      ? formatCloseReasonForCard(String(manualCloseReason).trim())
       : isTempClose
         ? "Temporarily closed"
-        : closedLabelFromApi;
+        : closedLabelFromApi != null
+          ? formatCloseReasonForCard(closedLabelFromApi)
+          : null;
   const closedReasonLine =
     exactClosedReason != null
       ? `Closed: ${exactClosedReason}`
@@ -771,7 +806,7 @@ export function MerchantCustomHeader() {
           ? (lastCloseReasonLabel.startsWith("Closed:") ? lastCloseReasonLabel : `Closed: ${lastCloseReasonLabel}`)
           : null) ??
         (scheduledClosure?.reason != null && String(scheduledClosure?.reason ?? "").trim() !== "")
-          ? `Closed: ${String(scheduledClosure?.reason ?? "")}`
+          ? `Closed: ${formatCloseReasonForCard(String(scheduledClosure?.reason ?? "").trim()) ?? String(scheduledClosure?.reason ?? "")}`
           : restrictionType != null
             ? `Closed: ${restrictionType}`
             : manualActivationLock
@@ -792,16 +827,9 @@ export function MerchantCustomHeader() {
   }
 
   if (!isOnline) {
-    const autoReopenSource =
-      reopenAtIsoFromContext ??
-      scheduledClosure?.to ??
-      manualCloseUntil ??
-      upcomingScheduledClosure?.from ??
-      null;
-
-    if (isTempClose && manualCloseUntil) {
-      const when = formatIstDateTimeCompact(manualCloseUntil);
-      const remaining = formatRemainingShort(manualCloseUntil);
+    if (isTempClose && primaryReopenIso) {
+      const when = formatIstDateTimeCompact(primaryReopenIso);
+      const remaining = formatRemainingShort(primaryReopenIso);
       if (when) {
         autoReopenLabel = `${tempClosedDurationLabel ? `${tempClosedDurationLabel} • ` : ""}Reopening at ${when}${remaining ? ` (${remaining})` : ""}`;
       }
@@ -818,23 +846,53 @@ export function MerchantCustomHeader() {
     }
   }
 
-  // "Last: Closed by Name (ID: uuid) · 11:56:12 am" when temp close
+  const isGatiMitraActor = (emailOrName: string | null | undefined): boolean => {
+    const v = emailOrName != null ? String(emailOrName).toLowerCase() : "";
+    return v.includes("gatimitra") || v.endsWith("@gatimitra.in") || v.endsWith("@gatimitra.com");
+  };
+
+  // "Last: Closed by ..." when store is offline
   let lastClosedLine: string | null = null;
-  if (isTempClose && (closedBy != null || manualCloseStartAt != null)) {
-    const timeStr =
-      manualCloseStartAt != null
-        ? new Intl.DateTimeFormat("en-IN", {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: true,
-            timeZone: "Asia/Calcutta",
-          }).format(new Date(manualCloseStartAt))
-        : null;
-    const who = closedBy && String(closedBy).trim() !== "" ? closedBy : null;
-    const idPart = closedById && String(closedById).trim() !== "" ? ` (ID: ${closedById.trim()})` : "";
-    const byPart = who ? `Closed by ${who}${idPart}` : "Closed";
-    lastClosedLine = `Last: ${byPart}${timeStr ? ` · ${timeStr}` : ""}`;
+  if (!isOnline && lastToggledAt) {
+    const timeStr = new Intl.DateTimeFormat("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Calcutta",
+    }).format(new Date(lastToggledAt));
+    const tType = lastToggleType != null ? String(lastToggleType).toUpperCase() : "";
+    const storePublicId = selectedStore?.store_id ? String(selectedStore.store_id) : null;
+    if (tType.startsWith("AUTO")) {
+      lastClosedLine = `Last: Auto closed · ${timeStr}`;
+    } else if (isGatiMitraActor(lastToggledByEmail) || isGatiMitraActor(lastToggledByName)) {
+      lastClosedLine = `Last: Closed by GatiMitra (agent: ${lastToggledByEmail || "unknown"}) · ${timeStr}`;
+    } else {
+      const who = lastToggledByName || lastToggledById || "Owner";
+      lastClosedLine = `Last: Closed by ${who}${storePublicId ? ` (ID: ${storePublicId})` : ""} · ${timeStr}`;
+    }
+  }
+
+  // "Last: Opened by ..." when store is online
+  let lastOpenedLine: string | null = null;
+  if (isOnline && lastToggledAt) {
+    const timeStr = new Intl.DateTimeFormat("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Calcutta",
+    }).format(new Date(lastToggledAt));
+    const tType = lastToggleType != null ? String(lastToggleType).toUpperCase() : "";
+    const storePublicId = selectedStore?.store_id ? String(selectedStore.store_id) : null;
+    if (tType.startsWith("AUTO")) {
+      lastOpenedLine = `Last: Auto on · ${timeStr}`;
+    } else if (isGatiMitraActor(lastToggledByEmail) || isGatiMitraActor(lastToggledByName)) {
+      lastOpenedLine = `Last: Opened by GatiMitra (agent: ${lastToggledByEmail || "unknown"}) · ${timeStr}`;
+    } else {
+      const who = lastToggledByName || lastToggledById || "Owner";
+      lastOpenedLine = `Last: Opened by ${who}${storePublicId ? ` (ID: ${storePublicId})` : ""} · ${timeStr}`;
+    }
   }
 
   return (
@@ -861,39 +919,10 @@ export function MerchantCustomHeader() {
               if (!isOnline && nextCloseTime) return `Today: Next close at ${nextCloseTime}`;
               return null;
             })()}
-            reopenAtIso={
-              !isOnline
-                ? isTempClose
-                  ? (manualCloseUntil && String(manualCloseUntil).trim() !== "" ? manualCloseUntil : null)
-                  : manualCloseUntil ??
-                    reopenAtIsoFromContext ??
-                    scheduledClosure?.to ??
-                    nextOpenIso ??
-                    upcomingScheduledClosure?.from ??
-                    null
-                : null
-            }
-            reopenCountdownLabelPrefix={isTempClose ? "Opens in" : undefined}
-            reopenAtFormatted={
-              !isOnline
-                ? isTempClose
-                  ? formatIstDateTimeCompact(manualCloseUntil ?? null)
-                  : formatIstDateTimeCompact(
-                      manualCloseUntil ??
-                        reopenAtIsoFromContext ??
-                        scheduledClosure?.to ??
-                        nextOpenIso ??
-                        upcomingScheduledClosure?.from ??
-                        null
-                    )
-                : null
-            }
-            manualCloseUntil={!isOnline ? manualCloseUntil : null}
-            nextOpenIso={!isOnline ? nextOpenIso : null}
-            scheduledClosureTo={!isOnline && scheduledClosure?.to ? scheduledClosure.to : null}
-            upcomingScheduledClosureFrom={
-              !isOnline && upcomingScheduledClosure?.from ? upcomingScheduledClosure.from : null
-            }
+            reopenAtIso={!isOnline ? primaryReopenIso : null}
+            reopenCountdownLabelPrefix={!isOnline && primaryReopenIso ? "Opens in" : undefined}
+            reopenAtFormatted={!isOnline ? formatIstDateTimeCompact(primaryReopenIso) : null}
+            lastOpenedLine={isOnline ? lastOpenedLine : null}
             lastClosedLine={!isOnline ? lastClosedLine : null}
           />
         )}

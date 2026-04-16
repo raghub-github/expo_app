@@ -37,6 +37,26 @@ const CACHE_TTL = 1000; // 1 second cache per request
  * `system_users.system_user_id` matches `auth.uid()::text` (see ticket RLS migrations).
  * Uses the unique index on system_user_id — avoids slow email / LOWER(TRIM) fallbacks.
  */
+/**
+ * Resolve a dashboard `system_users` row for the current Supabase session.
+ * Tries `system_users.system_user_id = auth.uid()` first (ticket/agent pattern), then email.
+ * Keeps bootstrap and dashboard-access aligned with `getUserPermissions` / permission engine.
+ */
+export async function resolveSystemUserForSupabaseAuth(
+  supabaseAuthId: string,
+  email?: string | null
+): Promise<SystemUser | null> {
+  const id = supabaseAuthId?.trim();
+  if (id) {
+    const byAuth = await getSystemUserByAuthId(id);
+    if (byAuth) return byAuth;
+  }
+  if (email?.trim()) {
+    return getSystemUserByEmail(email);
+  }
+  return null;
+}
+
 export async function getSystemUserByAuthId(
   supabaseAuthId: string
 ): Promise<SystemUser | null> {

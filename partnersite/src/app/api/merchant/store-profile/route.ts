@@ -24,7 +24,7 @@ function getSupabase() {
   });
 }
 
-const ALLOWED_MEDIA_KEYS = ['banner_url', 'logo_url', 'gallery_images'] as const;
+const ALLOWED_MEDIA_KEYS = ['banner_url', 'gallery_images'] as const;
 
 function keyFromMediaRef(val: unknown): string | null {
   if (val == null) return null;
@@ -64,12 +64,18 @@ function isBrandingMediaKeyForStore(key: string, storePublicId: string, parentId
 
 /**
  * PATCH /api/merchant/store-profile
- * Body: { storeId: string, banner_url?: string, logo_url?: string, gallery_images?: string[] }
+ * Body: { storeId: string, banner_url?: string, gallery_images?: string[] }
  * Updates media fields on merchant_stores. Removes replaced/cleared images from R2 one key at a time
  * (only under this store’s banner/logo/gallery paths — never whole-folder wipes).
  */
 export async function PATCH(req: NextRequest) {
   try {
+    // In dev, Fast Refresh / tab reload can abort in-flight requests (ECONNRESET / "aborted").
+    // Treat those as a client disconnect and exit quietly.
+    if (req.signal.aborted) {
+      return new NextResponse(null, { status: 499 });
+    }
+
     const body = await req.json().catch(() => ({}));
     const storeId = body?.storeId;
     if (!storeId || typeof storeId !== 'string') {
@@ -114,18 +120,20 @@ export async function PATCH(req: NextRequest) {
 
     const { data: prevRow, error: prevErr } = await db
       .from('merchant_stores')
-      .select('banner_url, logo_url, gallery_images')
+      .select('banner_url, gallery_images')
       .eq('store_id', storeIdTrim)
       .maybeSingle();
 
     if (prevErr) {
       console.error('[store-profile PATCH] load prev:', prevErr);
-      return NextResponse.json({ error: 'Could not load store' }, { status: 500 });
+      return NextResponse.json(
+        { error: 'Could not load store', details: prevErr.message, code: (prevErr as any)?.code },
+        { status: 500 }
+      );
     }
 
     const prev = prevRow as {
       banner_url?: string | null;
-      logo_url?: string | null;
       gallery_images?: string[] | null;
     } | null;
 
@@ -133,7 +141,7 @@ export async function PATCH(req: NextRequest) {
     for (const key of ALLOWED_MEDIA_KEYS) {
       if (Object.prototype.hasOwnProperty.call(body, key)) {
         const val = body[key];
-        if (key === 'banner_url' || key === 'logo_url') {
+        if (key === 'banner_url') {
           if (val === null || val === undefined) updates[key] = null;
           else if (typeof val === 'string') {
             updates[key] = toStoredDocumentUrl(val) ?? val;
@@ -162,13 +170,6 @@ export async function PATCH(req: NextRequest) {
       if (oldK && oldK !== newK) keysToDelete.add(oldK);
     }
 
-    if (Object.prototype.hasOwnProperty.call(body, 'logo_url')) {
-      const oldK = keyFromMediaRef(prev?.logo_url);
-      const newV = updates.logo_url;
-      const newK = newV == null || typeof newV !== 'string' ? null : keyFromMediaRef(newV);
-      if (oldK && oldK !== newK) keysToDelete.add(oldK);
-    }
-
     if (Object.prototype.hasOwnProperty.call(body, 'gallery_images')) {
       const prevG: string[] = Array.isArray(prev?.gallery_images) ? prev.gallery_images : [];
       const newG: string[] = Array.isArray(updates.gallery_images) ? (updates.gallery_images as string[]) : [];
@@ -192,6 +193,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     for (const k of keysToDelete) {
+      if (req.signal.aborted) break;
       if (!isBrandingMediaKeyForStore(k, accessStore.store_id, accessStore.parent_id)) {
         console.warn('[store-profile] skip R2 delete — key outside store branding paths:', k);
         continue;
@@ -205,6 +207,18 @@ export async function PATCH(req: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
+    const e = err as any;
+    const code = e?.code || e?.cause?.code;
+    const msg = typeof e?.message === 'string' ? e.message : '';
+    const aborted =
+      code === 'ECONNRESET' ||
+      msg.toLowerCase().includes('aborted') ||
+      (e?.name === 'AbortError');
+
+    if (aborted) {
+      return new NextResponse(null, { status: 499 });
+    }
+
     console.error('[store-profile PATCH]', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

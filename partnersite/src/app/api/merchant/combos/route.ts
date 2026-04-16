@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   }
   const { data, error } = await supabase
     .from('merchant_menu_combos')
-    .select('id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order')
+    .select('id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order, out_of_stock_manual, out_of_stock_until')
     .eq('store_id', access.storeIdNum)
     .or('is_deleted.is.null,is_deleted.eq.false')
     .order('display_order', { ascending: true })

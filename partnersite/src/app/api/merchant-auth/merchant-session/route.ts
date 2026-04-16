@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isInvalidRefreshToken, isNetworkOrTransientError } from "@/lib/auth/session-errors";
@@ -18,7 +18,7 @@ const maxGetUserAttempts = 3;
 const retryDelaysMs = [800, 1600];
 
 /** GET /api/merchant-auth/merchant-session — Supabase-based merchant session. */
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
     let user: {
@@ -103,21 +103,33 @@ export async function GET(request: NextRequest) {
     });
 
     let parentStoreLogo: string | null = null;
+    let parentOwnerName: string | null = null;
     if (validation.merchantParentId != null) {
       try {
         const db = getSupabaseAdmin();
-        const { data: logoRow } = await db
+        const { data: parentRow } = await db
           .from("merchant_parents")
-          .select("store_logo")
+          .select("store_logo, owner_name")
           .eq("id", validation.merchantParentId)
           .maybeSingle();
-        const raw = typeof logoRow?.store_logo === "string" ? logoRow.store_logo.trim() : "";
+        parentOwnerName =
+          typeof parentRow?.owner_name === "string" && parentRow.owner_name.trim()
+            ? parentRow.owner_name.trim()
+            : null;
+
+        const raw = typeof parentRow?.store_logo === "string" ? parentRow.store_logo.trim() : "";
         if (raw) {
           parentStoreLogo = toStoredDocumentUrl(raw) ?? raw;
         }
       } catch {
         parentStoreLogo = null;
+        parentOwnerName = null;
       }
+    }
+
+    // Ensure UI always shows owner name from merchant_parents (not OAuth profile name).
+    if (parentOwnerName) {
+      user = { ...user, name: parentOwnerName };
     }
 
     const parent = validation.isValid

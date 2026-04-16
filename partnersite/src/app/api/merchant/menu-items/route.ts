@@ -179,7 +179,6 @@ export async function POST(req: NextRequest) {
       .select('id', { count: 'exact', head: true })
       .eq('store_id', store.id)
       .eq('is_deleted', false)
-      .eq('is_locked_by_plan', false)
 
     const { data: activeSub } = await supabase
       .from('merchant_subscriptions')
@@ -275,9 +274,6 @@ export async function POST(req: NextRequest) {
       fat_unit: body.fat_unit ?? 'mg',
       fibre: parseOptNum(body.fibre),
       fibre_unit: body.fibre_unit ?? 'mg',
-      is_locked_by_plan: willExceedLimit,
-      locked_reason: willExceedLimit ? 'plan_item_limit_exceeded' : null,
-      locked_at: willExceedLimit ? new Date().toISOString() : null,
       // Merchant / MX portal: pending agent verification (dashboard agents use APPROVED on create).
       approval_status: 'PENDING' as const,
       approved_at: null,
@@ -431,16 +427,11 @@ export async function PATCH(req: NextRequest) {
 
     const { data: existingItemRow } = await supabase
       .from('merchant_menu_items')
-      .select('id, is_locked_by_plan')
+      .select('id')
       .eq('item_id', String(itemId))
       .eq('store_id', store.id)
       .maybeSingle()
-    if (existingItemRow && (existingItemRow as any).is_locked_by_plan) {
-      return NextResponse.json(
-        { error: 'This item is locked. Upgrade your plan to edit it.' },
-        { status: 403 }
-      )
-    }
+    // Plan-locking was removed from schema; edits are always allowed.
 
     const hasItemFields =
       body.item_name != null ||

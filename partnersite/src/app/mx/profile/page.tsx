@@ -21,7 +21,7 @@ function bankAttachmentHref(value: string | null | undefined): string | null {
   if (t.includes("://")) return `/api/attachments/proxy?url=${encodeURIComponent(t)}`;
   return toStoredDocumentUrl(t) ?? t;
 }
-import { Toaster, toast } from "sonner";
+import { toast } from "sonner";
 import { 
   Building, 
   MapPin, 
@@ -182,6 +182,7 @@ export default function ProfilePage() {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [savingField, setSavingField] = useState<string | null>(null);
   const [uploadingImages, setUploadingImages] = useState<string[]>([]);
+  const [uploadingGallerySlot, setUploadingGallerySlot] = useState<{ index: number; preview: string } | null>(null);
   const [bankVerification, setBankVerification] = useState<{
     verified: boolean;
     canTryVerify: boolean;
@@ -207,6 +208,8 @@ export default function ProfilePage() {
   const [agreementLoading, setAgreementLoading] = useState(false);
   const bannerInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
+  const gallerySlotInputRef = useRef<HTMLInputElement>(null);
+  const gallerySlotIndexRef = useRef<number | null>(null);
 
   /* ===== GET STORE ID ===== */
   useEffect(() => {
@@ -357,61 +360,6 @@ export default function ProfilePage() {
     }
   };
 
-  /* ===== CONVERT R2 URLs TO SIGNED URLs (so banner/gallery load from onboarding or dashboard) ===== */
-  const convertR2UrlToSigned = async (url: string | null | undefined): Promise<string | null> => {
-    if (!url || typeof url !== 'string') return null;
-    const u = url.trim();
-    if (!u) return null;
-    // Already a valid signed URL (avoid re-requesting; note: may be expired, we still try to refresh below if it looks like R2)
-    if (u.includes('X-Amz-') && u.includes('r2.cloudflarestorage.com')) {
-      try {
-        const res = await fetch(`/api/images/signed-url?url=${encodeURIComponent(u)}`);
-        const data = await res.json();
-        if (res.ok && data.url) return data.url;
-      } catch (err) {
-        console.error('Failed to refresh signed URL:', err);
-      }
-      return u;
-    }
-    // Proxy URL (stored from onboarding or dashboard): extract key and get fresh signed URL
-    if (u.includes('/api/attachments/proxy') && u.includes('key=')) {
-      try {
-        const parsed = new URL(u, 'https://dummy');
-        const key = parsed.searchParams.get('key');
-        if (key) {
-          const res = await fetch(`/api/images/signed-url?key=${encodeURIComponent(decodeURIComponent(key))}`);
-          const data = await res.json();
-          if (res.ok && data.url) return data.url;
-        }
-      } catch (err) {
-        console.error('Failed to get signed URL from proxy:', err);
-      }
-      return u;
-    }
-    // Raw R2 key (path with no protocol, e.g. docs/merchants/... or merchants/...)
-    if (!u.includes('://')) {
-      try {
-        const res = await fetch(`/api/images/signed-url?key=${encodeURIComponent(u)}`);
-        const data = await res.json();
-        if (res.ok && data.url) return data.url;
-      } catch (err) {
-        console.error('Failed to get signed URL for key:', err);
-      }
-      return u;
-    }
-    // Full R2 or merchant-assets URL
-    if (u.includes('r2.cloudflarestorage.com') || u.includes('merchant-assets/') || u.includes('merchants/') || u.includes('docs/')) {
-      try {
-        const res = await fetch(`/api/images/signed-url?url=${encodeURIComponent(u)}`);
-        const data = await res.json();
-        if (res.ok && data.url) return data.url;
-      } catch (err) {
-        console.error('Failed to get signed URL:', err);
-      }
-    }
-    return u;
-  };
-
   /* ===== FETCH AREA MANAGER (via API to bypass RLS / auth issues) ===== */
   useEffect(() => {
     if (!storeId) {
@@ -515,16 +463,16 @@ export default function ProfilePage() {
 
         const store = storeData as MerchantStore | null;
         if (store) {
-          const bannerUrl = await convertR2UrlToSigned(store.banner_url);
-          const galleryImages = store.gallery_images
-            ? await Promise.all(store.gallery_images.map(convertR2UrlToSigned))
+          const bannerUrl = normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url;
+          const galleryImages = Array.isArray(store.gallery_images)
+            ? store.gallery_images
+                .map((u) => normalizeMerchantStoreMediaUrl(u) ?? u)
+                .filter((u): u is string => typeof u === "string" && u.trim().length > 0)
             : null;
-          const logoUrl = await convertR2UrlToSigned(store.logo_url);
           const updatedStore = {
             ...store,
             banner_url: bannerUrl || store.banner_url,
-            gallery_images: galleryImages?.filter(Boolean) as string[] || store.gallery_images,
-            logo_url: logoUrl || store.logo_url,
+            gallery_images: (galleryImages ?? store.gallery_images) as any,
           };
           setStore(updatedStore);
           setEditData(updatedStore);
@@ -743,11 +691,10 @@ export default function ProfilePage() {
 
   /* ===== R2 UPLOAD (server-side, no Supabase Storage RLS) =====
    * Banner/gallery: docs/merchants/{parent_pk}/stores/{GMMC}/onboarding/assets/{banner|gallery}/...
-   * Logo: .../store-media/logo/...
    */
   const uploadStoreMediaToR2 = async (
     file: File,
-    kind: "banner" | "gallery" | "logo",
+    kind: "banner" | "gallery",
     gallerySlot?: number,
     galleryBatchTs?: number
   ): Promise<string | null> => {
@@ -766,9 +713,6 @@ export default function ProfilePage() {
       parent = getOnboardingAssetsGalleryPath(parentPk, storeId);
       const ts = galleryBatchTs ?? Date.now();
       filename = `gallery_${ts}_${gallerySlot ?? 0}.${ext}`;
-    } else {
-      parent = getMerchantStoreMediaPath(storeId, "logo", String(parentPk));
-      filename = `logo_${Date.now()}.${ext}`;
     }
     const formData = new FormData();
     formData.append("file", file);
@@ -794,53 +738,59 @@ export default function ProfilePage() {
   };
 
   /* ===== UPDATE STORE MEDIA VIA API (bypasses RLS, uses service role on server) ===== */
-  const updateStoreMedia = async (updates: { banner_url?: string; logo_url?: string; gallery_images?: string[] }): Promise<boolean> => {
+  const updateStoreMedia = async (updates: { banner_url?: string; gallery_images?: string[] }): Promise<boolean> => {
     if (!storeId) return false;
     const res = await fetch("/api/merchant/store-profile", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      cache: "no-store",
       body: JSON.stringify({ storeId, ...updates }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data?.error || "Failed to save");
+      const msg =
+        (data?.error && String(data.error)) ||
+        `Failed to save (HTTP ${res.status})`;
+      const details =
+        data?.details ? `\n${String(data.details)}` : data?.code ? `\n${String(data.code)}` : "";
+      throw new Error(`${msg}${details}`);
     }
     return true;
   };
 
   /* ===== IMAGE UPLOAD HANDLERS ===== */
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'banner' | 'logo' | 'gallery') => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'banner' | 'gallery') => {
     const files = Array.from(e.target.files || []);
     if (!files.length || !storeId) return;
 
-    setUploadingImages(files.map(file => URL.createObjectURL(file)));
+    const currentGallery = store?.gallery_images || [];
+    const remainingSlots = Math.max(0, 5 - currentGallery.length);
+    const effectiveFiles = type === "gallery" ? files.slice(0, remainingSlots) : files.slice(0, 1);
+
+    setUploadingImages(effectiveFiles.map(file => URL.createObjectURL(file)));
     e.target.value = "";
 
     try {
       if (type === 'banner') {
-        const file = files[0];
+        const file = effectiveFiles[0];
         const url = await uploadStoreMediaToR2(file, "banner");
         if (!url) throw new Error("Banner upload failed");
         await updateStoreMedia({ banner_url: url });
         setStore(r => r ? { ...r, banner_url: url } : r);
         setEditData(r => r ? { ...r, banner_url: url } : r);
         toast.success("Store banner updated!");
-      } else if (type === 'logo') {
-        const file = files[0];
-        const url = await uploadStoreMediaToR2(file, "logo");
-        if (!url) throw new Error("Logo upload failed");
-        await updateStoreMedia({ logo_url: url });
-        setStore(r => r ? { ...r, logo_url: url } : r);
-        setEditData(r => r ? { ...r, logo_url: url } : r);
-        toast.success("Logo updated!");
       } else if (type === 'gallery') {
+        if (effectiveFiles.length === 0) {
+          toast.error("Gallery is full (max 5 images).");
+          return;
+        }
         const galleryBatch = Date.now();
         const urls = await Promise.all(
-          files.map((file, i) => uploadStoreMediaToR2(file, "gallery", i, galleryBatch))
+          effectiveFiles.map((file, i) => uploadStoreMediaToR2(file, "gallery", i, galleryBatch))
         );
         const validUrls = urls.filter(Boolean) as string[];
-        const currentGallery = store?.gallery_images || [];
-        const newGallery = [...currentGallery, ...validUrls].slice(0, 10);
+        const newGallery = [...currentGallery, ...validUrls].slice(0, 5);
         await updateStoreMedia({ gallery_images: newGallery });
         setStore(r => r ? { ...r, gallery_images: newGallery } : r);
         setEditData(r => r ? { ...r, gallery_images: newGallery } : r);
@@ -852,6 +802,50 @@ export default function ProfilePage() {
       console.error("Image upload error:", error);
       toast.error(error instanceof Error ? error.message : "Image upload failed");
       setUploadingImages([]);
+    }
+  };
+
+  const openGallerySlotPicker = (index: number) => {
+    if (!storeId) return;
+    gallerySlotIndexRef.current = index;
+    gallerySlotInputRef.current?.click();
+  };
+
+  const handleGallerySlotUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !storeId) return;
+
+    const currentGallery = store?.gallery_images || [];
+    if (currentGallery.length >= 5) {
+      toast.error("Gallery is full (max 5 images).");
+      return;
+    }
+
+    const requestedIndex = gallerySlotIndexRef.current ?? currentGallery.length;
+    const targetIndex = requestedIndex < currentGallery.length ? requestedIndex : currentGallery.length;
+    const preview = URL.createObjectURL(file);
+    setUploadingGallerySlot({ index: targetIndex, preview });
+
+    try {
+      const galleryBatch = Date.now();
+      const url = await uploadStoreMediaToR2(file, "gallery", targetIndex, galleryBatch);
+      if (!url) throw new Error("Gallery upload failed");
+
+      const next = [...currentGallery];
+      if (targetIndex < next.length) next[targetIndex] = url;
+      else next.push(url);
+      const newGallery = next.slice(0, 5);
+
+      await updateStoreMedia({ gallery_images: newGallery });
+      setStore((r) => (r ? { ...r, gallery_images: newGallery } : r));
+      setEditData((r) => (r ? { ...r, gallery_images: newGallery } : r));
+      toast.success("Gallery image updated!");
+    } catch (err) {
+      console.error("Gallery slot upload error:", err);
+      toast.error(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploadingGallerySlot(null);
     }
   };
 
@@ -947,7 +941,6 @@ export default function ProfilePage() {
 
   return (
     <ProfileErrorBoundary>
-      <Toaster position="top-right" richColors />
       <MXLayoutWhite
         restaurantName={store.store_name}
         restaurantId={store.store_id}
@@ -956,8 +949,8 @@ export default function ProfilePage() {
         <div className="bg-gray-50 flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* MAIN CONTENT — no duplicate strip under shell header (avoids large white gap) */}
           <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hide-scrollbar" style={{ scrollBehavior: 'smooth' }}>
-            <div className="px-4 pt-0 pb-3">
-              <div className="max-w-7xl mx-auto w-full">
+            <div className="px-4 pt-2 pb-3">
+              <div className="w-full">
 
                 {/* MAIN CARD */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-2">
@@ -1466,6 +1459,9 @@ export default function ProfilePage() {
                                     {storeDocuments.pan_holder_name && (
                                       <div className="text-xs text-gray-600">Holder: {storeDocuments.pan_holder_name}</div>
                                     )}
+                                    {storeDocuments.pan_expiry_date && (
+                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.pan_expiry_date)}</div>
+                                    )}
                                     {storeDocuments.pan_document_url && (
                                       <a href={storeDocuments.pan_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
                                     )}
@@ -1487,6 +1483,9 @@ export default function ProfilePage() {
                                       </span>
                                     </div>
                                     <div className="text-xs text-gray-600">Number: {storeDocuments.gst_document_number}</div>
+                                    {storeDocuments.gst_expiry_date && (
+                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.gst_expiry_date)}</div>
+                                    )}
                                     {storeDocuments.gst_document_url && (
                                       <a href={storeDocuments.gst_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
                                     )}
@@ -1511,6 +1510,9 @@ export default function ProfilePage() {
                                     {storeDocuments.aadhaar_holder_name && (
                                       <div className="text-xs text-gray-600">Holder: {storeDocuments.aadhaar_holder_name}</div>
                                     )}
+                                    {storeDocuments.aadhaar_expiry_date && (
+                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.aadhaar_expiry_date)}</div>
+                                    )}
                                     {storeDocuments.aadhaar_document_url && (
                                       <a href={storeDocuments.aadhaar_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
                                     )}
@@ -1532,6 +1534,9 @@ export default function ProfilePage() {
                                       </span>
                                     </div>
                                     <div className="text-xs text-gray-600">Number: {storeDocuments.fssai_document_number}</div>
+                                    {storeDocuments.fssai_expiry_date && (
+                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.fssai_expiry_date)}</div>
+                                    )}
                                     {storeDocuments.fssai_document_url && (
                                       <a href={storeDocuments.fssai_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
                                     )}
@@ -1553,6 +1558,9 @@ export default function ProfilePage() {
                                       </span>
                                     </div>
                                     <div className="text-xs text-gray-600">Number: {storeDocuments.trade_license_document_number}</div>
+                                    {storeDocuments.trade_license_expiry_date && (
+                                      <div className="text-xs text-gray-600">Expiry: {formatDate(storeDocuments.trade_license_expiry_date)}</div>
+                                    )}
                                     {storeDocuments.trade_license_document_url && (
                                       <a href={storeDocuments.trade_license_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
                                     )}
@@ -1576,6 +1584,11 @@ export default function ProfilePage() {
                                       </span>
                                     </div>
                                     <div className="text-xs text-gray-600">Number: {storeDocuments.other_document_number}</div>
+                                    {(storeDocuments.other_expiry_date || storeDocuments.other_document_expiry_date) && (
+                                      <div className="text-xs text-gray-600">
+                                        Expiry: {formatDate((storeDocuments.other_expiry_date || storeDocuments.other_document_expiry_date) as string)}
+                                      </div>
+                                    )}
                                     {storeDocuments.other_document_url && (
                                       <a href={storeDocuments.other_document_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:underline mt-1 inline-block">View Document</a>
                                     )}
@@ -2029,6 +2042,13 @@ export default function ProfilePage() {
                             style={{ display: "none" }}
                             onChange={(e) => handleImageUpload(e, 'gallery')}
                           />
+                          <input
+                            type="file"
+                            accept="image/*"
+                            ref={gallerySlotInputRef}
+                            style={{ display: "none" }}
+                            onChange={handleGallerySlotUpload}
+                          />
                         </div>
                         
                         <div className="grid grid-cols-5 gap-2 mt-3">
@@ -2038,10 +2058,19 @@ export default function ProfilePage() {
                             const uploadingIndex = index - gallery.length;
                             const isUploading = uploadingIndex >= 0 && uploadingIndex < uploadingImages.length;
                             const uploadingPreview = isUploading ? uploadingImages[uploadingIndex] : null;
+                            const slotUploading = uploadingGallerySlot?.index === index ? uploadingGallerySlot : null;
                             return (
                               <div
                                 key={index}
-                                className="relative group aspect-square min-h-[80px] bg-gray-100 rounded-lg border border-gray-200 overflow-hidden flex items-center justify-center"
+                                className={`relative group aspect-square min-h-[80px] bg-gray-100 rounded-lg border border-gray-200 overflow-hidden flex items-center justify-center ${
+                                  (img || (store.gallery_images?.length ?? 0) < 5) ? "cursor-pointer hover:ring-2 hover:ring-green-300" : ""
+                                }`}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openGallerySlotPicker(index)}
+                                onKeyDown={(ev) => {
+                                  if (ev.key === "Enter" || ev.key === " ") openGallerySlotPicker(index);
+                                }}
                               >
                                 {img ? (
                                   <>
@@ -2053,11 +2082,24 @@ export default function ProfilePage() {
                                     <button
                                       type="button"
                                       onClick={() => handleRemoveGalleryImage(index)}
+                                      onMouseDown={(ev) => ev.stopPropagation()}
+                                      onClickCapture={(ev) => ev.stopPropagation()}
                                       className="absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition-opacity"
                                     >
                                       ×
                                     </button>
                                   </>
+                                ) : slotUploading ? (
+                                  <div className="relative w-full h-full">
+                                    <img
+                                      src={slotUploading.preview}
+                                      alt="Uploading..."
+                                      className="w-full h-full object-cover opacity-60"
+                                    />
+                                    <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                                      <div className="animate-spin rounded-full h-6 w-6 border-2 border-white border-t-transparent" />
+                                    </div>
+                                  </div>
                                 ) : uploadingPreview ? (
                                   <div className="relative w-full h-full">
                                     <img
@@ -2073,6 +2115,7 @@ export default function ProfilePage() {
                                   <div className="text-center p-2">
                                     <ImageIcon size={20} className="text-gray-400 mx-auto mb-1" />
                                     <p className="text-[10px] text-gray-500">Slot {index + 1}</p>
+                                    <p className="text-[10px] text-gray-400 mt-0.5">Tap to upload</p>
                                   </div>
                                 )}
                               </div>

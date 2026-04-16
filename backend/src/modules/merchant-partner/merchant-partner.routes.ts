@@ -9,9 +9,12 @@ import {
   getNextOpenClose,
   getNextOpenDayStartIso,
   getNextOpenIso,
+  getNextOpenIsoAfterIstCalendarDay,
+  isLikelyLegacyEndOfDayIstClose,
   nowInStoreTz,
   runStoreScheduleTickForStore,
   emitStoreStatusChanged,
+  syncMerchantStoresOnlineTriple,
 } from "./store-schedule-engine.js";
 import { resolveTicketTitleForUnifiedTicketsInsert } from "./unified-ticket-title-for-insert.js";
 import { buildGrowthBusinessInsights } from "./growth-business-insights.js";
@@ -3141,11 +3144,15 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                    msa.auto_open_from_schedule,
                    msa.block_auto_open,
                    msa.manual_close_until,
+                   msa.is_manual_override,
+                   msa.schedule_end_prompt_expires_at,
                    msa.close_reason,
                    msa.unavailable_reason,
                    msa.auto_available_at,
                    msa.restriction_type,
+                   msa.last_toggle_type,
                    msa.last_toggled_at,
+                   msa.last_toggled_by_email,
                    msa.last_toggled_by_name,
                    msa.last_toggled_by_id
             FROM merchant_stores ms
@@ -3162,19 +3169,32 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             auto_open_from_schedule?: boolean | null;
             block_auto_open?: boolean | null;
             manual_close_until?: Date | string | null;
+            is_manual_override?: boolean | null;
+            schedule_end_prompt_expires_at?: Date | string | null;
             close_reason?: string | null;
+            unavailable_reason?: string | null;
             restriction_type?: string | null;
+            last_toggle_type?: string | null;
             last_toggled_at?: Date | string | null;
+            last_toggled_by_email?: string | null;
             last_toggled_by_name?: string | null;
             last_toggled_by_id?: string | null;
           };
           const autoOpenFromSchedule = row.auto_open_from_schedule !== false;
           const blockAutoOpen = row.block_auto_open === true;
+          const normalizeInstantStr = (v: string): string => {
+            let s = v.trim().replace(" ", "T");
+            if (s && !/[zZ]$/.test(s)) {
+              s = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+              s = s.replace(/([+-]\d{2})$/, "$1:00");
+            }
+            return s;
+          };
           let manualCloseUntil: string | null = null;
           if (row.manual_close_until != null) {
             const raw = row.manual_close_until instanceof Date
               ? row.manual_close_until
-              : new Date(String(row.manual_close_until).trim().replace(" ", "T"));
+              : new Date(normalizeInstantStr(String(row.manual_close_until)));
             manualCloseUntil = Number.isNaN(raw.getTime()) ? null : raw.toISOString();
           }
           let restrictionType = row.restriction_type != null ? String(row.restriction_type) : null;
@@ -3182,16 +3202,37 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             row.close_reason != null && String(row.close_reason).trim() !== ""
               ? String(row.close_reason).trim()
               : null;
+          const lastToggleType =
+            row.last_toggle_type != null && String(row.last_toggle_type).trim() !== ""
+              ? String(row.last_toggle_type).trim()
+              : null;
           let manualCloseStartAt: string | null = null;
           if (row.last_toggled_at != null) {
-            const raw = row.last_toggled_at instanceof Date ? row.last_toggled_at : new Date(String(row.last_toggled_at).trim().replace(" ", "T"));
+            const raw = row.last_toggled_at instanceof Date
+              ? row.last_toggled_at
+              : new Date(normalizeInstantStr(String(row.last_toggled_at)));
             manualCloseStartAt = Number.isNaN(raw.getTime()) ? null : raw.toISOString();
           }
+          const lastToggledAt = manualCloseStartAt;
           const closedBy = row.last_toggled_by_name != null && String(row.last_toggled_by_name).trim() !== "" ? String(row.last_toggled_by_name).trim() : null;
           const closedById = row.last_toggled_by_id != null && String(row.last_toggled_by_id).trim() !== "" ? String(row.last_toggled_by_id).trim() : null;
+          const lastToggledByEmail =
+            (row as any).last_toggled_by_email != null && String((row as any).last_toggled_by_email).trim() !== ""
+              ? String((row as any).last_toggled_by_email).trim()
+              : null;
 
           const now = new Date();
           const nowMs = now.getTime();
+          let scheduleEndPromptExpiresAt: string | null = null;
+          if ((row as any).schedule_end_prompt_expires_at != null) {
+            const raw =
+              (row as any).schedule_end_prompt_expires_at instanceof Date
+                ? (row as any).schedule_end_prompt_expires_at
+                : new Date(normalizeInstantStr(String((row as any).schedule_end_prompt_expires_at)));
+            scheduleEndPromptExpiresAt = Number.isNaN(raw.getTime()) ? null : raw.toISOString();
+          }
+          const scheduleEndPromptActive =
+            scheduleEndPromptExpiresAt != null ? nowMs < new Date(scheduleEndPromptExpiresAt).getTime() : false;
           let untilMs = manualCloseUntil != null ? new Date(manualCloseUntil).getTime() : 0;
           let isInScheduledClosure = manualCloseUntil != null && nowMs < untilMs;
 
@@ -3383,10 +3424,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               if (didReopen) {
                 baseAcceptingOverride = true;
                 availAcceptingOverride = true;
-                await sql`
-                  UPDATE merchant_stores SET is_accepting_orders = TRUE, updated_at = NOW()
-                  WHERE id = ${storeId} AND parent_id = ${parentId}
-                `;
+                await syncMerchantStoresOnlineTriple(sql, storeId, true, { parentId });
                 resolvedManualCloseUntil = null;
               }
             } else {
@@ -3398,10 +3436,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     last_toggle_type = 'AUTO_CLOSE', last_toggled_at = ${reopenIso}, updated_at = NOW()
                 WHERE store_id = ${storeId}
               `;
-              await sql`
-                UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW()
-                WHERE id = ${storeId} AND parent_id = ${parentId}
-              `;
+              await syncMerchantStoresOnlineTriple(sql, storeId, false, { parentId });
               resolvedManualCloseUntil = null;
               statusReasonOverride = "schedule_closed";
               unavailableReasonOverride = "schedule_closed";
@@ -3452,12 +3487,15 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           let nextOpenTime: string | null = null;
           let nextCloseTime: string | null = null;
           let nextOpenIso: string | null = null;
+          /** Hoisted for `within_hours_but_restricted` (Partner / dashboard parity). */
+          let withinHoursComputed = false;
           const hoursRowsForStatus = await sql`
             SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1
           `;
           const hoursRowForStatus = hoursRowsForStatus[0] as Record<string, unknown> | undefined;
           if (hoursRowForStatus) {
             const withinHours = isWithinOperatingHours(hoursRowForStatus, dayOfWeek, minutesSinceMidnight);
+            withinHoursComputed = withinHours;
             const next = getNextOpenClose(hoursRowForStatus, dayOfWeek, minutesSinceMidnight);
             nextOpenTime = next.next_open_time;
             nextCloseTime = next.next_close_time;
@@ -3479,65 +3517,116 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               }
             }
             if (!isOpen) {
-              const fromEngine = getNextOpenIso(hoursRowForStatus, dayOfWeek, minutesSinceMidnight, new Date());
-              if (fromEngine != null) nextOpenIso = fromEngine;
-            }
-            if (nextOpenIso == null && nextOpenTime != null && nextOpenTime.trim() !== "") {
-              const [hStr, mStr] = nextOpenTime.split(":");
-              const nextOpenMin = (Number(hStr) || 0) * 60 + (Number(mStr) || 0);
-              const now = new Date();
-              const dateParts = new Intl.DateTimeFormat("en-CA", {
-                timeZone: "Asia/Kolkata",
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-              }).formatToParts(now);
-              const y = dateParts.find((p) => p.type === "year")?.value ?? "0";
-              const mo = dateParts.find((p) => p.type === "month")?.value ?? "01";
-              const d = dateParts.find((p) => p.type === "day")?.value ?? "01";
-              let dateStr = `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
-              if (nextOpenMin <= minutesSinceMidnight) {
-                const tomorrow = new Date(now);
-                tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-                const tp = new Intl.DateTimeFormat("en-CA", {
-                  timeZone: "Asia/Kolkata",
-                  year: "numeric",
-                  month: "2-digit",
-                  day: "2-digit",
-                }).formatToParts(tomorrow);
-                const ty = tp.find((p) => p.type === "year")?.value ?? y;
-                const tmo = tp.find((p) => p.type === "month")?.value ?? "01";
-                const td = tp.find((p) => p.type === "day")?.value ?? "01";
-                dateStr = `${ty}-${String(tmo).padStart(2, "0")}-${String(td).padStart(2, "0")}`;
-              }
-              const isoInIst = `${dateStr}T${nextOpenTime.trim()}:00+05:30`;
-              const nextOpenDate = new Date(isoInIst);
-              nextOpenIso = Number.isNaN(nextOpenDate.getTime()) ? null : nextOpenDate.toISOString();
-            }
-            if (!isOpen && nextOpenIso == null) {
-              const nextOpenDay = hoursRowForStatus
-                ? getNextOpenDayStartIso(hoursRowForStatus, dayOfWeek, new Date())
-                : null;
-              if (nextOpenDay != null) {
-                nextOpenIso = nextOpenDay;
+              const nowRef = new Date();
+              const manualStr =
+                resolvedManualCloseUntil != null && String(resolvedManualCloseUntil).trim() !== ""
+                  ? String(resolvedManualCloseUntil).trim()
+                  : null;
+              const scheduleNext = getNextOpenIso(hoursRowForStatus, dayOfWeek, minutesSinceMidnight, nowRef);
+              const nextAfterToday = getNextOpenIsoAfterIstCalendarDay(hoursRowForStatus, dayOfWeek, nowRef);
+              const nextDayStart = getNextOpenDayStartIso(hoursRowForStatus, dayOfWeek, nowRef);
+
+              if (manualStr) {
+                nextOpenIso = isLikelyLegacyEndOfDayIstClose(manualStr, nowRef)
+                  ? (nextAfterToday ?? scheduleNext ?? manualStr)
+                  : manualStr;
               } else {
-                const now = new Date();
-                const tomorrow = new Date(now);
-                tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-                const tp = new Intl.DateTimeFormat("en-CA", {
-                  timeZone: "Asia/Kolkata",
-                  year: "numeric",
-                  month: "2-digit",
-                  day: "2-digit",
-                }).formatToParts(tomorrow);
-                const ty = tp.find((p) => p.type === "year")?.value ?? "0";
-                const tmo = tp.find((p) => p.type === "month")?.value ?? "01";
-                const td = tp.find((p) => p.type === "day")?.value ?? "01";
-                const tomorrowStart = new Date(`${ty}-${String(tmo).padStart(2, "0")}-${String(td).padStart(2, "0")}T00:00:00+05:30`);
-                nextOpenIso = Number.isNaN(tomorrowStart.getTime()) ? null : tomorrowStart.toISOString();
+                nextOpenIso = scheduleNext;
+                if (nextOpenIso == null && nextOpenTime != null && nextOpenTime.trim() !== "") {
+                  const [hStr, mStr] = nextOpenTime.split(":");
+                  const nextOpenMin = (Number(hStr) || 0) * 60 + (Number(mStr) || 0);
+                  const dateParts = new Intl.DateTimeFormat("en-CA", {
+                    timeZone: "Asia/Kolkata",
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                  }).formatToParts(nowRef);
+                  const y = dateParts.find((p) => p.type === "year")?.value ?? "0";
+                  const mo = dateParts.find((p) => p.type === "month")?.value ?? "01";
+                  const d = dateParts.find((p) => p.type === "day")?.value ?? "01";
+                  let dateStr = `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+                  if (nextOpenMin <= minutesSinceMidnight) {
+                    const tomorrow = new Date(nowRef);
+                    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+                    const tp = new Intl.DateTimeFormat("en-CA", {
+                      timeZone: "Asia/Kolkata",
+                      year: "numeric",
+                      month: "2-digit",
+                      day: "2-digit",
+                    }).formatToParts(tomorrow);
+                    const ty = tp.find((p) => p.type === "year")?.value ?? y;
+                    const tmo = tp.find((p) => p.type === "month")?.value ?? "01";
+                    const td = tp.find((p) => p.type === "day")?.value ?? "01";
+                    dateStr = `${ty}-${String(tmo).padStart(2, "0")}-${String(td).padStart(2, "0")}`;
+                  }
+                  const isoInIst = `${dateStr}T${nextOpenTime.trim()}:00+05:30`;
+                  const nextOpenDate = new Date(isoInIst);
+                  nextOpenIso = Number.isNaN(nextOpenDate.getTime()) ? null : nextOpenDate.toISOString();
+                }
+                if (nextOpenIso == null) {
+                  if (nextDayStart != null) {
+                    nextOpenIso = nextDayStart;
+                  } else {
+                    const tomorrow = new Date(nowRef);
+                    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+                    const tp = new Intl.DateTimeFormat("en-CA", {
+                      timeZone: "Asia/Kolkata",
+                      year: "numeric",
+                      month: "2-digit",
+                      day: "2-digit",
+                    }).formatToParts(tomorrow);
+                    const ty = tp.find((p) => p.type === "year")?.value ?? "0";
+                    const tmo = tp.find((p) => p.type === "month")?.value ?? "01";
+                    const td = tp.find((p) => p.type === "day")?.value ?? "01";
+                    const tomorrowStart = new Date(
+                      `${ty}-${String(tmo).padStart(2, "0")}-${String(td).padStart(2, "0")}T00:00:00+05:30`
+                    );
+                    nextOpenIso = Number.isNaN(tomorrowStart.getTime()) ? null : tomorrowStart.toISOString();
+                  }
+                }
               }
             }
             if (statusReasonOverride != null) statusReason = statusReasonOverride;
+          }
+
+          // This flag is used by UIs to decide whether to show a schedule "Opens in …" countdown.
+          // It must be TRUE only when the store is within hours but held OFF with no countdown target
+          // (manual lock / manual indefinite). TEMP close (manual_close_until in future) should still show countdown.
+          const unavailableReasonNormForRestrict =
+            row.unavailable_reason != null && String(row.unavailable_reason).trim() !== ""
+              ? String(row.unavailable_reason).trim().toLowerCase()
+              : "";
+          const isManualIndefinite = unavailableReasonNormForRestrict === "manual_indefinite";
+          const withinHoursButRestricted =
+            withinHoursComputed && !isOpen && (blockAutoOpen || isManualIndefinite);
+
+          // Active scheduled vacation/off: countdown should match end of that window (dashboard / Partner parity).
+          if (!isOpen && isActiveSchedule && activeSched) {
+            const endsMs = activeSched.endsAt.getTime();
+            if (Number.isFinite(endsMs) && endsMs > nowMs) {
+              nextOpenIso = activeSched.endsAt.toISOString();
+            }
+          }
+
+          // No automatic reopen time: do not send a schedule slot countdown (merchant app / Partner parity).
+          const unavailableReasonNorm =
+            row.unavailable_reason != null && String(row.unavailable_reason).trim() !== ""
+              ? String(row.unavailable_reason).trim().toLowerCase()
+              : "";
+          if (!isOpen) {
+            const manualStrForNull =
+              resolvedManualCloseUntil != null && String(resolvedManualCloseUntil).trim() !== ""
+                ? String(resolvedManualCloseUntil).trim()
+                : null;
+            if (blockAutoOpen) {
+              nextOpenIso = null;
+            } else if (
+              manualStrForNull == null &&
+              unavailableReasonNorm === "manual_indefinite" &&
+              !(isActiveSchedule && activeSched)
+            ) {
+              nextOpenIso = null;
+            }
           }
 
           let scheduledClosure: { from: string; to: string; reason: string } | null = null;
@@ -3579,11 +3668,19 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             is_available: available,
             auto_open_from_schedule: autoOpenFromSchedule,
             block_auto_open: blockAutoOpen,
+            is_manual_override: row.is_manual_override === true,
+            schedule_end_prompt_expires_at: scheduleEndPromptExpiresAt,
+            schedule_end_prompt_active: scheduleEndPromptActive,
             manual_close_until: resolvedManualCloseUntil,
             manual_close_reason: manualCloseReason,
             manual_close_start_at: resolvedManualCloseUntil != null ? manualCloseStartAt : null,
             closed_by: resolvedManualCloseUntil != null ? closedBy : null,
             closed_by_id: resolvedManualCloseUntil != null ? closedById : null,
+            last_toggle_type: lastToggleType,
+            last_toggled_at: lastToggledAt,
+            last_toggled_by_email: lastToggledByEmail,
+            last_toggled_by_name: closedBy,
+            last_toggled_by_id: closedById,
             restriction_type: restrictionTypeOverride ?? (resolvedManualCloseUntil != null ? restrictionType : null),
             scheduled_closure: scheduledClosure,
             scheduled_closure_upcoming: isUpcomingSchedule && upcomingSched ? {
@@ -3595,6 +3692,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             next_open_time: nextOpenTime,
             next_close_time: nextCloseTime,
             next_open_iso: nextOpenIso,
+            within_hours_but_restricted: withinHoursButRestricted,
             unavailable_reason: unavailableReasonOverride ?? (row as any).unavailable_reason ?? null,
             auto_available_at: (row as any).auto_available_at != null
               ? (typeof (row as any).auto_available_at === "string"
@@ -3608,6 +3706,73 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       );
 
       /** PATCH /merchant-partner/stores/:storeId/status — toggle store open/closed and update availability flags for partner app. */
+      /** POST /merchant-partner/stores/:storeId/status/schedule-end-response — resolve schedule-end prompt ("stay online" vs "go offline"). */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: { action: "stay_online" | "go_offline" };
+      }>("/stores/:storeId/status/schedule-end-response", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const storeId = Number(req.params.storeId);
+        if (!Number.isInteger(storeId) || storeId < 1) {
+          return reply.code(400).send({ error: "invalid_store_id" });
+        }
+        const actionRaw = String((req.body as any)?.action ?? "");
+        const action = actionRaw === "stay_online" || actionRaw === "go_offline" ? actionRaw : null;
+        if (!action) return reply.code(400).send({ error: "invalid_action" });
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        const storeRows = await sql`
+          SELECT ms.id
+          FROM merchant_stores ms
+          WHERE ms.id = ${storeId} AND ms.parent_id = ${parentId} AND ms.deleted_at IS NULL
+          LIMIT 1
+        `;
+        if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+        const nowIso = new Date().toISOString();
+        if (action === "stay_online") {
+          await sql`
+            UPDATE merchant_store_availability
+            SET
+              is_manual_override = TRUE,
+              manual_override_at = ${nowIso},
+              schedule_end_prompted_at = NULL,
+              schedule_end_prompt_expires_at = NULL,
+              updated_at = NOW()
+            WHERE store_id = ${storeId}
+          `;
+          return reply.send({ ok: true, action: "stay_online" });
+        }
+
+        // go_offline
+        await syncMerchantStoresOnlineTriple(sql, storeId, false, { parentId });
+        await sql`
+          UPDATE merchant_store_availability
+          SET
+            is_available = FALSE,
+            is_accepting_orders = FALSE,
+            unavailable_reason = 'manual_close',
+            close_reason = 'Closed after schedule end',
+            auto_unavailable_at = ${nowIso},
+            auto_available_at = NULL,
+            manual_close_until = NULL,
+            is_manual_override = FALSE,
+            manual_override_at = NULL,
+            schedule_end_prompted_at = NULL,
+            schedule_end_prompt_expires_at = NULL,
+            last_toggle_type = 'MANUAL_CLOSE',
+            restriction_type = 'manual',
+            updated_at = NOW()
+          WHERE store_id = ${storeId}
+        `;
+        return reply.send({ ok: true, action: "go_offline" });
+      });
+
       protectedApp.patch<{
         Params: { storeId: string };
         Body: {
@@ -3701,6 +3866,38 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         const currentRestrictionType = availRow?.restriction_type ?? null;
         const hadScheduledClosure = currentManualCloseUntil != null;
 
+        // Vacation mode: if a scheduled closure is currently active, manual open is not allowed.
+        if (openingStore) {
+          const activeSchedRows = await sql`
+            SELECT 1
+            FROM merchant_store_scheduled_closures
+            WHERE store_id = ${storeId}
+              AND status IN ('scheduled', 'active')
+              AND starts_at <= NOW()
+              AND ends_at > NOW()
+            LIMIT 1
+          `;
+          if (activeSchedRows.length > 0) {
+            return reply
+              .code(409)
+              .send({ error: "vacation_mode_active", message: "Vacation mode is active. Disable Scheduled Off to go online." });
+          }
+        }
+
+        // Manual open before schedule = manual override (so schedule engine doesn't auto-close immediately).
+        let openingManualOverride = false;
+        if (openingStore) {
+          const hoursRows = await sql`SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1`;
+          const hoursRow = hoursRows[0] as Record<string, unknown> | undefined;
+          if (hoursRow) {
+            const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+            const withinHours = isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
+            openingManualOverride = !withinHours;
+          } else {
+            openingManualOverride = true;
+          }
+        }
+
         let mergedManualCloseUntil: string | null = null;
         if (openingStore) {
           mergedManualCloseUntil = null;
@@ -3733,33 +3930,14 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           lastToggledByName = (availRow as any).last_toggled_by_name != null ? String((availRow as any).last_toggled_by_name) : null;
         }
 
-        // Update merchant_stores if is_open was provided (maps to is_accepting_orders).
+        // Update merchant_stores when is_open was provided — keep is_active, is_accepting_orders, is_available in sync.
         if (hasIsOpen) {
           const accepting = body.is_open === true;
-          await sql`
-            UPDATE merchant_stores
-            SET is_accepting_orders = ${accepting}, updated_at = NOW()
-            WHERE id = ${storeId} AND parent_id = ${parentId}
-          `;
+          await syncMerchantStoresOnlineTriple(sql, storeId, accepting, { parentId });
         }
 
-        // When opening manually, clear:
-        // - today and future holiday rows so GET /status does not re-apply closure
-        // - any scheduled/active entries in merchant_store_scheduled_closures so they don't immediately close it again
-        if (openingStore && hadScheduledClosure) {
-          const todayStr = new Date().toISOString().slice(0, 10);
-          await sql`
-            DELETE FROM merchant_store_holidays
-            WHERE store_id = ${storeId} AND holiday_date >= ${todayStr}
-          `;
-        }
-        if (openingStore) {
-          await sql`
-            UPDATE merchant_store_scheduled_closures
-            SET status = 'completed', updated_at = NOW()
-            WHERE store_id = ${storeId} AND status IN ('scheduled', 'active')
-          `;
-        }
+        // IMPORTANT: Vacation / scheduled-closure mode must not be bypassed by manual open.
+        // Merchants should cancel scheduled off via the dedicated endpoint, not by toggling online.
 
         // Upsert merchant_store_availability with merged values (including clearing manual_close_until when opening).
         const currentAvailable = availRow?.is_available ?? true;
@@ -3786,7 +3964,15 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 UPDATE merchant_store_availability
                 SET is_available = TRUE, is_accepting_orders = TRUE,
                     unavailable_reason = NULL, close_reason = NULL, auto_unavailable_at = NULL, auto_available_at = ${nowIso},
-                    manual_close_until = NULL, last_toggle_type = 'MANUAL_OPEN', restriction_type = NULL,
+                    manual_close_until = NULL,
+                    block_auto_open = FALSE,
+                    is_manual_override = ${openingManualOverride},
+                    manual_override_at = ${openingManualOverride ? nowIso : null},
+                    schedule_end_prompted_at = NULL,
+                    schedule_end_prompt_expires_at = NULL,
+                    auto_off_reason = NULL,
+                    last_auto_action_at = NULL,
+                    last_toggle_type = 'MANUAL_OPEN', restriction_type = NULL,
                     updated_by = ${updatedBy}, updated_by_id = ${updatedById},
                     last_toggled_by_name = ${parentRow?.owner_name ?? parentRow?.parent_name ?? "Store owner"},
                     last_toggled_by_email = ${parentRow?.owner_email ?? null}, last_toggled_by_id = ${lastToggledById},
@@ -3804,6 +3990,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     unavailable_reason = ${unavailReason}, close_reason = ${closeReasonText},
                     auto_unavailable_at = ${nowIso}, auto_available_at = NULL,
                     manual_close_until = ${mergedManualCloseUntil}, last_toggle_type = 'MANUAL_CLOSE', restriction_type = 'manual',
+                    is_manual_override = FALSE, manual_override_at = NULL,
+                    schedule_end_prompted_at = NULL, schedule_end_prompt_expires_at = NULL,
+                    auto_off_reason = NULL, last_auto_action_at = NULL,
                     updated_by = ${updatedBy}, updated_by_id = ${updatedById},
                     last_toggled_by_name = ${lastToggledByName}, last_toggled_by_email = ${parentRow?.owner_email ?? null},
                     last_toggled_by_id = ${lastToggledById}, last_toggled_at = ${lastToggledAtIso}, updated_at = NOW()
@@ -3827,6 +4016,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               store_id, is_available, is_accepting_orders, auto_open_from_schedule, block_auto_open,
               manual_close_until, close_reason, restriction_type,
               unavailable_reason, auto_unavailable_at, auto_available_at, last_toggle_type,
+              is_manual_override, manual_override_at, schedule_end_prompted_at, schedule_end_prompt_expires_at,
+              auto_off_reason, last_auto_action_at,
               updated_by, updated_by_id, last_toggled_by_name, last_toggled_by_email, last_toggled_by_id, last_toggled_at, updated_at
             )
             VALUES (
@@ -3834,6 +4025,12 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               ${mergedManualCloseUntil}, ${mergedCloseReason}, ${mergedRestrictionType},
               ${unavailReason}, ${closingStore ? nowIso : null}, ${openingStore ? nowIso : null},
               ${openingStore ? "MANUAL_OPEN" : closingStore ? "MANUAL_CLOSE" : null},
+              ${openingStore ? openingManualOverride : false},
+              ${openingStore ? (openingManualOverride ? nowIso : null) : null},
+              ${null},
+              ${null},
+              ${null},
+              ${null},
               ${updatedBy}, ${updatedById},
               ${openingStore ? (parentRow?.owner_name ?? parentRow?.parent_name ?? "Store owner") : (closingStore ? lastToggledByName : null)},
               ${parentRow?.owner_email ?? null}, ${lastToggledById},
@@ -3851,6 +4048,12 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               auto_unavailable_at = EXCLUDED.auto_unavailable_at,
               auto_available_at = EXCLUDED.auto_available_at,
               last_toggle_type = EXCLUDED.last_toggle_type,
+              is_manual_override = EXCLUDED.is_manual_override,
+              manual_override_at = EXCLUDED.manual_override_at,
+              schedule_end_prompted_at = EXCLUDED.schedule_end_prompted_at,
+              schedule_end_prompt_expires_at = EXCLUDED.schedule_end_prompt_expires_at,
+              auto_off_reason = EXCLUDED.auto_off_reason,
+              last_auto_action_at = EXCLUDED.last_auto_action_at,
               updated_by = EXCLUDED.updated_by,
               updated_by_id = EXCLUDED.updated_by_id,
               last_toggled_by_name = EXCLUDED.last_toggled_by_name,
@@ -3861,19 +4064,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
         }
 
-        // Real notification: when store was in scheduled off and merchant opens, record for in-app list.
-        if (openingStore && hadScheduledClosure) {
-          await sql`
-            INSERT INTO merchant_store_notifications (store_id, type, title, body, read)
-            VALUES (
-              ${storeId},
-              'store',
-              'Store opened',
-              'Scheduled off cleared. Store is now open and accepting orders.',
-              FALSE
-            )
-          `;
-        }
+        // Note: scheduled off is not cleared by manual open (vacation mode cannot be bypassed).
 
         if (hasIsOpen) {
           const statusAction = body.is_open === true ? "manual_open" : "manual_close";
@@ -4654,6 +4845,92 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      const WAITING_FOR_ORDER_TITLE = "Waiting for Order";
+
+      /** POST /merchant-partner/stores/:storeId/notifications/waiting-for-order/ensure — idempotent in-app row for idle pipeline. */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/notifications/waiting-for-order/ensure",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const existing = await sql`
+            SELECT id FROM merchant_store_notifications
+            WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
+            ORDER BY created_at DESC
+            LIMIT 1
+          `;
+          const ex = existing[0] as { id?: unknown } | undefined;
+          if (ex?.id != null) {
+            return reply.send({
+              id: String(ex.id),
+              created: false,
+            });
+          }
+
+          const ins = await sql`
+            INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
+            VALUES (
+              ${storeId},
+              'system',
+              ${WAITING_FOR_ORDER_TITLE},
+              'You are online. We will notify you when a new order arrives.',
+              FALSE,
+              NULL
+            )
+            RETURNING id
+          `;
+          const row = ins[0] as { id?: unknown } | undefined;
+          const id = row?.id != null ? String(row.id) : null;
+          if (!id) return reply.code(500).send({ error: "insert_failed" });
+          return reply.send({ id, created: true });
+        }
+      );
+
+      /** DELETE /merchant-partner/stores/:storeId/notifications/waiting-for-order — remove all waiting-for-order rows (e.g. pipeline no longer idle). */
+      protectedApp.delete<{ Params: { storeId: string } }>(
+        "/stores/:storeId/notifications/waiting-for-order",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const del = await sql`
+            DELETE FROM merchant_store_notifications
+            WHERE store_id = ${storeId} AND title = ${WAITING_FOR_ORDER_TITLE}
+            RETURNING id
+          `;
+          return reply.send({ deleted: (del as unknown as { id: unknown }[]).length });
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/holidays — list holidays (default: upcoming scheduled_off days). */
       protectedApp.get<{ Params: { storeId: string }; Querystring: { type?: string; from?: string } }>(
         "/stores/:storeId/holidays",
@@ -4759,6 +5036,35 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             UPDATE merchant_store_notifications
             SET read = TRUE
             WHERE id = ${notificationId} AND store_id = ${storeId}
+          `;
+          return reply.send({ ok: true });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/notifications/read-all — mark every in-app notification as read for this store. */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/notifications/read-all",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const storeRows = await sql`
+            SELECT id FROM merchant_stores
+            WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL
+            LIMIT 1
+          `;
+          if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          await sql`
+            UPDATE merchant_store_notifications
+            SET read = TRUE
+            WHERE store_id = ${storeId}
           `;
           return reply.send({ ok: true });
         }
@@ -4875,11 +5181,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                   manual_close_until = NULL, restriction_type = ${restrictionType}, updated_at = NOW()
               WHERE store_id = ${storeId}
             `;
-            await sql`
-              UPDATE merchant_stores
-              SET is_accepting_orders = FALSE, is_active = FALSE, updated_at = NOW()
-              WHERE id = ${storeId}
-            `;
+            await syncMerchantStoresOnlineTriple(sql, storeId, false);
             await sql`
               INSERT INTO merchant_store_notifications (store_id, type, title, body, read, action_url)
               VALUES (

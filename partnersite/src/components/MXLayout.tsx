@@ -2,7 +2,6 @@
 
 import React from 'react'
 import { MXSidebar } from '@/components/MXSidebar'
-import NeedHelpBadge from '@/components/NeedHelpBadge'
 
 interface MXLayoutProps {
   children: React.ReactNode
@@ -29,8 +28,6 @@ export const MXLayout: React.FC<MXLayoutProps> = ({
           {children}
         </div>
       </main>
-      {/* Need Help Badge (fixed, always visible) */}
-      <NeedHelpBadge />
     </div>
   )
 }

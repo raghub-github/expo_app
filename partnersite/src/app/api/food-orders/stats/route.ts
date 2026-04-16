@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -11,18 +12,14 @@ function getSupabase() {
 }
 
 async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: string): Promise<number | null> {
-  const { data, error } = await db
-    .from('merchant_stores')
-    .select('id')
-    .eq('store_id', storeIdParam)
-    .single();
+  const { data, error } = await db.from('merchant_stores').select('id').eq('store_id', storeIdParam).single();
   if (error || !data) return null;
   return data.id as number;
 }
 
 /**
  * GET /api/food-orders/stats?store_id=GMMC1001
- * Returns analytics: orders today, active orders, avg prep time, revenue today, completion rate
+ * Counts from orders_core (canonical) for the store; revenue from delivered rows today.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -56,8 +53,8 @@ export async function GET(req: NextRequest) {
     const dayEndIso = dayEnd.toISOString();
 
     const { data: orders, error } = await db
-      .from('orders_food')
-      .select('id, order_status, created_at, food_items_total_value, preparation_time_minutes, prepared_at, accepted_at')
+      .from('orders_core')
+      .select('id, status, current_status, created_at, grand_total, item_total, cancelled_at, placed_at')
       .eq('merchant_store_id', storeInternalId)
       .gte('created_at', dayStartIso)
       .lt('created_at', dayEndIso);
@@ -68,34 +65,73 @@ export async function GET(req: NextRequest) {
     }
 
     const list = orders || [];
-    const activeStatuses = ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'];
+    const effectiveUi = (o: { status?: string; current_status?: string | null }) =>
+      resolvePartnerPipeline(null, o.status ?? 'assigned', o.current_status ?? null);
+
+    const pipelineTodayStatuses = ['CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'];
 
     const ordersToday = list.length;
-    const activeOrders = list.filter((o) => activeStatuses.includes((o.order_status || 'CREATED')));
-    const deliveredTodayList = list.filter((o) => (o.order_status || '').toUpperCase() === 'DELIVERED');
-    const totalRevenue = deliveredTodayList.reduce((sum, o) => sum + Number(o.food_items_total_value || 0), 0);
+    const ordersTodayActive = list.filter((o) =>
+      pipelineTodayStatuses.includes(effectiveUi(o as { status?: string; current_status?: string | null }))
+    ).length;
 
-    const pendingCount = list.filter((o) => ['CREATED', 'NEW'].includes((o.order_status || 'CREATED').toUpperCase())).length;
-    const preparingCount = list.filter((o) => (o.order_status || '').toUpperCase() === 'PREPARING').length;
-    const outForDeliveryCount = list.filter((o) => (o.order_status || '').toUpperCase() === 'OUT_FOR_DELIVERY').length;
+    /** Count of today’s orders still in the merchant pipeline (same as ordersTodayActive). */
+    const activeOrdersCount = list.filter((o) =>
+      pipelineTodayStatuses.includes(effectiveUi(o as { status?: string; current_status?: string | null }))
+    ).length;
+
+    const deliveredTodayList = list.filter(
+      (o) => effectiveUi(o as { status?: string; current_status?: string | null }) === 'DELIVERED'
+    );
+    const totalRevenue = deliveredTodayList.reduce(
+      (sum, o) => sum + Number((o as { grand_total?: string | number }).grand_total || 0),
+      0
+    );
+
+    const pendingCount = list.filter(
+      (o) => effectiveUi(o as { status?: string; current_status?: string | null }) === 'CREATED'
+    ).length;
+    const preparingCount = list.filter((o) =>
+      ['ACCEPTED', 'PREPARING'].includes(effectiveUi(o as { status?: string; current_status?: string | null }))
+    ).length;
+    const outForDeliveryCount = list.filter(
+      (o) => effectiveUi(o as { status?: string; current_status?: string | null }) === 'OUT_FOR_DELIVERY'
+    ).length;
     const deliveredTodayCount = deliveredTodayList.length;
-    const cancelledTodayCount = list.filter((o) => (o.order_status || '').toUpperCase() === 'CANCELLED').length;
+    const cancelledTodayCount = list.filter((o) =>
+      ['CANCELLED', 'RTO'].includes(effectiveUi(o as { status?: string; current_status?: string | null }))
+    ).length;
 
-    const preparedWithTime = list.filter((o) => o.prepared_at && o.created_at);
-    const prepTimes: number[] = preparedWithTime.map((o) => {
-      const created = new Date(o.created_at).getTime();
-      const prepared = new Date(o.prepared_at!).getTime();
-      return Math.round((prepared - created) / 60000);
-    });
-    const avgPrepTime = prepTimes.length ? Math.round(prepTimes.reduce((a, b) => a + b, 0) / prepTimes.length) : 0;
+    const { data: foodToday } = await db
+      .from('orders_food')
+      .select('created_at, prepared_at')
+      .eq('merchant_store_id', storeInternalId)
+      .gte('created_at', dayStartIso)
+      .lt('created_at', dayEndIso);
+    const prepTimes: number[] = (foodToday || [])
+      .filter((r) => (r as { prepared_at?: string }).prepared_at && (r as { created_at?: string }).created_at)
+      .map((o) => {
+        const row = o as { created_at: string; prepared_at: string };
+        return Math.round(
+          (new Date(row.prepared_at).getTime() - new Date(row.created_at).getTime()) / 60000
+        );
+      });
+    const avgPrepTime = prepTimes.length
+      ? Math.round(prepTimes.reduce((a, b) => a + b, 0) / prepTimes.length)
+      : 0;
 
     const completionRate = ordersToday > 0 ? Math.round((deliveredTodayCount / ordersToday) * 100) : 0;
-    const acceptedTodayCount = list.filter((o) => o.accepted_at != null).length;
+    const acceptedTodayCount = list.filter((o) =>
+      ['ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(
+        effectiveUi(o as { status?: string; current_status?: string | null })
+      )
+    ).length;
     const acceptanceRatePercent = ordersToday > 0 ? Math.round((acceptedTodayCount / ordersToday) * 100) : 0;
 
     return NextResponse.json({
       ordersToday,
-      activeOrders: activeOrders.length,
+      ordersTodayActive,
+      activeOrders: activeOrdersCount,
       pendingCount,
       acceptedTodayCount,
       preparingCount,

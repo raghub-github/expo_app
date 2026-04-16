@@ -288,11 +288,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [stockFilter, setStockFilter] = useState<"ALL" | "IN_STOCK" | "OUT_OF_STOCK">("ALL");
   const [changeRequestFilter, setChangeRequestFilter] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
   const [visibilityFilter, setVisibilityFilter] = useState<"LIVE" | "REMOVED" | "ALL">("LIVE");
-  const [crStatus, setCrStatus] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED">("PENDING");
-  const [crType, setCrType] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
-  const [crLoading, setCrLoading] = useState(false);
-  const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
-  const [changeRequests, setChangeRequests] = useState<any[]>([]);
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
   const menuFileSectionRef = useRef<HTMLDivElement>(null);
   const [menuReferenceFiles, setMenuReferenceFiles] = useState<MenuMediaFile[]>([]);
@@ -452,33 +447,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     }
   }, []);
 
-  const storePublicId = (data as any)?.store?.store_id as string | null | undefined;
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!storePublicId) return;
-    setCrLoading(true);
-    const params = new URLSearchParams();
-    params.set("storeId", storePublicId);
-    if (crStatus !== "ALL") params.set("status", crStatus);
-    if (crType !== "ALL") params.set("request_type", crType);
-    params.set("limit", "50");
-    params.set("offset", "0");
-    fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled) return;
-        const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
-        setChangeRequests(list);
-      })
-      .finally(() => {
-        if (!cancelled) setCrLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storePublicId, crStatus, crType]);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -599,102 +567,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setCategoryCuisineInput(typed);
     setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
   }, [categoryCuisineInput, cuisineOptions]);
-
-  const handleApproveCr = async (id: number) => {
-    setCrActionLoadingId(id);
-    try {
-      const res = await fetch(`/api/merchant-menu/change-requests/${id}/approve`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.success === false) throw new Error(data?.error || "Approve failed");
-      toast("Change request approved.");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "approve_change_request" },
-        actionStatus: "SUCCESS",
-        requestMethod: "POST",
-      });
-      refreshMenu();
-      if (storePublicId) {
-        const params = new URLSearchParams();
-        params.set("storeId", storePublicId);
-        if (crStatus !== "ALL") params.set("status", crStatus);
-        if (crType !== "ALL") params.set("request_type", crType);
-        params.set("limit", "50");
-        params.set("offset", "0");
-        fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d) => {
-            const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
-            setChangeRequests(list);
-          });
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Approve failed");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "approve_change_request" },
-        actionStatus: "FAILED",
-        errorMessage: e instanceof Error ? e.message : String(e),
-        requestMethod: "POST",
-      });
-    } finally {
-      setCrActionLoadingId(null);
-    }
-  };
-
-  const handleRejectCr = async (id: number) => {
-    setCrActionLoadingId(id);
-    try {
-      const res = await fetch(`/api/merchant-menu/change-requests/${id}/reject`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reviewed_reason: "Rejected by agent" }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.success === false) throw new Error(data?.error || "Reject failed");
-      toast("Change request rejected.");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "reject_change_request" },
-        actionStatus: "SUCCESS",
-        requestMethod: "POST",
-      });
-      refreshMenu();
-      if (storePublicId) {
-        const params = new URLSearchParams();
-        params.set("storeId", storePublicId);
-        if (crStatus !== "ALL") params.set("status", crStatus);
-        if (crType !== "ALL") params.set("request_type", crType);
-        params.set("limit", "50");
-        params.set("offset", "0");
-        fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d) => {
-            const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
-            setChangeRequests(list);
-          });
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Reject failed");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "reject_change_request" },
-        actionStatus: "FAILED",
-        errorMessage: e instanceof Error ? e.message : String(e),
-        requestMethod: "POST",
-      });
-    } finally {
-      setCrActionLoadingId(null);
-    }
-  };
 
   const rawCategories = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<string, unknown>[];
   const categories: MenuCategory[] = rawCategories.map((c, i) => {
@@ -2358,109 +2230,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
 
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-slate-50">
-          <div className="mb-3 rounded-lg border border-gray-200 bg-white/95 shadow-sm overflow-hidden">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-100">
-              <div>
-                <div className="text-sm font-bold text-gray-900">Change requests</div>
-                <div className="text-xs text-gray-500">
-                  Merchant edit/delete requests for this store (agent review).
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <select
-                  value={crStatus}
-                  onChange={(e) => setCrStatus(e.target.value as any)}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-                  aria-label="Filter change requests by status"
-                >
-                  <option value="ALL">Status: All</option>
-                  <option value="PENDING">Status: Pending</option>
-                  <option value="APPROVED">Status: Approved</option>
-                  <option value="REJECTED">Status: Rejected</option>
-                  <option value="CANCELLED">Status: Cancelled</option>
-                </select>
-                <select
-                  value={crType}
-                  onChange={(e) => setCrType(e.target.value as any)}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-                  aria-label="Filter change requests by type"
-                >
-                  <option value="ALL">Type: All</option>
-                  <option value="UPDATE">Type: Edit</option>
-                  <option value="DELETE">Type: Delete</option>
-                </select>
-              </div>
-            </div>
-            <div className="px-4 py-2.5">
-              {!storePublicId ? (
-                <div className="text-xs text-gray-500">Loading store info…</div>
-              ) : crLoading ? (
-                <div className="text-xs text-gray-500">Loading change requests…</div>
-              ) : changeRequests.length === 0 ? (
-                <div className="text-xs text-gray-500">No change requests found.</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="text-xs text-gray-500">
-                        <th className="text-left font-semibold py-2 pr-4">Item</th>
-                        <th className="text-left font-semibold py-2 pr-4">Type</th>
-                        <th className="text-left font-semibold py-2 pr-4">Status</th>
-                        <th className="text-left font-semibold py-2 pr-4">Created</th>
-                        <th className="text-right font-semibold py-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {changeRequests.map((r) => (
-                        <tr key={r.id} className="border-t border-gray-100">
-                          <td className="py-2 pr-4">
-                            <div className="font-semibold text-gray-900">{r.item_name ?? "—"}</div>
-                            <div className="text-xs text-gray-500">{r.menu_item_public_id ?? ""}</div>
-                          </td>
-                          <td className="py-2 pr-4">
-                            <span className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-xs font-bold">
-                              {r.request_type}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-4">
-                            <span className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-xs font-bold">
-                              {r.status}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-4 text-xs text-gray-600">
-                            {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
-                          </td>
-                          <td className="py-2 text-right">
-                            {r.status === "PENDING" ? (
-                              <div className="inline-flex items-center gap-2">
-                                <button
-                                  onClick={() => handleRejectCr(Number(r.id))}
-                                  disabled={crActionLoadingId === Number(r.id)}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                  {crActionLoadingId === Number(r.id) ? "…" : "Reject"}
-                                </button>
-                                <button
-                                  onClick={() => handleApproveCr(Number(r.id))}
-                                  disabled={crActionLoadingId === Number(r.id)}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                                >
-                                  {crActionLoadingId === Number(r.id) ? "…" : "Approve"}
-                                </button>
-                              </div>
-                            ) : (
-                              <span className="text-xs text-gray-500">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-
           {loading ? (
             <MenuItemsGridSkeleton />
           ) : searchedItems.length === 0 ? (

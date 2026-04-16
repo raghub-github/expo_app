@@ -11,6 +11,15 @@ function getSupabase() {
   });
 }
 
+function asBool(v: unknown, fallback: boolean) {
+  return typeof v === 'boolean' ? v : fallback;
+}
+
+function asNum(v: unknown, fallback: number) {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: string): Promise<number | null> {
   const { data, error } = await db
     .from('merchant_stores')
@@ -23,7 +32,7 @@ async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: 
 
 /**
  * GET /api/merchant/store-settings?storeId=GMMC1001
- * Returns delivery mode from merchant_store_settings (self_delivery, platform_delivery).
+ * Returns store settings from merchant_store_settings.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -36,8 +45,36 @@ export async function GET(req: NextRequest) {
     if (internalId === null) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
 
     const [settingsResult, storeResult] = await Promise.all([
-      db.from('merchant_store_settings').select('self_delivery, platform_delivery, delivery_priority, auto_accept_orders, settings_metadata').eq('store_id', internalId).maybeSingle(),
-      db.from('merchant_stores').select('delivery_radius_km, full_address, landmark, city, state, postal_code, latitude, longitude, packaging_charge_amount, packaging_charge_last_updated_at, delivery_charge_per_km, delivery_charge_per_km_last_updated_at').eq('store_id', storeId).maybeSingle(),
+      db
+        .from('merchant_store_settings')
+        .select(
+          [
+            'order_notification_enabled',
+            'order_notification_sound',
+            'auto_accept_orders',
+            'auto_accept_time_seconds',
+            'self_delivery',
+            'platform_delivery',
+            'delivery_charge_type',
+            'delivery_charge_amount',
+            'max_concurrent_orders',
+            'max_preparation_time_minutes',
+            'cash_handling_enabled',
+            'online_payment_enabled',
+            'settings_metadata',
+            'delivery_priority',
+            'show_floating_orders',
+          ].join(',')
+        )
+        .eq('store_id', internalId)
+        .maybeSingle(),
+      db
+        .from('merchant_stores')
+        .select(
+          'delivery_radius_km, full_address, landmark, city, state, postal_code, latitude, longitude, packaging_charge_amount, packaging_charge_last_updated_at, delivery_charge_per_km, delivery_charge_per_km_last_updated_at'
+        )
+        .eq('store_id', storeId)
+        .maybeSingle(),
     ]);
 
     const { data: settingsData, error: settingsError } = settingsResult;
@@ -56,6 +93,28 @@ export async function GET(req: NextRequest) {
       typeof metadata?.preparation_buffer_minutes === 'number' && !Number.isNaN(metadata.preparation_buffer_minutes)
         ? Number(metadata.preparation_buffer_minutes)
         : undefined;
+
+    // Manage communications (merchant app parity) — stored under settings_metadata
+    const comm = (metadata?.communication_settings as Record<string, unknown> | undefined) ?? undefined;
+    const reports = (comm?.reports as Record<string, unknown> | undefined) ?? undefined;
+    const orderNotifs = (comm?.order_notifications as Record<string, unknown> | undefined) ?? undefined;
+
+    const communication_settings = {
+      whatsapp_notifications: asBool(comm?.whatsapp_notifications, false),
+      reports: {
+        daily_whatsapp: asBool(reports?.daily_whatsapp, false),
+        daily_email: asBool(reports?.daily_email, false),
+        weekly_whatsapp: asBool(reports?.weekly_whatsapp, false),
+        weekly_email: asBool(reports?.weekly_email, false),
+      },
+      order_notifications: {
+        enabled: asBool(orderNotifs?.enabled, true),
+        ring_volume: Math.min(1, Math.max(0, asNum(orderNotifs?.ring_volume, 0.6))),
+        ring_in_silent: asBool(orderNotifs?.ring_in_silent, true),
+      },
+      live_complaint_notifications: asBool(comm?.live_complaint_notifications, false),
+      rider_notifications: asBool(comm?.rider_notifications, false),
+    };
 
     const address =
       storeData &&
@@ -97,11 +156,25 @@ export async function GET(req: NextRequest) {
         : null;
 
     return NextResponse.json({
-      self_delivery: settingsData?.self_delivery ?? false,
-      platform_delivery: settingsData?.platform_delivery ?? true,
-      delivery_priority: settingsData?.delivery_priority ?? (settingsData?.self_delivery ? 'SELF' : 'GATIMITRA'),
-      auto_accept_orders: settingsData?.auto_accept_orders ?? false,
+      // New store settings table fields (with sane defaults)
+      order_notification_enabled: (settingsData as any)?.order_notification_enabled ?? true,
+      order_notification_sound: (settingsData as any)?.order_notification_sound ?? true,
+      auto_accept_orders: (settingsData as any)?.auto_accept_orders ?? false,
+      auto_accept_time_seconds: (settingsData as any)?.auto_accept_time_seconds ?? 30,
+      self_delivery: (settingsData as any)?.self_delivery ?? false,
+      platform_delivery: (settingsData as any)?.platform_delivery ?? true,
+      delivery_charge_type: (settingsData as any)?.delivery_charge_type ?? 'PLATFORM',
+      delivery_charge_amount: (settingsData as any)?.delivery_charge_amount ?? null,
+      max_concurrent_orders: (settingsData as any)?.max_concurrent_orders ?? 20,
+      max_preparation_time_minutes: (settingsData as any)?.max_preparation_time_minutes ?? 60,
+      cash_handling_enabled: (settingsData as any)?.cash_handling_enabled ?? true,
+      online_payment_enabled: (settingsData as any)?.online_payment_enabled ?? true,
+      delivery_priority: (settingsData as any)?.delivery_priority ?? 'GATIMITRA',
+      // Backward-compatible default: floating orders UI is ON unless explicitly disabled.
+      show_floating_orders: (settingsData as any)?.show_floating_orders ?? true,
+
       ...(preparationBufferMinutes !== undefined && { preparation_buffer_minutes: preparationBufferMinutes }),
+      communication_settings,
       ...(deliveryRadiusKm !== undefined && { delivery_radius_km: deliveryRadiusKm }),
       ...(address && { address }),
       packaging_charge_amount: storeData?.packaging_charge_amount != null ? Number(storeData.packaging_charge_amount) : null,
@@ -139,10 +212,57 @@ export async function PATCH(req: NextRequest) {
       ? body.delivery_radius_km
       : undefined;
     const addressPayload = body?.address && typeof body.address === 'object' ? body.address : undefined;
+    const order_notification_enabled =
+      typeof body.order_notification_enabled === 'boolean' ? body.order_notification_enabled : undefined;
+    const order_notification_sound =
+      typeof body.order_notification_sound === 'boolean' ? body.order_notification_sound : undefined;
     const auto_accept_orders = typeof body.auto_accept_orders === 'boolean' ? body.auto_accept_orders : undefined;
+    const auto_accept_time_seconds =
+      typeof body.auto_accept_time_seconds === 'number' &&
+      Number.isFinite(body.auto_accept_time_seconds) &&
+      body.auto_accept_time_seconds >= 0 &&
+      body.auto_accept_time_seconds <= 600
+        ? Math.floor(body.auto_accept_time_seconds)
+        : undefined;
+    const cash_handling_enabled = typeof body.cash_handling_enabled === 'boolean' ? body.cash_handling_enabled : undefined;
+    const online_payment_enabled = typeof body.online_payment_enabled === 'boolean' ? body.online_payment_enabled : undefined;
+    const max_concurrent_orders =
+      typeof body.max_concurrent_orders === 'number' && Number.isFinite(body.max_concurrent_orders) && body.max_concurrent_orders >= 1 && body.max_concurrent_orders <= 500
+        ? Math.floor(body.max_concurrent_orders)
+        : undefined;
+    const max_preparation_time_minutes =
+      typeof body.max_preparation_time_minutes === 'number' && Number.isFinite(body.max_preparation_time_minutes) && body.max_preparation_time_minutes >= 1 && body.max_preparation_time_minutes <= 300
+        ? Math.floor(body.max_preparation_time_minutes)
+        : undefined;
+    const delivery_charge_type =
+      typeof body.delivery_charge_type === 'string' && body.delivery_charge_type.trim()
+        ? String(body.delivery_charge_type).trim().toUpperCase()
+        : undefined;
+    const rawDeliveryChargeAmount = body.delivery_charge_amount;
+    const delivery_charge_amount =
+      rawDeliveryChargeAmount !== undefined && rawDeliveryChargeAmount !== null
+        ? (typeof rawDeliveryChargeAmount === 'number' ? rawDeliveryChargeAmount : Number(rawDeliveryChargeAmount))
+        : undefined;
+    const delivery_priority =
+      typeof body.delivery_priority === 'string' && body.delivery_priority.trim()
+        ? String(body.delivery_priority).trim().toUpperCase()
+        : undefined;
+    const show_floating_orders = typeof body.show_floating_orders === 'boolean' ? body.show_floating_orders : undefined;
     const preparation_buffer_minutes =
       typeof body.preparation_buffer_minutes === 'number' && !Number.isNaN(body.preparation_buffer_minutes) && body.preparation_buffer_minutes >= 0 && body.preparation_buffer_minutes <= 120
         ? body.preparation_buffer_minutes
+        : undefined;
+
+    const commRaw = body?.communication_settings;
+    const communication_settings =
+      commRaw && typeof commRaw === 'object'
+        ? (commRaw as {
+            whatsapp_notifications?: boolean;
+            reports?: { daily_whatsapp?: boolean; daily_email?: boolean; weekly_whatsapp?: boolean; weekly_email?: boolean };
+            order_notifications?: { enabled?: boolean; ring_volume?: number; ring_in_silent?: boolean };
+            live_complaint_notifications?: boolean;
+            rider_notifications?: boolean;
+          })
         : undefined;
 
     const DELIVERY_PER_KM_MIN = 10;
@@ -168,7 +288,21 @@ export async function PATCH(req: NextRequest) {
         addressPayload.postal_code !== undefined ||
         addressPayload.latitude !== undefined ||
         addressPayload.longitude !== undefined);
-    const hasOperationsPayload = auto_accept_orders !== undefined || preparation_buffer_minutes !== undefined;
+    const hasOperationsPayload =
+      order_notification_enabled !== undefined ||
+      order_notification_sound !== undefined ||
+      auto_accept_orders !== undefined ||
+      auto_accept_time_seconds !== undefined ||
+      cash_handling_enabled !== undefined ||
+      online_payment_enabled !== undefined ||
+      max_concurrent_orders !== undefined ||
+      max_preparation_time_minutes !== undefined ||
+      delivery_charge_type !== undefined ||
+      delivery_charge_amount !== undefined ||
+      delivery_priority !== undefined ||
+      show_floating_orders !== undefined ||
+      preparation_buffer_minutes !== undefined ||
+      communication_settings !== undefined;
 
     const PACKAGING_MIN = 5;
     const PACKAGING_MAX = 15;
@@ -263,7 +397,7 @@ export async function PATCH(req: NextRequest) {
     if (hasDeliveryPayload || hasOperationsPayload) {
       const { data: existing } = await db
         .from('merchant_store_settings')
-        .select('id, self_delivery, platform_delivery, auto_accept_orders, settings_metadata')
+        .select('id, self_delivery, platform_delivery, auto_accept_orders, auto_accept_time_seconds, settings_metadata')
         .eq('store_id', internalId)
         .maybeSingle();
       settingsBefore = existing ?? null;
@@ -275,9 +409,62 @@ export async function PATCH(req: NextRequest) {
       if (self_delivery !== undefined) payload.self_delivery = self_delivery;
       if (platform_delivery !== undefined) payload.platform_delivery = platform_delivery;
       if (auto_accept_orders !== undefined) payload.auto_accept_orders = auto_accept_orders;
+      if (auto_accept_time_seconds !== undefined) payload.auto_accept_time_seconds = auto_accept_time_seconds;
+      if (order_notification_enabled !== undefined) payload.order_notification_enabled = order_notification_enabled;
+      if (order_notification_sound !== undefined) payload.order_notification_sound = order_notification_sound;
+      if (cash_handling_enabled !== undefined) payload.cash_handling_enabled = cash_handling_enabled;
+      if (online_payment_enabled !== undefined) payload.online_payment_enabled = online_payment_enabled;
+      if (max_concurrent_orders !== undefined) payload.max_concurrent_orders = max_concurrent_orders;
+      if (max_preparation_time_minutes !== undefined) payload.max_preparation_time_minutes = max_preparation_time_minutes;
+      if (delivery_charge_type !== undefined) payload.delivery_charge_type = delivery_charge_type;
+      if (delivery_charge_amount !== undefined) payload.delivery_charge_amount = delivery_charge_amount;
+      if (delivery_priority !== undefined) payload.delivery_priority = delivery_priority;
+      if (show_floating_orders !== undefined) payload.show_floating_orders = show_floating_orders;
       if (preparation_buffer_minutes !== undefined) {
         const currentMeta = (settingsBefore?.settings_metadata as Record<string, unknown>) || {};
         payload.settings_metadata = { ...currentMeta, preparation_buffer_minutes };
+      }
+      if (communication_settings !== undefined) {
+        const currentMeta = (payload.settings_metadata as Record<string, unknown>) || (settingsBefore?.settings_metadata as Record<string, unknown>) || {};
+        const prevComm =
+          (currentMeta.communication_settings && typeof currentMeta.communication_settings === 'object'
+            ? (currentMeta.communication_settings as Record<string, unknown>)
+            : {}) ?? {};
+        const nextComm = {
+          ...prevComm,
+          whatsapp_notifications:
+            typeof communication_settings.whatsapp_notifications === 'boolean'
+              ? communication_settings.whatsapp_notifications
+              : (prevComm as any).whatsapp_notifications,
+          live_complaint_notifications:
+            typeof communication_settings.live_complaint_notifications === 'boolean'
+              ? communication_settings.live_complaint_notifications
+              : (prevComm as any).live_complaint_notifications,
+          rider_notifications:
+            typeof communication_settings.rider_notifications === 'boolean'
+              ? communication_settings.rider_notifications
+              : (prevComm as any).rider_notifications,
+          reports: {
+            ...(((prevComm as any).reports && typeof (prevComm as any).reports === 'object' ? (prevComm as any).reports : {}) as Record<string, unknown>),
+            ...(communication_settings.reports ?? {}),
+          },
+          order_notifications: {
+            ...(((prevComm as any).order_notifications && typeof (prevComm as any).order_notifications === 'object'
+              ? (prevComm as any).order_notifications
+              : {}) as Record<string, unknown>),
+            ...(communication_settings.order_notifications ?? {}),
+          },
+        };
+        // Clamp ring_volume to [0,1] if provided
+        if (communication_settings.order_notifications && communication_settings.order_notifications.ring_volume != null) {
+          const rv = communication_settings.order_notifications.ring_volume;
+          const n = typeof rv === 'number' ? rv : Number(rv);
+          (nextComm as any).order_notifications = {
+            ...(nextComm as any).order_notifications,
+            ring_volume: Math.min(1, Math.max(0, Number.isFinite(n) ? n : 0.6)),
+          };
+        }
+        payload.settings_metadata = { ...currentMeta, communication_settings: nextComm };
       }
 
       if (settingsBefore?.id != null) {

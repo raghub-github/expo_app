@@ -18,6 +18,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useNotifications, type MerchantNotification, type NotificationType } from "@/context/NotificationContext";
+import { RadarLiveIndicator } from "@/components/RadarLiveIndicator";
+import { WAITING_FOR_ORDER_TITLE } from "@/services/storeNotificationsApi";
 
 const ICON_MAP: Record<NotificationType, keyof typeof Ionicons.glyphMap> = {
   order: "receipt-outline",
@@ -161,9 +163,16 @@ function NotificationItem({
             <Ionicons name={iconName} size={22} color={iconColor} />
           </View>
           <View style={styles.content}>
-            <Text style={styles.title} numberOfLines={1}>
-              {item.title}
-            </Text>
+            <View style={styles.titleRow}>
+              {item.title.trim() === WAITING_FOR_ORDER_TITLE ? (
+                <View style={styles.waitingRadar} accessibilityLabel="Live waiting indicator">
+                  <RadarLiveIndicator compact />
+                </View>
+              ) : null}
+              <Text style={styles.title} numberOfLines={1}>
+                {item.title}
+              </Text>
+            </View>
             <Text style={styles.body} numberOfLines={2}>
               {item.body}
             </Text>
@@ -298,7 +307,7 @@ export default function NotificationsScreen() {
         <Text style={styles.headerTitle}>Notifications</Text>
         {notifications.some((n) => !n.read) && (
           <Pressable
-            onPress={markAllAsRead}
+            onPress={() => void markAllAsRead()}
             style={({ pressed }) => [styles.markReadBtn, pressed && styles.pressed]}
           >
             <Text style={styles.markReadText}>Mark all read</Text>
@@ -436,7 +445,17 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+  },
+  waitingRadar: {
+    marginTop: -2,
+  },
   title: {
+    flex: 1,
     fontSize: 15,
     fontWeight: "600",
     color: GatiMitraMerchant.textPrimary,

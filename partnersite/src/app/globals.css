@@ -3,6 +3,42 @@
   z-index: 100002 !important;
 }
 
+/* Prevent toasts from hiding under the fixed partner header/topbar */
+[data-sonner-toaster][data-position^="top"] {
+  top: var(--mx-toast-top, calc(var(--mx-partner-topbar-h, 56px) + 12px)) !important;
+}
+
+/* Global toast styling + smooth slide-in from top */
+.mx-toast {
+  border-radius: 14px !important;
+  border: 1px solid rgba(0,0,0,0.08) !important;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.12) !important;
+  padding: 12px 12px !important;
+  gap: 6px !important;
+}
+.mx-toast__title {
+  font-weight: 800 !important;
+}
+.mx-toast__desc {
+  opacity: 0.95 !important;
+}
+
+@keyframes mxToastSlideIn {
+  from { transform: translateY(-10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes mxToastSlideOut {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-8px); opacity: 0; }
+}
+
+[data-sonner-toast][data-state="open"] {
+  animation: mxToastSlideIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+[data-sonner-toast][data-state="closed"] {
+  animation: mxToastSlideOut 180ms ease both;
+}
+
 /* Phone input custom styles for LoginModal */
 .phone-input-row {
   display: flex;
@@ -213,4 +249,19 @@ body.modal-open-blur aside * {
   padding-bottom: var(--mx-shell-header-pad-y);
   padding-left: 0.5rem;
   padding-right: 0.5rem;
+}
+
+/* Partner portal — radar live indicator (matches merchant app sonar) */
+@keyframes partner-radar-pulse {
+  0% {
+    transform: scale(0.25);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+.partner-radar-ring {
+  animation: partner-radar-pulse 1.8s ease-out infinite;
 }

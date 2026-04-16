@@ -40,7 +40,7 @@ import {
   FileImage,
 } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
 export const dynamic = 'force-dynamic'
@@ -484,7 +484,6 @@ function PaymentsContent() {
 
   return (
     <>
-      <Toaster />
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
         <PartnerPageHeader title="Payments & Ledger" subtitle="Wallet balance and full transaction history" />
         <div className="min-h-screen bg-[#f8fafc]">

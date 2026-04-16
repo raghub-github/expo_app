@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -18,6 +19,13 @@ async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: 
     .single();
   if (error || !data) return null;
   return data.id as number;
+}
+
+/** Align with orders_core.current_status / emit_order_event (PLACED = just placed, same as new for merchant). */
+function normalizeOrderStatusForTransition(raw: string | null | undefined): string {
+  let s = String(raw || 'CREATED').toUpperCase().replace('NEW', 'CREATED');
+  if (s === 'PLACED' || s === 'ORDER_RECEIVED' || s === 'ORDER_PLACED') s = 'CREATED';
+  return s;
 }
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
@@ -76,7 +84,26 @@ export async function PATCH(
       return NextResponse.json({ error: 'Order does not belong to this store' }, { status: 403 });
     }
 
-    const currentStatus = (existing.order_status || 'CREATED').toUpperCase().replace('NEW', 'CREATED');
+    // orders_food.order_status can lag behind orders_core.current_status in unified pipeline.
+    // Validate transitions using the same pipeline resolver used by partner UI.
+    let currentStatus = normalizeOrderStatusForTransition(existing.order_status as string);
+    try {
+      const { data: core } = await db
+        .from('orders_core')
+        .select('status, current_status')
+        .eq('id', existing.order_id as number)
+        .maybeSingle();
+      if (core) {
+        const pipeline = resolvePartnerPipeline(
+          existing.order_status as string | null,
+          (core as any).status ?? 'assigned',
+          (core as any).current_status ?? null
+        );
+        currentStatus = normalizeOrderStatusForTransition(pipeline);
+      }
+    } catch {
+      /* ignore and fall back to orders_food.order_status */
+    }
     const allowed = VALID_TRANSITIONS[currentStatus] || [];
     if (!allowed.includes(newStatus)) {
       return NextResponse.json({

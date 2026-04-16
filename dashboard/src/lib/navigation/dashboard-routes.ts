@@ -263,6 +263,12 @@ export function getStoreScopedMerchantRoutes(storeId: string): DashboardSubRoute
     { name: "Dashboard", href: base, icon: LayoutDashboard, description: "Store overview" },
     { name: "Orders", href: `${base}/orders`, icon: ClipboardList, description: "Order history and status" },
     { name: "Menu", href: `${base}/menu`, icon: UtensilsCrossed, description: "Categories and menu items" },
+    {
+      name: "Menu change requests",
+      href: `${base}/menu-change-requests`,
+      icon: FileText,
+      description: "Review merchant menu edit/delete requests",
+    },
     { name: "Offers", href: `${base}/offers`, icon: Zap, description: "Discounts and promotions" },
     { name: "Payments", href: `${base}/payments`, icon: CreditCard, description: "Wallet, payouts, transactions" },
     { name: "User Insights", href: `${base}/user-insights`, icon: UserCircle, description: "Reviews and complaints (read-only)" },

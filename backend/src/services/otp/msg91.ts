@@ -6,6 +6,7 @@
 
 const MSG91_V5_OTP_URL = "https://api.msg91.com/api/v5/otp";
 const MSG91_LEGACY_SEND_OTP_URL = "https://control.msg91.com/api/sendotp.php";
+const MSG91_FLOW_URL = "https://control.msg91.com/api/v5/flow/";
 
 export type Msg91SendOptions = {
   authKey: string;
@@ -22,11 +23,29 @@ export type Msg91SendOptions = {
  */
 export async function sendOtpViaMsg91(options: Msg91SendOptions): Promise<{ ok: boolean; error?: string }> {
   const { authKey, phoneE164, otp, templateId, senderId, otpExpirySec = 300 } = options;
-  const mobile = phoneE164.replace(/\D/g, "");
+  const mobileDigits = phoneE164.replace(/\D/g, "");
+  // Normalize to India 10-digit local mobile when possible (MSG91 commonly expects this).
+  const local10 =
+    mobileDigits.length === 10
+      ? mobileDigits
+      : mobileDigits.startsWith("91") && mobileDigits.length >= 12
+        ? mobileDigits.slice(-10)
+        : mobileDigits.length > 10
+          ? mobileDigits.slice(-10)
+          : mobileDigits;
 
   if (templateId) {
-    // MSG91 v5 OTP API (template-based, DLT compliant)
-    const res = await fetch(MSG91_V5_OTP_URL, {
+    // Prefer MSG91 Flow API when a DLT template/flow id is configured.
+    // The v5 OTP API has multiple variants and has caused "Please enter atleast one number to send sms."
+    // Flow API is what we already use for the Supabase Send SMS hook path.
+    const mobileWithCountry = local10.length === 10 ? `91${local10}` : local10;
+    const recipient: Record<string, string> = { mobiles: mobileWithCountry };
+    // Common variable names seen in MSG91 templates/flows.
+    recipient.OTP = otp;
+    recipient.Code = otp;
+    recipient.VAR1 = otp;
+
+    const res = await fetch(MSG91_FLOW_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -34,8 +53,9 @@ export async function sendOtpViaMsg91(options: Msg91SendOptions): Promise<{ ok: 
       },
       body: JSON.stringify({
         template_id: templateId,
-        shorturl: "0",
-        recipients: [{ mobiles: `91${mobile.replace(/^91/, "")}`, otp }],
+        sender: senderId || "GMMSMS",
+        short_url: "0",
+        recipients: [recipient],
       }),
     });
     const data = (await res.json().catch(() => ({}))) as { type?: string; message?: string };
@@ -51,7 +71,7 @@ export async function sendOtpViaMsg91(options: Msg91SendOptions): Promise<{ ok: 
   // Legacy sendotp.php (no template) – for dev/simple setups
   const params = new URLSearchParams({
     authkey: authKey,
-    mobile: mobile.replace(/^91/, "91"),
+    mobile: local10.length === 10 ? `91${local10}` : local10,
     otp,
     otp_expiry: String(otpExpirySec),
     ...(senderId ? { sender: senderId } : {}),

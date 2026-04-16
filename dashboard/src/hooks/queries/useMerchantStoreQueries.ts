@@ -2,6 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import { STORE_KEY } from "@/hooks/useStore";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { usePathname } from "next/navigation";
 
@@ -84,7 +85,8 @@ export function useStoreOperationsQuery(storeId: string | null) {
     queryFn: () => fetchJson(url!),
     enabled: Boolean(storeId && url) && isAllowed,
     ...SHARED_OPTIONS,
-    refetchOnWindowFocus: false,
+    // Partner Site / merchant app toggles update DB; tab back to dashboard should resync even if Realtime missed.
+    refetchOnWindowFocus: true,
     refetchOnMount: false,
   });
 }
@@ -145,6 +147,7 @@ export function useStoreMenuQuery(storeId: string | null) {
 export function useInvalidateMerchantStoreQueries() {
   const queryClient = useQueryClient();
   return (storeId: string) => {
+    queryClient.invalidateQueries({ queryKey: STORE_KEY(storeId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.stats(storeId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.wallet(storeId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.merchantStore.storeOperations(storeId) });
