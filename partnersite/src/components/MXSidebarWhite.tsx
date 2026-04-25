@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react'
 import { useMerchantSession } from '@/context/MerchantSessionContext'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import {
   LayoutDashboard,
   UtensilsCrossed,
@@ -20,7 +20,8 @@ import {
   LogOut,
   Store,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Inbox
 } from 'lucide-react'
 import LogoutConfirmModal from './LogoutConfirmModal'
 
@@ -79,6 +80,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const isDesktopSidebar = !(hasMounted && isSmallScreen);
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [expandedMenus, setExpandedMenus] = useState<string[]>(['dashboard']);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
@@ -185,6 +187,12 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       href: '/mx/user-insights'
     },
     {
+      id: 'support-inbox',
+      label: 'Support Inbox',
+      icon: <Inbox size={20} />,
+      href: '/mx/support-inbox'
+    },
+    {
       id: 'settings',
       label: 'Settings',
       icon: <Settings size={20} />, 
@@ -207,9 +215,33 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   }
 
   const isActive = (href: string) => {
-    const p = pathname || ''
-    if (href === '/mx/order-history') return p === href || p.startsWith(`${href}/`)
-    return p === href || p.startsWith(`${href}?`)
+    const p = pathname || '';
+    const q = searchParams?.toString() || '';
+    const full = q ? `${p}?${q}` : p;
+    const [hrefPath, hrefQuery = ''] = href.split('?');
+
+    // Query-aware active state (e.g. /mx/user-insights?view=inbox)
+    if (hrefQuery) {
+      if (p !== hrefPath) return false;
+      const current = new URLSearchParams(q);
+      const expected = new URLSearchParams(hrefQuery);
+      for (const [k, v] of expected.entries()) {
+        if (current.get(k) !== v) return false;
+      }
+      return true;
+    }
+
+    // Prevent both "User Insights" and "Support Inbox" being active together.
+    if (href === '/mx/user-insights') {
+      const current = new URLSearchParams(q);
+      if (current.get('view') === 'inbox') return false;
+    }
+
+    // Dedicated inbox route should activate Support Inbox only.
+    if (href === '/mx/support-inbox') return p === '/mx/support-inbox';
+
+    if (href === '/mx/order-history') return p === href || p.startsWith(`${href}/`);
+    return full === href || p === href || p.startsWith(`${href}?`) || p.startsWith(`${href}/`);
   }
 
   const switchToStore = (storeId: string) => {
@@ -482,11 +514,15 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     <>
       {/* Desktop: fixed sidebar — hidden on viewport < 768px so never visible on mobile load */}
       <aside
-        className={`hidden md:flex flex-col fixed z-50 shrink-0 transition-all duration-200 ${effectiveCollapsed ? 'w-14' : 'w-52'} ${
+        className={`hidden md:flex flex-col fixed z-40 shrink-0 transition-all duration-200 ${effectiveCollapsed ? 'w-14' : 'w-52'} ${
           partnerShell && !isRight
             ? 'bg-[#f5f5f5] border-r border-[#e8e8e8] left-0'
             : `bg-white ${isRight ? 'right-0 border-l border-gray-200 shadow-lg' : 'left-0 border-r border-gray-200 shadow-lg'}`
-        } ${partnerShell && !isRight ? 'top-[var(--mx-partner-topbar-h)] h-[calc(100vh-var(--mx-partner-topbar-h))]' : 'top-0 h-screen'}`}
+        } ${
+          partnerShell && !isRight
+            ? "top-[var(--mx-partner-topbar-h)] h-[calc(100dvh-var(--mx-partner-topbar-h))]"
+            : "top-0 h-dvh"
+        }`}
       >
         <SidebarContent />
       </aside>
@@ -497,11 +533,11 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
         {mobileMenuOpen && (
           <>
             <div
-              className="fixed inset-0 bg-black/40 z-[55]"
+              className="fixed inset-0 bg-black/40 z-[1090]"
               onClick={() => setMobileMenuOpen(false)}
               aria-hidden
             />
-            <aside className="fixed left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-white border-r border-gray-200 shadow-xl z-[60] overflow-y-auto">
+            <aside className="fixed left-0 top-0 bottom-0 w-72 max-w-[85vw] bg-white border-r border-gray-200 shadow-xl z-[1100] overflow-y-auto">
               <div className="mx-shell-header w-full justify-between gap-2">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center flex-shrink-0">

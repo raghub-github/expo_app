@@ -83,7 +83,9 @@ export async function GET(request: NextRequest) {
       .from("unified_ticket_messages")
       .select("*")
       .eq("ticket_id", ticket_id)
-      .eq("is_internal_note", false) // Don't show internal notes to merchants
+      // Don't show internal notes to merchants (defensive: filter by both flag and message_type)
+      .eq("is_internal_note", false)
+      .neq("message_type", "INTERNAL_NOTE")
       .order("created_at", { ascending: true });
 
     if (messagesError) {

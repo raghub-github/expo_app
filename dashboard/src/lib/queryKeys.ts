@@ -88,8 +88,9 @@ export const queryKeys = {
     lists: () => ["tickets", "list"] as const,
     list: (filters: Record<string, unknown>) => ["tickets", "list", stableSerialize(filters)] as const,
     details: () => ["tickets", "detail"] as const,
-    detail: (id: number | string) => ["tickets", "detail", id] as const,
-    activities: (id: number | string) => ["tickets", "activities", id] as const,
+    /** Always string id so URL slug + numeric `ticket.id` share one cache entry (avoids duplicate refetches / “reload”). */
+    detail: (id: number | string) => ["tickets", "detail", String(id).trim()] as const,
+    activities: (id: number | string) => ["tickets", "activities", String(id).trim()] as const,
     agents: (includePresence?: boolean, accessApprovedOnly?: boolean) =>
       [
         "tickets",

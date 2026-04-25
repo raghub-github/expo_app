@@ -51,6 +51,9 @@ export async function POST(request: NextRequest) {
     const joined = parentTrim ? `${parentTrim}/${safeFileName}` : safeFileName;
     const fullPath = normalizeR2ObjectKey(joined);
 
+    const isTicketAttachment =
+      typeof parent === "string" && parent.startsWith("tickets/");
+
     // -------- Convert File --------
     const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -64,15 +67,17 @@ export async function POST(request: NextRequest) {
 
     await s3Client.send(uploadCommand);
 
-    // -------- Generate signed URL (valid for 7 days) --------
-    const getObjectCommand = new GetObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: fullPath,
-    });
-    const signedUrl = await getSignedUrl(s3Client, getObjectCommand, { expiresIn: 60 * 60 * 24 * 7 }); // 7 days
-    
-    // For ticket attachments, return key so Supabase can store key and proxy can serve (no auth/expiry issues).
-    const isTicketAttachment = typeof parent === "string" && parent.startsWith("tickets/");
+    // Ticket flow stores the key only and serves via /api/attachments/proxy — skip presign (faster, no extra S3 round trip).
+    let signedUrl: string | null = null;
+    if (!isTicketAttachment) {
+      const getObjectCommand = new GetObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: fullPath,
+      });
+      signedUrl = await getSignedUrl(s3Client, getObjectCommand, {
+        expiresIn: 60 * 60 * 24 * 7,
+      }); // 7 days
+    }
 
     // -------- Update Supabase (Optional) --------
     // Only update DB when parent is a known flow that uses a table we have (e.g. tickets).
@@ -80,10 +85,17 @@ export async function POST(request: NextRequest) {
     // The table 'menu_items' does not exist in this schema; avoid touching it.
     const isTicketFlow = typeof parent === 'string' && parent.startsWith('tickets/');
     if (menu_item_id && isTicketFlow) {
+      const getForMenu = new GetObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: fullPath,
+      });
+      const menuImageUrl = await getSignedUrl(s3Client, getForMenu, {
+        expiresIn: 60 * 60 * 24 * 7,
+      });
       const { error } = await supabase
         .from('menu_items')
         .update({
-          image_url: signedUrl,
+          image_url: menuImageUrl,
           updated_at: new Date().toISOString(),
         })
         .eq('item_id', menu_item_id);
@@ -103,7 +115,7 @@ export async function POST(request: NextRequest) {
     // -------- Success --------
     return NextResponse.json({
       success: true,
-      url: isTicketAttachment ? fullPath : signedUrl,
+      url: isTicketAttachment ? fullPath : (signedUrl as string),
       path: fullPath,
       key: fullPath, // Always return key for future signed URL generation
       ...(isTicketAttachment ? { key: fullPath } : {}),

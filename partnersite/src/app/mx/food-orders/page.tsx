@@ -958,6 +958,76 @@ function OrdersPageContent() {
     </div>
   ) : null;
 
+  function StoreClosedOrdersState() {
+    return (
+      <div className="flex flex-1 min-h-0 items-center justify-center bg-white">
+        <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center px-6 py-14 text-center">
+          <svg viewBox="0 0 360 220" className="h-auto w-full max-w-[520px]" aria-hidden>
+            {/* hanger */}
+            <path
+              d="M120 48 L180 12 L240 48"
+              fill="none"
+              stroke="#cbd5e1"
+              strokeWidth="10"
+              strokeLinecap="round"
+            />
+            <circle cx="180" cy="12" r="10" fill="#34d399" />
+            {/* board */}
+            <g transform="translate(0,0) rotate(-10 180 120)">
+              <rect
+                x="92"
+                y="62"
+                width="176"
+                height="112"
+                rx="16"
+                fill="#f8fafc"
+                stroke="#cbd5e1"
+                strokeWidth="6"
+              />
+              <rect
+                x="108"
+                y="78"
+                width="144"
+                height="80"
+                rx="12"
+                fill="#ffffff"
+                stroke="#e2e8f0"
+                strokeWidth="3"
+              />
+              <text
+                x="180"
+                y="128"
+                textAnchor="middle"
+                fill="#64748b"
+                fontSize="40"
+                fontWeight="800"
+                fontFamily="system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+                letterSpacing="2"
+              >
+                CLOSED
+              </text>
+            </g>
+          </svg>
+
+          <p className="mt-6 text-sm font-semibold text-slate-700">You are offline</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Visit{" "}
+            <button
+              type="button"
+              onClick={() => {
+                window.dispatchEvent(new Event("mx-open-need-help"));
+              }}
+              className="font-semibold text-emerald-600 underline decoration-emerald-300 underline-offset-2 hover:text-emerald-700"
+            >
+              help centre
+            </button>{" "}
+            for more details
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
@@ -1094,8 +1164,10 @@ function OrdersPageContent() {
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
-            {/* Desktop (lg+): When order open, split layout. Mobile: full-screen overlay on card click */}
-            {rightPanelOpen && selectedOrder ? (
+            {/* Store closed/offline: show dedicated blank-state in the main area */}
+            {isStoreOpen === false ? (
+              <StoreClosedOrdersState />
+            ) : rightPanelOpen && selectedOrder ? (
               <>
                 {/* Order details: single card, actions top-right, reject half width, space used evenly */}
                 <div className="hidden lg:flex flex-1 min-w-0 border-r border-gray-200 bg-gray-50/80 flex-col overflow-hidden order-1 p-3">

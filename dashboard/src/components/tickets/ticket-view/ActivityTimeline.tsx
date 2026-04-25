@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
+import type { TicketMessage } from "@/hooks/tickets/useTicketDetail";
 
 export const TICKET_ACTIVITIES_STALE_MS = 60_000;
 
@@ -20,6 +21,32 @@ export interface TicketActivity {
   createdAt: string;
 }
 
+type TimelineItem =
+  | ({ kind: "activity" } & TicketActivity)
+  | {
+      kind: "message";
+      id: string;
+      ticketId: number;
+      createdAt: string;
+      actionType: "message_received" | "response_sent" | "internal_note" | "public_note";
+      actorName?: string | null;
+      actorEmail?: string | null;
+      activityDescription?: string | null;
+      metadata?: Record<string, unknown> | null;
+      messagePreview?: string;
+    }
+  | {
+      kind: "created";
+      id: string;
+      ticketId: number;
+      createdAt: string;
+      actionType: "created";
+      activityDescription?: string | null;
+      actorType?: string | null;
+      actorName?: string | null;
+      actorEmail?: string | null;
+    };
+
 export async function fetchTicketActivities(ticketId: number): Promise<TicketActivity[]> {
   const res = await fetch(`/api/tickets/${ticketId}/activities?limit=80`, { credentials: "include" });
   if (!res.ok) {
@@ -31,6 +58,28 @@ export async function fetchTicketActivities(ticketId: number): Promise<TicketAct
   }
   const json = await res.json();
   return (json.data?.activities ?? []) as TicketActivity[];
+}
+
+function safeTimeMs(d: string): number {
+  const ms = new Date(d).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function stripHtmlToText(input: string): string {
+  if (!input) return "";
+  return input
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<\/?[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeMessagePreview(msg: TicketMessage): string {
+  const raw = msg.message ?? "";
+  const txt = stripHtmlToText(String(raw));
+  if (!txt) return "";
+  return txt;
 }
 
 function formatActivityTime(createdAt: string): string {
@@ -57,6 +106,14 @@ function formatRelativeTime(createdAt: string): string {
   return `${days} day${days > 1 ? "s" : ""} ago`;
 }
 
+/** New copy + legacy rows stored with the old phrase. */
+function normalizeFrtActivityText(text: string | null | undefined): string {
+  if (text == null) return "";
+  const t = String(text).trim();
+  if (/^frt marked and locked$/i.test(t)) return "FRT Updated";
+  return String(text);
+}
+
 function formatActionLabel(actionType: string): string {
   const labels: Record<string, string> = {
     CREATED: "Ticket created",
@@ -78,6 +135,9 @@ function formatActionLabel(actionType: string): string {
     response: "Response sent",
     note: "Internal note",
     internal_note: "Internal note",
+    message_received: "Message received",
+    response_sent: "Response sent",
+    public_note: "Public note",
     resolved: "Ticket resolved",
     closed: "Ticket closed",
     resolution: "Resolved",
@@ -86,12 +146,12 @@ function formatActionLabel(actionType: string): string {
   return labels[actionType] ?? actionType.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function activitySummary(a: TicketActivity): string {
-  const byDisplay = a.actorEmail ?? a.actorName ?? "";
+function activitySummary(a: TimelineItem): string {
+  const byDisplay = (a as any).actorEmail ?? (a as any).actorName ?? "";
   const who = byDisplay ? ` by ${byDisplay}` : "";
-  if (a.activityDescription) return a.activityDescription + who;
+  if ((a as any).activityDescription) return normalizeFrtActivityText((a as any).activityDescription) + who;
   const label = formatActionLabel(a.actionType);
-  if (a.oldValue != null || a.newValue != null) {
+  if (a.kind === "activity" && (a.oldValue != null || a.newValue != null)) {
     const o = a.oldValue as
       | { status?: string; priority?: string; assigned_to_agent_name?: string | null }
       | undefined;
@@ -110,23 +170,23 @@ function activitySummary(a: TicketActivity): string {
   return label;
 }
 
-function activityActorLabel(a: TicketActivity): string {
-  const actorName = (a.actorName ?? "").trim();
-  const actorEmail = (a.actorEmail ?? "").trim();
+function activityActorLabel(a: TimelineItem): string {
+  const actorName = String((a as any).actorName ?? "").trim();
+  const actorEmail = String((a as any).actorEmail ?? "").trim();
   if (actorEmail) {
     if (actorName && actorName.toLowerCase() !== actorEmail.toLowerCase()) return `${actorName} (${actorEmail})`;
     return `GatiMitra Team (${actorEmail})`;
   }
-  return actorName || (a.actorType ? String(a.actorType) : "System");
+  return actorName || ((a as any).actorType ? String((a as any).actorType) : "System");
 }
 
-function activityInitial(a: TicketActivity): string {
+function activityInitial(a: TimelineItem): string {
   const raw = activityActorLabel(a).trim();
   return raw ? raw.charAt(0).toUpperCase() : "S";
 }
 
-function activityTitle(a: TicketActivity): string {
-  const base = (a.activityDescription ?? "").trim();
+function activityTitle(a: TimelineItem): string {
+  const base = normalizeFrtActivityText(String((a as any).activityDescription ?? "").trim());
   const lowerAction = String(a.actionType || "").toLowerCase();
   const lowerDesc = base.toLowerCase();
   if (lowerDesc.startsWith("merged tickets into") || lowerDesc.startsWith("merged into")) {
@@ -143,16 +203,24 @@ function activityTitle(a: TicketActivity): string {
   return formatActionLabel(a.actionType);
 }
 
-function activityDetailLines(a: TicketActivity): string[] {
+function activityDetailLines(a: TimelineItem): string[] {
   const lines: string[] = [];
-  const o = (a.oldValue ?? {}) as Record<string, unknown>;
-  const n = (a.newValue ?? {}) as Record<string, unknown>;
+  if (a.kind === "message") {
+    if (a.messagePreview && a.messagePreview.trim() !== "") {
+      lines.push(a.messagePreview.trim());
+      return lines;
+    }
+    return lines;
+  }
+
+  const o = a.kind === "activity" ? ((a.oldValue ?? {}) as Record<string, unknown>) : ({} as Record<string, unknown>);
+  const n = a.kind === "activity" ? ((a.newValue ?? {}) as Record<string, unknown>) : ({} as Record<string, unknown>);
   const oldStatus = o.status != null ? String(o.status) : "";
   const newStatus = n.status != null ? String(n.status) : "";
   const oldPriority = o.priority != null ? String(o.priority) : "";
   const newPriority = n.priority != null ? String(n.priority) : "";
   const assigned = n.assigned_to_agent_name != null ? String(n.assigned_to_agent_name) : "";
-  const desc = (a.activityDescription ?? "").trim();
+  const desc = normalizeFrtActivityText(String((a as any).activityDescription ?? "").trim());
   const lowerAction = String(a.actionType || "").toLowerCase();
   const lowerDesc = desc.toLowerCase();
   const cleanValue = (value: string): string => {
@@ -217,7 +285,17 @@ function isStatusUpdatedActivity(actionType: string): boolean {
   );
 }
 
-export function ActivityTimeline({ ticketId, noScroll }: { ticketId: number; noScroll?: boolean }) {
+export function ActivityTimeline({
+  ticketId,
+  noScroll,
+  ticketCreatedAt,
+  messages = [],
+}: {
+  ticketId: number;
+  noScroll?: boolean;
+  ticketCreatedAt?: string | null;
+  messages?: TicketMessage[];
+}) {
   const activityCacheId = String(ticketId);
   const { data, isPending, isError, error } = useQuery({
     queryKey: queryKeys.tickets.activities(activityCacheId),
@@ -239,16 +317,69 @@ export function ActivityTimeline({ ticketId, noScroll }: { ticketId: number; noS
     );
   }
 
-  const activities = [...(data ?? [])].reverse();
+  const baseActivities: TimelineItem[] = [...(data ?? [])]
+    .map((a) => ({ ...a, kind: "activity" as const }))
+    .sort((a, b) => safeTimeMs(a.createdAt) - safeTimeMs(b.createdAt));
+
+  const createdItem: TimelineItem[] =
+    ticketCreatedAt && String(ticketCreatedAt).trim() !== ""
+      ? [
+          {
+            kind: "created" as const,
+            id: `created-${ticketId}`,
+            ticketId,
+            createdAt: String(ticketCreatedAt),
+            actionType: "created",
+            activityDescription: "Ticket created",
+            actorType: "System",
+          },
+        ]
+      : [];
+
+  const messageItems: TimelineItem[] = (Array.isArray(messages) ? messages : [])
+    .filter((m) => m && m.createdAt)
+    .map((m) => {
+      const mt = String(m.messageType ?? "").toLowerCase();
+      const isInternal = Boolean(m.isInternalNote) || mt === "internal_note";
+      const isPublic = !isInternal && (mt === "public_note" || mt === "note_public");
+      const fromAgent = String(m.senderType ?? "").toUpperCase() === "AGENT";
+      const actionType: TimelineItem["actionType"] =
+        isInternal ? "internal_note" : isPublic ? "public_note" : fromAgent ? "response_sent" : "message_received";
+      const label =
+        actionType === "internal_note"
+          ? "Internal note"
+          : actionType === "public_note"
+            ? "Public note"
+            : actionType === "response_sent"
+              ? "Response sent"
+              : "Message received";
+      return {
+        kind: "message" as const,
+        id: `msg-${m.id}`,
+        ticketId,
+        createdAt: String(m.createdAt),
+        actionType,
+        activityDescription: label,
+        actorName: m.senderName,
+        actorEmail: m.senderEmail,
+        metadata: null,
+        messagePreview: normalizeMessagePreview(m),
+      };
+    })
+    .sort((a, b) => safeTimeMs(a.createdAt) - safeTimeMs(b.createdAt));
+
+  const items: TimelineItem[] = [...createdItem, ...messageItems, ...baseActivities].sort(
+    (a, b) => safeTimeMs(a.createdAt) - safeTimeMs(b.createdAt)
+  );
 
   return (
     <div className={`flex flex-col ${noScroll ? "" : "min-h-0 flex-1"}`}>
       <div className={noScroll ? "p-0" : "flex-1 min-h-0 overflow-y-auto p-0"}>
-        {activities.length === 0 ? (
+        {items.length === 0 ? (
           <p className="px-3 py-2 text-xs text-gray-500">No activity recorded yet.</p>
         ) : (
           <ul className="space-y-2.5">
-            {activities.map((a) => (
+            {items.map((a) => (
               <li key={a.id} className="flex gap-2.5 rounded-lg border border-[#e5ebf1] bg-[#f4f7fa] px-3.5 py-3 text-xs">
                 <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-gray-300 bg-gray-200 text-[11px] font-semibold text-gray-700">
                   {activityInitial(a)}
@@ -259,7 +390,7 @@ export function ActivityTimeline({ ticketId, noScroll }: { ticketId: number; noS
                       <span className="font-semibold text-gray-800">{activityActorLabel(a)}</span>
                       <span className="ml-1">- {activityTitle(a)}</span>
                     </span>
-                    {isStatusUpdatedActivity(a.actionType) ? (
+                    {a.kind === "activity" && isStatusUpdatedActivity(a.actionType) ? (
                       <span className="shrink-0 rounded-full border border-gray-300 bg-[#edf2f7] px-2 py-0.5 text-[10px] font-medium text-gray-700">
                         Status updated
                       </span>

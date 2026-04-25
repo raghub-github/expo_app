@@ -540,11 +540,11 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
           </div>
         </div>
 
-        {/* Scrollable: description+attachments, conversation. */}
-        <div className={`flex-1 min-h-0 overflow-y-auto bg-white px-2.5 ${showReplySection ? "pb-8" : "pb-4"} sm:px-3`}>
+        {/* Scrollable: description+attachments, conversation. (Main window is locked; only this pane scrolls) */}
+        <div className="flex-1 min-h-0 overflow-y-auto bg-white px-2.5 pb-4 sm:px-3">
           {showActivities ? (
             <div className="mt-0 px-0">
-              <ActivityTimeline ticketId={ticket.id} noScroll />
+              <ActivityTimeline ticketId={ticket.id} noScroll ticketCreatedAt={ticket.createdAt} messages={ticket.messages ?? []} />
             </div>
           ) : showCsatPanel ? (
             <div className="mt-0 px-0">

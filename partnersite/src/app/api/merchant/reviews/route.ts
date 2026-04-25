@@ -31,6 +31,40 @@ type RatingRow = {
   created_at: string;
 };
 
+type OrdersCoreRow = {
+  id: number;
+  order_id: string | null;
+  order_type?: string | null;
+  items?: unknown;
+  grand_total?: number | null;
+};
+
+function orderSummaryFromOrdersCore(o: OrdersCoreRow | undefined): string | null {
+  if (!o) return null;
+  const orderType = (o.order_type || "").toString().trim().toLowerCase();
+  const typeLabel =
+    orderType === "food" ? "Food order" : orderType ? `${orderType} order` : "Order";
+
+  // Try to infer a human-friendly item label from items JSON.
+  let itemLabel: string | null = null;
+  const items = o.items as any;
+  if (Array.isArray(items) && items.length > 0) {
+    const first = items[0] ?? {};
+    const name =
+      (typeof first.name === "string" && first.name.trim()) ||
+      (typeof first.item_name === "string" && first.item_name.trim()) ||
+      (typeof first.title === "string" && first.title.trim()) ||
+      null;
+    if (name) {
+      const more = items.length > 1 ? ` +${items.length - 1} more` : "";
+      itemLabel = `${name}${more}`;
+    }
+  }
+
+  if (itemLabel) return `${typeLabel} · ${itemLabel}`;
+  return typeLabel;
+}
+
 /**
  * GET /api/merchant/reviews?storeId=GMMC…&from=&to=
  * Same data as the merchant app: `merchant_store_ratings` for the store (numeric internal id resolved via assertStoreAccess).
@@ -83,16 +117,27 @@ export async function GET(request: NextRequest) {
     });
 
     const customerIds = [...new Set(filtered.map((r) => r.customer_id).filter((id): id is number => typeof id === "number" && id > 0))];
+    const orderIds = [
+      ...new Set(
+        filtered
+          .map((r) => r.order_id)
+          .filter((id): id is number => typeof id === "number" && id > 0)
+      ),
+    ];
 
     const customerById: Record<number, { name: string | null; mobile: string | null; email: string | null }> = {};
     if (customerIds.length > 0) {
-      const { data: custRows } = await db.from("customers").select("id, name, mobile, email").in("id", customerIds);
+      // Customers schema uses `full_name` + `primary_mobile` (see backend drizzle customers migrations).
+      const { data: custRows } = await db
+        .from("customers")
+        .select("id, full_name, primary_mobile, email")
+        .in("id", customerIds);
       for (const c of custRows ?? []) {
         const id = (c as { id?: number }).id;
         if (typeof id === "number") {
           customerById[id] = {
-            name: (c as { name?: string | null }).name ?? null,
-            mobile: (c as { mobile?: string | null }).mobile ?? null,
+            name: (c as { full_name?: string | null }).full_name ?? null,
+            mobile: (c as { primary_mobile?: string | null }).primary_mobile ?? null,
             email: (c as { email?: string | null }).email ?? null,
           };
         }
@@ -114,8 +159,23 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const orderById: Record<number, OrdersCoreRow> = {};
+    if (orderIds.length > 0) {
+      const { data: orderRows } = await db
+        .from("orders_core")
+        .select("id, order_id, order_type, items, grand_total")
+        .in("id", orderIds);
+      for (const o of (orderRows ?? []) as any[]) {
+        const id = (o as { id?: number }).id;
+        if (typeof id === "number") {
+          orderById[id] = o as OrdersCoreRow;
+        }
+      }
+    }
+
     const formattedReviews = filtered.map((review) => {
       const customer = review.customer_id != null ? customerById[review.customer_id] : undefined;
+      const order = review.order_id != null ? orderById[review.order_id] : undefined;
       const orderCount = review.customer_id != null ? orderCounts[review.customer_id] || 0 : 0;
       let userType: "new" | "repeated" | "fraud" = "new";
       if (review.is_flagged === true) userType = "fraud";
@@ -131,6 +191,8 @@ export async function GET(request: NextRequest) {
         customerEmail: customer?.email ?? null,
         customerMobile: customer?.mobile ?? null,
         orderId: review.order_id,
+        orderPublicId: order?.order_id ?? null,
+        orderSummary: orderSummaryFromOrdersCore(order),
         date: review.created_at,
         type,
         message: review.review_text || review.review_title || "",

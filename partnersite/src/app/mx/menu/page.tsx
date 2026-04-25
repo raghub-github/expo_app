@@ -663,74 +663,142 @@ function ItemForm(props: ItemFormProps) {
   const lockOptionsTab = Boolean(onSaveAndNext) && !currentItemId;
 
   return (
-    <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-2 md:mx-0 border border-gray-100">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
-        <div>
-          <h2 className="text-base font-bold text-gray-900">{readOnly ? 'View menu item details' : title}</h2>
-          <p className="text-xs text-gray-500">
-            {readOnly
-              ? 'View only — editing is managed from the agent dashboard'
-              : isEdit
-                ? `Editing: ${currentItemId}`
-                : currentItemId
-                  ? `Item #${currentItemId} — add customizations or variants on the next tab`
-                  : 'Enter details for the menu item'}
+    <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl mx-2 md:mx-0 border border-gray-100 overflow-hidden">
+      <div className="flex min-h-[70vh] max-h-[90vh]">
+        {/* Left: item preview (desktop only) */}
+        <div className="hidden md:flex w-[380px] shrink-0 border-r border-gray-100 bg-gradient-to-b from-gray-50 to-white flex-col items-center justify-between p-4">
+          <div className="flex-1 w-full flex items-center justify-center">
+            <div className="relative w-[250px] h-[520px] rounded-[2.5rem] bg-black shadow-[0_20px_60px_rgba(0,0,0,0.25)] p-[10px]">
+              <div className="absolute top-[8px] left-1/2 -translate-x-1/2 w-[96px] h-[22px] bg-black rounded-b-2xl" />
+              <div className="h-full w-full rounded-[2.1rem] bg-white overflow-hidden border border-black/10">
+                <div className="px-4 pt-4">
+                  <p className="text-sm font-semibold text-gray-900 truncate">
+                    {formData.item_name?.trim() ? formData.item_name : 'Item name'}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                    {formData.item_description?.trim() ? formData.item_description : 'Item description'}
+                  </p>
+                </div>
+                <div className="px-4 mt-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-gray-900">
+                      ₹{String(formData.selling_price || formData.base_price || '').trim() || '—'}
+                    </p>
+                    <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
+                      Preview
+                    </span>
+                  </div>
+                </div>
+                <div className="px-4 mt-3">
+                  <div className="aspect-square w-full rounded-2xl bg-gray-100 overflow-hidden border border-gray-200 flex items-center justify-center">
+                    {imagePreview ? (
+                      imagePreview.startsWith('blob:') || imagePreview.startsWith('data:') ? (
+                        <img src={imagePreview} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <R2Image src={imagePreview} alt="" className="h-full w-full object-cover" />
+                      )
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-gray-400">
+                        <ImageIcon size={22} />
+                        <p className="mt-2 text-xs font-medium">No image</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="px-4 mt-3">
+                  <div className="h-2 w-24 rounded-full bg-gray-200" />
+                  <div className="mt-2 h-2 w-40 rounded-full bg-gray-200" />
+                  <div className="mt-2 h-2 w-32 rounded-full bg-gray-200" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs text-gray-500">
+            Item preview on <span className="font-semibold text-gray-700">GatiMitra</span>
           </p>
         </div>
-        <button type="button" onClick={onCancel} className="p-1.5 hover:bg-gray-100 rounded-lg" aria-label="Close">
-          <X size={18} className="text-gray-600" />
-        </button>
-      </div>
 
-      <div className="flex border-b border-gray-200">
-        <button
-          type="button"
-          onClick={() => setActiveSection('main')}
-          className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'main' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'}`}
-        >
-          Item & pricing
-        </button>
-        <button
-          type="button"
-          title={
-            lockOptionsTab
-              ? 'Use Save and Next on the first tab to create the item, then add options here'
-              : undefined
-          }
-          disabled={lockOptionsTab}
-          onClick={() => {
-            if (lockOptionsTab) return;
-            setActiveSection('customization');
-          }}
-          className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'customization' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'} ${lockOptionsTab ? 'opacity-40 cursor-not-allowed' : ''}`}
-        >
-          Customizations & variants
-        </button>
-      </div>
+        {/* Right: editor */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-gray-900 truncate">
+                {formData.item_name?.trim()
+                  ? formData.item_name
+                  : (readOnly ? 'View menu item details' : title)}
+              </h2>
+              <p className="text-xs text-gray-500 truncate">
+                {readOnly
+                  ? 'View only — editing is managed from the agent dashboard'
+                  : isEdit
+                    ? `Editing: ${currentItemId}`
+                    : currentItemId
+                      ? `Item #${currentItemId} — add customizations or variants on the next tab`
+                      : 'Enter details for the menu item'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="p-2 hover:bg-gray-100 rounded-lg"
+                aria-label="Close"
+              >
+                <X size={18} className="text-gray-700" />
+              </button>
+            </div>
+          </div>
 
-      <form
-        className="px-4 py-3 max-h-[70vh] overflow-y-auto"
-        autoComplete="off"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (readOnly) return;
-          try {
-            if (activeSection === 'main') {
-              if (onSaveAndNext) {
-                await onSaveAndNext();
+          <div className="flex border-b border-gray-200 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveSection('main')}
+              className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'main' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'}`}
+            >
+              Item & pricing
+            </button>
+            <button
+              type="button"
+              title={
+                lockOptionsTab
+                  ? 'Use Save and Next on the first tab to create the item, then add options here'
+                  : undefined
+              }
+              disabled={lockOptionsTab}
+              onClick={() => {
+                if (lockOptionsTab) return;
                 setActiveSection('customization');
-              } else if (onSubmit) onSubmit();
-            } else {
-              if (onSubmitOptions) await onSubmitOptions();
-              else if (onSubmit) onSubmit();
-            }
-          } catch {
-            /* error state / toast from handler */
-          }
-        }}
-      >
-        {activeSection === 'main' && (
-          <div className="space-y-3">
+              }}
+              className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'customization' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'} ${lockOptionsTab ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              Customizations & variants
+            </button>
+          </div>
+
+          <form
+            className="px-4 py-3 flex-1 min-h-0 overflow-y-auto"
+            autoComplete="off"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (readOnly) return;
+              try {
+                if (activeSection === 'main') {
+                  if (onSaveAndNext) {
+                    await onSaveAndNext();
+                    setActiveSection('customization');
+                  } else if (onSubmit) onSubmit();
+                } else {
+                  if (onSubmitOptions) await onSubmitOptions();
+                  else if (onSubmit) onSubmit();
+                }
+              } catch {
+                /* error state / toast from handler */
+              }
+            }}
+          >
+            {activeSection === 'main' && (
+              <div className="space-y-3">
             {/* Row 1: Name, Category */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div>
@@ -1534,8 +1602,10 @@ function ItemForm(props: ItemFormProps) {
             </button>
           ))}
         </div>
-        {error && <div className="text-red-500 text-xs mt-2">{error}</div>}
-      </form>
+            {error && <div className="text-red-500 text-xs mt-2">{error}</div>}
+          </form>
+        </div>
+      </div>
     </div>
   );
 }

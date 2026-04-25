@@ -197,17 +197,29 @@ body.modal-open-blur aside * {
 
 /* Merchant shell: one band height for left sidebar store row + primary page headers + panel headers */
 :root {
+  /* Fixed partner shell header band (critical for strict dashboards like Support Inbox) */
   --mx-shell-header-min-h: 3.5rem; /* 56px */
   --mx-shell-header-pad-y: 0.5rem;
-  /* Partner top bar (Zomato-style) — keep equal to shell header band */
-  --mx-partner-topbar-h: var(--mx-shell-header-min-h);
+  /* Partner top bar (fixed 56px) */
+  --mx-partner-topbar-h: 3.5rem;
 }
-@media (min-width: 768px) {
-  :root {
-    --mx-shell-header-min-h: 4rem; /* 64px */
-    --mx-shell-header-pad-y: 0.5625rem;
-    --mx-partner-topbar-h: var(--mx-shell-header-min-h);
-  }
+
+/* Strict dashboard pages: disable page-level scrolling */
+html.mx-no-page-scroll,
+body.mx-no-page-scroll {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Default pages can scroll inside the main content area. Strict dashboards disable it. */
+.mx-main-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+html.mx-no-page-scroll .mx-main-scroll,
+body.mx-no-page-scroll .mx-main-scroll {
+  overflow: hidden;
 }
 
 /* Right sheets / drawers: header row matches partner top bar */

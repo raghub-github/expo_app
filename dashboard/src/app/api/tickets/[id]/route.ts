@@ -1406,7 +1406,7 @@ export async function PATCH(
         ticket_id: ticketId,
         activity_type: "first_response_marked",
         activity_category: "response",
-        activity_description: "FRT marked and locked",
+        activity_description: "FRT Updated",
         actor_user_id: actorId,
         actor_name: actorName,
         actor_email: actorEmail,
