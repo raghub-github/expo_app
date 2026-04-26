@@ -15,7 +15,7 @@
 
 import { getSql } from "../../db/client.js";
 
-const STORE_TIMEZONE = "Asia/Kolkata";
+const STORE_TIMEZONE_DEFAULT = "Asia/Kolkata";
 
 /**
  * Keeps `merchant_stores` online flags and `operational_status` aligned whenever the store is
@@ -452,10 +452,18 @@ function getSlotsForDay(
   return slots;
 }
 
+function normalizeTz(input: unknown): string {
+  const raw = typeof input === "string" ? input.trim() : "";
+  if (!raw) return STORE_TIMEZONE_DEFAULT;
+  // Fallback for common bad values; keep behavior deterministic.
+  if (raw.toLowerCase() === "ist") return STORE_TIMEZONE_DEFAULT;
+  return raw;
+}
+
 /** Current time in store TZ: day of week (0-6) and minutes since midnight. */
-function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: number } {
+function nowInStoreTz(timeZone: string = STORE_TIMEZONE_DEFAULT): { dayOfWeek: number; minutesSinceMidnight: number } {
   const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: STORE_TIMEZONE,
+    timeZone,
     hour: "numeric",
     minute: "numeric",
     second: "numeric",
@@ -467,7 +475,7 @@ function nowInStoreTz(): { dayOfWeek: number; minutesSinceMidnight: number } {
   const second = Number(parts.find((p) => p.type === "second")?.value ?? 0);
   const minutesSinceMidnight = hour * 60 + minute + second / 60;
 
-  const dayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: STORE_TIMEZONE, weekday: "short" });
+  const dayFormatter = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
   const dayShort = dayFormatter.format(new Date()).toLowerCase();
   const dayMap: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
   const dayOfWeek = dayMap[dayShort.slice(0, 3)] ?? 0;
@@ -558,7 +566,7 @@ export function getNextOpenIso(
   const sameForAll = row.same_for_all_days === true;
   const formatIstDate = (d: Date) => {
     const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: STORE_TIMEZONE,
+      timeZone: STORE_TIMEZONE_DEFAULT,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -614,13 +622,13 @@ export function isLikelyLegacyEndOfDayIstClose(untilIso: string, ref: Date): boo
   const until = new Date(untilIso);
   if (Number.isNaN(until.getTime())) return false;
   const dFmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: STORE_TIMEZONE,
+    timeZone: STORE_TIMEZONE_DEFAULT,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   });
   const tFmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone: STORE_TIMEZONE,
+    timeZone: STORE_TIMEZONE_DEFAULT,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -648,7 +656,7 @@ export function getNextOpenIsoAfterIstCalendarDay(
   const sameForAll = row.same_for_all_days === true;
   const formatIstDate = (d: Date) => {
     const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: STORE_TIMEZONE,
+      timeZone: STORE_TIMEZONE_DEFAULT,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -693,7 +701,7 @@ export function getNextOpenDayStartIso(
   const closedDays = (row.closed_days as string[] | null) ?? [];
   const formatIstDate = (d: Date) => {
     const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: STORE_TIMEZONE,
+      timeZone: STORE_TIMEZONE_DEFAULT,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -727,6 +735,7 @@ export { nowInStoreTz };
 
 type StoreRow = {
   store_id: number;
+  timezone?: string | null;
   is_accepting_orders: boolean | null;
   is_active: boolean | null;
   auto_open_from_schedule: boolean | null;
@@ -744,11 +753,11 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
   const sql = getSql();
   try {
     const now = new Date();
-    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
 
     const storeRows = await sql`
       SELECT
         ms.id AS store_id,
+        ms.timezone,
         ms.is_accepting_orders,
         ms.is_active,
         msa.auto_open_from_schedule,
@@ -830,6 +839,7 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
         continue;
       }
 
+      const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(normalizeTz((store as any).timezone));
       const hoursRow = hoursByStore.get(storeId);
       const autoOpen = store.auto_open_from_schedule === true;
       const blockAutoOpen = store.block_auto_open === true;
@@ -972,10 +982,10 @@ export async function runStoreScheduleTickForStore(
   }
   try {
     const now = new Date();
-    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
     const storeRows = await sql`
       SELECT
         ms.id AS store_id,
+        ms.timezone,
         ms.is_accepting_orders,
         ms.is_active,
         msa.auto_open_from_schedule,
@@ -995,6 +1005,7 @@ export async function runStoreScheduleTickForStore(
     const hoursRows = await sql`SELECT * FROM merchant_store_operating_hours WHERE store_id = ${storeId} LIMIT 1`;
     const hoursRow = hoursRows[0] as Record<string, unknown> | undefined;
     const store = storeRows[0] as StoreRow;
+    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz(normalizeTz((store as any).timezone));
     const autoOpen = store.auto_open_from_schedule === true;
     const blockAutoOpen = store.block_auto_open === true;
     const manualCloseUntilMs = parseManualCloseUntilMs(store.manual_close_until);

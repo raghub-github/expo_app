@@ -72,32 +72,33 @@ export type TicketUploadAttachment = {
 
 async function uploadToR2(files: File[], ticketId: number): Promise<TicketUploadAttachment[]> {
   const crypto = await import("crypto");
-  const results: TicketUploadAttachment[] = [];
-
-  for (const file of files) {
-    if (!(file instanceof File)) continue;
-    if (file.size > MAX_FILE_SIZE) {
-      throw new Error(`File ${file.name} exceeds 50MB limit`);
-    }
-    const mimeType = file.type || "application/octet-stream";
-    if (
-      !ALLOWED_TYPES.has(mimeType) &&
-      !mimeType.startsWith("image/") &&
-      !mimeType.startsWith("audio/") &&
-      !mimeType.startsWith("video/")
-    ) {
-      throw new Error(`File type not allowed: ${file.name}`);
-    }
-    const safeName = sanitizeFileName(file.name);
-    const r2Key = `${R2_TICKET_ATTACHMENTS_PREFIX}/${ticketId}/${crypto.randomUUID()}-${safeName}`;
-    await uploadWithKey(file, r2Key);
-    results.push({
-      storageKey: r2Key,
-      name: file.name,
-      mimeType,
-      url: buildProxyUrl(r2Key),
-    });
-  }
+  const validated = files.filter((f): f is File => f instanceof File);
+  // Upload in parallel; faster for multiple attachments.
+  const results = await Promise.all(
+    validated.map(async (file) => {
+      if (file.size > MAX_FILE_SIZE) {
+        throw new Error(`File ${file.name} exceeds 50MB limit`);
+      }
+      const mimeType = file.type || "application/octet-stream";
+      if (
+        !ALLOWED_TYPES.has(mimeType) &&
+        !mimeType.startsWith("image/") &&
+        !mimeType.startsWith("audio/") &&
+        !mimeType.startsWith("video/")
+      ) {
+        throw new Error(`File type not allowed: ${file.name}`);
+      }
+      const safeName = sanitizeFileName(file.name);
+      const r2Key = `${R2_TICKET_ATTACHMENTS_PREFIX}/${ticketId}/${crypto.randomUUID()}-${safeName}`;
+      await uploadWithKey(file, r2Key);
+      return {
+        storageKey: r2Key,
+        name: file.name,
+        mimeType,
+        url: buildProxyUrl(r2Key),
+      } satisfies TicketUploadAttachment;
+    }),
+  );
   return results;
 }
 

@@ -64,7 +64,11 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
             hideHelpBadge={hideHelpBadge}
           />
         )}
-        <div className="flex flex-1 min-h-0 overflow-hidden relative">
+        <div
+          className={`flex flex-1 min-h-0 overflow-hidden relative ${
+            !isRight ? "pt-14" : ""
+          }`}
+        >
           <MXSidebarWhite
             restaurantName={restaurantName}
             restaurantId={restaurantId}
@@ -77,7 +81,7 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
           />
           <main className={`flex-1 flex flex-col overflow-hidden h-full relative z-0 transition-[margin] duration-200 ${collapsed ? (isRight ? 'mr-0 md:mr-14' : 'ml-0 md:ml-14') : (isRight ? 'mr-0 md:mr-52' : 'ml-0 md:ml-52')}`}>
             <ParentBlockedBanner />
-            <div className="bg-white flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-h-0 scroll-smooth">
+            <div className="bg-white flex-1 flex flex-col min-h-0 scroll-smooth mx-main-scroll">
               {children}
             </div>
           </main>

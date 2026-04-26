@@ -597,6 +597,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     };
   }, []);
 
+  // Extra safety: re-measure after header title/subtitle changes (some browsers/fonts
+  // can miss a ResizeObserver tick during fast route transitions).
+  useEffect(() => {
+    const el = topbarRef.current;
+    if (!el || typeof document === 'undefined') return;
+    const root = document.documentElement;
+    const setVars = () => {
+      const h = Math.max(0, Math.ceil(el.getBoundingClientRect().height));
+      root.style.setProperty('--mx-partner-topbar-h', `${h}px`);
+      root.style.setProperty('--mx-toast-top', `${h + 12}px`);
+    };
+    const t = window.setTimeout(setVars, 0);
+    return () => window.clearTimeout(t);
+  }, [
+    partnerShellHeader?.header.title,
+    partnerShellHeader?.header.subtitle,
+    headerTitle,
+    headerSubtitle,
+  ]);
+
   useEffect(() => {
     if (sheet !== 'status') {
       setSwitchStoreMode(false);
@@ -1714,7 +1734,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       />
       <header
         ref={(n) => { topbarRef.current = n; }}
-        className="relative flex w-full shrink-0 border-b border-[#e8e8e8] bg-white z-[60]"
+        className="fixed top-0 left-0 right-0 z-[1000] flex h-14 w-full shrink-0 border-b border-[#e8e8e8] bg-white"
       >
         {/* Left: logo — contained so artwork cannot overlap the title column */}
         <div
@@ -1843,7 +1863,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       {sheet != null &&
         typeof document !== 'undefined' &&
         createPortal(
-          <div className="fixed inset-0 z-[85] flex justify-end" role="presentation">
+          <div className="fixed inset-0 z-[1100] flex justify-end" role="presentation">
             <div
               className="absolute inset-0 bg-black/40 backdrop-blur-[1px]"
               aria-hidden
@@ -1907,7 +1927,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         createPortal(
           <div
             ref={profilePanelRef}
-            className="fixed z-[200] max-h-[min(90vh,640px)] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-2xl"
+            className="fixed z-[1200] max-h-[min(90vh,640px)] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-2xl"
             style={{
               top: profilePanelPos.top,
               right: profilePanelPos.right,

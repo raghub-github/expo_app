@@ -323,6 +323,18 @@ function shouldCacheAttachmentToDisk(remote: string): boolean {
   );
 }
 
+function looksLikeAudioAttachment(uri: string): boolean {
+  const u = (uri || "").toLowerCase().split("?")[0].split("#")[0];
+  return (
+    u.endsWith(".wav") ||
+    u.endsWith(".mp3") ||
+    u.endsWith(".m4a") ||
+    u.endsWith(".ogg") ||
+    u.endsWith(".aac") ||
+    u.endsWith(".webm")
+  );
+}
+
 function ChatAttachmentImage({
   uri,
   token,
@@ -1655,6 +1667,7 @@ export default function HelpChatScreen() {
                     {m.attachments.map((raw, idx) => {
                       const uri = resolveAttachmentUri(raw);
                       const isImage = uri.length > 0 && looksLikeImageAttachment(uri);
+                      const isAudio = uri.length > 0 && looksLikeAudioAttachment(uri);
                       return (
                         <Pressable
                           key={`${m.id}-att-${idx}`}
@@ -1679,6 +1692,32 @@ export default function HelpChatScreen() {
                         >
                           {isImage ? (
                             <ChatAttachmentImage uri={uri} token={token} />
+                          ) : isAudio ? (
+                            <View style={styles.attachmentFileFallback}>
+                              <Ionicons
+                                name="play-circle-outline"
+                                size={20}
+                                color={isMerchant ? "#FFFFFF" : GatiMitraMerchant.primary}
+                              />
+                              <View style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>
+                                <Text
+                                  style={isMerchant ? styles.attachmentTextMerchant : styles.attachmentTextAgent}
+                                  numberOfLines={1}
+                                >
+                                  Voice note
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.attachmentBottomText,
+                                    { marginTop: 2, opacity: isMerchant ? 0.85 : 0.75 },
+                                    isMerchant ? null : styles.attachmentBottomTextAgent,
+                                  ]}
+                                  numberOfLines={1}
+                                >
+                                  Tap to play
+                                </Text>
+                              </View>
+                            </View>
                           ) : (
                             <View style={styles.attachmentFileFallback}>
                               <Ionicons

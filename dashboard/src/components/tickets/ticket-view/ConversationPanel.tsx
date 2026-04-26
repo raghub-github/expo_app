@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, type ClipboardEvent } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronDown,
@@ -38,6 +38,10 @@ import {
   Redo2,
   MoreHorizontal,
   Check,
+  Play,
+  Pause,
+  Mic,
+  Video,
 } from "lucide-react";
 import { ticketMessageFromPostApi, type TicketMessage, type TicketMessageSentPayload } from "@/hooks/tickets/useTicketDetail";
 import { useTicketComposeAutomationQuery } from "@/hooks/tickets/useTicketComposeAutomationQuery";
@@ -258,6 +262,152 @@ function isImageAttachment(attachment: { name?: string; mimeType?: string; url?:
   return false;
 }
 
+function isAudioAttachment(attachment: { name?: string; mimeType?: string; url?: string; storageKey?: string }): boolean {
+  const mime = (attachment.mimeType ?? "").toLowerCase();
+  if (mime.startsWith("audio/")) return true;
+  const name = (attachment.name ?? "").toLowerCase();
+  if (/\.(mp3|wav|m4a|ogg|aac|webm)(\?.*)?$/i.test(name)) return true;
+  const url = (attachment.url ?? "").toLowerCase();
+  if (/\.(mp3|wav|m4a|ogg|aac|webm)(\?.*)?$/i.test(url)) return true;
+  return false;
+}
+
+function isVideoAttachment(attachment: { name?: string; mimeType?: string; url?: string; storageKey?: string }): boolean {
+  const mime = (attachment.mimeType ?? "").toLowerCase();
+  if (mime.startsWith("video/")) return true;
+  const name = (attachment.name ?? "").toLowerCase();
+  if (/\.(mp4|webm|mov)(\?.*)?$/i.test(name)) return true;
+  const url = (attachment.url ?? "").toLowerCase();
+  if (/\.(mp4|webm|mov)(\?.*)?$/i.test(url)) return true;
+  return false;
+}
+
+function formatVoiceDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function TicketDashboardVoiceNotePill({
+  src,
+  name,
+}: {
+  src: string;
+  name: string;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [current, setCurrent] = useState(0);
+
+  const barHeights = useMemo(() => {
+    const safe = (src || "").trim();
+    const n = 26;
+    let h = 0;
+    for (let i = 0; i < safe.length; i++) h = (h + safe.charCodeAt(i) * (i + 7)) % 1000;
+    return Array.from({ length: n }, (_, i) => 10 + ((h + i * 19) % 18));
+  }, [src]);
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    const onTime = () => setCurrent(el.currentTime);
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    const syncDur = () => {
+      const d = el.duration;
+      if (Number.isFinite(d) && d > 0) setDuration(d);
+    };
+    const onEnd = () => {
+      setPlaying(false);
+      setCurrent(0);
+    };
+    el.addEventListener("timeupdate", onTime);
+    el.addEventListener("loadedmetadata", syncDur);
+    el.addEventListener("durationchange", syncDur);
+    el.addEventListener("play", onPlay);
+    el.addEventListener("pause", onPause);
+    el.addEventListener("ended", onEnd);
+    return () => {
+      el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("loadedmetadata", syncDur);
+      el.removeEventListener("durationchange", syncDur);
+      el.removeEventListener("play", onPlay);
+      el.removeEventListener("pause", onPause);
+      el.removeEventListener("ended", onEnd);
+    };
+  }, [src]);
+
+  const pct = duration > 0 ? Math.min(100, Math.max(0, (current / duration) * 100)) : 0;
+
+  const togglePlay = async () => {
+    const el = audioRef.current;
+    if (!el) return;
+    if (playing) {
+      el.pause();
+      return;
+    }
+    try {
+      await el.play();
+    } catch {
+      // ignore
+    }
+  };
+
+  const onSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = audioRef.current;
+    if (!el || !Number.isFinite(duration) || duration <= 0) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const p = Math.min(1, Math.max(0, x / Math.max(1, r.width)));
+    el.currentTime = p * duration;
+  };
+
+  return (
+    <div className="inline-flex max-w-full min-w-[min(100%,240px)] items-center gap-2 rounded-xl border border-gray-300 bg-white px-2.5 py-2 shadow-sm">
+      <button
+        type="button"
+        onClick={() => void togglePlay()}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm transition-colors hover:bg-blue-700"
+        aria-label={playing ? "Pause" : "Play"}
+      >
+        {playing ? (
+          <Pause className="h-4 w-4" strokeWidth={2.25} />
+        ) : (
+          <Play className="ml-0.5 h-4 w-4" strokeWidth={2.25} />
+        )}
+      </button>
+
+      <div className="min-w-0 flex-1">
+        <div
+          role="presentation"
+          className="flex h-8 w-full cursor-pointer items-end justify-between gap-px px-0.5"
+          onClick={onSeek}
+        >
+          {barHeights.map((px, i) => (
+            <div
+              key={i}
+              className="w-[3px] shrink-0 rounded-full bg-blue-600/35"
+              style={{ height: `${px}px` }}
+            />
+          ))}
+        </div>
+        <div className="h-1 w-full overflow-hidden rounded-full bg-black/10">
+          <div className="h-full rounded-full bg-blue-600" style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+
+      <div className="shrink-0 text-[11px] font-medium tabular-nums leading-none text-gray-600">
+        {formatVoiceDuration(current)}
+        <span className="opacity-60">{` / ${formatVoiceDuration(duration)}`}</span>
+      </div>
+      <audio ref={audioRef} src={src} preload="metadata" className="hidden" />
+      <div className="sr-only">{name}</div>
+    </div>
+  );
+}
+
 function normalizeConversationAttachment(raw: unknown): {
   url?: string;
   storageKey?: string;
@@ -339,6 +489,8 @@ function MessageAttachment({
   const url = attachment.url || signedUrl || (error ? undefined : "");
   const name = attachment.name || "Attachment";
   const isImage = isImageAttachment(attachment) || (!!url && isImageUrl(url));
+  const isAudio = isAudioAttachment(attachment);
+  const isVideo = isVideoAttachment(attachment);
   const handleDownloadAttachment = async (downloadUrl: string, fileName?: string) => {
     if (!downloadUrl || downloadUrl === "#") return;
     try {
@@ -373,6 +525,52 @@ function MessageAttachment({
 
   if (storageKey && !url && !error) return <span className="text-xs text-gray-400">Loading…</span>;
   if (!url && error) return <span className="text-xs text-gray-500">{name} (unavailable)</span>;
+
+  if (isAudio && url) {
+    return (
+      <div className="inline-flex max-w-full items-center gap-2">
+        <TicketDashboardVoiceNotePill src={url} name={name} />
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleDownloadAttachment(url, name || undefined);
+          }}
+          className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-gray-300 bg-white text-gray-600 shadow-sm hover:bg-gray-50"
+          aria-label="Download attachment"
+          title="Download"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  if (isVideo && url) {
+    return (
+      <div className="relative inline-flex max-w-full items-center gap-2 rounded-xl border border-gray-300 bg-white p-2 shadow-sm">
+        <video
+          controls
+          playsInline
+          className="max-h-36 w-full max-w-[260px] rounded-lg bg-black object-contain"
+        >
+          <source src={url} />
+        </video>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleDownloadAttachment(url, name || undefined);
+          }}
+          className="absolute right-2 top-2 inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-gray-300 bg-white text-gray-600 shadow-sm hover:bg-gray-50"
+          aria-label="Download attachment"
+          title="Download"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
 
   if (isImage && url) {
     return (
@@ -842,7 +1040,7 @@ export function ConversationPanel({
     if (replyVisible) {
       didScrollToReply.current = true;
       requestAnimationFrame(() => {
-        document.getElementById("reply")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        document.getElementById("reply")?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     } else {
       didScrollToReply.current = false;
@@ -862,9 +1060,32 @@ export function ConversationPanel({
   }, []);
 
   const replyBodyRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const hasComposerDraft = replyText.trim().length > 0 || attachedFiles.length > 0;
+
+  const attachedPreviews = useMemo(() => {
+    return attachedFiles.map((file) => {
+      const kind = file.type.startsWith("image/")
+        ? "image"
+        : file.type.startsWith("video/")
+          ? "video"
+          : file.type.startsWith("audio/")
+            ? "audio"
+            : "file";
+      const url = URL.createObjectURL(file);
+      return { file, kind, url };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachedFiles]);
+
+  useEffect(() => {
+    return () => {
+      for (const p of attachedPreviews) URL.revokeObjectURL(p.url);
+    };
+  }, [attachedPreviews]);
   const [templatePicker, setTemplatePicker] = useState<null | "quick" | "kb">(null);
   const { data: responseTemplatesData } = useTicketResponseTemplatesQuery();
   const quickReplyTemplates =
@@ -903,7 +1124,7 @@ export function ConversationPanel({
   const openComposerAndFocus = useCallback(() => {
     onOpenReply?.();
     requestAnimationFrame(() => {
-      document.getElementById("reply")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      document.getElementById("reply")?.scrollIntoView({ behavior: "smooth", block: "start" });
       requestAnimationFrame(() => {
         replyBodyRef.current?.focus();
       });
@@ -1192,30 +1413,6 @@ export function ConversationPanel({
         }
         let ticketStatusAfterSend: string | undefined;
 
-        const outboundWakesSnooze = !composeAsInternalNote;
-        const activeSnooze = isTicketActivelySnoozed(ticketStatus, snoozedUntil);
-        const statusPatch =
-          outboundWakesSnooze && activeSnooze ? (statusToSet ?? "OPEN") : statusToSet;
-
-        if (statusPatch) {
-          const patchRes = await fetch(`/api/tickets/${ticketId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ status: statusPatch }),
-          });
-          const patchData = await patchRes.json().catch(() => ({ success: false }));
-          if (!patchData.success) {
-            toast(patchData.error ?? "Message sent but status update failed");
-          } else {
-            const statusLabel =
-              SEND_STATUS_OPTIONS.find((o) => o.value === statusPatch)?.label?.replace(/^Send and set as /i, "") ??
-              (statusPatch === "OPEN" ? "Open" : statusPatch.replace(/_/g, " "));
-            toast(`Status updated to ${statusLabel}`);
-            ticketStatusAfterSend = statusPatch;
-          }
-        }
-
         setReplyText("");
         if (replyBodyRef.current) replyBodyRef.current.innerText = "";
         setComposeMode("reply");
@@ -1237,6 +1434,35 @@ export function ConversationPanel({
           isFirstResponse,
         });
         onCloseReply?.();
+        // Do status patch after UI is responsive (avoid keeping "Sending..." for the extra PATCH).
+        const outboundWakesSnooze = !composeAsInternalNote;
+        const activeSnooze = isTicketActivelySnoozed(ticketStatus, snoozedUntil);
+        const statusPatch =
+          outboundWakesSnooze && activeSnooze ? (statusToSet ?? "OPEN") : statusToSet;
+        if (statusPatch) {
+          void (async () => {
+            try {
+              const patchRes = await fetch(`/api/tickets/${ticketId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ status: statusPatch }),
+              });
+              const patchData = await patchRes.json().catch(() => ({ success: false }));
+              if (!patchData.success) {
+                toast(patchData.error ?? "Message sent but status update failed");
+              } else {
+                const statusLabel =
+                  SEND_STATUS_OPTIONS.find((o) => o.value === statusPatch)?.label?.replace(/^Send and set as /i, "") ??
+                  (statusPatch === "OPEN" ? "Open" : statusPatch.replace(/_/g, " "));
+                toast(`Status updated to ${statusLabel}`);
+              }
+            } catch {
+              toast("Message sent but status update failed");
+            }
+          })();
+          ticketStatusAfterSend = statusPatch;
+        }
         if (newMessage) {
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
@@ -1349,20 +1575,22 @@ export function ConversationPanel({
     >
       <div ref={conversationScrollRef} className={noScroll ? "min-h-0 space-y-3.5 p-3.5" : "flex-1 min-h-0 overflow-y-auto space-y-3.5 p-3.5"}>
         {messages.length === 0 ? (
-          <ThreadQuickActionBar
-            avatarLetter={initial((recipientEmail ?? "").split("@")[0] || "Contact")}
-            avatarClassName={avatarBgClass("customer", false)}
-            onReplyAction={handleQuickReply}
-            onAddNoteAction={handleQuickAddNote}
-            onForwardAction={() => handleQuickForward({ fromToolbar: true })}
-          />
+          !replyVisible ? (
+            <ThreadQuickActionBar
+              avatarLetter={initial((recipientEmail ?? "").split("@")[0] || "Contact")}
+              avatarClassName={avatarBgClass("customer", false)}
+              onReplyAction={handleQuickReply}
+              onAddNoteAction={handleQuickAddNote}
+              onForwardAction={() => handleQuickForward({ fromToolbar: true })}
+            />
+          ) : null
         ) : (
           <>
             {topMessages.map((msg) => (
-              <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
+              <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId && !replyVisible} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
             ))}
             {middleMessages.map((msg) => (
-              <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
+              <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId && !replyVisible} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
             ))}
             {showExpandBadge && hasMoreToExpand && (
               <div className="flex justify-center py-2">
@@ -1377,7 +1605,7 @@ export function ConversationPanel({
               </div>
             )}
             {bottomMessages.map((msg) => (
-              <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
+              <MessageBlock key={msg.id} msg={msg} recipientEmail={recipientEmail} senderDisplayName={senderDisplayName} formatMessageTimeLong={formatMessageTimeLong} initial={initial} avatarBgClass={avatarBgClass} currentUserEmail={senderEmail} downloadNamePrefix={downloadNamePrefix} onEditRequest={requestEdit} onDeleteRequest={requestDelete} showBottomActions={msg.id === lastMessageId && !replyVisible} onReplyAction={handleQuickReply} onAddNoteAction={handleQuickAddNote} onForwardAction={() => handleQuickForward({ fromToolbar: true })} />
             ))}
           </>
         )}
@@ -1385,7 +1613,7 @@ export function ConversationPanel({
 
         {/* Reply composer — in normal document flow only (no fixed/sticky); scrolls with page so it never overlaps content */}
         {replyVisible && (
-          <div id="reply" className="relative rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden min-h-[320px] flex flex-col mt-4">
+          <div id="reply" className="relative scroll-mt-24 rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden min-h-[320px] flex flex-col mt-4">
           {/* Compact header: From (avatar + name (email)) + To + Cc/Bcc + Expand/Close */}
           <div className="border-b border-gray-100 px-3 py-2">
             <div className="flex items-center justify-between gap-2">
@@ -1639,11 +1867,35 @@ export function ConversationPanel({
           <div className="flex items-center justify-between gap-2 border-t border-gray-100 bg-gray-50/50 px-3 py-2">
             <div ref={templatesTriggerRef} className="relative flex min-w-0 flex-1 flex-wrap items-center gap-1">
               <input
-                ref={fileInputRef}
+                ref={imageInputRef}
                 type="file"
                 multiple
                 className="hidden"
-                accept="image/*,application/pdf,.pdf,.csv,.xls,.xlsx,.doc,.docx,text/plain,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                accept="image/*"
+                onChange={(e) => {
+                  const f = e.target.files;
+                  if (f?.length) setAttachedFiles((prev) => [...prev, ...Array.from(f)]);
+                  e.target.value = "";
+                }}
+              />
+              <input
+                ref={videoInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                accept="video/*"
+                onChange={(e) => {
+                  const f = e.target.files;
+                  if (f?.length) setAttachedFiles((prev) => [...prev, ...Array.from(f)]);
+                  e.target.value = "";
+                }}
+              />
+              <input
+                ref={audioInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                accept="audio/*"
                 onChange={(e) => {
                   const f = e.target.files;
                   if (f?.length) setAttachedFiles((prev) => [...prev, ...Array.from(f)]);
@@ -1653,12 +1905,32 @@ export function ConversationPanel({
               <button
                 type="button"
                 disabled={sending}
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => imageInputRef.current?.click()}
                 className={`p-2 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-40 ${sending ? "cursor-not-allowed" : "cursor-pointer"}`}
-                title="Attach images, PDF, Excel, Word (max 50MB each)"
-                aria-label="Attach files"
+                title="Attach images"
+                aria-label="Attach image"
               >
-                <Paperclip className="h-4 w-4" />
+                <Image className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                disabled={sending}
+                onClick={() => videoInputRef.current?.click()}
+                className={`p-2 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-40 ${sending ? "cursor-not-allowed" : "cursor-pointer"}`}
+                title="Attach video"
+                aria-label="Attach video"
+              >
+                <Video className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                disabled={sending}
+                onClick={() => audioInputRef.current?.click()}
+                className={`p-2 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-40 ${sending ? "cursor-not-allowed" : "cursor-pointer"}`}
+                title="Attach audio"
+                aria-label="Attach audio"
+              >
+                <Mic className="h-4 w-4" />
               </button>
               <button
                 type="button"
@@ -1682,25 +1954,52 @@ export function ConversationPanel({
               >
                 <BookOpen className="h-4 w-4" />
               </button>
-              {attachedFiles.length > 0 && (
-                <div className="flex max-w-full flex-wrap items-center gap-1">
-                  {attachedFiles.map((f, i) => (
-                    <span
-                      key={`${f.name}-${i}-${f.size}`}
-                      className="inline-flex max-w-[200px] items-center gap-0.5 rounded border border-emerald-300/90 bg-emerald-50 pl-2 pr-1 py-0.5 text-[10px] font-medium text-emerald-900 shadow-sm"
-                      title={f.name}
+              {attachedPreviews.length > 0 && (
+                <div className="mt-1 flex w-full max-w-full flex-nowrap items-center gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {attachedPreviews.map((p, i) => (
+                    <div
+                      key={`${p.file.name}-${i}-${p.file.size}`}
+                      className="relative inline-flex h-10 w-[240px] shrink-0 items-center gap-2 overflow-hidden rounded-lg border border-gray-200 bg-white px-2 shadow-sm"
+                      title={p.file.name}
                     >
-                      <span className="truncate">{f.name}</span>
                       <button
                         type="button"
                         disabled={sending}
                         onClick={() => setAttachedFiles((prev) => prev.filter((_, j) => j !== i))}
-                        className="shrink-0 rounded p-0.5 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-950 disabled:pointer-events-none disabled:opacity-40"
-                        aria-label={`Remove ${f.name}`}
+                        className="absolute right-1 top-1/2 z-10 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md bg-white/95 text-gray-600 shadow hover:bg-white disabled:pointer-events-none disabled:opacity-40"
+                        aria-label={`Remove ${p.file.name}`}
                       >
-                        <X className="h-3 w-3" />
+                        <X className="h-3.5 w-3.5" />
                       </button>
-                    </span>
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-100">
+                        {p.kind === "image" ? (
+                          <img src={p.url} alt="" className="h-full w-full object-cover" />
+                        ) : p.kind === "video" ? (
+                          <Video className="h-4 w-4 text-gray-600" />
+                        ) : p.kind === "audio" ? (
+                          <Mic className="h-4 w-4 text-gray-600" />
+                        ) : (
+                          <Paperclip className="h-4 w-4 text-gray-600" />
+                        )}
+                      </span>
+                      <div className="min-w-0 flex-1 pr-8">
+                        <p className="truncate text-xs font-semibold text-gray-800">{p.file.name}</p>
+                        <p className="truncate text-[10px] font-medium text-gray-500">
+                          {p.kind === "image"
+                            ? "Image"
+                            : p.kind === "video"
+                              ? "Video"
+                              : p.kind === "audio"
+                                ? "Audio"
+                                : "File"}
+                        </p>
+                      </div>
+                      {p.kind === "audio" ? (
+                        <div className="absolute left-10 right-9 top-1/2 -translate-y-1/2">
+                          <TicketDashboardVoiceNotePill src={p.url} name={p.file.name} />
+                        </div>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
               )}

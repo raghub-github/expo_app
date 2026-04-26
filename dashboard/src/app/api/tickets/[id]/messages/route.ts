@@ -308,6 +308,8 @@ export async function POST(
       });
     }
 
+    // Outbound email can be slow (SMTP + loading attachment buffers). Do not block UI send.
+    // We queue it best-effort in the background; the message is already persisted.
     let emailDispatch: { ok: true } | { ok: false; code: string } | undefined;
     const shouldEmailCustomer = !isInternalNote && messageType === "TEXT";
     if (shouldEmailCustomer && !dedupedExistingMessage) {
@@ -341,57 +343,63 @@ export async function POST(
           messageText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "(see ticket for full message)";
         const hasHtml = /<[a-z][\s\S]*>/i.test(messageText);
 
-        const outboundAttachments: OutboundEmailAttachment[] = [];
-        for (const raw of rawAttachments) {
-          if (!raw || typeof raw !== "object" || !("storageKey" in (raw as object))) continue;
-          const a = raw as { storageKey?: unknown; name?: unknown; mimeType?: unknown };
-          const key = typeof a.storageKey === "string" ? a.storageKey.trim() : "";
-          if (!key) continue;
-          const name =
-            typeof a.name === "string" && a.name.trim() ? a.name.trim() : key.split("/").pop() || "attachment";
-          const mime =
-            typeof a.mimeType === "string" && a.mimeType.trim()
-              ? a.mimeType.trim()
-              : "application/octet-stream";
-          const loaded = await loadTicketAttachmentBuffer(key, mime);
-          if (loaded) {
-            outboundAttachments.push({
-              filename: name,
-              content: loaded.buffer,
-              contentType: loaded.contentType,
+        // Fire-and-forget email dispatch so UI send stays fast.
+        void (async () => {
+          try {
+            const outboundAttachments: OutboundEmailAttachment[] = [];
+            for (const raw of rawAttachments) {
+              if (!raw || typeof raw !== "object" || !("storageKey" in (raw as object))) continue;
+              const a = raw as { storageKey?: unknown; name?: unknown; mimeType?: unknown };
+              const key = typeof a.storageKey === "string" ? a.storageKey.trim() : "";
+              if (!key) continue;
+              const name =
+                typeof a.name === "string" && a.name.trim() ? a.name.trim() : key.split("/").pop() || "attachment";
+              const mime =
+                typeof a.mimeType === "string" && a.mimeType.trim()
+                  ? a.mimeType.trim()
+                  : "application/octet-stream";
+              const loaded = await loadTicketAttachmentBuffer(key, mime);
+              if (loaded) {
+                outboundAttachments.push({
+                  filename: name,
+                  content: loaded.buffer,
+                  contentType: loaded.contentType,
+                });
+              } else {
+                console.warn("[POST /api/tickets/[id]/messages] Attachment not loaded for outbound email:", key);
+              }
+            }
+
+            const outcome = await sendEmail({
+              to: toRecipientsParsed.length === 1 ? toRecipientsParsed[0] : toRecipientsParsed,
+              cc: ccRecipientsParsed.length ? ccRecipientsParsed : undefined,
+              bcc: bccRecipientsParsed.length ? bccRecipientsParsed : undefined,
+              subject,
+              text: plain,
+              ...(hasHtml ? { html: messageText } : {}),
+              ...(outboundAttachments.length > 0 ? { attachments: outboundAttachments } : {}),
             });
-          } else {
-            console.warn("[POST /api/tickets/[id]/messages] Attachment not loaded for outbound email:", key);
+
+            if (!outcome.ok) {
+              console.error("[POST /api/tickets/[id]/messages] Outbound email failed:", outcome);
+            }
+
+            if (messageId != null) {
+              const outboundStatus = outcome.ok ? "sent" : "failed";
+              try {
+                await sqlClient`
+                  UPDATE public.unified_ticket_messages
+                  SET outbound_email_status = ${outboundStatus}
+                  WHERE id = ${messageId}
+                `;
+              } catch (statusErr) {
+                console.warn("[POST /api/tickets/[id]/messages] outbound_email_status column update skipped:", statusErr);
+              }
+            }
+          } catch (e) {
+            console.error("[POST /api/tickets/[id]/messages] Outbound email job failed:", e);
           }
-        }
-
-        const outcome = await sendEmail({
-          to: toRecipientsParsed.length === 1 ? toRecipientsParsed[0] : toRecipientsParsed,
-          cc: ccRecipientsParsed.length ? ccRecipientsParsed : undefined,
-          bcc: bccRecipientsParsed.length ? bccRecipientsParsed : undefined,
-          subject,
-          text: plain,
-          ...(hasHtml ? { html: messageText } : {}),
-          ...(outboundAttachments.length > 0 ? { attachments: outboundAttachments } : {}),
-        });
-
-        emailDispatch = outcome.ok ? { ok: true } : { ok: false, code: outcome.code };
-        if (!outcome.ok) {
-          console.error("[POST /api/tickets/[id]/messages] Outbound email failed:", outcome);
-        }
-      }
-
-      if (messageId != null) {
-        const outboundStatus = emailDispatch?.ok === true ? "sent" : "failed";
-        try {
-          await sqlClient`
-            UPDATE public.unified_ticket_messages
-            SET outbound_email_status = ${outboundStatus}
-            WHERE id = ${messageId}
-          `;
-        } catch (statusErr) {
-          console.warn("[POST /api/tickets/[id]/messages] outbound_email_status column update skipped:", statusErr);
-        }
+        })();
       }
     }
 

@@ -97,6 +97,13 @@ const NeedHelpBadge: React.FC<{
     };
   }, [open]);
 
+  // Allow other UI (e.g. offline "help centre" link) to open this sheet.
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("mx-open-need-help", onOpen as EventListener);
+    return () => window.removeEventListener("mx-open-need-help", onOpen as EventListener);
+  }, []);
+
   const rootSections = useMemo(() => {
     const roots = sections.filter((s) => s.parent_title_id == null);
     if (roots.length === 0 && sections.length > 0) return [...sections].sort(sortSections);
@@ -284,7 +291,7 @@ const NeedHelpBadge: React.FC<{
                   </button>
                 )}
                 <h3 id="help-sheet-title" className="truncate text-lg font-bold text-slate-900">
-                  {sheetStep === "success" ? "Ticket created" : "Help &amp; support"}
+                  {sheetStep === "success" ? "Ticket created" : "Help and Support"}
                 </h3>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg p-2 text-slate-500 hover:bg-slate-100">
