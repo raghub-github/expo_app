@@ -29,7 +29,7 @@ import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { useProfileNav } from "@/context/ProfileNavContext";
 import { getRushStatus } from "@/services/rushApi";
-import { prefetchOutlet } from "@/services/outletApi";
+import { prefetchOperatingHours, prefetchOutlet } from "@/services/outletApi";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 10;
@@ -136,6 +136,7 @@ export default function ProfileScreen() {
           }
           // Prefetch outlet info so Manage Outlet screens open instantly
           prefetchOutlet(selectedStore.id, token);
+          prefetchOperatingHours(selectedStore.id, token);
           const status = await getRushStatus(selectedStore.id, token);
           if (cancelled) return;
           setRushBadge(status.is_active && status.remaining_minutes > 0 ? "ON" : "OFF");
@@ -173,6 +174,7 @@ export default function ProfileScreen() {
       // Reload rush status + outlet prefetch
       if (selectedStore?.id && token) {
         prefetchOutlet(selectedStore.id, token);
+        prefetchOperatingHours(selectedStore.id, token);
         try {
           const status = await getRushStatus(selectedStore.id, token);
           if (!cancelled) {

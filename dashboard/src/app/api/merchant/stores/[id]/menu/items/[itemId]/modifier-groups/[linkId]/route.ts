@@ -9,6 +9,21 @@ import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
+async function syncHasAddonsFlag(sql: ReturnType<typeof getSql>, storeId: number, menuItemId: number) {
+  const [row] = await sql`
+    SELECT EXISTS(
+      SELECT 1 FROM merchant_item_modifier_groups img
+      WHERE img.menu_item_id = ${menuItemId}
+    ) AS has_links
+  `;
+  const hasLinks = Boolean((row as any)?.has_links);
+  await sql`
+    UPDATE merchant_menu_items
+    SET has_addons = ${hasLinks}
+    WHERE id = ${menuItemId} AND store_id = ${storeId}
+  `;
+}
+
 export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string; itemId: string; linkId: string }> }
@@ -36,6 +51,8 @@ export async function DELETE(
     if (!r) return NextResponse.json({ success: false, error: "Link not found" }, { status: 404 });
 
     await sql`DELETE FROM merchant_item_modifier_groups WHERE id = ${linkRowId}`;
+    // Keep legacy `has_addons` in sync when unlinking last group.
+    await syncHasAddonsFlag(sql, storeId, menuItemId);
     try {
       await logStoreActivity({ storeId, section: "addon", action: "unlink", summary: `Agent unlinked modifier group from item #${itemId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}

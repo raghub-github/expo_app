@@ -21,9 +21,27 @@ export async function authFetch(
     typeof normalizedBody !== "boolean"
   ) {
     try {
-      normalizedBody = JSON.stringify(normalizedBody);
+      // Ensure we never pass Date objects to RN fetch internals.
+      normalizedBody = JSON.stringify(normalizedBody, (_k, v) => {
+        const isDateObject = v != null && Object.prototype.toString.call(v) === "[object Date]";
+        return isDateObject ? new Date(v as any).toISOString() : v;
+      });
     } catch {
       // leave as-is; fetch will throw a clearer error
+    }
+  }
+
+  if (__DEV__) {
+    try {
+      const b = normalizedBody as any;
+      const type = b == null ? "null" : Object.prototype.toString.call(b);
+      if (type === "[object Date]") {
+        // eslint-disable-next-line no-console
+        console.warn("[authFetch] body is Date, normalizing", { url });
+        normalizedBody = new Date(b as any).toISOString();
+      }
+    } catch {
+      // ignore
     }
   }
 
@@ -34,7 +52,14 @@ export async function authFetch(
 
   let res: Response;
   try {
-    res = await fetch(url, {
+    // Build final request object explicitly (avoids any spread surprises).
+    const finalBodyType =
+      normalizedBody == null ? "null" : Object.prototype.toString.call(normalizedBody);
+    if (finalBodyType === "[object Date]") {
+      normalizedBody = new Date(normalizedBody as any).toISOString();
+    }
+
+    const finalOpts: RequestInit = {
       ...opts,
       body: normalizedBody,
       headers: {
@@ -44,7 +69,25 @@ export async function authFetch(
         "X-Merchant-App-Slug": "gatimitra",
         ...(opts.headers || {}),
       },
-    });
+    };
+
+    if (__DEV__) {
+      try {
+        const b = (finalOpts as any).body;
+        const type = b == null ? "null" : Object.prototype.toString.call(b);
+        // eslint-disable-next-line no-console
+        console.log("[authFetch] request", {
+          url,
+          method: (finalOpts.method as string) ?? "GET",
+          bodyType: type,
+          bodyPreview: typeof b === "string" ? b.slice(0, 180) : undefined,
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    res = await fetch(url, finalOpts);
   } catch (e) {
     const detail =
       e instanceof Error && e.message.trim()
@@ -65,6 +108,9 @@ export async function authFetch(
        * Only force “session ended” when auth plugin explicitly revoked this/all devices.
        * Other 401 bodies may reuse `session_revoked` (e.g. wrong app routes) — those must not auto sign-out.
        */
+      if (code === "invalid_token") {
+        notifySessionRevoked({ reason: "invalid_token" });
+      }
       if (code === "session_revoked") {
         const isForcedDeviceLogout =
           msg.includes("Signed out from all devices") ||

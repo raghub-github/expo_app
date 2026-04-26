@@ -542,9 +542,11 @@ function normalizeOutOfStockBody(body: {
   until?: unknown;
 }): { mode: OutOfStockMode; hours?: number; until?: string } {
   const untilRaw = (body as any).until;
+  const isDateObject =
+    untilRaw != null && Object.prototype.toString.call(untilRaw) === "[object Date]";
   const until =
-    untilRaw instanceof Date
-      ? untilRaw.toISOString()
+    isDateObject
+      ? new Date(untilRaw as any).toISOString()
       : typeof untilRaw === "string"
         ? untilRaw
         : untilRaw == null
@@ -565,15 +567,21 @@ export async function patchItemOutOfStock(
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
   const base = getApiBaseUrl();
   const normalized = normalizeOutOfStockBody(body);
-  const bodyJson = JSON.stringify(normalized, (_k, v) => (v instanceof Date ? v.toISOString() : v));
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
     `${base}/v1/merchant-menu/items/${itemId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
-    { method: "PATCH", body: bodyJson }
+    { method: "PATCH", body: normalized as any }
   );
-  const json = await res.json().catch(() => ({}));
+  const text = await res.text().catch(() => "");
+  const json = (() => {
+    try {
+      return text ? (JSON.parse(text) as any) : {};
+    } catch {
+      return {};
+    }
+  })();
   if (!res.ok) {
     throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
   }
@@ -588,15 +596,21 @@ export async function patchCategoryOutOfStock(
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
   const base = getApiBaseUrl();
   const normalized = normalizeOutOfStockBody(body);
-  const bodyJson = JSON.stringify(normalized, (_k, v) => (v instanceof Date ? v.toISOString() : v));
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
     `${base}/v1/merchant-menu/categories/${categoryId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
-    { method: "PATCH", body: bodyJson }
+    { method: "PATCH", body: normalized as any }
   );
-  const json = await res.json().catch(() => ({}));
+  const text = await res.text().catch(() => "");
+  const json = (() => {
+    try {
+      return text ? (JSON.parse(text) as any) : {};
+    } catch {
+      return {};
+    }
+  })();
   if (!res.ok) {
     throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
   }
@@ -1073,15 +1087,21 @@ export async function patchComboOutOfStock(
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
   const base = getApiBaseUrl();
   const normalized = normalizeOutOfStockBody(body);
-  const bodyJson = JSON.stringify(normalized, (_k, v) => (v instanceof Date ? v.toISOString() : v));
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
     `${base}/v1/merchant-menu/combos/${comboId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
-    { method: "PATCH", body: bodyJson }
+    { method: "PATCH", body: normalized as any }
   );
-  const json = await res.json().catch(() => ({}));
+  const text = await res.text().catch(() => "");
+  const json = (() => {
+    try {
+      return text ? (JSON.parse(text) as any) : {};
+    } catch {
+      return {};
+    }
+  })();
   if (!res.ok) {
     throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
   }

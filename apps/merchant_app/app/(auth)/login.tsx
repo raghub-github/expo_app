@@ -317,6 +317,19 @@ export default function LoginScreen() {
     }
   };
 
+  function normalizeOtpErrorMessage(raw: string): string {
+    const msg = String(raw || "").trim();
+    const lower = msg.toLowerCase();
+    // Supabase often returns: "Token has expired or is invalid"
+    // For UX we prefer being specific: treat ambiguous "expired or invalid" as invalid.
+    if (lower.includes("expired or is invalid")) return "Invalid OTP. Please try again.";
+    if (lower.includes("invalid otp") || (lower.includes("invalid") && lower.includes("token"))) {
+      return "Invalid OTP. Please try again.";
+    }
+    if (lower.includes("expired")) return "OTP expired. Please request a new OTP.";
+    return msg || "Invalid OTP. Please try again.";
+  }
+
   const handleVerifyOtp = async () => {
     if (!otp || otp.length !== OTP_LEN) {
       setError("Enter the 6-digit code from SMS");
@@ -344,7 +357,8 @@ export default function LoginScreen() {
       } else {
         setDeviceSessionMode(false);
         setLastExchange(null);
-        const msg = e instanceof Error ? e.message : "Invalid code or partner not found.";
+        const raw = e instanceof Error ? e.message : "Invalid code or partner not found.";
+        const msg = normalizeOtpErrorMessage(raw);
         setError(msg);
       }
     } finally {

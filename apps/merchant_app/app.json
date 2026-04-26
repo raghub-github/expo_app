@@ -6,7 +6,9 @@
     "orientation": "portrait",
     "scheme": "gatimitra-merchant",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/onlylogo.png",
     "splash": {
+      "image": "./assets/wlcm.png",
       "backgroundColor": "#16A34A"
     },
     "androidStatusBar": {
@@ -23,6 +25,7 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/onlylogo.png",
         "backgroundColor": "#16A34A"
       },
       "package": "com.anonymous.gatimitramerchantapp",

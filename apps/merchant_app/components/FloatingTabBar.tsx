@@ -68,11 +68,12 @@ function isMainTab(name: string): name is MainTabName {
   return (MAIN_TAB_ORDER as readonly string[]).includes(name);
 }
 
+// Hub bottom bar shows these buttons only (Complaints is reachable via toggle inside Reviews screen).
 const HUB_TAB_ORDER = ["earnings", "growth", "reviews"] as const;
 type HubTabName = (typeof HUB_TAB_ORDER)[number];
 
-function isHubTab(name: string): name is HubTabName {
-  return (HUB_TAB_ORDER as readonly string[]).includes(name);
+function isHubTab(name: string): boolean {
+  return (HUB_TAB_ORDER as readonly string[]).includes(name) || name === "complaints";
 }
 
 export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
@@ -114,7 +115,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       setSwitchKind(kind);
       setSwitchOverlay(true);
       const delay = Platform.OS === "web" ? 180 : 260;
-      const messageMs = 2400;
+      // Keep this short: a long full-screen overlay can feel like the Flow/Home buttons "disappeared".
+      const messageMs = 450;
       setTimeout(() => {
         setDock(nextDock);
         navigate();
@@ -323,15 +325,26 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                 contentContainerStyle={styles.hubScrollInner}
               >
                 {HUB_TAB_ORDER.map((routeName) => {
-                  const isFocused = focusedRouteName === routeName;
+                  const complaintsActive = focusedRouteName === "complaints";
+                  const isFocused =
+                    focusedRouteName === routeName ||
+                    (routeName === "reviews" && complaintsActive);
                   const label =
-                    routeName === "earnings" ? "Earnings" : routeName === "growth" ? "Growth" : "Review";
+                    routeName === "earnings"
+                      ? "Earnings"
+                      : routeName === "growth"
+                        ? "Growth"
+                        : complaintsActive
+                          ? "Complaints"
+                          : "Reviews";
                   const iconName =
                     routeName === "earnings"
                       ? ("wallet-outline" as const)
                       : routeName === "growth"
                         ? ("trending-up-outline" as const)
-                        : ("star-outline" as const);
+                        : complaintsActive
+                          ? ("warning-outline" as const)
+                          : ("star-outline" as const);
                   return (
                     <Pressable
                       key={routeName}
@@ -494,9 +507,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 10,
+    width: "100%",
+    minWidth: 0,
   },
   mainCapsule: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -511,7 +528,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   hubCapsule: {
-    flex: 1,
+    // Do not stretch to full width when only 3 hub pills.
+    flexGrow: 0,
+    flexShrink: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -578,6 +597,7 @@ const styles = StyleSheet.create({
     color: TAB_INACTIVE_FG,
   },
   satellite: {
+    flexShrink: 0,
     width: SATELLITE_SIZE,
     height: SATELLITE_SIZE,
     borderRadius: SATELLITE_SIZE / 2,
@@ -586,6 +606,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   satelliteHome: {
+    flexShrink: 0,
     width: SATELLITE_SIZE,
     height: SATELLITE_SIZE,
     borderRadius: SATELLITE_SIZE / 2,

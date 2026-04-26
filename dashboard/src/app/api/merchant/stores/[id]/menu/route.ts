@@ -92,7 +92,15 @@ export async function GET(
              category_id, food_type, spice_level, cuisine_type,
              base_price, selling_price, discount_percentage, tax_percentage,
              in_stock, is_active, is_deleted, display_order,
-             has_customizations, has_addons, has_variants,
+             has_customizations,
+             (
+               COALESCE(has_addons, FALSE)
+               OR EXISTS(
+                 SELECT 1 FROM merchant_item_modifier_groups img
+                 WHERE img.menu_item_id = merchant_menu_items.id
+               )
+             ) AS has_addons,
+             has_variants,
              is_popular, is_recommended,
              preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit,
              available_for_delivery,
@@ -109,6 +117,33 @@ export async function GET(
                ORDER BY r.created_at DESC
                LIMIT 1
              ) AS pending_change_request_type
+             ,
+             (
+               SELECT COALESCE(
+                 json_agg(
+                   json_build_object(
+                     'id', img.id,
+                     'modifier_group_id', img.modifier_group_id,
+                     'display_order', img.display_order,
+                     'title', mg.title,
+                     'description', mg.description,
+                     'is_required', mg.is_required,
+                     'min_selection', mg.min_selection,
+                     'max_selection', mg.max_selection,
+                     'options_count', (
+                       SELECT COUNT(*)::int FROM merchant_modifier_options mo
+                       WHERE mo.modifier_group_id = img.modifier_group_id
+                     )
+                   )
+                   ORDER BY img.display_order ASC, img.id ASC
+                 ),
+                 '[]'::json
+               )
+               FROM merchant_item_modifier_groups img
+               INNER JOIN merchant_modifier_groups mg ON mg.id = img.modifier_group_id
+               WHERE img.menu_item_id = merchant_menu_items.id
+                 AND mg.store_id = ${storeId}
+             ) AS linked_modifier_groups
       FROM merchant_menu_items
       WHERE store_id = ${storeId}
       ORDER BY category_id NULLS FIRST, display_order ASC, id ASC
