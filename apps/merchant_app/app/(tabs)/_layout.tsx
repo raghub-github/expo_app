@@ -126,6 +126,17 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="complaints"
+        options={{
+          title: "Complaints",
+          /** Shown only via toggle inside Reviews/Complaints screen in Flow hub. */
+          href: null,
+          tabBarIcon: ({ color, focused, size }) => (
+            <TabIcon name={focused ? "warning" : "warning-outline"} color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",

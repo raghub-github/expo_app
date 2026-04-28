@@ -226,7 +226,11 @@ function MenuItemCard({
             <Text style={styles.oosSubtext} numberOfLines={1}>
               {oosLabel}
             </Text>
-          ) : null}
+          ) : (
+            <Text style={styles.inStockSubtext} numberOfLines={1}>
+              In stock
+            </Text>
+          )}
           <View style={styles.itemMetaRow}>
             <Text style={styles.itemMetaText} numberOfLines={1}>
               {categoryName ?? "Uncategorised"}
@@ -380,16 +384,16 @@ function ComboCard({
     )
     .filter((u): u is string => Boolean(u) && !imageError);
 
-  const lines = components.map((comp) => {
+  const lineRows = components.map((comp) => {
     const item = itemById.get(comp.menu_item_id);
     const name = item?.item_name ?? `Item #${comp.menu_item_id}`;
     const qty = comp.quantity ?? 1;
-    return `${name} × ${qty}`;
+    return { key: comp.id, text: `${name} × ${qty}` };
   });
 
   const maxLinesToShow = 3;
-  const shownLines = lines.slice(0, maxLinesToShow);
-  const remainingCount = (lines?.length ?? 0) - (shownLines?.length ?? 0);
+  const shownLines = lineRows.slice(0, maxLinesToShow);
+  const remainingCount = (lineRows?.length ?? 0) - (shownLines?.length ?? 0);
 
   const comboPrice = `₹${Number(combo.combo_price).toFixed(0)}`;
   const comboInStock = effectiveComboInStock(combo, detail, itemById);
@@ -486,9 +490,9 @@ function ComboCard({
           ) : null}
           {(shownLines?.length ?? 0) > 0 ? (
             <View style={styles.comboItemsList}>
-              {shownLines.map((line) => (
-                <Text key={line} style={styles.comboItemLine} numberOfLines={1}>
-                  {line}
+              {shownLines.map((row) => (
+                <Text key={row.key} style={styles.comboItemLine} numberOfLines={1}>
+                  {row.text}
                 </Text>
               ))}
               {remainingCount > 0 && (
@@ -497,6 +501,13 @@ function ComboCard({
                 </Text>
               )}
             </View>
+          ) : null}
+          {(components?.length ?? 0) < 2 ? (
+            <Text style={styles.comboIncompleteHint} numberOfLines={2}>
+              {(components?.length ?? 0) === 0
+                ? "No items yet — tap to add menu items."
+                : "Add one more menu item — combos need at least two."}
+            </Text>
           ) : null}
           <View style={styles.priceRow}>
             <Text
@@ -755,11 +766,12 @@ export default function MenuScreen() {
     [sectionOffsets]
   );
 
+  /** Full-menu map for combo components — filtered `items` would hide names/stock for items outside the current category. */
   const itemById = useMemo(() => {
     const map = new Map<number, MenuItemRow>();
-    for (const it of items) map.set(it.id, it);
+    for (const it of allItems) map.set(it.id, it);
     return map;
-  }, [items]);
+  }, [allItems]);
 
   const itemsTreeGroups = useMemo(() => {
     const map = new Map<string, { key: string; categoryName: string; items: MenuItemRow[] }>();
@@ -926,6 +938,39 @@ export default function MenuScreen() {
         setOosModal({ kind: "ITEM", itemId: item.id, itemName: item.item_name });
         return;
       }
+      // If the category itself is out-of-stock, restoring the item alone won't make it available.
+      // Match partnersite behavior: offer to restore the category (and clear item OOS too).
+      if (item.category_id != null && isCategoryOos(item.category_id)) {
+        const c: any = categoryById.get(item.category_id);
+        const categoryName = (c?.category_name as string) ?? "this category";
+        setRestoreConfirm({
+          title: "Category is out of stock",
+          message: `This item is under "${categoryName}", which is currently out of stock. Restore the category to bring this item back in stock.`,
+          onConfirm: async () => {
+            setRestoreConfirm(null);
+            setOosBusy(true);
+            try {
+              console.log("[menu] restore item: category oos -> clearing", { itemId: item.id, categoryId: item.category_id });
+              const catRes = await patchCategoryOutOfStock(storeId, item.category_id!, token, { mode: "CLEAR" });
+              const itemRes = await patchItemOutOfStock(storeId, item.id, token, { mode: "CLEAR" });
+              console.log("[menu] restore item: cleared oos", { catRes, itemRes });
+              if (item.in_stock === false) {
+                await patchStock.mutateAsync({ itemId: item.id, inStock: true });
+              }
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.error("[menu] restore item failed", e);
+              Alert.alert("Could not restore in stock", msg);
+            } finally {
+              setOosBusy(false);
+              setOosModal(null);
+              await refetchItems();
+              await refetchCategories();
+            }
+          },
+        });
+        return;
+      }
       setRestoreConfirm({
         title: "Bring back in stock?",
         message: "This will make it available to customers and start receiving orders.",
@@ -933,12 +978,18 @@ export default function MenuScreen() {
           setRestoreConfirm(null);
           setOosBusy(true);
           try {
+            console.log("[menu] restore item: clearing item oos", { itemId: item.id, inStock: item.in_stock });
             // Clear item-level out-of-stock (if any).
-            await patchItemOutOfStock(storeId, item.id, token, { mode: "CLEAR" });
+            const itemRes = await patchItemOutOfStock(storeId, item.id, token, { mode: "CLEAR" });
+            console.log("[menu] restore item: cleared item oos", { itemRes });
             // If legacy base flag is off, restore it so item can show as in-stock.
             if (item.in_stock === false) {
               await patchStock.mutateAsync({ itemId: item.id, inStock: true });
             }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error("[menu] restore item failed", e);
+            Alert.alert("Could not restore in stock", msg);
           } finally {
             setOosBusy(false);
             setOosModal(null);
@@ -947,7 +998,7 @@ export default function MenuScreen() {
         },
       });
     },
-    [storeId, token, patchStock, refetchItems]
+    [storeId, token, patchStock, refetchItems, refetchCategories, isCategoryOos, categoryById]
   );
 
   const handleConfirmOos = useCallback(
@@ -1291,17 +1342,9 @@ export default function MenuScreen() {
     const q = searchDebounced.toLowerCase();
     return combos.filter((c) => String(c.combo_name ?? "").toLowerCase().includes(q));
   }, [combos, searchDebounced]);
-  const validCombos = useMemo(
-    () =>
-      visibleCombos.filter((c) => {
-        const detail = comboDetails.get(c.id);
-        return (detail?.components?.length ?? 0) >= 2;
-      }),
-    [visibleCombos, comboDetails]
-  );
   const totalDisplayed =
     (showItems ? total : 0) +
-    (showCombos ? (validCombos?.length ?? 0) : 0) +
+    (showCombos ? (visibleCombos?.length ?? 0) : 0) +
     (showAddons ? (addonGroups?.length ?? 0) : 0);
 
   if (!canFetch) {
@@ -1847,7 +1890,9 @@ export default function MenuScreen() {
                           </TouchableOpacity>
 
                           <View style={styles.treeGroupRight}>
-                            <Text style={styles.treeInStockLabel}>In stock</Text>
+                            <Text style={allInStock ? styles.treeInStockLabel : styles.treeOutStockLabel}>
+                              {allInStock ? "In stock" : "Out of stock"}
+                            </Text>
                             <Switch
                               value={allInStock}
                               onValueChange={async () => {
@@ -1913,7 +1958,11 @@ export default function MenuScreen() {
                                     <Text style={styles.treeOosSubtext} numberOfLines={1}>
                                       {getItemOosLabel(item)}
                                     </Text>
-                                  ) : null}
+                                  ) : (
+                                    <Text style={styles.treeInStockSubtext} numberOfLines={1}>
+                                      In stock
+                                    </Text>
+                                  )}
                                 </TouchableOpacity>
                                 <View style={styles.treeRowRight}>
                                   <Text style={styles.treePrice}>
@@ -1937,7 +1986,7 @@ export default function MenuScreen() {
                     );
                   })}
 
-                  {showCombos && (validCombos?.length ?? 0) > 0 && (
+                  {showCombos && (visibleCombos?.length ?? 0) > 0 && (
                     <View
                       style={styles.treeGroupCard}
                       onLayout={(e) => {
@@ -1948,10 +1997,9 @@ export default function MenuScreen() {
                       {(() => {
                         const key = "combos";
                         const isOpen = openTreeGroups[key] ?? true;
-                        const comboIds = validCombos.map((c) => c.id);
                         const allActive =
-                          (validCombos?.length ?? 0) > 0 &&
-                          validCombos.every((c) => effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById));
+                          (visibleCombos?.length ?? 0) > 0 &&
+                          visibleCombos.every((c) => effectiveComboInStock(c, comboDetails.get(c.id) ?? null, itemById));
                         return (
                           <>
                             <View style={styles.treeGroupHeader}>
@@ -1975,7 +2023,7 @@ export default function MenuScreen() {
                                 <Text style={styles.treeGroupTitle} numberOfLines={1}>
                                   Combos{" "}
                                   <Text style={styles.treeCountText}>
-                                    ({validCombos?.length ?? 0})
+                                    ({visibleCombos?.length ?? 0})
                                   </Text>
                                 </Text>
                               </TouchableOpacity>
@@ -1987,7 +2035,7 @@ export default function MenuScreen() {
                                     if (!storeId || !token) return;
                                     const next = !allActive;
                                     if (!next) {
-                                      const first = validCombos[0];
+                                      const first = visibleCombos[0];
                                       if (first) setOosModal({ kind: "COMBO", comboId: first.id, comboName: first.combo_name });
                                       return;
                                     }
@@ -1998,7 +2046,7 @@ export default function MenuScreen() {
                                         setRestoreConfirm(null);
                                         setOosBusy(true);
                                         try {
-                                          await Promise.all(validCombos.map((c) => patchComboOutOfStock(storeId, c.id, token, { mode: "CLEAR" })));
+                                          await Promise.all(visibleCombos.map((c) => patchComboOutOfStock(storeId, c.id, token, { mode: "CLEAR" })));
                                         } finally {
                                           setOosBusy(false);
                                           await reloadCombos();
@@ -2017,7 +2065,7 @@ export default function MenuScreen() {
 
                             {isOpen && (
                               <View style={styles.treeItemsWrap}>
-                                {validCombos.map((combo) => (
+                                {visibleCombos.map((combo) => (
                                   <View key={`tree-combo-${combo.id}`} style={styles.treeRow}>
                                     <TouchableOpacity
                                       style={styles.treeRowLeft}
@@ -2059,7 +2107,7 @@ export default function MenuScreen() {
                 </View>
               ))}
             {showCombos && viewMode === "card" &&
-              validCombos.map((combo) => {
+              visibleCombos.map((combo) => {
                 const detail = comboDetails.get(combo.id) ?? null;
                 const hasUnavailableItem =
                   detail?.components?.some((c) => {
@@ -2607,6 +2655,7 @@ const styles = StyleSheet.create({
   treeCountText: { fontWeight: "700", color: GatiMitraMerchant.textTertiary },
   treeGroupRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   treeInStockLabel: { fontSize: 12, fontWeight: "700", color: GatiMitraMerchant.textSecondary },
+  treeOutStockLabel: { fontSize: 12, fontWeight: "800", color: GatiMitraMerchant.error },
   treeItemsWrap: { backgroundColor: GatiMitraMerchant.cardBg },
   treeRow: {
     flexDirection: "row",
@@ -2620,6 +2669,7 @@ const styles = StyleSheet.create({
   treeRowLeft: { flex: 1, minWidth: 0, paddingRight: 10 },
   treeItemName: { fontSize: 14, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
   treeOosSubtext: { fontSize: 11, color: GatiMitraMerchant.error, fontWeight: "700", marginTop: 2 },
+  treeInStockSubtext: { fontSize: 11, color: GatiMitraMerchant.success, fontWeight: "700", marginTop: 2 },
   treeRowRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   treePrice: { fontSize: 14, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
   itemCard: {
@@ -2723,6 +2773,7 @@ const styles = StyleSheet.create({
   },
   itemDescription: { fontSize: 13, color: GatiMitraMerchant.textSecondary, lineHeight: 18, marginTop: 0 },
   oosSubtext: { fontSize: 12, color: GatiMitraMerchant.error, fontWeight: "700", marginTop: 2 },
+  inStockSubtext: { fontSize: 12, color: GatiMitraMerchant.success, fontWeight: "700", marginTop: 2 },
   itemMetaRow: { marginTop: 0 },
   itemMetaText: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
   itemServeSizeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", marginTop: 2 },
@@ -2730,6 +2781,12 @@ const styles = StyleSheet.create({
   comboItemsList: { marginTop: 4, gap: 2 },
   comboItemLine: { fontSize: 12, color: GatiMitraMerchant.textSecondary },
   comboItemMore: { fontSize: 12, color: GatiMitraMerchant.textTertiary, fontStyle: "italic" },
+  comboIncompleteHint: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.warning,
+  },
   priceRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
   sellingPrice: { fontSize: 20, fontWeight: "800", color: GatiMitraMerchant.primary, letterSpacing: -0.3 },
   basePriceStrike: { fontSize: 14, color: GatiMitraMerchant.textSecondary, textDecorationLine: "line-through" },

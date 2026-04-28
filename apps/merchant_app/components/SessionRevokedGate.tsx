@@ -9,10 +9,12 @@ export function SessionRevokedGate() {
   const router = useRouter();
 
   useEffect(() => {
-    const unsubscribe = onSessionRevoked(async () => {
+    const unsubscribe = onSessionRevoked(async (payload) => {
       Alert.alert(
         "Session ended",
-        "Your session has ended. Please sign in again to access the app.",
+        payload.reason === "invalid_token"
+          ? "Your login has expired or is no longer valid for this server. Please sign in again."
+          : "Your session has ended. Please sign in again to access the app.",
         [
           {
             text: "OK",

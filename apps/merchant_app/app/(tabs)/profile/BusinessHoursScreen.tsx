@@ -17,7 +17,7 @@ import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, BUTTON_RADIUS } from "@/cons
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";
-import { getOperatingHours, updateOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
+import { getOperatingHours, getOperatingHoursFresh, peekOperatingHoursCache, updateOperatingHours, type OperatingHours, type DaySlots } from "@/services/outletApi";
 
 const DAY_KEYS: Array<{ key: keyof OperatingHours; label: string }> = [
   { key: "monday", label: "Monday" },
@@ -90,6 +90,13 @@ type CloseWarningState = {
   dayKey: DayKey;
 };
 
+function todayKey(): DayKey {
+  // JS: Sunday=0 ... Saturday=6
+  const idx = new Date().getDay();
+  return (["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][idx] ??
+    "monday") as DayKey;
+}
+
 function makeEmptyDay(): LocalDay {
   return {
     open: false,
@@ -135,10 +142,12 @@ function toApiPayload(local: LocalState): { is_24_hours: boolean; days: Record<s
     const src = local.days[key];
     days[d.key] = {
       open: src.open,
-      slot1_start: src.open ? src.slot1_start : null,
-      slot1_end: src.open ? src.slot1_end : null,
-      slot2_start: src.open && src.hasSecond ? src.slot2_start : null,
-      slot2_end: src.open && src.hasSecond ? src.slot2_end : null,
+      // Important UX: closing a day should NOT wipe saved slots.
+      // Keep slot values in DB so reopening the day restores times instantly.
+      slot1_start: src.slot1_start,
+      slot1_end: src.slot1_end,
+      slot2_start: src.hasSecond ? src.slot2_start : null,
+      slot2_end: src.hasSecond ? src.slot2_end : null,
     };
   }
   return { is_24_hours: local.is_24_hours, days };
@@ -186,6 +195,9 @@ export default function BusinessHoursScreen() {
   const [error, setError] = useState<string | null>(null);
   const [slotModal, setSlotModal] = useState<SlotModalState | null>(null);
   const [closeWarning, setCloseWarning] = useState<CloseWarningState | null>(null);
+  const [expandedDays, setExpandedDays] = useState<Set<DayKey>>(
+    () => new Set<DayKey>([todayKey()])
+  );
 
   useEffect(() => {
     if (!storeId || !token) {
@@ -193,6 +205,16 @@ export default function BusinessHoursScreen() {
       if (!token) setError("Not signed in.");
       else if (!storeId) setError("No store selected.");
       return;
+    }
+    // Default accordion state: always expand today's day when screen opens.
+    setExpandedDays(new Set<DayKey>([todayKey()]));
+    // Instant paint: hydrate from cache if available (no spinner).
+    const cached = peekOperatingHoursCache(storeId);
+    if (cached !== undefined) {
+      setLocal(fromApi(cached));
+      setLoading(false);
+    } else {
+      setLoading(true);
     }
     let cancelled = false;
     getOperatingHours(storeId, token)
@@ -220,7 +242,7 @@ export default function BusinessHoursScreen() {
     setLocal(next);
     try {
       await updateOperatingHours(storeId, toApiPayload(next), token);
-      const fresh = await getOperatingHours(storeId, token);
+      const fresh = await getOperatingHoursFresh(storeId, token);
       setLocal(fromApi(fresh));
       // So Store Status header and countdown update immediately without app reload.
       void refreshStoreStatus();
@@ -248,6 +270,8 @@ export default function BusinessHoursScreen() {
           [dayKey]: { ...day, open: true },
         },
       };
+      // Make it obvious the toggle worked: expand the day immediately.
+      setExpandedDays((prev) => new Set<DayKey>([...prev, dayKey]));
       syncToBackend(next, false);
     }
   };
@@ -257,12 +281,8 @@ export default function BusinessHoursScreen() {
     const { dayKey } = closeWarning;
     const cur = local.days[dayKey];
     const updated: LocalDay = {
+      ...cur,
       open: false,
-      slot1_start: null,
-      slot1_end: null,
-      slot2_start: null,
-      slot2_end: null,
-      hasSecond: false,
     };
     const next: LocalState = {
       ...local,
@@ -404,38 +424,75 @@ export default function BusinessHoursScreen() {
           const isOpen = !!day.open;
           const slot1Duration = durationLabel(day.slot1_start, day.slot1_end);
           const slot2Duration = durationLabel(day.slot2_start, day.slot2_end);
+          const key = d.key as DayKey;
+          const isExpanded = expandedDays.has(key);
+          const slot1Summary = formatRange(day.slot1_start, day.slot1_end);
+          const slot2Summary = day.hasSecond ? formatRange(day.slot2_start, day.slot2_end) : null;
+          const hasAnySlot = !!(day.slot1_start || day.slot1_end || (day.hasSecond && (day.slot2_start || day.slot2_end)));
           return (
             <View key={d.key} style={styles.dayCard}>
-              <View style={styles.dayHeader}>
-                <View>
-                  <Text style={styles.dayLabel}>{d.label}</Text>
-                  <Text style={styles.daySubtitle}>{isOpen ? "Open" : "Closed"}</Text>
-                </View>
+              <View style={styles.dayHeaderRow}>
                 <Pressable
-                  onPress={() => requestToggleOpen(d.key as DayKey)}
+                  onPress={() =>
+                    setExpandedDays((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(key)) next.delete(key);
+                      else next.add(key);
+                      return next;
+                    })
+                  }
                   style={({ pressed }) => [
-                    styles.openToggle,
-                    isOpen ? styles.openToggleOn : styles.openToggleOff,
+                    styles.dayHeaderLeft,
                     pressed && styles.pressed,
+                    GatiMitraMerchant.cursorPointer,
                   ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Toggle ${d.label} time slots`}
                 >
-                  <View style={[styles.openToggleThumb, isOpen && styles.openToggleThumbOn]} />
+                  <View style={styles.dayTitleCol}>
+                    <Text style={styles.dayLabel}>{d.label}</Text>
+                    <Text style={styles.daySubtitle}>
+                      {isOpen ? "Open" : "Closed"}
+                      {hasAnySlot ? ` • ${slot1Summary}${slot2Summary ? `, ${slot2Summary}` : ""}` : ""}
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name={isExpanded ? "chevron-up" : "chevron-down"}
+                    size={18}
+                    color={GatiMitraMerchant.textTertiary}
+                  />
                 </Pressable>
+
+                <View style={styles.dayHeaderRight}>
+                  <Text style={[styles.openPillText, isOpen ? styles.openPillTextOn : styles.openPillTextOff]}>
+                    {isOpen ? "Open" : "Closed"}
+                  </Text>
+                  <Pressable
+                    onPress={() => requestToggleOpen(key)}
+                    style={({ pressed }) => [
+                      styles.openToggle,
+                      isOpen ? styles.openToggleOn : styles.openToggleOff,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <View style={[styles.openToggleThumb, isOpen && styles.openToggleThumbOn]} />
+                  </Pressable>
+                </View>
               </View>
 
-              {isOpen && !local.is_24_hours && (
-                <View style={styles.slotsWrap}>
+              {isExpanded && isOpen && !local.is_24_hours && (
+                <View style={styles.slotsWrapZomato}>
                   {/* Slot 1 */}
-                  <View style={styles.slotRow}>
+                  <View style={styles.slotRowZ}>
                     <View style={styles.slotLeft}>
                       <Text style={styles.slotLabel}>Slot 1</Text>
-                      <Text style={styles.slotTime}>{formatRange(day.slot1_start, day.slot1_end)}</Text>
+                      <Text style={styles.slotTimeZ}>{formatRange(day.slot1_start, day.slot1_end)}</Text>
                       {!!slot1Duration && <Text style={styles.slotDuration}>{slot1Duration}</Text>}
                     </View>
                     <View style={styles.slotActions}>
                       <Pressable
                         style={({ pressed }) => [styles.slotActionBtn, pressed && styles.pressed]}
-                        onPress={() => openSlotEditor(d.key as DayKey, 1)}
+                        onPress={() => openSlotEditor(key, 1)}
                       >
                         <Text style={styles.slotActionText}>
                           {day.slot1_start || day.slot1_end ? "Edit" : "Add"}
@@ -444,7 +501,7 @@ export default function BusinessHoursScreen() {
                       {day.slot1_start || day.slot1_end ? (
                         <Pressable
                           style={({ pressed }) => [styles.slotActionBtn, pressed && styles.pressed]}
-                          onPress={() => removeSlot(d.key as DayKey, 1)}
+                          onPress={() => removeSlot(key, 1)}
                         >
                           <Text style={styles.slotActionTextSecondary}>Remove</Text>
                         </Pressable>
@@ -455,10 +512,10 @@ export default function BusinessHoursScreen() {
                   <View style={styles.divider} />
 
                   {/* Slot 2 */}
-                  <View style={styles.slotRow}>
+                  <View style={styles.slotRowZ}>
                     <View style={styles.slotLeft}>
                       <Text style={styles.slotLabel}>Slot 2 (optional)</Text>
-                      <Text style={styles.slotTime}>
+                      <Text style={styles.slotTimeZ}>
                         {day.hasSecond ? formatRange(day.slot2_start, day.slot2_end) : "Not added"}
                       </Text>
                       {day.hasSecond && !!slot2Duration && (
@@ -468,7 +525,7 @@ export default function BusinessHoursScreen() {
                     <View style={styles.slotActions}>
                       <Pressable
                         style={({ pressed }) => [styles.slotActionBtn, pressed && styles.pressed]}
-                        onPress={() => openSlotEditor(d.key as DayKey, 2)}
+                        onPress={() => openSlotEditor(key, 2)}
                       >
                         <Text style={styles.slotActionText}>
                           {day.hasSecond ? "Edit" : "Add"}
@@ -477,7 +534,7 @@ export default function BusinessHoursScreen() {
                       {day.hasSecond && (
                         <Pressable
                           style={({ pressed }) => [styles.slotActionBtn, pressed && styles.pressed]}
-                          onPress={() => removeSlot(d.key as DayKey, 2)}
+                          onPress={() => removeSlot(key, 2)}
                         >
                           <Text style={styles.slotActionTextSecondary}>Remove</Text>
                         </Pressable>
@@ -623,9 +680,26 @@ const styles = StyleSheet.create({
     borderColor: GatiMitraMerchant.border,
     marginBottom: 10,
   },
-  dayHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  dayHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  dayHeaderLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 2,
+  },
+  dayTitleCol: { flexDirection: "column" },
+  dayHeaderRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   dayLabel: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
   daySubtitle: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  openPillText: { fontSize: 12, fontWeight: "700" },
+  openPillTextOn: { color: GatiMitraMerchant.statusCompleted },
+  openPillTextOff: { color: GatiMitraMerchant.textTertiary },
 
   openToggle: {
     width: 46,
@@ -646,10 +720,13 @@ const styles = StyleSheet.create({
   openToggleThumbOn: { alignSelf: "flex-end" },
 
   slotsWrap: { marginTop: 10 },
+  slotsWrapZomato: { marginTop: 10 },
   slotRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 },
+  slotRowZ: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 12 },
   slotLeft: { flex: 1, marginRight: 10 },
   slotLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
   slotTime: { fontSize: 13, color: GatiMitraMerchant.textPrimary, marginTop: 2 },
+  slotTimeZ: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.textPrimary, marginTop: 2 },
   slotDuration: { fontSize: 11, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
   slotActions: { alignItems: "flex-end", gap: 4 },
   slotActionBtn: { paddingVertical: 4, paddingHorizontal: 6 },

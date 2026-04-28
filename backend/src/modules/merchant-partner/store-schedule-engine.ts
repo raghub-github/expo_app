@@ -757,7 +757,6 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
     const storeRows = await sql`
       SELECT
         ms.id AS store_id,
-        ms.timezone,
         ms.is_accepting_orders,
         ms.is_active,
         msa.auto_open_from_schedule,
@@ -985,7 +984,6 @@ export async function runStoreScheduleTickForStore(
     const storeRows = await sql`
       SELECT
         ms.id AS store_id,
-        ms.timezone,
         ms.is_accepting_orders,
         ms.is_active,
         msa.auto_open_from_schedule,

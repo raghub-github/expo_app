@@ -501,10 +501,18 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
                 key={g.id}
                 className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden transition-shadow hover:shadow-md"
               >
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expandedId === g.id}
                   onClick={() => toggleExpand(g)}
-                  className="w-full flex items-center justify-between p-4 text-left hover:bg-gray-50/50 transition-colors"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleExpand(g);
+                    }
+                  }}
+                  className="w-full flex items-center justify-between p-4 text-left hover:bg-gray-50/50 transition-colors cursor-pointer"
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <div
@@ -543,7 +551,7 @@ export function AddonLibraryClient({ storeId }: { storeId: string }) {
                       <Trash2 size={16} />
                     </button>
                   </div>
-                </button>
+                </div>
 
                 {expandedId === g.id && (
                   <div className="border-t border-gray-100 bg-gray-50/50 p-4">

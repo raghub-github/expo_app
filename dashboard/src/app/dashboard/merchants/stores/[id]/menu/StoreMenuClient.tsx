@@ -213,6 +213,7 @@ function normalizeItem(
     approval_status: (item.approval_status as any) ?? null,
     has_pending_change_request: Boolean((item as any).has_pending_change_request),
     pending_change_request_type: ((item as any).pending_change_request_type as any) ?? null,
+    linked_modifier_groups: ((item as any).linked_modifier_groups as any) ?? [],
   };
 }
 
@@ -412,6 +413,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [reviewItem, setReviewItem] = useState<MenuItem | null>(null);
   const [showReviewDrawer, setShowReviewDrawer] = useState(false);
   const [isReviewActionLoading, setIsReviewActionLoading] = useState<"APPROVE" | "REJECT" | null>(null);
+  const [showAppliedAddonsDrawer, setShowAppliedAddonsDrawer] = useState(false);
+  const [appliedAddonsItem, setAppliedAddonsItem] = useState<MenuItem | null>(null);
+  const [appliedAddonsLoading, setAppliedAddonsLoading] = useState(false);
+  const [appliedAddonsError, setAppliedAddonsError] = useState("");
+  const [unlinkingModifierLinkId, setUnlinkingModifierLinkId] = useState<number | null>(null);
   const categoryScrollRef = useRef<HTMLDivElement>(null);
 
   const trackAudit = useCallback((payload: {
@@ -954,6 +960,26 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     }
     setShowEditModal(true);
   };
+
+  const openAppliedAddons = useCallback(
+    async (item: MenuItem) => {
+      setShowAppliedAddonsDrawer(true);
+      setAppliedAddonsItem(item);
+      setAppliedAddonsError("");
+      setAppliedAddonsLoading(true);
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${item.id}`);
+        const json = await res.json().catch(() => ({}));
+        const full = res.ok && json?.success && json?.item ? (json.item as MenuItem) : null;
+        if (full) setAppliedAddonsItem(full);
+      } catch (e) {
+        setAppliedAddonsError(e instanceof Error ? e.message : "Failed to load addons");
+      } finally {
+        setAppliedAddonsLoading(false);
+      }
+    },
+    [storeId],
+  );
 
   const packagingPayloadForForm = (form: ItemFormData) => {
     if (!form.packaging_enabled) return null;
@@ -2229,7 +2255,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-slate-50">
+        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 pt-3 pb-0 bg-slate-50">
           {loading ? (
             <MenuItemsGridSkeleton />
           ) : searchedItems.length === 0 ? (
@@ -2250,18 +2276,28 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {searchedItems.map((item) => {
                 const categoryDisplayLabel = formatCategoryLabel(categories, item.category_id);
                 const discount = Number(item.discount_percentage);
                 const hasDiscount = discount > 0;
+                const linkedGroupsCount = (item.linked_modifier_groups?.length ?? 0) || 0;
+                const linkedOptionsCount =
+                  item.linked_modifier_groups?.reduce((sum, g) => sum + (g.options?.length ?? 0), 0) ?? 0;
+                const inlineAddonsCount =
+                  (item.customizations ?? []).reduce((sum, c) => sum + (c.addons?.length ?? 0), 0) || 0;
+                const hasAddons =
+                  linkedGroupsCount > 0 ||
+                  (item.has_addons ?? false) ||
+                  linkedOptionsCount > 0 ||
+                  inlineAddonsCount > 0;
                 return (
                   <div
                     key={item.id}
                     className="bg-white/95 rounded-lg border border-gray-200/80 shadow-sm hover:shadow-md transition-all overflow-hidden"
                   >
-                    <div className="flex p-2 h-full gap-3">
-                      <div className="w-16 h-16 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
+                    <div className="flex p-3 h-full gap-3">
+                      <div className="w-20 h-20 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
                         <R2Image
                           src={item.item_image_url}
                           alt={item.item_name}
@@ -2293,6 +2329,29 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                   ? "Rejected"
                                   : "Pending"}
                             </span>
+                            {hasAddons && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void openAppliedAddons(item);
+                                }}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 transition-colors"
+                                title={
+                                  linkedGroupsCount > 0
+                                    ? `${linkedGroupsCount} addon group${linkedGroupsCount !== 1 ? "s" : ""}`
+                                    : "View applied addons"
+                                }
+                              >
+                                <Layers size={12} />
+                                Addons
+                                {linkedGroupsCount > 0
+                                  ? ` · ${linkedGroupsCount}`
+                                  : linkedOptionsCount > 0
+                                    ? ` · ${linkedOptionsCount}`
+                                    : ""}
+                              </button>
+                            )}
                             {item.has_pending_change_request && (
                               <span
                                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
@@ -2749,6 +2808,149 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 >
                   {isReviewActionLoading === "APPROVE" ? "Approving…" : "Approve"}
                 </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {showAppliedAddonsDrawer &&
+        appliedAddonsItem &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9997] flex items-stretch justify-end bg-black/40 backdrop-blur-sm"
+            onClick={() => {
+              setShowAppliedAddonsDrawer(false);
+              setAppliedAddonsItem(null);
+              setAppliedAddonsError("");
+            }}
+          >
+            <div
+              className="w-full max-w-md bg-white shadow-xl border-l border-gray-200 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Applied addons</div>
+                  <div className="text-sm font-extrabold text-gray-900 truncate">{appliedAddonsItem.item_name}</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
+                    {(appliedAddonsItem.linked_modifier_groups?.length ?? 0)} group
+                    {(appliedAddonsItem.linked_modifier_groups?.length ?? 0) === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAppliedAddonsDrawer(false);
+                    setAppliedAddonsItem(null);
+                    setAppliedAddonsError("");
+                  }}
+                  className="text-xs font-semibold text-gray-500 hover:text-gray-800"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="p-4 flex-1 overflow-auto space-y-3 text-sm bg-gradient-to-b from-white to-slate-50/60">
+                {appliedAddonsError ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {appliedAddonsError}
+                  </div>
+                ) : (appliedAddonsItem.linked_modifier_groups?.length ?? 0) === 0 ? (
+                  <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-700">
+                    No addon groups are linked to this item.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {appliedAddonsLoading && (
+                      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-800">
+                        Fetching latest addon options…
+                      </div>
+                    )}
+                    {appliedAddonsItem.linked_modifier_groups?.map((g) => (
+                      <div key={g.id} className="rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="px-3 py-2 bg-white flex items-start justify-between gap-3 border-b border-gray-100">
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-gray-900 truncate">{g.title}</div>
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                                  g.is_required
+                                    ? "bg-red-50 text-red-700 border-red-200"
+                                    : "bg-gray-50 text-gray-700 border-gray-200"
+                                }`}
+                              >
+                                {g.is_required ? "Required" : "Optional"}
+                              </span>
+                              {(g.min_selection != null || g.max_selection != null) && (
+                                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-50 text-slate-700 border border-slate-200">
+                                  min {g.min_selection ?? 0} / max {g.max_selection ?? "—"}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="text-[11px] font-bold text-gray-600">
+                              {typeof (g as any).options_count === "number"
+                                ? `${Number((g as any).options_count)} option${Number((g as any).options_count) !== 1 ? "s" : ""}`
+                                : `${(g.options?.length ?? 0)} option${(g.options?.length ?? 0) !== 1 ? "s" : ""}`}
+                            </div>
+                            <button
+                              type="button"
+                              disabled={unlinkingModifierLinkId === g.id}
+                              onClick={async () => {
+                                setUnlinkingModifierLinkId(g.id);
+                                try {
+                                  const res = await fetch(
+                                    `/api/merchant/stores/${storeId}/menu/items/${appliedAddonsItem.id}/modifier-groups/${g.id}`,
+                                    { method: "DELETE" }
+                                  );
+                                  const j = await res.json().catch(() => ({}));
+                                  if (!res.ok || j?.success === false) {
+                                    throw new Error(j?.error || "Failed to remove addon group");
+                                  }
+                                  setAppliedAddonsItem((prev) => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      linked_modifier_groups: (prev.linked_modifier_groups ?? []).filter((x) => x.id !== g.id),
+                                    };
+                                  });
+                                  // Also refresh the menu list so badge/count updates.
+                                  await refreshMenu();
+                                } catch (e) {
+                                  setAppliedAddonsError(e instanceof Error ? e.message : "Failed to remove addon group");
+                                } finally {
+                                  setUnlinkingModifierLinkId(null);
+                                }
+                              }}
+                              className="px-2 py-1 rounded-md text-[11px] font-extrabold border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Remove this addon group from item"
+                            >
+                              {unlinkingModifierLinkId === g.id ? "Removing…" : "Remove"}
+                            </button>
+                          </div>
+                        </div>
+                        {(g.options?.length ?? 0) > 0 ? (
+                          <ul className="px-3 py-2 text-sm text-gray-800 space-y-1 bg-gray-50/50">
+                            {g.options!.map((o) => (
+                              <li key={o.id} className="flex items-center justify-between gap-2">
+                                <span className="truncate">{o.name}</span>
+                                <span className="text-xs font-extrabold text-gray-700 shrink-0 tabular-nums">
+                                  {o.price_delta !== "0" ? `+₹${o.price_delta}` : "+₹0"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : appliedAddonsLoading ? (
+                          <div className="px-3 py-2 text-sm text-gray-600 bg-gray-50/50">Loading options…</div>
+                        ) : (
+                          <div className="px-3 py-2 text-sm text-gray-600 bg-gray-50/50">No options in this group.</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>,
