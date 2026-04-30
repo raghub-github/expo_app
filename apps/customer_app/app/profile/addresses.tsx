@@ -2,13 +2,15 @@
  * Saved addresses – list from API, delete, set default, add new.
  */
 
+import { useLayoutEffect, useState } from "react";
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
-import { useRouter } from "expo-router";
+import { useRouter, useLocalSearchParams, useNavigation } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
+import { useLocationStore } from "@/store/locationStore";
 
 const TEAL = "#14b8a6";
 const MINT_SOFT = "#ccfbf1";
@@ -43,7 +45,19 @@ export default function AddressesScreen() {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
+  const params = useLocalSearchParams<{ forCheckout?: string }>();
+  const selectingForCheckout = params.forCheckout === "1" || params.forCheckout === "true";
+  const [selectingAddressId, setSelectingAddressId] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      title: selectingForCheckout
+        ? t("addresses.deliverToTitle", "Deliver to")
+        : t("addresses.screenTitle", "Saved addresses"),
+    });
+  }, [navigation, selectingForCheckout, t]);
 
   const { data: addresses = [], isLoading, error } = useQuery({
     queryKey: ["addresses"],
@@ -61,7 +75,80 @@ export default function AddressesScreen() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["addresses"] }),
   });
 
-  const handleAddNewAddress = () => router.push("/location");
+  const handleSetDefault = async (addr: Address) => {
+    try {
+      await setDefaultMutation.mutateAsync(addr.id);
+      // Make "Default" also become the active location shown on home header across restarts.
+      await addressService.setActiveLocation({
+        latitude: addr.latitude,
+        longitude: addr.longitude,
+        address: addr.fullAddress,
+      });
+      const primary = addr.label ?? t("addresses.other", "Other");
+      useLocationStore.getState().setAddressAndCoords(
+        {
+          primary,
+          secondary: addr.fullAddress.slice(0, 80),
+          fullAddress: addr.fullAddress,
+        },
+        { latitude: addr.latitude, longitude: addr.longitude },
+        { source: "selected" }
+      );
+      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+    } catch {
+      Alert.alert(t("addresses.defaultErrorTitle", "Could not set default"), t("addresses.defaultErrorBody", "Please try again."));
+    }
+  };
+
+  const handleAddNewAddress = () =>
+    router.push(
+      selectingForCheckout ? { pathname: "/location", params: { afterSaveReturn: "checkout" } } : "/location"
+    );
+
+  const openEditAddress = (addr: Address) => {
+    router.push({
+      pathname: "/location-address",
+      params: {
+        latitude: String(addr.latitude),
+        longitude: String(addr.longitude),
+        addressId: String(addr.id),
+        primary: addr.label ?? addr.fullAddress.slice(0, 40),
+        ...(selectingForCheckout ? { afterSaveReturn: "checkout" as const } : {}),
+      },
+    });
+  };
+
+  const handleSelectForCheckout = async (addr: Address) => {
+    if (selectingAddressId != null) return;
+    setSelectingAddressId(addr.id);
+    try {
+      await addressService.setActiveLocation({
+        latitude: addr.latitude,
+        longitude: addr.longitude,
+        address: addr.fullAddress,
+      });
+      const primary = addr.label ?? t("addresses.other", "Other");
+      useLocationStore.getState().setAddressAndCoords(
+        {
+          primary,
+          secondary: addr.fullAddress.slice(0, 80),
+          fullAddress: addr.fullAddress,
+        },
+        { latitude: addr.latitude, longitude: addr.longitude },
+        { source: "selected" }
+      );
+      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      router.back();
+    } catch {
+      Alert.alert(
+        t("addresses.checkoutSelectErrorTitle", "Could not update address"),
+        t("addresses.checkoutSelectErrorBody", "Please try again.")
+      );
+    } finally {
+      setSelectingAddressId(null);
+    }
+  };
 
   const handleShare = async (addr: Address) => {
     const parts: string[] = [];
@@ -137,63 +224,105 @@ export default function AddressesScreen() {
           </View>
         ) : (
           <>
-            {addresses.map((addr) => (
-              <TouchableOpacity
-                key={addr.id}
-                style={[styles.addressCard, SHADOW_SOFT]}
-                activeOpacity={0.85}
-              >
-                <View style={styles.addressIconWrap}>
-                  <Ionicons name={addressIcon(addr.label)} size={22} color={TEAL} />
-                </View>
-                <View style={styles.addressBody}>
-                  <View style={styles.addressLabelRow}>
-                    <Text style={styles.addressLabel}>{addr.label ?? t("addresses.other", "Other")}</Text>
-                    {addr.isDefault && (
-                      <View style={styles.defaultBadge}>
-                        <Text style={styles.defaultBadgeText}>{t("addresses.default", "Default")}</Text>
-                      </View>
+            {selectingForCheckout ? (
+              <Text style={styles.checkoutHint}>
+                {t("addresses.tapToDeliverHere", "Tap an address to deliver your order here")}
+              </Text>
+            ) : null}
+            {addresses.map((addr) => {
+              const cardMain = (
+                <>
+                  <View style={styles.addressIconWrap}>
+                    {selectingAddressId === addr.id ? (
+                      <ActivityIndicator size="small" color={TEAL} />
+                    ) : (
+                      <Ionicons name={addressIcon(addr.label)} size={22} color={TEAL} />
                     )}
                   </View>
-                  {addr.contactName ? (
-                    <Text style={styles.addressLine} numberOfLines={1}>
-                      {addr.contactName}
-                      {addr.contactMobile ? ` • ${addr.contactMobile}` : ""}
+                  <View style={styles.addressBody}>
+                    <View style={styles.addressLabelRow}>
+                      <Text style={styles.addressLabel}>{addr.label ?? t("addresses.other", "Other")}</Text>
+                      {addr.isDefault && (
+                        <View style={styles.defaultBadge}>
+                          <Text style={styles.defaultBadgeText}>{t("addresses.default", "Default")}</Text>
+                        </View>
+                      )}
+                    </View>
+                    {addr.contactName ? (
+                      <Text style={styles.addressLine} numberOfLines={1}>
+                        {addr.contactName}
+                        {addr.contactMobile ? ` • ${addr.contactMobile}` : ""}
+                      </Text>
+                    ) : null}
+                    <Text style={styles.addressLine} numberOfLines={2}>
+                      {addr.fullAddress}
                     </Text>
-                  ) : null}
-                  <Text style={styles.addressLine} numberOfLines={2}>
-                    {addr.fullAddress}
-                  </Text>
-                </View>
-                <View style={styles.cardActions}>
-                  {!addr.isDefault && (
+                  </View>
+                </>
+              );
+
+              const cardBody = (
+                <>
+                  {selectingForCheckout ? (
+                    <View style={styles.addressCardMain}>{cardMain}</View>
+                  ) : (
                     <TouchableOpacity
-                      hitSlop={12}
-                      style={styles.editBtn}
-                      onPress={() => setDefaultMutation.mutate(addr.id)}
-                      disabled={setDefaultMutation.isPending}
+                      style={styles.addressCardMain}
+                      activeOpacity={0.88}
+                      onPress={() => openEditAddress(addr)}
                     >
-                      <Text style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</Text>
+                      {cardMain}
                     </TouchableOpacity>
                   )}
-                  <TouchableOpacity
-                    hitSlop={12}
-                    style={styles.editBtn}
-                    onPress={() => handleShare(addr)}
-                  >
-                    <Ionicons name="share-social-outline" size={20} color={TEXT_GRAY} />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    hitSlop={12}
-                    style={styles.editBtn}
-                    onPress={() => handleDelete(addr)}
-                    disabled={deleteMutation.isPending}
-                  >
-                    <Ionicons name="trash-outline" size={20} color={TEXT_GRAY} />
-                  </TouchableOpacity>
+                  <View style={styles.cardActions}>
+                    {!selectingForCheckout && !addr.isDefault && (
+                      <TouchableOpacity
+                        hitSlop={12}
+                        style={styles.editBtn}
+                        onPress={() => void handleSetDefault(addr)}
+                        disabled={setDefaultMutation.isPending}
+                      >
+                        <Text style={styles.setDefaultText}>{t("addresses.setDefault", "Set default")}</Text>
+                      </TouchableOpacity>
+                    )}
+                    {!selectingForCheckout && (
+                      <TouchableOpacity hitSlop={12} style={styles.editBtn} onPress={() => handleShare(addr)}>
+                        <Ionicons name="share-social-outline" size={20} color={TEXT_GRAY} />
+                      </TouchableOpacity>
+                    )}
+                    {!selectingForCheckout && (
+                      <TouchableOpacity
+                        hitSlop={12}
+                        style={styles.editBtn}
+                        onPress={() => handleDelete(addr)}
+                        disabled={deleteMutation.isPending}
+                      >
+                        <Ionicons name="trash-outline" size={20} color={TEXT_GRAY} />
+                      </TouchableOpacity>
+                    )}
+                    {selectingForCheckout ? (
+                      <Ionicons name="chevron-forward" size={22} color={TEXT_MUTED} />
+                    ) : null}
+                  </View>
+                </>
+              );
+
+              return selectingForCheckout ? (
+                <TouchableOpacity
+                  key={addr.id}
+                  style={[styles.addressCard, SHADOW_SOFT, styles.addressCardSelectable]}
+                  activeOpacity={0.88}
+                  disabled={selectingAddressId != null}
+                  onPress={() => void handleSelectForCheckout(addr)}
+                >
+                  {cardBody}
+                </TouchableOpacity>
+              ) : (
+                <View key={addr.id} style={[styles.addressCard, SHADOW_SOFT]}>
+                  {cardBody}
                 </View>
-              </TouchableOpacity>
-            ))}
+              );
+            })}
           </>
         )}
 
@@ -227,6 +356,16 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: PAD_H,
     paddingTop: 16,
+  },
+  checkoutHint: {
+    fontSize: 14,
+    color: TEXT_GRAY,
+    lineHeight: 20,
+    marginBottom: 14,
+  },
+  addressCardSelectable: {
+    borderWidth: 2,
+    borderColor: "#14b8a640",
   },
   emptyWrap: {
     alignItems: "center",
@@ -264,6 +403,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_LIGHT,
   },
+  /** Tappable area (icon + text) to open map editor; actions stay outside. */
+  addressCardMain: { flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0 },
   addressIconWrap: {
     width: 44,
     height: 44,

@@ -44,6 +44,23 @@ import { useRecentLocationStore } from "@/store/recentLocationStore";
 
 const NEARBY_RADIUS_METERS = 500;
 
+/** Best-effort split of saved `fullAddress` into flat/area lines using structured fields. */
+function splitSavedAddressLines(addr: Address): { line1: string; line2: string } {
+  const city = (addr.city ?? "").trim();
+  const state = (addr.state ?? "").trim();
+  const pin = (addr.pincode ?? "").trim();
+  let rest = (addr.fullAddress ?? "").trim();
+  if (city && state && pin) {
+    const tail = `, ${city}, ${state}, ${pin}`.replace(/\s+/g, " ");
+    const lower = rest.toLowerCase();
+    const t = tail.toLowerCase();
+    if (lower.endsWith(t)) rest = rest.slice(0, rest.length - tail.length).replace(/,\s*$/, "").trim();
+  }
+  const parts = rest.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return { line1: (addr.fullAddress || "—").trim(), line2: "" };
+  return { line1: parts[0]!, line2: parts.slice(1).join(", ") };
+}
+
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000;
   const toRad = (d: number) => (d * Math.PI) / 180;
@@ -103,15 +120,51 @@ export default function LocationAddressScreen() {
     primary?: string;
     fullAddress?: string;
     fromOnboarding?: string;
+    afterSaveReturn?: string;
+    addressId?: string;
   }>();
+
+  const editAddressId = useMemo(() => {
+    const raw = params.addressId;
+    if (raw == null || raw === "") return null;
+    const n = parseInt(String(raw), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [params.addressId]);
+
+  const isEditMode = editAddressId != null;
 
   const lat = params.latitude != null ? parseFloat(params.latitude) : NaN;
   const lon = params.longitude != null ? parseFloat(params.longitude) : NaN;
   const initialLat = !Number.isNaN(lat) ? lat : (storeCoords?.latitude ?? DEFAULT_LAT);
   const initialLon = !Number.isNaN(lon) ? lon : (storeCoords?.longitude ?? DEFAULT_LNG);
   const fromOnboarding = params.fromOnboarding === "1";
+  const returnToCheckout = params.afterSaveReturn === "checkout";
+
+  const finishAddressFlow = () => {
+    if (fromOnboarding) {
+      router.replace("/(onboarding)/permissions");
+      return;
+    }
+    if (returnToCheckout) {
+      router.replace("/checkout");
+      return;
+    }
+    router.replace("/(tabs)/");
+  };
   const mapRef = useRef<MapView | null>(null);
+  const editSeedAppliedRef = useRef(false);
+  const editBaselineRef = useRef<{ lat: number; lon: number } | null>(null);
   const [mapCenter, setMapCenter] = useState({ latitude: initialLat, longitude: initialLon });
+  /** When true, skip reverse-geocode so saved city/state/pin are not overwritten until the user moves the pin. */
+  const [editGeoLocked, setEditGeoLocked] = useState(isEditMode);
+
+  useEffect(() => {
+    setEditGeoLocked(isEditMode);
+    if (!isEditMode) {
+      editSeedAppliedRef.current = false;
+      editBaselineRef.current = null;
+    }
+  }, [isEditMode]);
 
   const [line1, setLine1] = useState("");
   const [line2, setLine2] = useState("");
@@ -194,8 +247,17 @@ export default function LocationAddressScreen() {
     retry: false,
   });
 
-  const hasHome = savedAddresses.some((a) => (a.label ?? "").toLowerCase() === "home");
-  const hasWork = savedAddresses.some((a) => (a.label ?? "").toLowerCase() === "work");
+  const editTarget = useMemo(
+    () => (editAddressId != null ? savedAddresses.find((a) => a.id === editAddressId) : undefined),
+    [savedAddresses, editAddressId]
+  );
+
+  const hasHome = savedAddresses.some(
+    (a) => (a.label ?? "").toLowerCase() === "home" && (!isEditMode || a.id !== editAddressId)
+  );
+  const hasWork = savedAddresses.some(
+    (a) => (a.label ?? "").toLowerCase() === "work" && (!isEditMode || a.id !== editAddressId)
+  );
   const liveMapAddress = [line2.trim(), city.trim(), state.trim(), pincode.trim()].filter(Boolean).join(", ");
   const getDistanceKey = (lat: number, lon: number) => `${lat.toFixed(5)},${lon.toFixed(5)}`;
 
@@ -219,6 +281,10 @@ export default function LocationAddressScreen() {
   };
 
   useEffect(() => {
+    if (isEditMode && editGeoLocked) {
+      setGeocodeLoading(false);
+      return;
+    }
     let cancelled = false;
     setGeocodeLoading(true);
     reverseGeocode(mapCenter.longitude, mapCenter.latitude)
@@ -235,7 +301,54 @@ export default function LocationAddressScreen() {
     return () => {
       cancelled = true;
     };
-  }, [mapCenter.latitude, mapCenter.longitude]);
+  }, [mapCenter.latitude, mapCenter.longitude, isEditMode, editGeoLocked]);
+
+  useEffect(() => {
+    if (!isEditMode || editSeedAppliedRef.current) return;
+    const addr = editTarget;
+    if (!addr) return;
+    editSeedAppliedRef.current = true;
+    editBaselineRef.current = { lat: addr.latitude, lon: addr.longitude };
+    setMapCenter({ latitude: addr.latitude, longitude: addr.longitude });
+    const lines = splitSavedAddressLines(addr);
+    setLine1(lines.line1);
+    setLine2(lines.line2);
+    if (addr.city) {
+      setCity(addr.city);
+      setPrefilled((p) => ({ ...p, city: true }));
+    }
+    if (addr.state) {
+      setState(addr.state);
+      setPrefilled((p) => ({ ...p, state: true }));
+    }
+    if (addr.pincode) {
+      setPincode(addr.pincode);
+      setPrefilled((p) => ({ ...p, pincode: true }));
+    }
+    setLandmark(addr.landmark ?? "");
+    if (addr.contactName) setContactName(addr.contactName);
+    if (addr.contactMobile) setContactMobile(addr.contactMobile);
+    const lb = (addr.label ?? "").trim();
+    if (lb.toLowerCase() === "home") setLabel("Home");
+    else if (lb.toLowerCase() === "work") setLabel("Work");
+    else {
+      setLabel("Other");
+      setCustomLabel(lb);
+    }
+    setGeocodeLoading(false);
+    setError("");
+    requestAnimationFrame(() => {
+      mapRef.current?.animateToRegion(
+        {
+          latitude: addr.latitude,
+          longitude: addr.longitude,
+          latitudeDelta: 0.008,
+          longitudeDelta: 0.008,
+        },
+        1
+      );
+    });
+  }, [isEditMode, editTarget]);
 
   useEffect(() => {
     let cancelled = false;
@@ -459,6 +572,7 @@ export default function LocationAddressScreen() {
     let savedWithin500m: Address | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const addr of savedAddresses) {
+      if (isEditMode && addr.id === editAddressId) continue;
       try {
         const { distanceMeters } = await getRoadDistance(
           selectedLon,
@@ -487,9 +601,19 @@ export default function LocationAddressScreen() {
                 longitude: savedWithin500m.longitude,
                 address: savedWithin500m.fullAddress,
               });
+              const primary = savedWithin500m.label ?? "Address";
+              useLocationStore.getState().setAddressAndCoords(
+                {
+                  primary,
+                  secondary: savedWithin500m.fullAddress.slice(0, 80),
+                  fullAddress: savedWithin500m.fullAddress,
+                },
+                { latitude: savedWithin500m.latitude, longitude: savedWithin500m.longitude },
+                { source: "selected" }
+              );
               queryClient.invalidateQueries({ queryKey: ["addresses"] });
-              if (fromOnboarding) router.replace("/(onboarding)/permissions");
-              else router.replace("/(tabs)/");
+              queryClient.invalidateQueries({ queryKey: ["active-location"] });
+              finishAddressFlow();
             } catch {
               setError("Could not set location.");
             }
@@ -515,6 +639,26 @@ export default function LocationAddressScreen() {
     submittingRef.current = true;
     setSubmitting(true);
     try {
+      if (isEditMode && editAddressId != null) {
+        await addressService.updateAddress(editAddressId, {
+          label: finalLabel,
+          fullAddress,
+          landmark: landmark.trim() || null,
+          city: cityVal === "—" ? null : cityVal,
+          state: stateVal === "—" ? null : stateVal,
+          pincode: pincodeVal === "—" ? null : pincodeVal,
+          country: "IN",
+          latitude: selectedLat,
+          longitude: selectedLon,
+          contactName: contactName.trim() || null,
+          contactMobile: contactMobile.trim() || null,
+        });
+        queryClient.invalidateQueries({ queryKey: ["addresses"] });
+        queryClient.invalidateQueries({ queryKey: ["active-location"] });
+        router.back();
+        return;
+      }
+
       await addressService.addAddress({
         label: finalLabel,
         fullAddress,
@@ -548,11 +692,8 @@ export default function LocationAddressScreen() {
         { source: "selected" }
       );
       queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      if (fromOnboarding) {
-        router.replace("/(onboarding)/permissions");
-      } else {
-        router.replace("/(tabs)/");
-      }
+      queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      finishAddressFlow();
     } catch (e: unknown) {
       const msg =
         (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
@@ -593,6 +734,7 @@ export default function LocationAddressScreen() {
         label: "your current location",
       });
       setMapCenter({ latitude: nextLat, longitude: nextLon });
+      if (isEditMode) setEditGeoLocked(false);
       mapRef.current?.animateToRegion(
         {
           latitude: nextLat,
@@ -659,6 +801,7 @@ export default function LocationAddressScreen() {
   const applySearchedLocation = (latitude: number, longitude: number, primary: string, fullAddress?: string) => {
     setIsCurrentLocationSheetLoading(false);
     setMapCenter({ latitude, longitude });
+    if (isEditMode) setEditGeoLocked(false);
     mapRef.current?.animateToRegion(
       {
         latitude,
@@ -716,19 +859,28 @@ export default function LocationAddressScreen() {
       >
         <View style={styles.mapCard}>
           <MapView
+            key={isEditMode && editAddressId != null ? `edit-addr-${editAddressId}` : "new-address-map"}
             ref={(ref) => {
               mapRef.current = ref;
             }}
             style={styles.inlineMap}
             {...customerMapProps()}
             initialRegion={{
-              latitude: initialLat,
-              longitude: initialLon,
+              latitude: mapCenter.latitude,
+              longitude: mapCenter.longitude,
               latitudeDelta: 0.008,
               longitudeDelta: 0.008,
             }}
             onRegionChangeComplete={(region: Region) => {
-              setMapCenter({ latitude: region.latitude, longitude: region.longitude });
+              const latitude = region.latitude;
+              const longitude = region.longitude;
+              setMapCenter({ latitude, longitude });
+              if (isEditMode && editBaselineRef.current) {
+                const b = editBaselineRef.current;
+                if (haversineMeters(b.lat, b.lon, latitude, longitude) > 35) {
+                  setEditGeoLocked(false);
+                }
+              }
             }}
             scrollEnabled
             zoomEnabled
@@ -987,7 +1139,7 @@ export default function LocationAddressScreen() {
           {submitting ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.primaryBtnText}>Save address</Text>
+            <Text style={styles.primaryBtnText}>{isEditMode ? "Update address" : "Save address"}</Text>
           )}
         </TouchableOpacity>
       </View>

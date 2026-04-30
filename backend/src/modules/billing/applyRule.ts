@@ -143,6 +143,22 @@ export function applyRule(
             },
           };
         }
+        if (key === "DELIVERY_SLABS_GEO_V2") {
+          const fee = ctx.deliveryFeeFromSlabsGeoV2 ?? 0;
+          if (fee <= 0) return { applied: false, reason: "zero_slab_v2" };
+          return {
+            applied: true,
+            label: (rule.name as string) || "Delivery (slabs)",
+            amount: clamp0(fee),
+            bucket: "delivery",
+            meta: {
+              ruleId: rule.id,
+              source: "delivery_slab_geo_v2",
+              appliedGeo: ctx.deliverySlabsGeoV2AppliedGeo ?? undefined,
+              quote: ctx.deliverySlabsGeoV2Quote ?? undefined,
+            },
+          };
+        }
         if (key === "MERCHANT_PER_KM") {
           if (ctx.distanceKm == null) return { applied: false, reason: "distance_required" };
           const fee = ctx.deliveryChargePerKm * ctx.distanceKm + vn;

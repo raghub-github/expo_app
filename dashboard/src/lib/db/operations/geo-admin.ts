@@ -7,7 +7,11 @@ import type {
   GeoSearchRow,
   RiderRateCardRow,
 } from "@/lib/geo/geo-shared";
-import { geoPricingRefKey, parseRiderRateSummaries } from "@/lib/geo/geo-shared";
+import {
+  geoPricingRefKey,
+  parseGeoEffectivePlatformOffers,
+  parseRiderRateSummaries,
+} from "@/lib/geo/geo-shared";
 
 export type {
   GeoAncestorStep,
@@ -201,13 +205,60 @@ async function withEffectiveBaseFees(
       ef: string | null;
       ep: string | null;
       er: string | null;
+      food_slabs: string | null;
+      parcel_slabs: string | null;
+      ride_slabs: string | null;
       rider_rate_summaries: unknown;
+      effective_platform_offers: unknown;
     }[]>`
       SELECT
         geo_effective_base_fee(${level}::geo_pricing_level, ${id}::uuid, 'food'::geo_service)::text AS ef,
         geo_effective_base_fee(${level}::geo_pricing_level, ${id}::uuid, 'parcel'::geo_service)::text AS ep,
         geo_effective_base_fee(${level}::geo_pricing_level, ${id}::uuid, 'ride'::geo_service)::text AS er,
-        geo_effective_rider_rate_summaries(${level}::geo_pricing_level, ${id}::uuid) AS rider_rate_summaries
+        (
+          SELECT
+            CASE
+              WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+              ELSE concat(
+                '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+                '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+              )
+            END
+          FROM delivery_rate_slabs_effective(${level}::geo_pricing_level, ${id}::uuid, 'food'::order_type, 'customer'::delivery_actor_type) s
+          WHERE s.min_km = 0
+          ORDER BY s.priority DESC, s.id ASC
+          LIMIT 1
+        ) AS food_slabs,
+        (
+          SELECT
+            CASE
+              WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+              ELSE concat(
+                '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+                '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+              )
+            END
+          FROM delivery_rate_slabs_effective(${level}::geo_pricing_level, ${id}::uuid, 'parcel'::order_type, 'customer'::delivery_actor_type) s
+          WHERE s.min_km = 0
+          ORDER BY s.priority DESC, s.id ASC
+          LIMIT 1
+        ) AS parcel_slabs,
+        (
+          SELECT
+            CASE
+              WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+              ELSE concat(
+                '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+                '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+              )
+            END
+          FROM delivery_rate_slabs_effective(${level}::geo_pricing_level, ${id}::uuid, 'person_ride'::order_type, 'customer'::delivery_actor_type) s
+          WHERE s.min_km = 0
+          ORDER BY s.priority DESC, s.id ASC
+          LIMIT 1
+        ) AS ride_slabs,
+        geo_effective_rider_rate_summaries(${level}::geo_pricing_level, ${id}::uuid) AS rider_rate_summaries,
+        geo_effective_platform_offers_json(${level}::geo_pricing_level, ${id}::uuid) AS effective_platform_offers
     `;
     if (!fr) return row;
     return {
@@ -215,7 +266,11 @@ async function withEffectiveBaseFees(
       effective_food_base_fee: fr.ef,
       effective_parcel_base_fee: fr.ep,
       effective_ride_base_fee: fr.er,
+      customer_food_delivery_slabs_preview: fr.food_slabs,
+      customer_parcel_delivery_slabs_preview: fr.parcel_slabs,
+      customer_ride_delivery_slabs_preview: fr.ride_slabs,
       rider_rate_summaries: parseRiderRateSummaries(fr.rider_rate_summaries),
+      effective_platform_offers: parseGeoEffectivePlatformOffers(fr.effective_platform_offers) ?? [],
     };
   } catch {
     return row;
@@ -247,7 +302,11 @@ async function geoFetchChildRowSnapshot(
     effective_food_base_fee: null,
     effective_parcel_base_fee: null,
     effective_ride_base_fee: null,
+    customer_food_delivery_slabs_preview: null,
+    customer_parcel_delivery_slabs_preview: null,
+    customer_ride_delivery_slabs_preview: null,
     rider_rate_summaries: null,
+    effective_platform_offers: null,
   });
 
   if (level === "state") {
@@ -374,12 +433,56 @@ export async function geoGetChildren(params: {
       geo_effective_base_fee(ch.kind::geo_pricing_level, ch.id, 'food'::geo_service)::text AS effective_food_base_fee,
       geo_effective_base_fee(ch.kind::geo_pricing_level, ch.id, 'parcel'::geo_service)::text AS effective_parcel_base_fee,
       geo_effective_base_fee(ch.kind::geo_pricing_level, ch.id, 'ride'::geo_service)::text AS effective_ride_base_fee,
-      geo_effective_rider_rate_summaries(ch.kind::geo_pricing_level, ch.id) AS rider_rate_summaries
+      (
+        SELECT
+          CASE
+            WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+            ELSE concat(
+              '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+            )
+          END
+        FROM delivery_rate_slabs_effective(ch.kind::geo_pricing_level, ch.id, 'food'::order_type, 'customer'::delivery_actor_type) s
+        WHERE s.min_km = 0
+        ORDER BY s.priority DESC, s.id ASC
+        LIMIT 1
+      ) AS customer_food_delivery_slabs_preview,
+      (
+        SELECT
+          CASE
+            WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+            ELSE concat(
+              '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+            )
+          END
+        FROM delivery_rate_slabs_effective(ch.kind::geo_pricing_level, ch.id, 'parcel'::order_type, 'customer'::delivery_actor_type) s
+        WHERE s.min_km = 0
+        ORDER BY s.priority DESC, s.id ASC
+        LIMIT 1
+      ) AS customer_parcel_delivery_slabs_preview,
+      (
+        SELECT
+          CASE
+            WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+            ELSE concat(
+              '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+            )
+          END
+        FROM delivery_rate_slabs_effective(ch.kind::geo_pricing_level, ch.id, 'person_ride'::order_type, 'customer'::delivery_actor_type) s
+        WHERE s.min_km = 0
+        ORDER BY s.priority DESC, s.id ASC
+        LIMIT 1
+      ) AS customer_ride_delivery_slabs_preview,
+      geo_effective_rider_rate_summaries(ch.kind::geo_pricing_level, ch.id) AS rider_rate_summaries,
+      geo_effective_platform_offers_json(ch.kind::geo_pricing_level, ch.id) AS effective_platform_offers
     FROM ch
   `;
   return raw.map((r) => ({
     ...r,
     rider_rate_summaries: parseRiderRateSummaries(r.rider_rate_summaries),
+    effective_platform_offers: parseGeoEffectivePlatformOffers(r.effective_platform_offers) ?? [],
   }));
 }
 
@@ -434,12 +537,56 @@ export async function geoSearchLocations(params: {
       geo_effective_base_fee(h.kind::geo_pricing_level, h.id, 'food'::geo_service)::text AS effective_food_base_fee,
       geo_effective_base_fee(h.kind::geo_pricing_level, h.id, 'parcel'::geo_service)::text AS effective_parcel_base_fee,
       geo_effective_base_fee(h.kind::geo_pricing_level, h.id, 'ride'::geo_service)::text AS effective_ride_base_fee,
-      geo_effective_rider_rate_summaries(h.kind::geo_pricing_level, h.id) AS rider_rate_summaries
+      (
+        SELECT
+          CASE
+            WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+            ELSE concat(
+              '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+            )
+          END
+        FROM delivery_rate_slabs_effective(h.kind::geo_pricing_level, h.id, 'food'::order_type, 'customer'::delivery_actor_type) s
+        WHERE s.min_km = 0
+        ORDER BY s.priority DESC, s.id ASC
+        LIMIT 1
+      ) AS customer_food_delivery_slabs_preview,
+      (
+        SELECT
+          CASE
+            WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+            ELSE concat(
+              '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+            )
+          END
+        FROM delivery_rate_slabs_effective(h.kind::geo_pricing_level, h.id, 'parcel'::order_type, 'customer'::delivery_actor_type) s
+        WHERE s.min_km = 0
+        ORDER BY s.priority DESC, s.id ASC
+        LIMIT 1
+      ) AS customer_parcel_delivery_slabs_preview,
+      (
+        SELECT
+          CASE
+            WHEN s.base_fare IS NULL OR s.base_fare = 0 THEN concat('₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km')
+            ELSE concat(
+              '₹', trim(to_char(s.base_fare, 'FM999999990.009999')),
+              '+₹', trim(to_char(s.per_km_rate, 'FM999999990.009999')), '/km'
+            )
+          END
+        FROM delivery_rate_slabs_effective(h.kind::geo_pricing_level, h.id, 'person_ride'::order_type, 'customer'::delivery_actor_type) s
+        WHERE s.min_km = 0
+        ORDER BY s.priority DESC, s.id ASC
+        LIMIT 1
+      ) AS customer_ride_delivery_slabs_preview,
+      geo_effective_rider_rate_summaries(h.kind::geo_pricing_level, h.id) AS rider_rate_summaries,
+      geo_effective_platform_offers_json(h.kind::geo_pricing_level, h.id) AS effective_platform_offers
     FROM h
   `;
   return raw.map((r) => ({
     ...r,
     rider_rate_summaries: parseRiderRateSummaries(r.rider_rate_summaries),
+    effective_platform_offers: parseGeoEffectivePlatformOffers(r.effective_platform_offers) ?? [],
   }));
 }
 
@@ -722,6 +869,63 @@ export async function geoSoftDelete(level: Exclude<GeoHierarchyLevel, "root">, i
   else if (level === "division") await sql`UPDATE divisions SET is_active = false WHERE id = ${id}::uuid`;
   else if (level === "post_office") await sql`UPDATE post_offices SET is_active = false WHERE id = ${id}::uuid`;
   else await sql`UPDATE pincodes SET is_active = false WHERE id = ${id}::uuid`;
+}
+
+export type GeoPlatformOfferBindingAdminRow = {
+  id: string;
+  geo_level: string;
+  geo_ref_id: string;
+  platform_offer_id: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listGeoPlatformOfferBindingsForNode(
+  level: Exclude<GeoHierarchyLevel, "root">,
+  refId: string
+): Promise<GeoPlatformOfferBindingAdminRow[]> {
+  const sql = getSql();
+  return sql<GeoPlatformOfferBindingAdminRow[]>`
+    SELECT
+      id::text AS id,
+      geo_level::text AS geo_level,
+      geo_ref_id::text AS geo_ref_id,
+      platform_offer_id,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+    FROM geo_platform_offer_bindings
+    WHERE geo_level = ${level}::geo_pricing_level AND geo_ref_id = ${refId}::uuid
+    ORDER BY platform_offer_id ASC
+  `;
+}
+
+export async function insertGeoPlatformOfferBinding(params: {
+  level: Exclude<GeoHierarchyLevel, "root">;
+  refId: string;
+  platformOfferId: number;
+}): Promise<GeoPlatformOfferBindingAdminRow> {
+  const sql = getSql();
+  const [row] = await sql<GeoPlatformOfferBindingAdminRow[]>`
+    INSERT INTO geo_platform_offer_bindings (geo_level, geo_ref_id, platform_offer_id)
+    VALUES (${params.level}::geo_pricing_level, ${params.refId}::uuid, ${params.platformOfferId})
+    RETURNING
+      id::text AS id,
+      geo_level::text AS geo_level,
+      geo_ref_id::text AS geo_ref_id,
+      platform_offer_id,
+      created_at::text AS created_at,
+      updated_at::text AS updated_at
+  `;
+  if (!row) throw new Error("Failed to insert platform offer binding");
+  return row;
+}
+
+export async function deleteGeoPlatformOfferBinding(bindingId: number): Promise<boolean> {
+  const sql = getSql();
+  const rows = await sql<{ id: string }[]>`
+    DELETE FROM geo_platform_offer_bindings WHERE id = ${bindingId}::bigint RETURNING id::text AS id
+  `;
+  return rows.length > 0;
 }
 
 export async function geoUpdateLocation(

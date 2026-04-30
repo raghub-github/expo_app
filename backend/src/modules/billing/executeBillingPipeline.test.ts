@@ -7,7 +7,7 @@ const ctx = (): BillContext => ({
   itemSubtotal: 100,
   addonSubtotal: 0,
   addonQtyTotal: 0,
-  orderLines: [{ menuItemId: "1", lineTotal: 100 }],
+  orderLines: [{ menuItemId: "1", lineTotal: 100, quantity: 1 }],
   distanceKm: 2,
   merchantStoreId: 1,
   merchantParentId: null,
@@ -22,10 +22,15 @@ const ctx = (): BillContext => ({
   serviceType: "FOOD",
   cityName: null,
   dropPostalCode: null,
+  dropGeoRefByLevel: null,
+  platformOfferGeoBindingEffectiveIds: new Set(),
   deliveryFeeFromRateCard: 0,
   deliveryFeeFromGeo: null,
+  deliveryDefaultBaseInr: 25,
+  deliveryDefaultPerKmInr: 5,
   tipAmount: 5,
   donationAmount: 0,
+  checkoutAudience: "CUSTOMER",
 });
 
 function ruleBase(
@@ -75,6 +80,10 @@ describe("executeBillingPipeline", () => {
         addonSubtotal: 0,
         tipAmount: 5,
         donationAmount: 0,
+        distanceKm: null,
+        deliveryChargePerKm: 0,
+        deliveryFeeFromRateCard: 0,
+        deliveryFeeFromGeo: null,
       },
       dataset
     );
@@ -82,6 +91,70 @@ describe("executeBillingPipeline", () => {
     assert.equal(r.ruleset_version, 1);
     assert.equal(r.items_net_after_discounts, 100);
     assert.deepEqual(r.taxes_by_group, {});
+  });
+
+  it("env default delivery when no rules and zero geo/card/legacy (base + per_km×km)", () => {
+    const dataset: BillingDataset = {
+      rulesetVersion: 1,
+      rules: [],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [],
+      merchantOverrides: null,
+      coupon: null,
+    };
+    const c = ctx();
+    const r = executeBillingPipeline(
+      {
+        ...c,
+        distanceKm: 10,
+        deliveryChargePerKm: 0,
+        deliveryFeeFromRateCard: 0,
+        deliveryFeeFromGeo: null,
+        deliveryDefaultBaseInr: 25,
+        deliveryDefaultPerKmInr: 5,
+        tipAmount: 0,
+        donationAmount: 0,
+      },
+      dataset
+    );
+    assert.equal(r.delivery_fee, 75);
+    assert.equal(r.final_amount, 175);
+  });
+
+  it("delivery minimum floor raises legacy per-km fallback when distance > 0", () => {
+    const dataset: BillingDataset = {
+      rulesetVersion: 1,
+      rules: [],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [],
+      merchantOverrides: null,
+      coupon: null,
+    };
+    const c = ctx();
+    const r = executeBillingPipeline(
+      {
+        ...c,
+        distanceKm: 2,
+        deliveryChargePerKm: 5,
+        deliveryFeeFromRateCard: 0,
+        deliveryFeeFromGeo: null,
+        deliveryMinimumInr: 25,
+        tipAmount: 5,
+        donationAmount: 0,
+      },
+      dataset
+    );
+    assert.equal(r.delivery_fee, 25);
+    assert.equal(r.final_amount, 130);
+    assert.ok(r.breakdown_steps.some((s) => s.step === "Delivery minimum"));
   });
 
   it("GST on items and delivery after discount (Swiggy-style split)", () => {
@@ -162,5 +235,134 @@ describe("executeBillingPipeline", () => {
     assert.ok(r.gst_components.items.gst > 0);
     assert.ok(r.gst_components.delivery.gst > 0);
     assert.equal(r.gst_totals.total_tax, r.tax_total);
+  });
+
+  it("merchant packaging sums across cart quantities and applies GST on packaging", () => {
+    const dataset: BillingDataset = {
+      rulesetVersion: 3,
+      rules: [
+        ruleBase({
+          id: 10,
+          type: "PACKAGING",
+          calculationType: "FORMULA_KEY",
+          valueJson: { key: "MERCHANT_PACKAGING" },
+          priority: 10,
+        }),
+      ],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [
+        {
+          id: 11,
+          name: "GST packaging",
+          rate: 0.18,
+          applicableBase: "PACKAGING_FEE",
+          taxGroup: "packaging",
+          priority: 20,
+          chargeOrderKey: 20,
+          isHidden: false,
+          serviceType: "FOOD",
+        },
+      ],
+      merchantOverrides: null,
+      coupon: null,
+    };
+    const c = ctx();
+    const r = executeBillingPipeline(
+      {
+        ...c,
+        itemSubtotal: 300,
+        tipAmount: 0,
+        donationAmount: 0,
+        distanceKm: null,
+        deliveryChargePerKm: 0,
+        deliveryFeeFromRateCard: 0,
+        deliveryFeeFromGeo: null,
+        itemPackagingTotal: 45,
+      },
+      dataset
+    );
+    assert.equal(r.packaging_fee, 45);
+    assert.equal(r.gst_components.packaging.taxable_value, 45);
+    assert.equal(r.gst_components.packaging.gst, 8.1);
+    assert.equal(r.tax_total, 8.1);
+    assert.equal(r.final_amount, 353.1);
+  });
+
+  it("coupon with metadata customer_segment NEW only applies for NEW users", () => {
+    const coupon = {
+      id: 1,
+      code: "WELCOME",
+      discountType: "PERCENTAGE",
+      valueNumeric: 10,
+      maxDiscountCap: null,
+      usageLimit: null,
+      usedCount: 0,
+      validFrom: null,
+      validUntil: null,
+      isActive: true,
+      isHidden: false,
+      serviceType: "FOOD",
+      offerAudience: "CUSTOMER",
+      perUserUsageLimit: null,
+      metadata: { customer_segment: "NEW" } as Record<string, unknown>,
+    };
+    const dataset: BillingDataset = {
+      rulesetVersion: 1,
+      rules: [],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [],
+      merchantOverrides: null,
+      coupon,
+    };
+    const c = ctx();
+    const rExisting = executeBillingPipeline({ ...c, userSegment: "EXISTING" }, dataset);
+    assert.equal(rExisting.discount_total, 0);
+    const rNew = executeBillingPipeline({ ...c, userSegment: "NEW" }, dataset);
+    assert.equal(rNew.discount_total, 10);
+  });
+
+  it("coupon with metadata customer_segment EXISTING skips NEW users", () => {
+    const coupon = {
+      id: 2,
+      code: "BACK",
+      discountType: "FIXED",
+      valueNumeric: 15,
+      maxDiscountCap: null,
+      usageLimit: null,
+      usedCount: 0,
+      validFrom: null,
+      validUntil: null,
+      isActive: true,
+      isHidden: false,
+      serviceType: "FOOD",
+      offerAudience: "CUSTOMER",
+      perUserUsageLimit: null,
+      metadata: { customer_segment: "EXISTING" } as Record<string, unknown>,
+    };
+    const dataset: BillingDataset = {
+      rulesetVersion: 1,
+      rules: [],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [],
+      merchantOverrides: null,
+      coupon,
+    };
+    const c = ctx();
+    const rNew = executeBillingPipeline({ ...c, userSegment: "NEW" }, dataset);
+    assert.equal(rNew.discount_total, 0);
+    const rExisting = executeBillingPipeline({ ...c, userSegment: "EXISTING" }, dataset);
+    assert.equal(rExisting.discount_total, 15);
   });
 });

@@ -7,7 +7,7 @@ const baseCtx = (): BillContext => ({
   itemSubtotal: 100,
   addonSubtotal: 0,
   addonQtyTotal: 0,
-  orderLines: [{ menuItemId: "1", lineTotal: 100 }],
+  orderLines: [{ menuItemId: "1", lineTotal: 100, quantity: 1 }],
   distanceKm: 3.5,
   merchantStoreId: 42,
   merchantParentId: 7,
@@ -22,10 +22,15 @@ const baseCtx = (): BillContext => ({
   serviceType: "FOOD",
   cityName: null,
   dropPostalCode: null,
+  dropGeoRefByLevel: null,
+  platformOfferGeoBindingEffectiveIds: new Set(),
   deliveryFeeFromRateCard: 0,
   deliveryFeeFromGeo: null,
+  deliveryDefaultBaseInr: 25,
+  deliveryDefaultPerKmInr: 5,
   tipAmount: 0,
   donationAmount: 0,
+  checkoutAudience: "CUSTOMER",
 });
 
 describe("evaluateCondition", () => {

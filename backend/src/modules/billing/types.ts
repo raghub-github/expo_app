@@ -6,13 +6,18 @@ export type BillLineCategory = {
   categoryName: string | null;
 };
 
+/** Geo UUIDs for the customer's delivery pincode (see `resolveDropGeoRefsFromPincode`). */
+export type DropGeoRefByLevel = Partial<
+  Record<"state" | "region" | "district" | "division" | "post_office" | "pincode", string>
+>;
+
 export type BillContext = {
   itemSubtotal: number;
   addonSubtotal: number;
   /** Total add-on pieces: Σ line (qty × Σ addon.quantity). */
   addonQtyTotal: number;
   /** Per-line totals for merchant offer item targeting (menu_item_ids in offer_metadata). */
-  orderLines: { menuItemId: string; lineTotal: number }[];
+  orderLines: { menuItemId: string; lineTotal: number; quantity: number }[];
   distanceKm: number | null;
   merchantStoreId: number;
   merchantParentId: number | null;
@@ -32,17 +37,50 @@ export type BillContext = {
   cityName: string | null;
   /** Drop postal code for geo `pricing_rules` (customer_delivery_fee). */
   dropPostalCode: string | null;
+  /** Hierarchy UUIDs resolved from `dropPostalCode` for platform offer targeting. */
+  dropGeoRefByLevel: DropGeoRefByLevel | null;
+  /**
+   * Platform offers whose geo bindings apply to this drop location (pincode chain merge in SQL).
+   * Empty when pincode is unknown or no bindings; use with GEO / GEO_MERCHANT scoped offers.
+   */
+  platformOfferGeoBindingEffectiveIds: ReadonlySet<number>;
   /** Delivery fee computed by Delivery Rate Card Engine (same as legacy pre-pipeline injection). */
   deliveryFeeFromRateCard: number;
+  /** Delivery fee computed by progressive geo slabs (DELIVERY_SLABS_GEO_V2). */
+  deliveryFeeFromSlabsGeoV2?: number;
+  /** Optional breakdown for audit/simulator/UI. */
+  deliverySlabsGeoV2Quote?: Record<string, unknown> | null;
+  deliverySlabsGeoV2AppliedGeo?: { level: string; refId: string } | null;
   /**
    * Location-based delivery from `pricing_rules_resolve_totals` (customer_delivery_fee).
    * Null when pincode missing or geo engine returned no rule.
    */
   deliveryFeeFromGeo: number | null;
+  /**
+   * When set, after DELIVERY rules and fallbacks, `delivery_fee` is at least this (INR) if `distanceKm` > 0.
+   * From env `DELIVERY_MIN_FEE_INR` in `computeBillForOrder`.
+   */
+  deliveryMinimumInr?: number;
+  /**
+   * Last-resort delivery when geo/rate-card/legacy are zero: max(base, per_km × distanceKm).
+   * From env `DELIVERY_DEFAULT_*` with product defaults in `computeBillForOrder`.
+   */
+  deliveryDefaultBaseInr: number;
+  deliveryDefaultPerKmInr: number;
   tipAmount: number;
   donationAmount: number;
   /** User opted into a platform subscription add-on at checkout (SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
+  /**
+   * Who is checking out; must match `billing_discounts.offer_audience` for a coupon to apply.
+   * Customer checkout should use CUSTOMER (default).
+   */
+  checkoutAudience: "CUSTOMER" | "MERCHANT" | "RIDER";
+  /**
+   * How many times this actor already redeemed the requested coupon code (for per-user cap).
+   * When omitted, treated as 0 (quote may overstate eligibility until order commit validates).
+   */
+  couponRedemptionsByUser?: number;
 };
 
 export type AppliedLine = {
@@ -196,6 +234,12 @@ export type DiscountRow = {
   isActive: boolean;
   isHidden: boolean;
   serviceType: string;
+  /** CUSTOMER | MERCHANT | RIDER */
+  offerAudience: string;
+  /** Max redemptions per checkout actor; null = unlimited per user. */
+  perUserUsageLimit: number | null;
+  /** JSON from billing_discounts.metadata (e.g. customer_segment, discount_applies_on). */
+  metadata: Record<string, unknown> | null;
 };
 
 export type DeliveryRateCardRow = {
@@ -222,6 +266,8 @@ export type PlatformOfferRow = {
   deliveryDiscountType: string | null;
   deliveryDiscountValue: number | null;
   offerKind: string;
+  /** CUSTOMER | MERCHANT | RIDER — customer checkout only applies CUSTOMER (missing treated as CUSTOMER). */
+  offerAudience: string;
   fundingMode: string;
   platformSharePct: number;
   merchantSharePct: number;

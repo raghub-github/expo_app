@@ -9,7 +9,8 @@ import { ResultTable } from "@/components/geo-admin/ResultTable";
 import { SearchChainPanel } from "@/components/geo-admin/SearchChainPanel";
 import { AddLocationForm } from "@/components/geo-admin/AddLocationForm";
 import { EditLocationModal } from "@/components/geo-admin/EditLocationModal";
-import { RateCardModal } from "@/components/geo-admin/RateCardModal";
+import { PlatformOfferMapModal } from "@/components/geo-admin/PlatformOfferMapModal";
+import { DeliverySlabsModal } from "@/components/geo-admin/DeliverySlabsModal";
 import { useGeoStatesQuery, useLazyGeoSearchQuery } from "@/store/api/geoAdminApi";
 import type { GeoChildRow, GeoSearchRow } from "@/lib/geo/geo-shared";
 import { GitBranch, LayoutList, MapPin, Plus } from "lucide-react";
@@ -37,6 +38,11 @@ function searchRowToChild(r: GeoSearchRow): GeoChildRow {
     effective_food_base_fee: r.effective_food_base_fee ?? null,
     effective_parcel_base_fee: r.effective_parcel_base_fee ?? null,
     effective_ride_base_fee: r.effective_ride_base_fee ?? null,
+    customer_food_delivery_slabs_preview: r.customer_food_delivery_slabs_preview ?? null,
+    customer_parcel_delivery_slabs_preview: r.customer_parcel_delivery_slabs_preview ?? null,
+    customer_ride_delivery_slabs_preview: r.customer_ride_delivery_slabs_preview ?? null,
+    rider_rate_summaries: r.rider_rate_summaries ?? null,
+    effective_platform_offers: r.effective_platform_offers ?? [],
   };
 }
 
@@ -65,7 +71,8 @@ export default function GeoSuperAdminPage() {
   const [parcel, setParcel] = useState<ServiceTriState>(null);
   const [ride, setRide] = useState<ServiceTriState>(null);
   const [editRow, setEditRow] = useState<GeoChildRow | null>(null);
-  const [riderRow, setRiderRow] = useState<GeoChildRow | null>(null);
+  const [offerMapRow, setOfferMapRow] = useState<GeoChildRow | null>(null);
+  const [slabsRow, setSlabsRow] = useState<GeoChildRow | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [flatChainRow, setFlatChainRow] = useState<GeoSearchRow | null>(null);
   const [lastQuery, setLastQuery] = useState("");
@@ -222,7 +229,13 @@ export default function GeoSuperAdminPage() {
         </div>
 
         {view === "tree" ? (
-          <GeoTree key={treeRemountKey} filters={filters} onEdit={setEditRow} onRiderRates={setRiderRow} />
+          <GeoTree
+            key={treeRemountKey}
+            filters={filters}
+            onEdit={setEditRow}
+            onPlatformOfferMap={setOfferMapRow}
+            onDeliverySlabs={setSlabsRow}
+          />
         ) : (
           <div className="flex min-w-0 flex-col gap-4 rounded-xl border border-slate-200/80 bg-white/90 p-4 shadow-md shadow-slate-200/30 sm:rounded-2xl sm:p-5">
             {searchState.isError ? (
@@ -250,6 +263,8 @@ export default function GeoSuperAdminPage() {
                   chainFor={flatChainRow}
                   onChainFor={setFlatChainRow}
                   onEditRow={onPickSearchRow}
+                  onPlatformOfferMap={(r) => setOfferMapRow(searchRowToChild(r))}
+                  onDeliverySlabs={(r) => setSlabsRow(searchRowToChild(r))}
                   onDataMutated={refetchSearch}
                 />
                 <SearchChainPanel
@@ -275,7 +290,14 @@ export default function GeoSuperAdminPage() {
       )}
 
       {editRow && <EditLocationModal row={editRow} onClose={() => setEditRow(null)} />}
-      {riderRow && <RateCardModal row={riderRow} onClose={() => setRiderRow(null)} />}
+      {slabsRow && <DeliverySlabsModal row={slabsRow} onClose={() => setSlabsRow(null)} />}
+      {offerMapRow && (
+        <PlatformOfferMapModal
+          row={offerMapRow}
+          onClose={() => setOfferMapRow(null)}
+          onBindingsChanged={refetchSearch}
+        />
+      )}
     </div>
   );
 }

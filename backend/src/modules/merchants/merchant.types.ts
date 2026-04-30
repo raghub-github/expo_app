@@ -17,6 +17,7 @@ export type MerchantMenuItemRow = {
   base_price: string;
   selling_price: string;
   discount_percentage: string | null;
+  packaging_charges?: string | number | null;
   in_stock: boolean | null;
   is_active: boolean | null;
   is_popular: boolean | null;

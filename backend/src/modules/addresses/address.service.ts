@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 import { getDb } from "../../db/client.js";
 import { customerAddresses, customerActiveLocation } from "../../db/schema.js";
 import { eq, and, desc, isNull, sql } from "drizzle-orm";
+import { forwardGeocodeAddress } from "../../services/mapbox/geocoding.js";
 
 /** App-facing shape (id, fullAddress, pincode, etc.) for list/detail. */
 export type AddressRow = {
@@ -100,8 +101,8 @@ export async function addAddress(
     state?: string | null;
     pincode?: string | null;
     country?: string | null;
-    latitude: number;
-    longitude: number;
+    latitude?: number;
+    longitude?: number;
     isDefault?: boolean;
     contactName?: string | null;
     contactMobile?: string | null;
@@ -109,6 +110,25 @@ export async function addAddress(
 ): Promise<AddressRow> {
   const db = getDb();
   const { label: addressType, customLabel } = toLabelAndCustom(data.label);
+  let latitude = data.latitude;
+  let longitude = data.longitude;
+
+  // Production-grade: allow saving by text address only; geocode via Mapbox if coords missing.
+  if (latitude == null || longitude == null) {
+    const geo = await forwardGeocodeAddress(data.fullAddress);
+    if (!geo) throw new Error("Could not geocode address. Please select the location on map and try again.");
+    latitude = geo.latitude;
+    longitude = geo.longitude;
+    // Fill in missing locality fields when user didn't provide them.
+    if (!data.city && geo.city) data.city = geo.city;
+    if (!data.state && geo.state) data.state = geo.state;
+    if (!data.pincode && geo.pincode) data.pincode = geo.pincode;
+  }
+
+  if (!Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) {
+    throw new Error("Invalid address coordinates. Please select the location on map and try again.");
+  }
+
   const city = (data.city ?? "").trim() || "—";
   const state = (data.state ?? "").trim() || "—";
   const postalCode = (data.pincode ?? "").trim() || "—";
@@ -145,8 +165,8 @@ export async function addAddress(
         eq(customerAddresses.customerId, customerId),
         eq(customerAddresses.isActive, true),
         isNull(customerAddresses.deletedAt),
-        sql`ABS((${customerAddresses.latitude}::double precision) - ${data.latitude}) < ${LOCATION_TOLERANCE}`,
-        sql`ABS((${customerAddresses.longitude}::double precision) - ${data.longitude}) < ${LOCATION_TOLERANCE}`
+        sql`ABS((${customerAddresses.latitude}::double precision) - ${Number(latitude)}) < ${LOCATION_TOLERANCE}`,
+        sql`ABS((${customerAddresses.longitude}::double precision) - ${Number(longitude)}) < ${LOCATION_TOLERANCE}`
       )
     )
     .limit(1);
@@ -197,8 +217,8 @@ export async function addAddress(
       state,
       postalCode,
       country: data.country ?? "IN",
-      latitude: data.latitude != null ? String(data.latitude) : null,
-      longitude: data.longitude != null ? String(data.longitude) : null,
+      latitude: latitude != null ? String(latitude) : null,
+      longitude: longitude != null ? String(longitude) : null,
       contactName: data.contactName ?? null,
       contactMobile: data.contactMobile ?? null,
       isDefault: data.isDefault ?? false,
@@ -240,6 +260,17 @@ export async function updateAddress(
   if (data.state !== undefined) set.state = (data.state ?? "").trim() || "—";
   if (data.pincode !== undefined) set.postalCode = (data.pincode ?? "").trim() || "—";
   if (data.country !== undefined) set.country = data.country;
+  // If fullAddress changed but coords not provided, geocode to keep coordinates valid.
+  if ((data.latitude == null || data.longitude == null) && data.fullAddress != null) {
+    const geo = await forwardGeocodeAddress(data.fullAddress);
+    if (geo) {
+      if (data.latitude == null) set.latitude = String(geo.latitude);
+      if (data.longitude == null) set.longitude = String(geo.longitude);
+      if (data.city == null && geo.city) set.city = geo.city;
+      if (data.state == null && geo.state) set.state = geo.state;
+      if (data.pincode == null && geo.pincode) set.postalCode = geo.pincode;
+    }
+  }
   if (data.latitude != null) set.latitude = String(data.latitude);
   if (data.longitude != null) set.longitude = String(data.longitude);
   if (data.isDefault !== undefined) set.isDefault = data.isDefault;

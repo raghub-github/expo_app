@@ -16,10 +16,12 @@ export function getDb() {
   const env = getEnv();
 
   // Postgres.js maintains its own connection pool.
+  const connectTimeoutSec = env.DATABASE_CONNECT_TIMEOUT_SEC ?? 30;
+
   const sql = postgres(env.DATABASE_URL, {
     max: env.NODE_ENV === "production" ? 20 : 5,
     idle_timeout: 20,
-    connect_timeout: 10,
+    connect_timeout: connectTimeoutSec,
   });
 
   _sql = sql;

@@ -24,18 +24,19 @@ import {
   Alert,
 } from "react-native";
 import * as Location from "expo-location";
-import { useRouter, useNavigation } from "expo-router";
+import { useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCartStore } from "@/store/cartStore";
+import { useLocationStore } from "@/store/locationStore";
 import { useOrderStore } from "@/store/orderStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { orderService } from "@/services/order.service";
-import { billingService } from "@/services/billing.service";
+import { billingService, type CalculateBillResponse, type GstComponentLine } from "@/services/billing.service";
 import { paymentService } from "@/services/payment.service";
 import { addressService, type Address } from "@/services/address.service";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult, type RazorpayOrderParams } from "@/components/RazorpayCheckoutModal";
@@ -43,15 +44,31 @@ import { merchantService } from "@/services/merchant.service";
 import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
-import {
-  computeBillSummary,
-  haversineKm,
-  type BillSummary,
-} from "@/lib/billSummary";
+import { haversineKm, SERVICE_RADIUS_KM } from "@/lib/billSummary";
+import { matchSavedAddressIdNearCoords } from "@/lib/deliveryDropResolution";
 import { reverseGeocode } from "@/services/location.service";
 import { getRoute } from "@/services/distance.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
+
+function roundBillAmount(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Total for a fee supply line (taxable base + GST), server-rounded. */
+function gstComponentLineTotal(c: GstComponentLine): number {
+  return roundBillAmount(Math.max(0, c.taxable_value) + Math.max(0, c.gst));
+}
+
+/**
+ * Single "GST & other charges" bucket (Swiggy-style): everything in the payable subtotal
+ * except item net (after discounts), delivery fee base, tip, and donation.
+ * Matches backend: preFinal − rem.items − rem.delivery.
+ */
+function computeGstAndOtherChargesTotal(bill: CalculateBillResponse): number {
+  const preTipDon = roundBillAmount(bill.finalAmount - bill.tipAmount - bill.donationAmount);
+  return Math.max(0, roundBillAmount(preTipDon - bill.itemsNetAfterDiscounts - bill.deliveryFee));
+}
 
 const GRID = 6;
 const SPACING = GRID * 2;
@@ -72,7 +89,6 @@ type TipPreset = 0 | 10 | 20 | 30 | 50 | "custom";
 
 export default function CheckoutScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
@@ -95,6 +111,7 @@ export default function CheckoutScreen() {
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
   const [paymentSheetVisible, setPaymentSheetVisible] = useState(false);
   const [billSummaryExpanded, setBillSummaryExpanded] = useState(false);
+  const [gstBreakdownModalVisible, setGstBreakdownModalVisible] = useState(false);
   const [couponSheetVisible, setCouponSheetVisible] = useState(false);
   const [couponCodeInput, setCouponCodeInput] = useState("");
   const [couponApplyError, setCouponApplyError] = useState<string | null>(null);
@@ -106,11 +123,35 @@ export default function CheckoutScreen() {
   const [razorpayCreating, setRazorpayCreating] = useState(false);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
   const currentLocationAddressCreatedRef = useRef(false);
+  /**
+   * Idempotency key for the current checkout attempt. Generated on first
+   * "Place order" tap and cleared on success / cancel / address change, so
+   * retries of the SAME user-intent collapse to a single pending order, while
+   * a new intent (e.g. after editing the cart) gets a fresh key.
+   */
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   const { data: addresses = [], isLoading: addressesLoading } = useQuery({
     queryKey: ["addresses"],
     queryFn: () => addressService.getAddresses(),
   });
+
+  const sessionCoords = useLocationStore((s) => s.coords);
+  const locationSource = useLocationStore((s) => s.locationSource);
+  const setAddressAndCoords = useLocationStore((s) => s.setAddressAndCoords);
+
+  const { data: activeLocation } = useQuery({
+    queryKey: ["active-location"],
+    queryFn: () => addressService.getActiveLocation(),
+    staleTime: 0,
+  });
+
+  useFocusEffect(
+    useCallback(() => {
+      void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
+    }, [queryClient])
+  );
 
   const selectedAddress = useMemo(
     () =>
@@ -121,13 +162,106 @@ export default function CheckoutScreen() {
     [addresses, selectedAddressId]
   );
 
+  // Keep "active location" and global location pin in sync with the checkout delivery address.
+  // This makes store distance consistent across Home, Merchant detail, and Checkout.
   useEffect(() => {
-    if (addresses.length > 0 && selectedAddressId === null) {
+    if (!selectedAddress) return;
+    const activeLat = activeLocation?.latitude;
+    const activeLng = activeLocation?.longitude;
+    const sameAsActive =
+      activeLat != null &&
+      activeLng != null &&
+      Math.abs(activeLat - selectedAddress.latitude) < 1e-6 &&
+      Math.abs(activeLng - selectedAddress.longitude) < 1e-6;
+    if (sameAsActive) return;
+
+    // Update local app "selected" location (used by merchants list + merchant detail).
+    setAddressAndCoords(
+      {
+        primary: selectedAddress.label ?? "Delivery location",
+        secondary: [selectedAddress.city, selectedAddress.state].filter(Boolean).join(", "),
+        fullAddress: selectedAddress.fullAddress,
+        city: selectedAddress.city ?? null,
+        state: selectedAddress.state ?? null,
+        pincode: selectedAddress.pincode ?? null,
+      },
+      { latitude: selectedAddress.latitude, longitude: selectedAddress.longitude },
+      { source: "selected" }
+    );
+
+    // Best-effort: update backend active location so future sessions/devices are consistent.
+    addressService
+      .setActiveLocation({
+        latitude: selectedAddress.latitude,
+        longitude: selectedAddress.longitude,
+        address: selectedAddress.fullAddress,
+      })
+      .catch(() => {});
+  }, [
+    activeLocation?.latitude,
+    activeLocation?.longitude,
+    selectedAddress?.id,
+    selectedAddress?.latitude,
+    selectedAddress?.longitude,
+    selectedAddress?.fullAddress,
+    selectedAddress?.label,
+    selectedAddress?.city,
+    selectedAddress?.state,
+    selectedAddress?.pincode,
+    setAddressAndCoords,
+  ]);
+
+  /**
+   * Delivery pin must follow the same source as home / "Select a location":
+   * 1) In-memory map pin when user chose a saved address or map (locationSource === "selected")
+   * 2) Server PUT /v1/me/active-location (updated when user picks a saved row or current location)
+   * 3) Fallback: isLastUsed / default / first — avoids ignoring "Kkk" when backend flags still point at HOME.
+   * Do not auto-pick a saved address from device GPS here — that breaks ordering for someone else while you are elsewhere.
+   */
+  useEffect(() => {
+    if (addresses.length === 0) return;
+
+    let resolved: number | null = null;
+    if (sessionCoords && locationSource === "selected") {
+      resolved = matchSavedAddressIdNearCoords(
+        addresses,
+        sessionCoords.latitude,
+        sessionCoords.longitude,
+        0.25
+      );
+    }
+    if (
+      resolved == null &&
+      activeLocation?.latitude != null &&
+      activeLocation.longitude != null
+    ) {
+      resolved = matchSavedAddressIdNearCoords(
+        addresses,
+        activeLocation.latitude,
+        activeLocation.longitude,
+        0.08
+      );
+    }
+
+    if (resolved != null) {
+      setSelectedAddressId(resolved);
+      return;
+    }
+
+    setSelectedAddressId((prev) => {
+      if (prev != null) return prev;
       const defaultAddr =
         addresses.find((a) => a.isLastUsed) ?? addresses.find((a) => a.isDefault) ?? addresses[0];
-      if (defaultAddr) setSelectedAddressId(defaultAddr.id);
-    }
-  }, [addresses, selectedAddressId]);
+      return defaultAddr?.id ?? null;
+    });
+  }, [
+    addresses,
+    sessionCoords?.latitude,
+    sessionCoords?.longitude,
+    locationSource,
+    activeLocation?.latitude,
+    activeLocation?.longitude,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,21 +280,14 @@ export default function CheckoutScreen() {
           label: "Current location",
           fullAddress: result.fullAddress,
         });
-        if (addresses.length > 0) {
-          const nearest = addresses.reduce((best, a) => {
-            const d = haversineKm(a.latitude, a.longitude, coords.latitude, coords.longitude);
-            return d < best.dist ? { addr: a, dist: d } : best;
-          }, { addr: addresses[0], dist: haversineKm(addresses[0].latitude, addresses[0].longitude, coords.latitude, coords.longitude) });
-          if (nearest.dist <= 0.2 && selectedAddressId === null) {
-            setSelectedAddressId(nearest.addr.id);
-          }
-        }
       } catch {
         if (!cancelled) setCurrentLocationDisplay({ label: "Current location", fullAddress: "Enable location to set" });
       }
     })();
-    return () => { cancelled = true; };
-  }, [addresses.length]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-create delivery address from current location when user has no saved addresses (Zomato/Swiggy style).
   useEffect(() => {
@@ -233,16 +360,8 @@ export default function CheckoutScreen() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const deliveryDistanceKm = useMemo(() => {
-    if (routeDistanceQuery.data?.distanceKm != null) return routeDistanceQuery.data.distanceKm;
-    if (!selectedAddress || merchant?.latitude == null || merchant?.longitude == null) return null;
-    return haversineKm(
-      selectedAddress.latitude,
-      selectedAddress.longitude,
-      Number(merchant.latitude),
-      Number(merchant.longitude)
-    );
-  }, [routeDistanceQuery.data?.distanceKm, selectedAddress, merchant?.latitude, merchant?.longitude]);
+  /** Store→drop km from backend routing engine (UI hint while bill loads). */
+  const routeDistanceKm = routeDistanceQuery.data?.distanceKm ?? null;
 
   const currentVsSelectedDistanceKm = useMemo(() => {
     if (!selectedAddress || !currentLocationCoords) return null;
@@ -254,8 +373,18 @@ export default function CheckoutScreen() {
     );
   }, [selectedAddress, currentLocationCoords]);
 
-  const itemTotal = useMemo(
-    () => items.reduce((s, i) => s + i.price * i.quantity, 0),
+  /** Matches server cart subtotal (items + add-ons) for offer eligibility. */
+  const cartSubtotalForOffers = useMemo(
+    () =>
+      items.reduce((s, i) => {
+        const base = i.basePrice ?? i.price;
+        const line = base * i.quantity;
+        const addonLine = (i.addons ?? []).reduce(
+          (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
+          0
+        );
+        return s + line + addonLine;
+      }, 0),
     [items]
   );
 
@@ -302,16 +431,6 @@ export default function CheckoutScreen() {
     });
   }, [items, merchant?.menu]);
 
-  const rangeBill: BillSummary = useMemo(
-    () =>
-      computeBillSummary({
-        itemTotal,
-        deliveryDistanceKm,
-        couponDiscount: 0,
-      }),
-    [itemTotal, deliveryDistanceKm]
-  );
-
   const billingQuery = useQuery({
     queryKey: [
       "billing-calculate",
@@ -346,23 +465,101 @@ export default function CheckoutScreen() {
     retry: 2,
   });
 
+  const checkoutOffersQuery = useQuery({
+    queryKey: ["billing-checkout-offers", merchantId, selectedAddress?.id, cartSubtotalForOffers],
+    queryFn: () =>
+      billingService.getCheckoutOffers({
+        merchantId: merchantId!,
+        addressId: String(selectedAddress!.id),
+        cartSubtotal: cartSubtotalForOffers,
+        serviceType: "FOOD",
+      }),
+    enabled: couponSheetVisible && !!merchantId && !!selectedAddress && items.length > 0,
+    staleTime: 60 * 1000,
+  });
+
   const serverBill = billingQuery.data ?? null;
-  const visibleCharges = useMemo(
-    () => (serverBill?.charges ?? []).filter((c) => !c.hidden),
-    [serverBill?.charges]
-  );
+  /** Store→drop km from backend routing (authoritative for pricing); client route is for UI hint only. */
+  const serverDistanceKm = serverBill?.distanceKm ?? null;
+  /** Distance shown to user in checkout, always backend-computed. */
+  const uiDistanceKm = serverDistanceKm ?? routeDistanceKm;
+  /**
+   * Serviceability comes from the server (respects store.delivery_radius_km + env fallback),
+   * falling back to the platform default if the server hasn't been updated yet.
+   */
+  const isDeliveryOutOfRange =
+    serverBill?.serviceable === false ||
+    serverBill?.unserviceableReason === "out_of_range" ||
+    (uiDistanceKm != null &&
+      serverBill?.serviceable == null &&
+      uiDistanceKm > (serverBill?.serviceRadiusKm ?? SERVICE_RADIUS_KM));
   const visibleDiscounts = useMemo(
     () => (serverBill?.discounts ?? []).filter((c) => !c.hidden),
     [serverBill?.discounts]
   );
-  const visibleTaxes = useMemo(
-    () => (serverBill?.taxes ?? []).filter((c) => !c.hidden),
-    [serverBill?.taxes]
-  );
-  const toPay =
-    serverBill != null
-      ? serverBill.finalAmount
-      : rangeBill.finalTotal + tipValue + donationValue;
+
+  const deliveryFeeLabel = useMemo(() => {
+    if (!serverBill || serverBill.deliveryFee <= 0) return "Delivery fee";
+    const found = serverBill.charges.find(
+      (c) =>
+        c.kind === "charge" &&
+        !c.hidden &&
+        c.meta?.source !== "checkout_tipAmount" &&
+        c.meta?.source !== "checkout_donationAmount" &&
+        Math.abs(c.amount - serverBill.deliveryFee) < 0.05
+    );
+    const base = found?.label?.trim() || "Delivery fee";
+    const km = uiDistanceKm;
+    return km != null ? `${base} (${km.toFixed(1)} km)` : base;
+  }, [serverBill, uiDistanceKm]);
+
+  const gstAndOtherBreakdown = useMemo(() => {
+    if (!serverBill) return null;
+    const total = computeGstAndOtherChargesTotal(serverBill);
+    const comp = serverBill.components;
+    const lines: { key: string; label: string; amount: number; sub?: string }[] = [];
+    const push = (key: string, label: string, amount: number, sub?: string) => {
+      const a = roundBillAmount(amount);
+      if (a > 0.005) lines.push({ key, label, amount: a, sub });
+    };
+    push("packaging", "Restaurant packaging", gstComponentLineTotal(comp.packaging));
+    push(
+      "platform",
+      "Platform fee",
+      gstComponentLineTotal(comp.platform),
+      "This fee helps us operate and maintain the platform. GST is included where applicable as per billing rules."
+    );
+    push(
+      "food_gst",
+      "GST on food",
+      comp.items.gst,
+      "Taxes on food follow your merchant and government billing configuration."
+    );
+    push("delivery_gst", "GST on delivery fee", comp.delivery.gst);
+    push("surge", "Surge fee", gstComponentLineTotal(comp.surge));
+    push("small_order", "Small order fee", gstComponentLineTotal(comp.small_order));
+    push("convenience", "Convenience fee", gstComponentLineTotal(comp.convenience));
+    const accounted = roundBillAmount(lines.reduce((s, l) => s + l.amount, 0));
+    const remainder = roundBillAmount(total - accounted);
+    if (remainder > 0.005) {
+      lines.push({
+        key: "other",
+        label: "Other fees & charges",
+        amount: remainder,
+        sub: "Includes subscription, store-specific fees, or taxes not split above (server billing pipeline).",
+      });
+    }
+    if (lines.length === 0 && total > 0.005) {
+      lines.push({
+        key: "aggregate",
+        label: "Charges & taxes",
+        amount: total,
+        sub: "See billing rules in dashboard for how this total is computed.",
+      });
+    }
+    return { total: roundBillAmount(total), lines };
+  }, [serverBill]);
+  const toPayAmount = serverBill?.finalAmount;
   const hasValidPayment = paymentMethod !== "cod" && ["upi", "card", "wallet"].includes(paymentMethod);
   const canPlaceOrder =
     !isStoreClosed &&
@@ -395,6 +592,7 @@ export default function CheckoutScreen() {
       ...(donationValue > 0 && { donationAmount: donationValue }),
       ...(appliedCouponCode && { couponCode: appliedCouponCode }),
       ...(subscriptionOptIn && { subscriptionOptIn: true }),
+      checkoutMetadata: { leaveAtDoor },
       ...pickup,
     };
   }, [
@@ -406,6 +604,7 @@ export default function CheckoutScreen() {
     donationValue,
     appliedCouponCode,
     subscriptionOptIn,
+    leaveAtDoor,
     merchant,
     storeFullAddress,
     merchantName,
@@ -438,17 +637,23 @@ export default function CheckoutScreen() {
       });
       clearCart();
       queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      navigation.replace("success", {
-        orderId: order.orderId,
-        merchantName: merchantName ?? undefined,
-        etaMinutes: etaMins,
+      router.replace({
+        pathname: "/orders/payment-success",
+        params: {
+          orderId: order.orderId,
+          ...(merchantName ? { merchantName } : {}),
+          etaMinutes: String(etaMins),
+        },
       });
     },
     onError: (err: Error & { response?: { data?: { message?: string } } }) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const msg = err?.response?.data?.message ?? err?.message ?? "Could not place order.";
-      Alert.alert("Order failed", msg + ORDER_FAILED_REFUND_NOTE, [{ text: "OK" }]);
+      router.replace({
+        pathname: "/orders/payment-failure",
+        params: { message: msg + ORDER_FAILED_REFUND_NOTE },
+      });
     },
   });
 
@@ -468,15 +673,24 @@ export default function CheckoutScreen() {
       );
     },
     onSuccess: (order) => {
+      const recoveryPendingId = finalizeArgsRef.current?.pendingId ?? "";
       finalizeArgsRef.current = null;
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
+      // Order placed successfully — any future "Place order" tap should start a
+      // brand-new checkout attempt, not reuse the same key.
+      idempotencyKeyRef.current = null;
       const orderId = order?.orderId ?? (order as { order_id?: string })?.order_id;
       if (!orderId) {
         console.warn("[checkout] finalize success but no orderId in response", order);
-        clearCart();
-        queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-        navigation.replace("/(tabs)/");
+        router.replace({
+          pathname: "/orders/payment-confirming",
+          params: {
+            pendingId: recoveryPendingId,
+            merchantName: merchantName ?? "",
+            message: "Payment was received. We are confirming your order now.",
+          },
+        });
         return;
       }
       const etaMins = merchant?.avgPreparationTimeMinutes != null ? Math.round(Number(merchant.avgPreparationTimeMinutes)) + 20 : 25;
@@ -490,39 +704,45 @@ export default function CheckoutScreen() {
       });
       clearCart();
       queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      navigation.replace("success", {
-        orderId,
-        merchantName: merchantName ?? undefined,
-        etaMinutes: etaMins,
+      router.replace({
+        pathname: "/orders/payment-success",
+        params: {
+          orderId,
+          ...(merchantName ? { merchantName } : {}),
+          etaMinutes: String(etaMins),
+        },
       });
     },
     onError: (err: Error & { response?: { data?: { message?: string } }; code?: string }) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const msg = err?.response?.data?.message ?? err?.message ?? "Order could not be confirmed.";
+      const apiCode = (err as unknown as { response?: { data?: { error?: string } } })?.response?.data?.error;
       const networkErr = isNetworkError(err);
 
-      if (networkErr && finalizeArgsRef.current) {
-        Alert.alert(
-          "Connection issue",
-          "We couldn't confirm your order. Your payment may have gone through. Tap Retry to confirm, or check My Orders.",
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Retry",
-              onPress: () => finalizeOrder.mutate(finalizeArgsRef.current!),
-            },
-            {
-              text: "My Orders",
-              onPress: () => {
-                queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-                router.replace("/(tabs)/orders");
-              },
-            },
-          ]
-        );
+      const shouldDeferToRecovery =
+        finalizeArgsRef.current &&
+        (networkErr ||
+          err?.response == null ||
+          apiCode === "PAYMENT_PENDING_CONFIRMATION" ||
+          apiCode === "PAYMENT_NOT_CAPTURED" ||
+          String(msg).toLowerCase().includes("contact support") ||
+          String(msg).toLowerCase().includes("could not be created"));
+
+      if (shouldDeferToRecovery && finalizeArgsRef.current) {
+        router.replace({
+          pathname: "/orders/payment-confirming",
+          params: {
+            pendingId: finalizeArgsRef.current.pendingId,
+            merchantName: merchantName ?? "",
+            message: "Payment received. We are confirming your order in the background.",
+          },
+        });
       } else {
-        Alert.alert("Order failed", msg + ORDER_FAILED_REFUND_NOTE, [{ text: "OK" }]);
+        router.replace({
+          pathname: "/orders/payment-failure",
+          params: { message: msg + ORDER_FAILED_REFUND_NOTE },
+        });
       }
     },
   });
@@ -537,10 +757,21 @@ export default function CheckoutScreen() {
           setRazorpayCreating(false);
           return;
         }
-        const pending = await orderService.createPendingOrder(payload);
+        // Stable Idempotency-Key: generated once per checkout attempt; reused on
+        // retry. Cleared on success / cancel / address change. This guards the
+        // backend /v1/orders/pending endpoint from producing duplicate pending
+        // rows (and duplicate Razorpay orders) on double-tap or flaky retries.
+        if (!idempotencyKeyRef.current) {
+          idempotencyKeyRef.current = `chk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        }
+        const pending = await orderService.createPendingOrder({
+          ...payload,
+          idempotencyKey: idempotencyKeyRef.current,
+        });
         const razorpayOrder = await paymentService.createRazorpayOrder({
           amountPaise: pending.amount,
           receipt: pending.pendingId,
+          pendingId: pending.pendingId,
         });
         if (razorpayOrder.keyId === "dev_sim_key") {
           setSimulatedPaymentOrder({
@@ -585,6 +816,9 @@ export default function CheckoutScreen() {
   const handleRazorpayCancel = useCallback(() => {
     setRazorpayModalVisible(false);
     setRazorpayOrderParams(null);
+    // Let the user re-tap "Place order" with a fresh intent — most cancels mean
+    // "I changed my mind" not "retry the same idempotent attempt".
+    idempotencyKeyRef.current = null;
   }, []);
 
   // When payment modal or simulated payment overlay is open, hardware back should close it, not leave checkout
@@ -727,16 +961,16 @@ export default function CheckoutScreen() {
             <Text style={styles.headerTitle} numberOfLines={2}>
               {storeFullAddress}
             </Text>
-            {deliveryDistanceKm != null && (
-              <View style={[styles.headerDistanceTag, rangeBill.isOutOfRange && styles.headerDistanceTagFar]}>
+            {uiDistanceKm != null && (
+              <View style={[styles.headerDistanceTag, isDeliveryOutOfRange && styles.headerDistanceTagFar]}>
                 <Ionicons
                   name="navigate"
                   size={12}
-                  color={rangeBill.isOutOfRange ? GatiMitraColors.warningAmber : GatiMitraColors.emerald}
+                  color={isDeliveryOutOfRange ? GatiMitraColors.warningAmber : GatiMitraColors.emerald}
                   style={styles.headerDistanceTagIcon}
                 />
-                <Text style={[styles.headerDistanceTagText, rangeBill.isOutOfRange && styles.headerDistanceTagTextFar]}>
-                  {deliveryDistanceKm.toFixed(1)} km away
+                <Text style={[styles.headerDistanceTagText, isDeliveryOutOfRange && styles.headerDistanceTagTextFar]}>
+                  {uiDistanceKm.toFixed(1)} km away
                 </Text>
               </View>
             )}
@@ -752,11 +986,11 @@ export default function CheckoutScreen() {
         </View>
       </View>
 
-      {rangeBill.isOutOfRange && (
+      {isDeliveryOutOfRange && (
         <Animated.View entering={FadeIn.duration(ANIM_DURATION)} style={styles.distanceBanner}>
           <Ionicons name="warning" size={20} color={GatiMitraColors.warningAmber} />
           <Text style={styles.distanceBannerText}>
-            Selected address is {deliveryDistanceKm?.toFixed(1)} km away. Delivery charges may be higher.
+            Selected address is {uiDistanceKm?.toFixed(1)} km away. Delivery charges may be higher.
           </Text>
         </Animated.View>
       )}
@@ -954,10 +1188,13 @@ export default function CheckoutScreen() {
               <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
             </TouchableOpacity>
             <View style={styles.deliveryDivider} />
-            <TouchableOpacity
-              style={styles.deliveryAddrRow}
-              onPress={() => router.push("/profile/addresses")}
-              activeOpacity={0.8}
+            <Pressable
+              style={({ pressed }) => [styles.deliveryAddrRow, pressed && styles.deliveryAddrRowPressed]}
+              onPress={() =>
+                router.push({ pathname: "/profile/addresses", params: { forCheckout: "1" } })
+              }
+              hitSlop={12}
+              android_ripple={{ color: "rgba(20, 184, 166, 0.12)" }}
             >
               <Ionicons name="location-outline" size={20} color={GatiMitraColors.emerald} />
               <View style={styles.deliveryAddrTextWrap}>
@@ -967,7 +1204,7 @@ export default function CheckoutScreen() {
                 <Text style={styles.deliveryAddrSub} numberOfLines={1}>
                   {selectedAddress
                     ? selectedAddress.fullAddress
-                    : currentLocationDisplay?.fullAddress ?? "Select delivery address"}
+                    : currentLocationDisplay?.fullAddress ?? "Tap to choose delivery address"}
                 </Text>
                 {leaveAtDoor && (
                   <View style={styles.leaveAtDoorChip}>
@@ -976,9 +1213,9 @@ export default function CheckoutScreen() {
                   </View>
                 )}
               </View>
-              <Text style={styles.editAddressCta}>Edit</Text>
+              <Text style={styles.editAddressCta}>Change</Text>
               <Ionicons name="chevron-forward" size={18} color={GatiMitraColors.textSecondary} />
-            </TouchableOpacity>
+            </Pressable>
             <View style={styles.leaveAtDoorRow}>
               <Text style={styles.leaveAtDoorLabel}>Leave at door</Text>
               <Switch
@@ -1002,7 +1239,9 @@ export default function CheckoutScreen() {
               <Text style={styles.sectionTitleSmall}>Bill summary</Text>
               {!showBillSkeleton && (
                 <View style={styles.billSummaryHeaderRight}>
-                  <Text style={styles.billSummaryTotal}>₹{toPay.toFixed(2)}</Text>
+                  <Text style={styles.billSummaryTotal}>
+                    {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                  </Text>
                   <Ionicons
                     name={billSummaryExpanded ? "chevron-up" : "chevron-down"}
                     size={22}
@@ -1024,15 +1263,22 @@ export default function CheckoutScreen() {
                     {serverBill.addonTotal > 0 && (
                       <BillRow label="Add-ons" value={`₹${serverBill.addonTotal.toFixed(2)}`} />
                     )}
-                    {visibleCharges.map((c, idx) => (
-                      <BillRow key={`chg-${idx}`} label={c.label} value={`₹${c.amount.toFixed(2)}`} />
-                    ))}
+                    {serverBill.packagingFee > 0.005 && (
+                      <BillRow label="Packaging charges" value={`₹${serverBill.packagingFee.toFixed(2)}`} />
+                    )}
                     {visibleDiscounts.map((c, idx) => (
                       <BillRow key={`dsc-${idx}`} label={c.label} value={`-₹${c.amount.toFixed(2)}`} green />
                     ))}
-                    {visibleTaxes.map((c, idx) => (
-                      <BillRow key={`tax-${idx}`} label={c.label} value={`₹${c.amount.toFixed(2)}`} />
-                    ))}
+                    {serverBill.deliveryFee > 0.005 && (
+                      <BillRow label={deliveryFeeLabel} value={`₹${serverBill.deliveryFee.toFixed(2)}`} />
+                    )}
+                    {gstAndOtherBreakdown != null && gstAndOtherBreakdown.total > 0.005 && (
+                      <GstOtherChargesRow
+                        label="GST & other charges"
+                        value={`₹${gstAndOtherBreakdown.total.toFixed(2)}`}
+                        onInfoPress={() => setGstBreakdownModalVisible(true)}
+                      />
+                    )}
                     <View style={styles.billDivider} />
                     <BillRow
                       label="Subtotal"
@@ -1048,24 +1294,11 @@ export default function CheckoutScreen() {
                     <BillRow label="Total payable" value={`₹${serverBill.finalAmount.toFixed(2)}`} bold />
                   </>
                 ) : (
-                  <>
-                    <Text style={{ fontSize: 13, color: GatiMitraColors.textSecondary, marginBottom: 8 }}>
-                      Showing estimate — connect to refresh bill from server.
-                    </Text>
-                    <BillRow label="Item total" value={`₹${rangeBill.itemTotal.toFixed(2)}`} />
-                    <BillRow
-                      label={`Delivery partner fee${deliveryDistanceKm != null ? ` (${deliveryDistanceKm.toFixed(1)} km)` : ""}`}
-                      value={`₹${rangeBill.deliveryFee.toFixed(2)}`}
-                    />
-                    <BillRow label="Platform fee" value={`₹${rangeBill.platformFee.toFixed(2)}`} />
-                    <BillRow label="GST (govt. taxes)" value={`₹${rangeBill.gst.toFixed(2)}`} />
-                    <View style={styles.billDivider} />
-                    <BillRow label="Subtotal" value={`₹${rangeBill.finalTotal.toFixed(2)}`} />
-                    {tipValue > 0 && <BillRow label="Delivery partner tip" value={`₹${tipValue.toFixed(2)}`} />}
-                    {donationValue > 0 && <BillRow label="Feeding India donation" value={`₹${donationValue.toFixed(2)}`} />}
-                    <View style={styles.billDivider} />
-                    <BillRow label="Total payable" value={`₹${toPay.toFixed(2)}`} bold />
-                  </>
+                  <Text style={{ fontSize: 13, color: GatiMitraColors.textSecondary, lineHeight: 20 }}>
+                    {billingQuery.isError
+                      ? "Could not load bill from server. Check your connection and try again."
+                      : "Calculating bill on server…"}
+                  </Text>
                 )}
               </View>
             ) : null}
@@ -1276,26 +1509,73 @@ export default function CheckoutScreen() {
             </View>
             {couponApplyError && <Text style={styles.couponError}>{couponApplyError}</Text>}
             <ScrollView style={styles.couponList} showsVerticalScrollIndicator={false}>
-              {[
-                { code: "SAVE50", desc: "₹50 off on orders above ₹299", minOrder: 299 },
-                { code: "FLAT20", desc: "20% off up to ₹100", minOrder: 199 },
-                { code: "FIRST", desc: "₹30 off for first order", minOrder: 150 },
-              ].map((c) => (
-                <TouchableOpacity
-                  key={c.code}
-                  style={styles.couponListItem}
-                  onPress={() => {
-                    setCouponCodeInput(c.code);
-                    setCouponApplyError(null);
-                  }}
-                >
-                  <View style={styles.couponListItemLeft}>
-                    <Text style={styles.couponListCode}>{c.code}</Text>
-                    <Text style={styles.couponListDesc}>{c.desc}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
-                </TouchableOpacity>
-              ))}
+              {checkoutOffersQuery.isLoading ? (
+                <View style={styles.couponLoadingWrap}>
+                  <ActivityIndicator color={GatiMitraColors.emerald} />
+                  <Text style={styles.couponLoadingText}>Loading offers for your area…</Text>
+                </View>
+              ) : checkoutOffersQuery.isError ? (
+                <Text style={styles.couponError}>Could not load offers. Pull to refresh or try again later.</Text>
+              ) : (
+                <>
+                  {(checkoutOffersQuery.data?.platformOffers?.length ?? 0) > 0 ? (
+                    <>
+                      <Text style={styles.couponSectionTitle}>Platform offers</Text>
+                      <Text style={styles.couponSectionHint}>Applied automatically when your cart qualifies.</Text>
+                      {checkoutOffersQuery.data!.platformOffers.map((o) => (
+                        <View key={`pf-${o.id}`} style={styles.couponListItem}>
+                          <View style={styles.couponListItemLeft}>
+                            <Text style={styles.couponListCode}>{o.name ?? o.offerKind}</Text>
+                            <Text style={styles.couponListDesc}>{o.summary}</Text>
+                          </View>
+                        </View>
+                      ))}
+                    </>
+                  ) : null}
+                  {(checkoutOffersQuery.data?.merchantOffers?.length ?? 0) > 0 ? (
+                    <>
+                      <Text style={[styles.couponSectionTitle, { marginTop: 12 }]}>Store offers</Text>
+                      <Text style={styles.couponSectionHint}>From this restaurant — applied on the bill when eligible.</Text>
+                      {checkoutOffersQuery.data!.merchantOffers.map((o) => (
+                        <View key={`mo-${o.id}`} style={styles.couponListItem}>
+                          <View style={styles.couponListItemLeft}>
+                            <Text style={styles.couponListCode}>{o.title}</Text>
+                            <Text style={styles.couponListDesc}>{o.summary}</Text>
+                          </View>
+                        </View>
+                      ))}
+                    </>
+                  ) : null}
+                  {(checkoutOffersQuery.data?.coupons?.length ?? 0) > 0 ? (
+                    <>
+                      <Text style={[styles.couponSectionTitle, { marginTop: 12 }]}>Coupon codes</Text>
+                      <Text style={styles.couponSectionHint}>Tap to fill the code, then tap Apply.</Text>
+                      {checkoutOffersQuery.data!.coupons.map((c) => (
+                        <TouchableOpacity
+                          key={c.code}
+                          style={styles.couponListItem}
+                          onPress={() => {
+                            setCouponCodeInput(c.code);
+                            setCouponApplyError(null);
+                          }}
+                        >
+                          <View style={styles.couponListItemLeft}>
+                            <Text style={styles.couponListCode}>{c.code}</Text>
+                            <Text style={styles.couponListDesc}>{c.description}</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={20} color={GatiMitraColors.textSecondary} />
+                        </TouchableOpacity>
+                      ))}
+                    </>
+                  ) : null}
+                  {!checkoutOffersQuery.isLoading &&
+                  (checkoutOffersQuery.data?.coupons?.length ?? 0) === 0 &&
+                  (checkoutOffersQuery.data?.merchantOffers?.length ?? 0) === 0 &&
+                  (checkoutOffersQuery.data?.platformOffers?.length ?? 0) === 0 ? (
+                    <Text style={styles.couponEmptyText}>No coupons or offers for this address right now.</Text>
+                  ) : null}
+                </>
+              )}
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -1353,7 +1633,10 @@ export default function CheckoutScreen() {
             </View>
           ) : !canPlaceOrder ? (
             <View style={styles.footerCtaSlotDisabled}>
-              <Text style={styles.ctaDisabledLabel}>Place Order • ₹{toPay.toFixed(2)}</Text>
+              <Text style={styles.ctaDisabledLabel}>
+                Place Order
+                {toPayAmount != null ? ` • ₹${toPayAmount.toFixed(2)}` : ""}
+              </Text>
               <Text style={styles.ctaDisabledHint}>
                 {!selectedAddress
                   ? "Check your address before proceeding"
@@ -1383,7 +1666,9 @@ export default function CheckoutScreen() {
                 ) : (
                   <>
                     <View style={styles.ctaLeftPart}>
-                      <Text style={styles.ctaTotalAmount} numberOfLines={1}>₹{toPay.toFixed(2)}</Text>
+                      <Text style={styles.ctaTotalAmount} numberOfLines={1}>
+                        {toPayAmount != null ? `₹${toPayAmount.toFixed(2)}` : "—"}
+                      </Text>
                       <Text style={styles.ctaTotalLabel} numberOfLines={1}>TOTAL</Text>
                     </View>
                     <View style={styles.ctaRightPart}>
@@ -1422,9 +1707,54 @@ export default function CheckoutScreen() {
         />
       )}
 
+      <Modal
+        visible={gstBreakdownModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGstBreakdownModalVisible(false)}
+      >
+        <View style={styles.gstModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setGstBreakdownModalVisible(false)} />
+          <View style={styles.gstModalCard}>
+            <View style={styles.gstModalHeader}>
+              <Text style={styles.gstModalTitle}>GST & other charges</Text>
+              <Pressable onPress={() => setGstBreakdownModalVisible(false)} hitSlop={12} accessibilityRole="button">
+                <Ionicons name="close" size={24} color={GatiMitraColors.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={styles.gstModalSubtitle}>
+              Amounts come from the server bill. They match the single total on your bill.
+            </Text>
+            <ScrollView style={styles.gstModalScroll} showsVerticalScrollIndicator={false}>
+              {gstAndOtherBreakdown?.lines.map((row) => (
+                <View key={row.key} style={styles.gstModalLine}>
+                  <View style={styles.gstModalLineLeft}>
+                    <Text style={styles.gstModalLineLabel}>{row.label}</Text>
+                    {row.sub ? <Text style={styles.gstModalLineSub}>{row.sub}</Text> : null}
+                  </View>
+                  <Text style={styles.gstModalLineValue}>₹{row.amount.toFixed(2)}</Text>
+                </View>
+              ))}
+              <View style={styles.gstModalDivider} />
+              <View style={styles.gstModalLine}>
+                <Text style={styles.gstModalTotalLabel}>Total</Text>
+                <Text style={styles.gstModalTotalValue}>
+                  ₹{(gstAndOtherBreakdown?.total ?? 0).toFixed(2)}
+                </Text>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <RazorpayCheckoutModal
         visible={razorpayModalVisible && !!razorpayOrderParams}
         orderParams={razorpayOrderParams}
+        prefill={{
+          contact: selectedAddress?.contactMobile ?? null,
+          name: selectedAddress?.contactName ?? null,
+          email: null,
+        }}
         onSuccess={handleRazorpaySuccess}
         onCancel={handleRazorpayCancel}
       />
@@ -1459,6 +1789,33 @@ export default function CheckoutScreen() {
           </Pressable>
         </View>
       )}
+    </View>
+  );
+}
+
+function GstOtherChargesRow({
+  label,
+  value,
+  onInfoPress,
+}: {
+  label: string;
+  value: string;
+  onInfoPress: () => void;
+}) {
+  return (
+    <View style={styles.billRow}>
+      <View style={styles.billRowLabelWithInfo}>
+        <Text style={styles.billLabel}>{label}</Text>
+        <Pressable
+          onPress={onInfoPress}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Show breakdown of GST and other charges"
+        >
+          <Ionicons name="information-circle-outline" size={19} color={GatiMitraColors.textSecondary} />
+        </Pressable>
+      </View>
+      <Text style={styles.billValue}>{value}</Text>
     </View>
   );
 }
@@ -1699,6 +2056,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: GRID * 2,
     marginBottom: 10,
+    borderRadius: 12,
+    marginHorizontal: -4,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+  },
+  deliveryAddrRowPressed: {
+    opacity: 0.92,
+    backgroundColor: "rgba(20, 184, 166, 0.06)",
   },
   deliveryAddrTextWrap: { flex: 1, minWidth: 0 },
   deliveryAddrLabel: { fontSize: 15, fontWeight: "700", color: GatiMitraColors.textPrimary },
@@ -1734,7 +2099,40 @@ const styles = StyleSheet.create({
   billSkeletonLast: { width: "60%" },
   billSkeletonLastLine: { height: 20, borderRadius: 8, width: "60%" },
   billRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
+  billRowLabelWithInfo: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
   billLabel: { fontSize: 14, color: GatiMitraColors.textSecondary },
+  gstModalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+    justifyContent: "center",
+    paddingHorizontal: SPACING,
+    position: "relative",
+  },
+  gstModalCard: {
+    maxHeight: "78%",
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: SPACING + 2,
+    ...GatiMitraColors.elevationShadow,
+  },
+  gstModalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  gstModalTitle: { fontSize: 17, fontWeight: "800", color: GatiMitraColors.textPrimary, flex: 1 },
+  gstModalSubtitle: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 6, marginBottom: 12 },
+  gstModalScroll: { maxHeight: 360 },
+  gstModalLine: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingVertical: 8,
+    gap: 12,
+  },
+  gstModalLineLeft: { flex: 1, minWidth: 0 },
+  gstModalLineLabel: { fontSize: 14, fontWeight: "600", color: GatiMitraColors.textPrimary },
+  gstModalLineSub: { fontSize: 12, color: GatiMitraColors.textSecondary, marginTop: 4, lineHeight: 16 },
+  gstModalLineValue: { fontSize: 14, fontWeight: "700", color: GatiMitraColors.textPrimary },
+  gstModalDivider: { height: 1, backgroundColor: GatiMitraColors.border, marginVertical: 4 },
+  gstModalTotalLabel: { fontSize: 15, fontWeight: "800", color: GatiMitraColors.textPrimary },
+  gstModalTotalValue: { fontSize: 15, fontWeight: "800", color: GatiMitraColors.textPrimary },
   billValue: { fontSize: 14, color: GatiMitraColors.textPrimary },
   billValueBold: { fontWeight: "800", fontSize: 16 },
   billValueGreen: { color: GatiMitraColors.emerald, fontWeight: "600" },
@@ -2149,6 +2547,18 @@ const styles = StyleSheet.create({
   },
   couponApplyBtnText: { fontSize: 15, fontWeight: "700", color: "#fff" },
   couponError: { fontSize: 13, color: GatiMitraColors.errorRed, marginBottom: GRID },
+  couponSectionTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: GatiMitraColors.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 4,
+  },
+  couponSectionHint: { fontSize: 12, color: GatiMitraColors.textSecondary, marginBottom: 8, lineHeight: 16 },
+  couponLoadingWrap: { paddingVertical: 24, alignItems: "center", gap: 10 },
+  couponLoadingText: { fontSize: 13, color: GatiMitraColors.textSecondary },
+  couponEmptyText: { fontSize: 14, color: GatiMitraColors.textSecondary, paddingVertical: 16, textAlign: "center" },
   couponList: { maxHeight: 280 },
   couponListItem: {
     flexDirection: "row",

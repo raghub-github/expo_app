@@ -15,6 +15,11 @@ const EnvSchema = z.object({
 
   // Database
   DATABASE_URL: z.string().min(10),
+  /** Seconds to establish a new TCP connection (pooler / slow networks may need >10). */
+  DATABASE_CONNECT_TIMEOUT_SEC: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(120)
+  ).optional(),
 
   // Supabase
   SUPABASE_URL: z.string().url(),
@@ -56,16 +61,106 @@ const EnvSchema = z.object({
   RAZORPAY_KEY_SECRET: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
   RAZORPAY_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
+  /**
+   * Hard TTL (ms) between the user starting a payment and us considering the
+   * attempt stale. Past this point the reconciler will auto-refund any captured
+   * payment (customer has likely reordered elsewhere) and fail the pending
+   * order so the app can unlock the cart. Default 10 minutes.
+   */
+  PAYMENT_CONFIRM_WINDOW_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(60 * 60_000)
+  ).default(10 * 60_000),
+
+  /**
+   * How many seconds between two reconciler sweeps. The reconciler polls
+   * Razorpay for any pending_confirmation row whose paymentConfirmBy has
+   * elapsed, so we don't need this to be aggressive — 30s is cheap and
+   * bounded. Exposed for load-test tuning.
+   */
+  PAYMENT_RECONCILER_INTERVAL_SEC: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().max(600)
+  ).default(30),
+
+  /**
+   * What to do if we find a late-but-captured payment after the TTL elapsed:
+   *   - refund (default): customer very likely reordered elsewhere, return the
+   *     money and mark pending as failed/refunded.
+   *   - finalize: late-but-still-valid — place the order anyway. Only use this
+   *     if your merchant flow can tolerate delayed order ingestion.
+   */
+  PAYMENT_LATE_CAPTURE_POLICY: z.preprocess(
+    emptyToUndefined,
+    z.enum(["refund", "finalize"])
+  ).default("refund"),
+
+  /**
+   * Dev helper: disable background intervals (store schedule tick + payment reconciler).
+   * Use when DATABASE_URL is unreachable so local API debugging isn't spammed by ETIMEDOUT/ECONNRESET.
+   */
+  DISABLE_BACKGROUND_JOBS: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+
   // Distance / routing (backend-only; shared by Customer, Rider, Merchant apps)
   OSRM_BASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
   MAPBOX_ACCESS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(20).optional()),
   REDIS_URL: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
-  /** When true, createPendingOrder uses rule engine + persists billing_snapshot. */
+  /**
+   * Legacy flag; billing always runs for checkout. Kept for dashboards/scripts that read env.
+   */
   BILLING_RULES_ENABLED: z.preprocess(
     (v) => v === true || v === "true" || v === "1",
     z.boolean()
+  ).default(true),
+
+  /**
+   * Floor (INR) for delivery when route distance > 0, applied after rules + geo/rate-card + default fallback.
+   */
+  DELIVERY_MIN_FEE_INR: z.preprocess(emptyToUndefined, z.coerce.number().nonnegative()).optional(),
+
+  /**
+   * When no rule/geo/rate-card/legacy per-km yields a fee, use max(base, per_km × distance_km).
+   * Defaults in code: 25 and 5 when unset.
+   */
+  DELIVERY_DEFAULT_BASE_INR: z.preprocess(emptyToUndefined, z.coerce.number().nonnegative()).optional(),
+  DELIVERY_DEFAULT_PER_KM_INR: z.preprocess(emptyToUndefined, z.coerce.number().nonnegative()).optional(),
+
+  /**
+   * Platform-wide fallback service radius (km) when a store has no delivery_radius_km set.
+   * Used by the canonical `/v1/distance/store-quote` engine and billing to decide `serviceable`.
+   */
+  SERVICE_RADIUS_KM_DEFAULT: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(200)).default(15),
+
+  /** Enable progressive slab-based delivery pricing (geo-inherited) when a billing rule selects it. */
+  DELIVERY_SLABS_V2_ENABLED: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(true),
+
+  /**
+   * Optional tax injection flags (only used when DB tax configs don't already cover the base).
+   * Keeps behavior DB-driven by default, but allows safe rollout via env.
+   */
+  APPLY_GST_ON_DELIVERY_FEE: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
   ).default(false),
+  /** Percent (e.g. 5 = 5%). Used only when APPLY_GST_ON_DELIVERY_FEE is true. */
+  DELIVERY_FEE_GST_PERCENT: z.preprocess(emptyToUndefined, z.coerce.number().nonnegative().max(100)).optional(),
+
+  APPLY_GST_ON_PACKAGING: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+  /**
+   * Packaging GST mode:
+   * - same_as_item: use the effective item GST rate (sum of item-group tax config rates) as packaging GST rate.
+   */
+  PACKAGING_GST_MODE: z.preprocess(emptyToUndefined, z.enum(["same_as_item"]).optional()),
 
   /** Optional: dashboard billing simulator calls POST /v1/billing/calculate without a customer JWT. */
   BILLING_SIM_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),

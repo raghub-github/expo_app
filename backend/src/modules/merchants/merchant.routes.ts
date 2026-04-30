@@ -18,6 +18,11 @@ const querySchema = z.object({
   offset: z.coerce.number().int().min(0).optional().default(0),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
+  /** Distance mode: air = straight-line (DB/RPC), road = routing engine (Mapbox/OSRM). */
+  distanceMode: z
+    .enum(["air", "road"])
+    .optional()
+    .default("air"),
   veg: z
     .string()
     .optional()
@@ -119,6 +124,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         lat: q.lat,
         lng: q.lng,
         veg_mode: q.veg ?? false,
+        distanceMode: q.distanceMode,
       });
       const body = items.map((s) => {
         const nearby = s as NearbyStoreRow;

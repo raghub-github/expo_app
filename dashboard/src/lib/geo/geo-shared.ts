@@ -9,6 +9,19 @@ export type GeoHierarchyLevel =
   | "post_office"
   | "pincode";
 
+/** Effective platform offers for a node (geo_effective_platform_offers_json). */
+export type GeoEffectivePlatformOffer = {
+  platform_offer_id: number;
+  name: string | null;
+  service_type: string;
+  offer_audience: string;
+  offer_kind: string;
+  offer_setup_summary: string;
+  applied_level: string;
+  applied_ref_id: string;
+  is_inherited: boolean;
+};
+
 export type GeoChildRow = {
   kind: string;
   id: string;
@@ -28,8 +41,17 @@ export type GeoChildRow = {
   effective_food_base_fee: string | null;
   effective_parcel_base_fee: string | null;
   effective_ride_base_fee: string | null;
+  /**
+   * Customer delivery progressive slabs preview (nearest-wins via `delivery_rate_slabs_effective`).
+   * This is a compact label derived from the first slab (min_km=0) for quick tree scanning.
+   */
+  customer_food_delivery_slabs_preview: string | null;
+  customer_parcel_delivery_slabs_preview: string | null;
+  customer_ride_delivery_slabs_preview: string | null;
   /** Effective rider payout params per service (JSON from geo_effective_rider_rate_summaries). */
   rider_rate_summaries?: RiderRateSummaries | null;
+  /** Merged platform offer bindings up the ancestor chain (closest wins per offer id). */
+  effective_platform_offers?: GeoEffectivePlatformOffer[] | null;
 };
 
 export type GeoSearchRow = {
@@ -56,7 +78,11 @@ export type GeoSearchRow = {
   effective_food_base_fee?: string | null;
   effective_parcel_base_fee?: string | null;
   effective_ride_base_fee?: string | null;
+  customer_food_delivery_slabs_preview?: string | null;
+  customer_parcel_delivery_slabs_preview?: string | null;
+  customer_ride_delivery_slabs_preview?: string | null;
   rider_rate_summaries?: RiderRateSummaries | null;
+  effective_platform_offers?: GeoEffectivePlatformOffer[] | null;
 };
 
 export type GeoPricingRuleRow = {
@@ -161,4 +187,34 @@ export function parseRiderRateSummaries(raw: unknown): RiderRateSummaries | null
   const ride = parseRiderRateEffectiveDetail(o.ride);
   if (!food && !parcel && !ride) return null;
   return { food: food ?? undefined, parcel: parcel ?? undefined, ride: ride ?? undefined };
+}
+
+function numId(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") return parseInt(v, 10);
+  return NaN;
+}
+
+export function parseGeoEffectivePlatformOffers(raw: unknown): GeoEffectivePlatformOffer[] | null {
+  if (raw == null) return null;
+  if (!Array.isArray(raw)) return null;
+  const out: GeoEffectivePlatformOffer[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const id = numId(o.platform_offer_id);
+    if (!Number.isInteger(id)) continue;
+    out.push({
+      platform_offer_id: id,
+      name: o.name == null ? null : String(o.name),
+      service_type: String(o.service_type ?? "").toUpperCase(),
+      offer_audience: String(o.offer_audience ?? "CUSTOMER").toUpperCase(),
+      offer_kind: String(o.offer_kind ?? "DISCOUNT").toUpperCase(),
+      offer_setup_summary: String(o.offer_setup_summary ?? ""),
+      applied_level: String(o.applied_level ?? ""),
+      applied_ref_id: String(o.applied_ref_id ?? ""),
+      is_inherited: Boolean(o.is_inherited),
+    });
+  }
+  return out.length > 0 ? out : [];
 }

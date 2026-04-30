@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getSql } from "../../db/client.js";
+import { getEnv } from "../../config/env.js";
 import {
   billingRulesetVersion,
   billingPricingRules,
@@ -35,6 +36,43 @@ function nn(v: unknown): number {
   return n(v) ?? 0;
 }
 
+function hasApplicableBaseTax(taxConfigs: TaxConfigRow[], base: string): boolean {
+  const b = base.trim().toUpperCase();
+  return taxConfigs.some((t) => String(t.applicableBase ?? "").trim().toUpperCase() === b && (t.rate ?? 0) > 0);
+}
+
+function sumItemGstRate(taxConfigs: TaxConfigRow[]): number {
+  // Heuristic: sum the rates of configs that target item taxable value.
+  // This matches common India GST modeling (single GST slab), but also works when CGST+SGST are modeled separately.
+  const bases = new Set(["ITEM_AFTER_DISCOUNT", "ITEM_SUBTOTAL"]);
+  return taxConfigs
+    .filter((t) => bases.has(String(t.applicableBase ?? "").trim().toUpperCase()))
+    .reduce((s, t) => s + (Number(t.rate) || 0), 0);
+}
+
+function safeEnvForTaxInjection(): {
+  APPLY_GST_ON_DELIVERY_FEE: boolean;
+  DELIVERY_FEE_GST_PERCENT?: number;
+  APPLY_GST_ON_PACKAGING: boolean;
+  PACKAGING_GST_MODE?: "same_as_item";
+} {
+  try {
+    const env = getEnv();
+    return {
+      APPLY_GST_ON_DELIVERY_FEE: env.APPLY_GST_ON_DELIVERY_FEE === true,
+      DELIVERY_FEE_GST_PERCENT: env.DELIVERY_FEE_GST_PERCENT,
+      APPLY_GST_ON_PACKAGING: env.APPLY_GST_ON_PACKAGING === true,
+      PACKAGING_GST_MODE: env.PACKAGING_GST_MODE,
+    };
+  } catch {
+    // In tests / scripts without env loaded, skip injection quietly.
+    return {
+      APPLY_GST_ON_DELIVERY_FEE: false,
+      APPLY_GST_ON_PACKAGING: false,
+    };
+  }
+}
+
 export async function getRulesetVersion(db: PostgresJsDatabase<Record<string, unknown>>): Promise<number> {
   const rows = await db
     .select({ version: billingRulesetVersion.version })
@@ -42,6 +80,53 @@ export async function getRulesetVersion(db: PostgresJsDatabase<Record<string, un
     .where(eq(billingRulesetVersion.id, 1))
     .limit(1);
   return rows[0]?.version ?? 1;
+}
+
+/** Active promo codes customers can type at checkout (dashboard `billing_discounts`). */
+export async function listActiveCustomerCoupons(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  serviceTypeUpper: string
+): Promise<
+  Array<{
+    code: string;
+    discountType: string;
+    valueNumeric: number | null;
+    maxDiscountCap: number | null;
+  }>
+> {
+  const st = serviceTypeUpper.trim().toUpperCase();
+  const now = new Date();
+  const rows = await db
+    .select({
+      code: billingDiscounts.code,
+      discountType: billingDiscounts.discountType,
+      valueNumeric: billingDiscounts.valueNumeric,
+      maxDiscountCap: billingDiscounts.maxDiscountCap,
+    })
+    .from(billingDiscounts)
+    .where(
+      and(
+        eq(billingDiscounts.isActive, true),
+        eq(billingDiscounts.isHidden, false),
+        eq(billingDiscounts.offerAudience, "CUSTOMER"),
+        or(eq(billingDiscounts.serviceType, st), eq(billingDiscounts.serviceType, "ALL")),
+        or(isNull(billingDiscounts.validFrom), lte(billingDiscounts.validFrom, now)),
+        or(isNull(billingDiscounts.validUntil), gte(billingDiscounts.validUntil, now)),
+        or(
+          isNull(billingDiscounts.usageLimit),
+          sql`${billingDiscounts.usedCount} < ${billingDiscounts.usageLimit}`
+        )
+      )
+    )
+    .orderBy(asc(billingDiscounts.code))
+    .limit(80);
+
+  return rows.map((r) => ({
+    code: r.code,
+    discountType: String(r.discountType),
+    valueNumeric: n(r.valueNumeric),
+    maxDiscountCap: n(r.maxDiscountCap),
+  }));
 }
 
 export async function bumpRulesetVersion(db: PostgresJsDatabase<Record<string, unknown>>): Promise<number> {
@@ -191,6 +276,7 @@ export async function loadBillingDatasetUncached(
         deliveryDiscountType: o.deliveryDiscountType,
         deliveryDiscountValue: n(o.deliveryDiscountValue),
         offerKind: (o.offerKind ?? "DISCOUNT").toUpperCase(),
+        offerAudience: (o.offerAudience ?? "CUSTOMER").toUpperCase(),
         fundingMode: (o.fundingMode ?? "PLATFORM_ONLY").toUpperCase(),
         platformSharePct: n(o.platformSharePct) ?? 100,
         merchantSharePct: n(o.merchantSharePct) ?? 0,
@@ -268,6 +354,46 @@ export async function loadBillingDatasetUncached(
     }))
     .filter((t) => t.serviceType === serviceType || t.serviceType === "ALL");
 
+  // Optional runtime injection: add GST lines for delivery/packaging if not already configured in DB.
+  // This is intentionally opt-in via env and will never duplicate existing tax configs.
+  const env = safeEnvForTaxInjection();
+  if (env.APPLY_GST_ON_DELIVERY_FEE && !hasApplicableBaseTax(taxConfigs, "DELIVERY_FEE")) {
+    const pct = env.DELIVERY_FEE_GST_PERCENT ?? 5;
+    const rate = Math.max(0, Math.min(1, pct / 100));
+    if (rate > 0) {
+      taxConfigs.push({
+        id: -1001,
+        name: `GST on delivery fee (${pct}%)`,
+        rate,
+        applicableBase: "DELIVERY_FEE",
+        taxGroup: "delivery",
+        priority: 999999,
+        chargeOrderKey: 999999,
+        isHidden: false,
+        serviceType,
+      });
+    }
+  }
+
+  if (env.APPLY_GST_ON_PACKAGING && !hasApplicableBaseTax(taxConfigs, "PACKAGING_FEE")) {
+    const mode = (env.PACKAGING_GST_MODE ?? "same_as_item").trim().toLowerCase();
+    const derivedRate = mode === "same_as_item" ? sumItemGstRate(taxConfigs) : 0;
+    const rate = Math.max(0, Math.min(1, derivedRate));
+    if (rate > 0) {
+      taxConfigs.push({
+        id: -1002,
+        name: "GST on packaging",
+        rate,
+        applicableBase: "PACKAGING_FEE",
+        taxGroup: "packaging",
+        priority: 999998,
+        chargeOrderKey: 999998,
+        isHidden: false,
+        serviceType,
+      });
+    }
+  }
+
   let merchantOffers: MerchantOfferRow[] = [];
   if (serviceType === "FOOD") {
     type MoRow = {
@@ -335,6 +461,9 @@ export async function loadBillingDatasetUncached(
     if (d) {
       const rowSt = (d.serviceType ?? "FOOD").trim().toUpperCase();
       if (rowSt === serviceType || rowSt === "ALL") {
+        const audRaw = String(d.offerAudience ?? "CUSTOMER").toUpperCase();
+        const offerAudience =
+          audRaw === "MERCHANT" || audRaw === "RIDER" ? audRaw : "CUSTOMER";
         coupon = {
           id: d.id,
           code: d.code,
@@ -348,6 +477,9 @@ export async function loadBillingDatasetUncached(
           isActive: d.isActive,
           isHidden: d.isHidden,
           serviceType: rowSt,
+          offerAudience,
+          perUserUsageLimit: d.perUserUsageLimit ?? null,
+          metadata: (d.metadata as Record<string, unknown> | null) ?? null,
         };
       }
     }

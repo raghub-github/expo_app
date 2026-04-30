@@ -2,13 +2,201 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ulid } from "ulid";
 import { getDb } from "../../db/client.js";
-import { riders, onboardingPayments } from "../../db/schema.js";
+import { riders, onboardingPayments, paymentWebhookEvents } from "../../db/schema.js";
 import { eq, desc, and } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
-import { createRazorpayOrder, verifyRazorpaySignature, getPaymentDetails } from "../../services/payment/razorpayService.js";
+import {
+  createRazorpayOrder,
+  verifyRazorpaySignature,
+  verifyRazorpayWebhookSignature,
+  getPaymentDetails,
+} from "../../services/payment/razorpayService.js";
 import { getEnv } from "../../config/env.js";
+import {
+  markPendingOrderPaymentStarted,
+  finalizePendingOrderFromWebhook,
+  markPendingOrderFailedFromWebhook,
+  applyRefundWebhook,
+  logPaymentEvent,
+} from "../orders/order.placement.service.js";
 
 export async function paymentRoutes(app: FastifyInstance) {
+  /**
+   * Razorpay webhook ingress. Verifies the HMAC signature, dedups on the
+   * event id, then routes by event type:
+   *
+   *   - payment.captured / order.paid  → finalize pending order (idempotent)
+   *   - payment.failed                 → mark pending order as FAILED fast,
+   *                                      so the customer screen flips in
+   *                                      seconds instead of waiting the full
+   *                                      TTL for the reconciler.
+   *   - refund.created                 → mark refund_pending
+   *   - refund.processed               → mark refunded
+   *   - refund.failed                  → mark refund_failed for ops to retry
+   *   - anything else                  → acknowledged + logged, no-op.
+   *
+   * We ALWAYS return 200 after signature verification (even for no-ops) so
+   * Razorpay doesn't retry forever. Dedup is best-effort: if it fails we
+   * still let the downstream idempotency checks prevent double-processing.
+   */
+  app.post(
+    "/razorpay/webhook",
+    {
+      config: {
+        rateLimit: false,
+      },
+    },
+    async (req, reply) => {
+      const signature = String(req.headers["x-razorpay-signature"] ?? "");
+      const payloadObject = (req.body ?? {}) as Record<string, unknown>;
+      const payload = JSON.stringify(payloadObject);
+      if (!signature) {
+        return reply.status(400).send({ error: "missing_signature" });
+      }
+      if (!verifyRazorpayWebhookSignature(payload, signature)) {
+        return reply.status(400).send({ error: "invalid_signature" });
+      }
+
+      const event = String(payloadObject.event ?? "");
+      // Razorpay's event id lives in the `x-razorpay-event-id` header (v2+)
+      // or in the body's `id` field. Fall back to an order-id based key so
+      // we still get some dedup even on older accounts.
+      const headerEventId = String(req.headers["x-razorpay-event-id"] ?? "");
+      const bodyEventId = String(payloadObject.id ?? "");
+      const eventId = headerEventId || bodyEventId;
+
+      const db = getDb();
+
+      // Dedup: if we've already processed this exact event id, ack and move on.
+      if (eventId) {
+        try {
+          await db.insert(paymentWebhookEvents).values({
+            eventId,
+            provider: "razorpay",
+            eventType: event || "unknown",
+            signature,
+            payload: payloadObject,
+          });
+        } catch (err) {
+          // unique violation → duplicate delivery; ack with 200 so Razorpay stops retrying.
+          const code = (err as { code?: string })?.code;
+          if (code === "23505") {
+            return reply.send({ ok: true, duplicate: true });
+          }
+          // any other storage error → log and continue; don't block the business
+          // logic just because audit insert failed.
+          req.log.warn({ err }, "payment_webhook_events insert failed");
+        }
+      }
+
+      const payloadEnvelope = payloadObject.payload as Record<string, unknown> | undefined;
+
+      const extractEntity = (key: "payment" | "refund") => {
+        const node = payloadEnvelope?.[key] as Record<string, unknown> | undefined;
+        return (node?.entity as Record<string, unknown> | undefined) ?? node;
+      };
+
+      try {
+        if (event === "payment.captured" || event === "order.paid") {
+          const paymentEntity = extractEntity("payment");
+          const razorpayOrderId = String(paymentEntity?.order_id ?? "");
+          const razorpayPaymentId = String(paymentEntity?.id ?? "");
+          if (!razorpayOrderId || !razorpayPaymentId) {
+            return reply.status(400).send({ error: "invalid_payload" });
+          }
+          const result = await finalizePendingOrderFromWebhook(db, {
+            razorpayOrderId,
+            razorpayPaymentId,
+            paymentMethod: String(paymentEntity?.method ?? "online"),
+            gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
+          });
+          await markWebhookProcessed(db, eventId);
+          return reply.send({ ok: result.ok });
+        }
+
+        if (event === "payment.failed") {
+          const paymentEntity = extractEntity("payment");
+          const razorpayOrderId = String(paymentEntity?.order_id ?? "");
+          const razorpayPaymentId = String(paymentEntity?.id ?? "") || null;
+          const failureCode = String(paymentEntity?.error_code ?? "PAYMENT_FAILED");
+          const failureMessage = String(
+            paymentEntity?.error_description ??
+              paymentEntity?.error_reason ??
+              "Payment failed at gateway."
+          );
+          if (!razorpayOrderId) {
+            return reply.status(400).send({ error: "invalid_payload" });
+          }
+          await markPendingOrderFailedFromWebhook(db, {
+            razorpayOrderId,
+            razorpayPaymentId,
+            failureCode,
+            failureMessage,
+            gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
+          });
+          await markWebhookProcessed(db, eventId);
+          return reply.send({ ok: true });
+        }
+
+        if (event === "refund.created" || event === "refund.processed" || event === "refund.failed") {
+          const refundEntity = extractEntity("refund");
+          const razorpayPaymentId = String(refundEntity?.payment_id ?? "");
+          const refundId = String(refundEntity?.id ?? "");
+          const refundStatus = refundEntity?.status != null ? String(refundEntity.status) : null;
+          if (!razorpayPaymentId || !refundId) {
+            return reply.status(400).send({ error: "invalid_payload" });
+          }
+          await applyRefundWebhook(db, {
+            eventType: event,
+            razorpayPaymentId,
+            refundId,
+            refundStatus,
+            gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
+          });
+          await markWebhookProcessed(db, eventId);
+          return reply.send({ ok: true });
+        }
+
+        // Unhandled event type: ack + keep for audit.
+        await logPaymentEvent(db, {
+          eventType: "WEBHOOK_UNHANDLED",
+          source: "webhook",
+          payload: { event, payload: payloadObject },
+        });
+        await markWebhookProcessed(db, eventId);
+        return reply.send({ ok: true, ignored: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "webhook_processing_failed";
+        req.log.error({ err: error, event, eventId }, "razorpay webhook processing failed");
+        if (eventId) {
+          try {
+            await db
+              .update(paymentWebhookEvents)
+              .set({ processingError: message })
+              .where(eq(paymentWebhookEvents.eventId, eventId));
+          } catch {
+            // ignore; we already logged upstream
+          }
+        }
+        // Respond 500 so Razorpay retries (transient failures should recover).
+        return reply.status(500).send({ ok: false, error: message });
+      }
+    }
+  );
+
+  // Helper: flip `processed_at` so ops can tell what we actually processed.
+  async function markWebhookProcessed(db: ReturnType<typeof getDb>, eventId: string | null | undefined) {
+    if (!eventId) return;
+    try {
+      await db
+        .update(paymentWebhookEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(paymentWebhookEvents.eventId, eventId));
+    } catch {
+      /* best-effort */
+    }
+  }
+
   await app.register(auth, { required: true });
 
   // Create Razorpay order for food/checkout (amount in paise). Returns orderId + key for client checkout.
@@ -20,6 +208,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           amount: z.number().int().positive(), // in paise (₹100 = 10000)
           currency: z.string().max(4).optional().default("INR"),
           receipt: z.string().max(64).optional(),
+          pendingId: z.string().max(100).optional(),
         }),
         response: {
           200: z.object({
@@ -32,10 +221,11 @@ export async function paymentRoutes(app: FastifyInstance) {
       },
     },
     async (req) => {
-      const { amount, currency, receipt } = req.body as {
+      const { amount, currency, receipt, pendingId } = req.body as {
         amount: number;
         currency?: string;
         receipt?: string;
+        pendingId?: string;
       };
       const env = getEnv();
       if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
@@ -52,9 +242,15 @@ export async function paymentRoutes(app: FastifyInstance) {
       const order = await createRazorpayOrder({
         amount,
         currency: currency ?? "INR",
-        receipt: receipt ?? `food_${Date.now()}`,
-        notes: {},
+        receipt: receipt ?? pendingId ?? `food_${Date.now()}`,
+        notes: pendingId ? { pending_id: pendingId } : {},
       });
+      if (pendingId) {
+        await markPendingOrderPaymentStarted(getDb(), {
+          pendingId,
+          razorpayOrderId: order.id,
+        });
+      }
       return {
         orderId: order.id,
         keyId: env.RAZORPAY_KEY_ID,

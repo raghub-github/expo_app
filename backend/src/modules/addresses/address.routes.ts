@@ -34,9 +34,11 @@ const addressBodySchema = z.object({
   state: z.string().max(100).optional().nullable(),
   pincode: z.string().max(20).optional().nullable(),
   country: z.string().max(2).optional().nullable(),
-  latitude: z.number().min(-90).max(90),
-  longitude: z.number().min(-180).max(180),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
   isDefault: z.boolean().optional(),
+  contactName: z.string().max(80).optional().nullable(),
+  contactMobile: z.string().max(20).optional().nullable(),
 });
 
 const activeLocationBodySchema = z.object({
@@ -65,6 +67,8 @@ export async function addressRoutes(app: FastifyInstance) {
               country: z.string().nullable(),
               latitude: z.number(),
               longitude: z.number(),
+              contactName: z.string().nullable().optional(),
+              contactMobile: z.string().nullable().optional(),
               isDefault: z.boolean(),
               isLastUsed: z.boolean(),
             })
@@ -91,6 +95,8 @@ export async function addressRoutes(app: FastifyInstance) {
             country: r.country,
             latitude: Number(r.latitude) || 0,
             longitude: Number(r.longitude) || 0,
+              contactName: (r as any).contactName ?? null,
+              contactMobile: (r as any).contactMobile ?? null,
             isDefault: r.isDefault ?? false,
             isLastUsed: r.isLastUsed ?? false,
           }))

@@ -1,12 +1,11 @@
 "use client";
 
 import React from "react";
-import { Bike, ChevronDown, ChevronRight, PencilLine } from "lucide-react";
+import { ChevronDown, ChevronRight, PencilLine, Tag, Truck } from "lucide-react";
 import { ServiceSwitch } from "./ServiceSwitch";
 import { cn } from "@/lib/utils";
 import type { GeoChildRow } from "@/lib/geo/geo-shared";
-import { formatGeoBaseFee } from "./geoFeeLabel";
-import { RateCardBadge } from "./RateCardBadge";
+import { formatGeoDeliverySlabPreview } from "./geoFeeLabel";
 
 const kindBadge: Record<string, string> = {
   state: "border-violet-200 bg-violet-50 text-violet-800",
@@ -23,7 +22,8 @@ export const GeoNode = React.memo(function GeoNode(props: {
   onToggleExpand: () => void;
   onServiceToggle: (service: "food" | "parcel" | "ride", value: boolean) => void | Promise<void>;
   onEdit: () => void;
-  onRiderRates: () => void;
+  onPlatformOfferMap: () => void;
+  onDeliverySlabs: () => void;
   depth: number;
   pendingService?: "food" | "parcel" | "ride" | null;
 }) {
@@ -66,9 +66,11 @@ export const GeoNode = React.memo(function GeoNode(props: {
           <span className="min-w-0 flex-1 text-sm font-semibold tracking-tight text-slate-900">{row.name}</span>
         </div>
 
-        <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:justify-end xl:w-auto xl:max-w-[min(100%,52rem)]">
+          <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:justify-end xl:w-auto xl:max-w-[min(100%,52rem)]">
           <div className="flex flex-col gap-1">
-            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-400">Customer · coverage + base fee</p>
+            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-400">
+              Customer · coverage + delivery slabs (0 km slab preview)
+            </p>
             <div className="flex items-end gap-1.5 rounded-xl border border-slate-200/60 bg-white/90 px-2 py-1.5 shadow-sm">
               <div className="flex flex-col items-center gap-0.5">
                 <ServiceSwitch
@@ -80,9 +82,9 @@ export const GeoNode = React.memo(function GeoNode(props: {
                 />
                 <span
                   className="font-mono text-[8px] font-semibold tabular-nums text-slate-600"
-                  title="Effective base_fee (this row or nearest parent)"
+                  title="Effective customer delivery slabs (nearest-wins). Preview uses the first slab where minKm=0."
                 >
-                  {formatGeoBaseFee(row.effective_food_base_fee)}
+                  {formatGeoDeliverySlabPreview(row.customer_food_delivery_slabs_preview)}
                 </span>
               </div>
               <div className="flex flex-col items-center gap-0.5">
@@ -95,9 +97,9 @@ export const GeoNode = React.memo(function GeoNode(props: {
                 />
                 <span
                   className="font-mono text-[8px] font-semibold tabular-nums text-slate-600"
-                  title="Effective base_fee (this row or nearest parent)"
+                  title="Effective customer delivery slabs (nearest-wins). Preview uses the first slab where minKm=0."
                 >
-                  {formatGeoBaseFee(row.effective_parcel_base_fee)}
+                  {formatGeoDeliverySlabPreview(row.customer_parcel_delivery_slabs_preview)}
                 </span>
               </div>
               <div className="flex flex-col items-center gap-0.5">
@@ -110,29 +112,55 @@ export const GeoNode = React.memo(function GeoNode(props: {
                 />
                 <span
                   className="font-mono text-[8px] font-semibold tabular-nums text-slate-600"
-                  title="Effective base_fee (this row or nearest parent)"
+                  title="Effective customer delivery slabs (nearest-wins). Preview uses the first slab where minKm=0."
                 >
-                  {formatGeoBaseFee(row.effective_ride_base_fee)}
+                  {formatGeoDeliverySlabPreview(row.customer_ride_delivery_slabs_preview)}
                 </span>
               </div>
             </div>
+            <button
+              type="button"
+              onClick={props.onDeliverySlabs}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-slate-800 shadow-sm transition hover:border-teal-300 hover:bg-teal-50/30"
+            >
+              <Truck className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden />
+              Delivery slabs
+            </button>
           </div>
 
-          <div className="flex flex-col gap-1 sm:min-w-[12rem]">
-            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-400">Rider payout (effective)</p>
-            <div className="flex flex-col gap-1.5 rounded-xl border border-teal-200/50 bg-teal-50/30 px-2 py-1.5">
-              <div className="flex flex-wrap items-center gap-1">
-                <RateCardBadge service="food" detail={row.rider_rate_summaries?.food} />
-                <RateCardBadge service="parcel" detail={row.rider_rate_summaries?.parcel} />
-                <RateCardBadge service="ride" detail={row.rider_rate_summaries?.ride} />
+          <div className="flex flex-col gap-1 sm:min-w-[13rem]">
+            <p className="text-[9px] font-medium uppercase tracking-wide text-slate-400">Platform offers (effective)</p>
+            <div className="flex flex-col gap-1.5 rounded-xl border border-indigo-200/50 bg-indigo-50/25 px-2 py-1.5">
+              <div className="max-h-[5.5rem] space-y-1 overflow-y-auto text-[10px] leading-snug text-slate-700">
+                {(row.effective_platform_offers ?? []).length === 0 ? (
+                  <span className="text-slate-400">—</span>
+                ) : (
+                  (row.effective_platform_offers ?? []).map((o) => (
+                    <div
+                      key={o.platform_offer_id}
+                      className="rounded border border-white/60 bg-white/90 px-1.5 py-1 shadow-sm"
+                      title={o.offer_setup_summary}
+                    >
+                      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 font-mono text-[9px]">
+                        <span className="font-bold text-slate-900">#{o.platform_offer_id}</span>
+                        <span className="text-slate-600">{o.service_type}</span>
+                        <span className="text-slate-500">{o.offer_audience}</span>
+                        {o.is_inherited ? (
+                          <span className="rounded bg-amber-100 px-1 text-[8px] font-semibold text-amber-900">Inh</span>
+                        ) : null}
+                      </div>
+                      <p className="line-clamp-2 text-[9px] text-slate-600">{o.offer_setup_summary}</p>
+                    </div>
+                  ))
+                )}
               </div>
               <button
                 type="button"
-                onClick={props.onRiderRates}
-                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-teal-600/20 bg-white px-2 py-1.5 text-[11px] font-semibold text-teal-800 shadow-sm transition hover:bg-teal-50"
+                onClick={props.onPlatformOfferMap}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-600/20 bg-white px-2 py-1.5 text-[11px] font-semibold text-indigo-900 shadow-sm transition hover:bg-indigo-50"
               >
-                <Bike className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                Rider payout
+                <Tag className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                Map offers
               </button>
             </div>
           </div>

@@ -22,6 +22,27 @@ const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "frid
 const UPDATED_BY_SYSTEM = "system";
 const UPDATED_BY_ID_SYSTEM: number | null = null;
 
+/** True when a retry may succeed (network blip, pooler cold start). */
+function isTransientPostgresConnectionError(err: unknown): boolean {
+  if (err == null || typeof err !== "object") return false;
+  const o = err as Record<string, unknown>;
+  const code = String(o.code ?? o.errno ?? "");
+  if (code === "CONNECT_TIMEOUT" || code === "ETIMEDOUT" || code === "ECONNRESET" || code === "EPIPE") {
+    return true;
+  }
+  const message = String(o.message ?? err);
+  return (
+    message.includes("CONNECT_TIMEOUT") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("socket hang up")
+  );
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Emit store_status_changed: log and insert into merchant_store_status_change. */
 export async function emitStoreStatusChanged(
   sql: ReturnType<typeof getSql>,
@@ -491,12 +512,35 @@ type StoreRow = {
 };
 
 export async function runStoreScheduleTick(log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }): Promise<void> {
-  const sql = getSql();
-  try {
-    const now = new Date();
-    const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await runStoreScheduleTickOnce(log);
+      return;
+    } catch (err) {
+      const willRetry = attempt < maxAttempts && isTransientPostgresConnectionError(err);
+      if (willRetry) {
+        log.info(
+          { attempt, maxAttempts, err },
+          "store_schedule_tick_transient_db_error_retry"
+        );
+        await sleepMs(800 * attempt);
+        continue;
+      }
+      log.error({ err }, "store_schedule_tick_failed");
+      return;
+    }
+  }
+}
 
-    const storeRows = await sql`
+async function runStoreScheduleTickOnce(
+  log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
+): Promise<void> {
+  const sql = getSql();
+  const now = new Date();
+  const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+
+  const storeRows = await sql`
       SELECT
         ms.id AS store_id,
         ms.is_accepting_orders,
@@ -511,102 +555,99 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
       WHERE ms.deleted_at IS NULL
     `;
 
-    const hoursRows = await sql`
+  const hoursRows = await sql`
       SELECT * FROM merchant_store_operating_hours
     `;
-    const hoursByStore = new Map<number, Record<string, unknown>>();
-    for (const r of hoursRows as Record<string, unknown>[]) {
-      const sid = Number((r as any).store_id);
-      if (Number.isFinite(sid)) hoursByStore.set(sid, r);
+  const hoursByStore = new Map<number, Record<string, unknown>>();
+  for (const r of hoursRows as Record<string, unknown>[]) {
+    const sid = Number((r as any).store_id);
+    if (Number.isFinite(sid)) hoursByStore.set(sid, r);
+  }
+
+  for (const store of storeRows as unknown as StoreRow[]) {
+    const storeId = store.store_id;
+    if (!Number.isInteger(storeId) || storeId < 1) continue;
+
+    try {
+      await ensureAvailabilityRow(sql, storeId);
+    } catch (e) {
+      log.error({ storeId, err: e }, "store_schedule_tick_ensure_availability_failed");
+      continue;
     }
 
-    for (const store of storeRows as unknown as StoreRow[]) {
-      const storeId = store.store_id;
-      if (!Number.isInteger(storeId) || storeId < 1) continue;
+    const hoursRow = hoursByStore.get(storeId);
+    const autoOpen = store.auto_open_from_schedule === true;
+    const blockAutoOpen = store.block_auto_open === true;
+    const manualCloseUntilMs = parseManualCloseUntilMs(store.manual_close_until);
+    const nowMs = now.getTime();
+    const isManualCloseActive = manualCloseUntilMs > 0 && nowMs < manualCloseUntilMs;
+    const currentlyOpen =
+      store.is_accepting_orders === true &&
+      store.avail_accepting !== false &&
+      store.is_available !== false &&
+      (store.is_active !== false);
 
-      try {
-        await ensureAvailabilityRow(sql, storeId);
-      } catch (e) {
-        log.error({ storeId, err: e }, "store_schedule_tick_ensure_availability_failed");
+    let withinHours = false;
+    if (hoursRow) {
+      withinHours = isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
+    }
+
+    try {
+      // Fail-safe: no hours config => treat as closed (1. Schedule closed)
+      if (!hoursRow) {
+        if (currentlyOpen && autoOpen) {
+          await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+          await applyScheduleExpired(sql, storeId, log);
+        }
         continue;
       }
 
-      const hoursRow = hoursByStore.get(storeId);
-      const autoOpen = store.auto_open_from_schedule === true;
-      const blockAutoOpen = store.block_auto_open === true;
-      const manualCloseUntilMs = parseManualCloseUntilMs(store.manual_close_until);
-      const nowMs = now.getTime();
-      const isManualCloseActive = manualCloseUntilMs > 0 && nowMs < manualCloseUntilMs;
-      const currentlyOpen =
-        store.is_accepting_orders === true &&
-        store.avail_accepting !== false &&
-        store.is_available !== false &&
-        (store.is_active !== false);
-
-      let withinHours = false;
-      if (hoursRow) {
-        withinHours = isWithinOperatingHours(hoursRow, dayOfWeek, minutesSinceMidnight);
+      // 5. Forced lock
+      if (blockAutoOpen) {
+        if (currentlyOpen) {
+          await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+          await applyForcedLock(sql, storeId, log);
+        }
+        continue;
       }
 
-      try {
-        // Fail-safe: no hours config => treat as closed (1. Schedule closed)
-        if (!hoursRow) {
-          if (currentlyOpen && autoOpen) {
-            await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
-            await applyScheduleExpired(sql, storeId, log);
-          }
-          continue;
+      if (isManualCloseActive) continue;
+      if (!autoOpen) continue;
+
+      // 2. Schedule open / 7. Auto reopen after manual close — only if DB says no active manual close
+      if (withinHours) {
+        if (!currentlyOpen) {
+          const safeToOpen = await hasNoActiveManualClose(sql, storeId);
+          if (!safeToOpen) continue;
+          const manualCloseJustExpired = manualCloseUntilMs > 0 && nowMs >= manualCloseUntilMs;
+          await sql`UPDATE merchant_stores SET is_accepting_orders = TRUE, updated_at = NOW() WHERE id = ${storeId}`;
+          await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
         }
-
-        // 5. Forced lock
-        if (blockAutoOpen) {
-          if (currentlyOpen) {
-            await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
-            await applyForcedLock(sql, storeId, log);
-          }
-          continue;
-        }
-
-        if (isManualCloseActive) continue;
-        if (!autoOpen) continue;
-
-        // 2. Schedule open / 7. Auto reopen after manual close — only if DB says no active manual close
-        if (withinHours) {
-          if (!currentlyOpen) {
-            const safeToOpen = await hasNoActiveManualClose(sql, storeId);
-            if (!safeToOpen) continue;
-            const manualCloseJustExpired = manualCloseUntilMs > 0 && nowMs >= manualCloseUntilMs;
-            await sql`UPDATE merchant_stores SET is_accepting_orders = TRUE, updated_at = NOW() WHERE id = ${storeId}`;
-            await (manualCloseJustExpired ? applyAutoReopen(sql, storeId, log) : applyScheduleOpen(sql, storeId, log));
-          }
-        } else {
-          // 1. Schedule closed (outside hours)
-          if (currentlyOpen) {
-            const recentManualOpen = await sql`
+      } else {
+        // 1. Schedule closed (outside hours)
+        if (currentlyOpen) {
+          const recentManualOpen = await sql`
               SELECT 1 FROM merchant_store_status_log
               WHERE store_id = ${storeId} AND action = 'manual_open'
                 AND created_at > NOW() - INTERVAL '2 minutes'
             LIMIT 1
             `;
-            if (recentManualOpen.length > 0) continue;
-            await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
-            await applyScheduleClosed(sql, storeId, log);
-          } else {
-            // Clear stale manual_close_until so status shows schedule_closed
-            await sql`
+          if (recentManualOpen.length > 0) continue;
+          await sql`UPDATE merchant_stores SET is_accepting_orders = FALSE, updated_at = NOW() WHERE id = ${storeId}`;
+          await applyScheduleClosed(sql, storeId, log);
+        } else {
+          // Clear stale manual_close_until so status shows schedule_closed
+          await sql`
               UPDATE merchant_store_availability
               SET manual_close_until = NULL, close_reason = NULL, unavailable_reason = NULL, last_toggle_type = NULL, updated_at = NOW()
               WHERE store_id = ${storeId}
                 AND (manual_close_until IS NULL OR manual_close_until < NOW())
             `;
-          }
         }
-      } catch (e) {
-        log.error({ storeId, err: e }, "store_schedule_tick_update_failed");
       }
+    } catch (e) {
+      log.error({ storeId, err: e }, "store_schedule_tick_update_failed");
     }
-  } catch (err) {
-    log.error({ err }, "store_schedule_tick_failed");
   }
 }
 

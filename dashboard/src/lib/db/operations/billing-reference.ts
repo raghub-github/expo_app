@@ -712,6 +712,11 @@ export type DiscountRow = {
   used_count: number;
   is_active: boolean;
   is_hidden: boolean;
+  valid_from: string | null;
+  valid_until: string | null;
+  service_type: string;
+  offer_audience: string;
+  per_user_usage_limit: number | null;
   metadata: unknown;
 };
 
@@ -728,6 +733,11 @@ export async function listDiscounts(): Promise<DiscountRow[]> {
       used_count,
       is_active,
       is_hidden,
+      valid_from::text AS valid_from,
+      valid_until::text AS valid_until,
+      service_type,
+      offer_audience,
+      per_user_usage_limit,
       metadata
     FROM billing_discounts
     ORDER BY id ASC
@@ -742,12 +752,21 @@ export async function insertDiscount(input: {
   usage_limit?: number | null;
   is_active?: boolean;
   is_hidden?: boolean;
+  valid_from?: string | null;
+  valid_until?: string | null;
+  service_type?: string;
+  offer_audience?: string;
+  per_user_usage_limit?: number | null;
   metadata?: unknown;
 }): Promise<DiscountRow> {
   const db = getSql();
+  const st = (input.service_type ?? "FOOD").trim().toUpperCase();
+  const audRaw = String(input.offer_audience ?? "CUSTOMER").toUpperCase();
+  const offerAudience = audRaw === "MERCHANT" || audRaw === "RIDER" ? audRaw : "CUSTOMER";
   const [row] = await db<DiscountRow[]>`
     INSERT INTO billing_discounts (
-      code, discount_type, value_numeric, max_discount_cap, usage_limit, is_active, is_hidden, metadata
+      code, discount_type, value_numeric, max_discount_cap, usage_limit, is_active, is_hidden,
+      valid_from, valid_until, service_type, offer_audience, per_user_usage_limit, metadata
     ) VALUES (
       ${input.code.trim()},
       ${input.discount_type}::billing_discount_type,
@@ -756,6 +775,11 @@ export async function insertDiscount(input: {
       ${input.usage_limit ?? null},
       ${input.is_active ?? true},
       ${input.is_hidden ?? false},
+      ${input.valid_from ?? null},
+      ${input.valid_until ?? null},
+      ${st},
+      ${offerAudience},
+      ${input.per_user_usage_limit ?? null},
       ${sqlJsonb(input.metadata)}::jsonb
     )
     RETURNING
@@ -768,6 +792,11 @@ export async function insertDiscount(input: {
       used_count,
       is_active,
       is_hidden,
+      valid_from::text AS valid_from,
+      valid_until::text AS valid_until,
+      service_type,
+      offer_audience,
+      per_user_usage_limit,
       metadata
   `;
   if (!row) throw new Error("insertDiscount failed");
@@ -796,6 +825,11 @@ export async function getDiscount(id: number): Promise<DiscountRow | null> {
       used_count,
       is_active,
       is_hidden,
+      valid_from::text AS valid_from,
+      valid_until::text AS valid_until,
+      service_type,
+      offer_audience,
+      per_user_usage_limit,
       metadata
     FROM billing_discounts
     WHERE id = ${id}
@@ -812,6 +846,11 @@ export type PatchDiscountInput = Partial<{
   usage_limit: number | null;
   is_active: boolean;
   is_hidden: boolean;
+  valid_from: string | null;
+  valid_until: string | null;
+  service_type: string;
+  offer_audience: string;
+  per_user_usage_limit: number | null;
   metadata: unknown;
 }>;
 
@@ -838,6 +877,22 @@ export async function updateDiscount(id: number, patch: PatchDiscountInput): Pro
   const isActive = patch.is_active !== undefined ? patch.is_active : cur.is_active;
   const isHidden = patch.is_hidden !== undefined ? patch.is_hidden : cur.is_hidden;
   const metadata = patch.metadata !== undefined ? patch.metadata : cur.metadata;
+  const validFrom = patch.valid_from !== undefined ? patch.valid_from : cur.valid_from;
+  const validUntil = patch.valid_until !== undefined ? patch.valid_until : cur.valid_until;
+  const serviceType =
+    patch.service_type !== undefined
+      ? patch.service_type.trim().toUpperCase()
+      : (cur.service_type ?? "FOOD").trim().toUpperCase();
+  const offerAudience = (() => {
+    if (patch.offer_audience !== undefined) {
+      const a = String(patch.offer_audience).toUpperCase();
+      return a === "MERCHANT" || a === "RIDER" ? a : "CUSTOMER";
+    }
+    const a = String(cur.offer_audience ?? "CUSTOMER").toUpperCase();
+    return a === "MERCHANT" || a === "RIDER" ? a : "CUSTOMER";
+  })();
+  const perUserLimit =
+    patch.per_user_usage_limit !== undefined ? patch.per_user_usage_limit : cur.per_user_usage_limit;
 
   const [row] = await db<DiscountRow[]>`
     UPDATE billing_discounts SET
@@ -848,6 +903,11 @@ export async function updateDiscount(id: number, patch: PatchDiscountInput): Pro
       usage_limit = ${usageLimit},
       is_active = ${isActive},
       is_hidden = ${isHidden},
+      valid_from = ${validFrom},
+      valid_until = ${validUntil},
+      service_type = ${serviceType},
+      offer_audience = ${offerAudience},
+      per_user_usage_limit = ${perUserLimit},
       metadata = ${sqlJsonb(metadata)}::jsonb,
       updated_at = now()
     WHERE id = ${id}
@@ -861,6 +921,11 @@ export async function updateDiscount(id: number, patch: PatchDiscountInput): Pro
       used_count,
       is_active,
       is_hidden,
+      valid_from::text AS valid_from,
+      valid_until::text AS valid_until,
+      service_type,
+      offer_audience,
+      per_user_usage_limit,
       metadata
   `;
   if (!row) return null;

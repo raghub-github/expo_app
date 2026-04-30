@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
+import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
+import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
 import { deletePlatformOffer, listPlatformOffers, updatePlatformOffer } from "@/lib/db/operations/billing-advanced";
 
 export const runtime = "nodejs";
+
+const offerAudienceSchema = z.enum(["CUSTOMER", "MERCHANT", "RIDER"]);
 
 const patchSchema = z
   .object({
     name: z.string().optional().nullable(),
     service_type: z.string().optional(),
-    offer_kind: z.string().optional(),
+    offer_kind: platformOfferKindSchema.optional(),
+    offer_audience: offerAudienceSchema.optional(),
     funding_mode: z.string().optional(),
     platform_share_pct: z.number().min(0).max(100).optional(),
     merchant_share_pct: z.number().min(0).max(100).optional(),
@@ -84,6 +89,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       name: parsed.data.name ?? row0.name,
       service_type: parsed.data.service_type ?? row0.service_type,
       offer_kind: parsed.data.offer_kind ?? row0.offer_kind,
+      offer_audience: parsed.data.offer_audience ?? row0.offer_audience ?? "CUSTOMER",
       funding_mode: parsed.data.funding_mode ?? row0.funding_mode,
       platform_share_pct:
         parsed.data.platform_share_pct !== undefined ? parsed.data.platform_share_pct : parseFloat(row0.platform_share_pct ?? "100"),
@@ -157,6 +163,18 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       conditions: cond,
       metadata: parsed.data.metadata !== undefined ? parsed.data.metadata : row0.metadata,
     };
+    const patchKindErr = validatePlatformOfferKindFieldsForApi({
+      offer_kind: merged.offer_kind,
+      buy_qty: merged.buy_qty,
+      get_qty: merged.get_qty,
+      conditions: merged.conditions as Record<string, unknown>,
+      discount_type: merged.discount_type,
+      value_numeric: merged.value_numeric,
+      delivery_discount_type: merged.delivery_discount_type,
+    });
+    if (patchKindErr) {
+      return NextResponse.json({ error: patchKindErr }, { status: 400 });
+    }
     const offer = await updatePlatformOffer(id, merged);
     if (!offer) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ offer });

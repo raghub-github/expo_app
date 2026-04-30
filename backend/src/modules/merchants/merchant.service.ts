@@ -346,6 +346,8 @@ export async function listStores(params: {
   lat?: number;
   lng?: number;
   veg_mode?: boolean;
+  /** air (default): DB/RPC straight-line; road: routing engine via Mapbox/OSRM */
+  distanceMode?: "air" | "road";
 }): Promise<{ items: MerchantStoreRow[] | NearbyStoreRow[] }> {
   if (
     params.lat != null &&
@@ -359,11 +361,60 @@ export async function listStores(params: {
       limit: params.limit ?? DEFAULT_LIMIT,
       veg_mode: params.veg_mode,
     });
+    if (params.distanceMode === "road") {
+      const env = getEnv();
+      const withRoad = await enrichNearbyWithRoadDistance({
+        userLat: params.lat,
+        userLng: params.lng,
+        items,
+        mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
+        osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
+      });
+      return { items: withRoad };
+    }
     return { items };
   }
 
   return { items: [] };
 }
+
+async function enrichNearbyWithRoadDistance(params: {
+  userLat: number;
+  userLng: number;
+  items: NearbyStoreRow[];
+  mapboxToken?: string;
+  osrmBaseUrl?: string;
+}): Promise<NearbyStoreRow[]> {
+  if (!validCoord(params.userLat, params.userLng)) return params.items;
+  const token = params.mapboxToken;
+  const osrm = params.osrmBaseUrl;
+
+  const enriched = await mapWithConcurrency(params.items, MAPBOX_CONCURRENCY, async (s) => {
+    const lat = toNumber(s.latitude);
+    const lng = toNumber(s.longitude);
+    if (lat == null || lng == null) return s;
+    try {
+      const route = await getRoute({
+        origin: { lat: params.userLat, lng: params.userLng },
+        destination: { lat, lng },
+        profile: "driving",
+        mapboxToken: token,
+        osrmBaseUrl: osrm,
+      });
+      return {
+        ...s,
+        distance_km: Number((route.distanceKm ?? 0).toFixed(2)),
+      };
+    } catch {
+      return s;
+    }
+  });
+
+  return [...enriched].sort((a, b) => (a.distance_km ?? 0) - (b.distance_km ?? 0));
+}
+
+/** Test-only export: avoids calling Supabase in unit tests. */
+export const __test__enrichNearbyWithRoadDistance = enrichNearbyWithRoadDistance;
 
 /**
  * Get store by string store_id (public id). Includes banner fields and operational data.
@@ -467,7 +518,7 @@ export async function getMenuByStoreId(
     searchQ && searchQ.trim()
       ? supabase
           .from("merchant_menu_items")
-          .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, in_stock, is_active, is_popular, is_recommended, preparation_time_minutes, has_customizations, has_addons, has_variants")
+          .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, packaging_charges, in_stock, is_active, is_popular, is_recommended, preparation_time_minutes, has_customizations, has_addons, has_variants")
           .eq("store_id", store.id)
           .eq("is_active", true)
           .eq("in_stock", true)
@@ -476,7 +527,7 @@ export async function getMenuByStoreId(
           .order("item_name", { ascending: true })
       : supabase
           .from("merchant_menu_items")
-          .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, in_stock, is_active, is_popular, is_recommended, preparation_time_minutes, has_customizations, has_addons, has_variants")
+          .select("id, store_id, category_id, item_id, item_name, item_description, item_image_url, food_type, spice_level, cuisine_type, base_price, selling_price, discount_percentage, packaging_charges, in_stock, is_active, is_popular, is_recommended, preparation_time_minutes, has_customizations, has_addons, has_variants")
           .eq("store_id", store.id)
           .eq("is_active", true)
           .eq("in_stock", true)
@@ -549,7 +600,7 @@ export async function getMenuItemFullConfig(
 
   const { data: itemRow, error: itemError } = await supabase
     .from("merchant_menu_items")
-    .select("id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, has_customizations, has_addons, has_variants")
+    .select("id, item_id, item_name, item_description, item_image_url, food_type, base_price, selling_price, packaging_charges, has_customizations, has_addons, has_variants")
     .eq("store_id", store.id)
     .eq("item_id", itemId)
     .eq("is_active", true)

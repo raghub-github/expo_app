@@ -13,6 +13,11 @@ const postSchema = z.object({
   usage_limit: z.number().int().nullable().optional(),
   is_active: z.boolean().optional(),
   is_hidden: z.boolean().optional(),
+  valid_from: z.string().datetime().nullable().optional(),
+  valid_until: z.string().datetime().nullable().optional(),
+  service_type: z.string().optional(),
+  offer_audience: z.enum(["CUSTOMER", "MERCHANT", "RIDER"]).optional(),
+  per_user_usage_limit: z.number().int().nullable().optional(),
   metadata: z.unknown().optional(),
 });
 
