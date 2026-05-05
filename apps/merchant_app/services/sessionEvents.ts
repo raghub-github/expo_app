@@ -1,5 +1,5 @@
 export type SessionRevokedPayload = {
-  reason: "revoked";
+  reason: "revoked" | "invalid_token";
 };
 
 type Listener = (payload: SessionRevokedPayload) => void;

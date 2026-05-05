@@ -19,12 +19,9 @@ function isTicketPresenceRole(v: unknown): v is TicketPresenceRole {
  */
 function roleFromPresenceMeta(meta: object): TicketPresenceRole | null {
   const rec = meta as Record<string, unknown>;
-  const direct = rec.role;
-  if (isTicketPresenceRole(direct)) return direct;
-  const nested = rec.payload;
-  if (nested != null && typeof nested === "object") {
-    const p = (nested as Record<string, unknown>).role;
-    if (isTicketPresenceRole(p)) return p;
+  const candidates = [rec.role, rec.user_role, (rec.payload as Record<string, unknown> | undefined)?.role];
+  for (const c of candidates) {
+    if (isTicketPresenceRole(c)) return c;
   }
   return null;
 }
@@ -69,24 +66,26 @@ export type TicketOtherAgentViewer = {
 
 function userIdFromPresenceMeta(meta: object): string | null {
   const rec = meta as Record<string, unknown>;
-  const direct = rec.user_id;
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const top = [rec.user_id, rec.userId, rec.sub].find((v) => typeof v === "string" && v.trim());
+  if (top) return (top as string).trim();
   const nested = rec.payload;
   if (nested != null && typeof nested === "object") {
-    const p = (nested as Record<string, unknown>).user_id;
-    if (typeof p === "string" && p.trim()) return p.trim();
+    const p = nested as Record<string, unknown>;
+    const inner = [p.user_id, p.userId, p.sub].find((v) => typeof v === "string" && v.trim());
+    if (inner) return inner.trim();
   }
   return null;
 }
 
 function displayNameFromPresenceMeta(meta: object): string {
   const rec = meta as Record<string, unknown>;
-  const direct = rec.name;
-  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const top = [rec.name, rec.displayName, rec.full_name].find((v) => typeof v === "string" && v.trim());
+  if (top) return (top as string).trim();
   const nested = rec.payload;
   if (nested != null && typeof nested === "object") {
-    const p = (nested as Record<string, unknown>).name;
-    if (typeof p === "string" && p.trim()) return p.trim();
+    const p = nested as Record<string, unknown>;
+    const inner = [p.name, p.displayName, p.full_name].find((v) => typeof v === "string" && v.trim());
+    if (inner) return inner.trim();
   }
   return "";
 }
@@ -104,12 +103,14 @@ export function listOtherTicketAgentViewers(
 
   const byId = new Map<string, string>();
 
-  for (const metas of Object.values(presenceState)) {
+  for (const [presenceKey, metas] of Object.entries(presenceState)) {
     if (!Array.isArray(metas)) continue;
+    const keyTrim = presenceKey.trim();
     for (const meta of metas) {
       if (meta == null || typeof meta !== "object") continue;
       if (roleFromPresenceMeta(meta) !== "agent") continue;
-      const uid = userIdFromPresenceMeta(meta);
+      // Phoenix key is our presence key (Supabase auth user id); use it if payload omits user_id.
+      const uid = userIdFromPresenceMeta(meta) ?? (keyTrim || null);
       if (!uid || uid === self) continue;
       const name = displayNameFromPresenceMeta(meta);
       const label = name || "Agent";

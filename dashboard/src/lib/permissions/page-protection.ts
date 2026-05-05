@@ -10,11 +10,11 @@ import { redirect } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import {
-  hasDashboardAccessByAuth,
   isSuperAdmin,
   getDashboardTypeFromPath,
-  getSystemUserIdFromAuthUser,
   hasAccessPointAction,
+  getUserPermissions,
+  hasDashboardAccess,
 } from "./engine";
 import type { AccessPointGroup, ActionType, DashboardType } from "../db/schema";
 
@@ -75,10 +75,12 @@ export async function requireDashboardAccess(
     redirect("/login");
   }
 
-  // Check if super admin - they have access to all dashboards
-  const userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
-  if (userIsSuperAdmin) {
-    return; // Super admin has access
+  const userPerms = await getUserPermissions(user.id, user.email);
+  if (!userPerms) {
+    redirect("/login");
+  }
+  if (userPerms.isSuperAdmin) {
+    return;
   }
 
   // Special case: Payment dashboard is super admin only
@@ -86,13 +88,7 @@ export async function requireDashboardAccess(
     redirect(redirectTo);
   }
 
-  // Check dashboard access
-  const hasAccess = await hasDashboardAccessByAuth(
-    user.id,
-    user.email,
-    dashboardType
-  );
-
+  const hasAccess = await hasDashboardAccess(userPerms.systemUserId, dashboardType);
   if (!hasAccess) {
     redirect(redirectTo);
   }
@@ -130,23 +126,19 @@ export async function checkDashboardAccess(
       return false;
     }
 
-    // Check if super admin
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
-    if (userIsSuperAdmin) {
+    const userPerms = await getUserPermissions(user.id, user.email);
+    if (!userPerms) {
+      return false;
+    }
+    if (userPerms.isSuperAdmin) {
       return true;
     }
 
-    // Special case: Payment dashboard is super admin only
     if (dashboardType === "PAYMENT") {
       return false;
     }
 
-    // Check dashboard access
-    return await hasDashboardAccessByAuth(
-      user.id,
-      user.email,
-      dashboardType
-    );
+    return hasDashboardAccess(userPerms.systemUserId, dashboardType);
   } catch (err) {
     console.error("Error checking dashboard access:", err);
     return false;
@@ -168,22 +160,25 @@ export async function checkDashboardAccessPointAction(
       return false;
     }
 
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email);
-    if (userIsSuperAdmin) {
+    const userPerms = await getUserPermissions(user.id, user.email);
+    if (!userPerms) {
+      return false;
+    }
+    if (userPerms.isSuperAdmin) {
       return true;
     }
 
-    const hasAccess = await hasDashboardAccessByAuth(user.id, user.email, dashboardType);
+    const hasAccess = await hasDashboardAccess(userPerms.systemUserId, dashboardType);
     if (!hasAccess) {
       return false;
     }
 
-    const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email);
-    if (!systemUserId) {
-      return false;
-    }
-
-    return hasAccessPointAction(systemUserId, dashboardType, accessPointGroup, actionType);
+    return hasAccessPointAction(
+      userPerms.systemUserId,
+      dashboardType,
+      accessPointGroup,
+      actionType
+    );
   } catch (err) {
     console.error("Error checking dashboard access point action:", err);
     return false;

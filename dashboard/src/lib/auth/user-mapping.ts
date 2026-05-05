@@ -28,27 +28,114 @@ export interface SystemUser {
   supabase_auth_id?: string; // Supabase auth.users.id (UUID)
 }
 
+// Request-level cache to avoid duplicate queries within the same request
+const requestCache = new Map<string, { data: SystemUser | null; timestamp: number }>();
+const CACHE_TTL = 1000; // 1 second cache per request
+
 /**
- * Find system user by Supabase auth user ID (UUID)
- * Note: Currently uses email matching since supabase_auth_id column may not exist
+ * Find system user by Supabase auth user ID (UUID).
+ * `system_users.system_user_id` matches `auth.uid()::text` (see ticket RLS migrations).
+ * Uses the unique index on system_user_id — avoids slow email / LOWER(TRIM) fallbacks.
  */
+/**
+ * Resolve a dashboard `system_users` row for the current Supabase session.
+ * Tries `system_users.system_user_id = auth.uid()` first (ticket/agent pattern), then email.
+ * Keeps bootstrap and dashboard-access aligned with `getUserPermissions` / permission engine.
+ */
+export async function resolveSystemUserForSupabaseAuth(
+  supabaseAuthId: string,
+  email?: string | null
+): Promise<SystemUser | null> {
+  const id = supabaseAuthId?.trim();
+  if (id) {
+    const byAuth = await getSystemUserByAuthId(id);
+    if (byAuth) return byAuth;
+  }
+  if (email?.trim()) {
+    return getSystemUserByEmail(email);
+  }
+  return null;
+}
+
 export async function getSystemUserByAuthId(
   supabaseAuthId: string
 ): Promise<SystemUser | null> {
-  // For now, we need to get the email from Supabase Auth first
-  // This function will be enhanced when supabase_auth_id column is added
-  // For now, return null and let getSystemUserByEmail handle it
-  return null;
+  try {
+    const id = supabaseAuthId?.trim();
+    if (!id) return null;
+
+    const cacheKey = `authid:${id}`;
+    const cached = requestCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
+
+    const db = getDb();
+    const notDeleted = isNull(systemUsers.deletedAt);
+
+    const result = await db
+      .select({
+        id: systemUsers.id,
+        system_user_id: systemUsers.systemUserId,
+        email: systemUsers.email,
+        mobile: systemUsers.mobile,
+        full_name: systemUsers.fullName,
+        primary_role: systemUsers.primaryRole,
+        status: systemUsers.status,
+        can_toggle_portal: systemUsers.canTogglePortal,
+      })
+      .from(systemUsers)
+      .where(and(eq(systemUsers.systemUserId, id), notDeleted))
+      .limit(1);
+
+    let userData: SystemUser | null = null;
+    if (result.length > 0) {
+      const user = result[0];
+      const numericId = Number(user.id);
+      if (Number.isFinite(numericId)) {
+        userData = {
+          id: numericId,
+          system_user_id: user.system_user_id,
+          email: user.email,
+          mobile: user.mobile,
+          full_name: user.full_name,
+          primary_role: user.primary_role,
+          status: user.status,
+          can_toggle_portal: Boolean(user.can_toggle_portal),
+        };
+      }
+    }
+
+    requestCache.set(cacheKey, { data: userData, timestamp: now });
+    if (requestCache.size > 100) {
+      for (const [key, value] of requestCache.entries()) {
+        if (now - value.timestamp > CACHE_TTL) {
+          requestCache.delete(key);
+        }
+      }
+    }
+
+    return userData;
+  } catch (error) {
+    if (error instanceof Error) {
+      const isConnectionError =
+        error.message.includes("CONNECT_TIMEOUT") ||
+        error.message.includes("ECONNREFUSED") ||
+        error.message.includes("ETIMEDOUT") ||
+        error.message.includes("ENOTFOUND");
+      if (isConnectionError) {
+        throw new Error(`Database connection error: ${error.message}`);
+      }
+    }
+    return null;
+  }
 }
 
 /**
  * Find system user by email
  * This is the primary mapping method
  */
-// Request-level cache to avoid duplicate queries within the same request
-const requestCache = new Map<string, { data: SystemUser | null; timestamp: number }>();
-const CACHE_TTL = 1000; // 1 second cache per request
-
 export async function getSystemUserByEmail(
   email: string | null | undefined
 ): Promise<SystemUser | null> {

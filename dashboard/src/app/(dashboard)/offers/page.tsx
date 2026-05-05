@@ -40,14 +40,14 @@ export default function OffersPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Offer & Banner Management</h1>
+        <h1 className="text-3xl font-bold text-gray-900">Subscription Plans</h1>
         <p className="mt-2 text-gray-600">
-          Manage offers, incentives, and banners for all apps
+          Manage subscription plans for merchants, users, and riders
         </p>
       </div>
 
       <div className="rounded-lg border border-gray-200 bg-white p-6">
-        <p className="text-gray-500">Offer management functionality coming soon...</p>
+        <p className="text-gray-500">Subscription plan management functionality coming soon...</p>
       </div>
     </div>
   );

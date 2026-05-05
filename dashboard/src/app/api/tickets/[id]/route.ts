@@ -14,6 +14,7 @@ import { isInvalidRefreshToken } from "@/lib/auth/session-errors";
 import { queueTicketAssignedNotification, queueTicketReopenedNotification } from "@/lib/tickets/ticket-notification-send";
 import { validateAssigneeForTicket } from "@/lib/tickets/assignee-eligibility";
 import { pickRoundRobinAssigneeForGroup } from "@/lib/tickets/round-robin-auto-assign";
+import { coerceSqlTextArray } from "@/lib/tickets/coerce-sql-text-array";
 
 export const runtime = "nodejs";
 
@@ -194,6 +195,8 @@ export async function GET(
       group_id?: number | null; group_code?: string; group_name?: string; tags?: string[] | null;
       merchant_store_id?: number | null; store_number?: string | null; store_parent_id?: number | null;
       store_email?: string | null; store_phones?: string[] | null;
+      store_name?: string | null;
+      store_display_name?: string | null;
       parent_merchant_id?: string | null; parent_phone?: string | null; parent_owner_name?: string | null;
       customer_full_name?: string | null; customer_mobile?: string | null;
       rider_name?: string | null; rider_mobile?: string | null;
@@ -229,6 +232,8 @@ export async function GET(
           ms.parent_id AS store_parent_id,
           ms.store_email AS store_email,
           ms.store_phones AS store_phones,
+          ms.store_name AS store_name,
+          ms.store_display_name AS store_display_name,
           mp.parent_merchant_id AS parent_merchant_id,
           mp.registered_phone AS parent_phone,
           mp.owner_name AS parent_owner_name,
@@ -270,6 +275,15 @@ export async function GET(
             ut.buyer_np_name, ut.seller_np_name, ut.logistics_np_name,
             ut.igm_action_triggered, ut.igm_short_resolution, ut.igm_long_resolution, ut.igm_refund_amount, ut.gro_details,
             oc.formatted_order_id AS formatted_order_id,
+            ms.store_id AS store_number,
+            ms.parent_id AS store_parent_id,
+            ms.store_email AS store_email,
+            ms.store_phones AS store_phones,
+            ms.store_name AS store_name,
+            ms.store_display_name AS store_display_name,
+            mp.parent_merchant_id AS parent_merchant_id,
+            mp.registered_phone AS parent_phone,
+            mp.owner_name AS parent_owner_name,
             c.full_name AS customer_full_name,
             c.primary_mobile AS customer_mobile,
             r.name AS rider_name,
@@ -280,9 +294,11 @@ export async function GET(
           LEFT JOIN public.orders_core oc ON oc.id = ut.order_id
           LEFT JOIN public.customers c ON c.id = ut.customer_id
           LEFT JOIN public.riders r ON r.id = ut.rider_id
+          LEFT JOIN public.merchant_stores ms ON ms.id = ut.merchant_store_id
+          LEFT JOIN public.merchant_parents mp ON mp.id = COALESCE(ut.merchant_parent_id, ms.parent_id)
           WHERE ${numericTicketId != null ? sqlClient`ut.id = ${numericTicketId}` : sqlClient`ut.ticket_id = ${rawIdentifier}`}
         `;
-        ticketResult = (rows || []).map((r: Record<string, unknown>) => ({ ...r, store_number: null })) as TicketRow[];
+        ticketResult = (rows || []) as TicketRow[];
       } catch {
         try {
           const fallback = await sqlClient`
@@ -560,7 +576,6 @@ export async function GET(
     const rawStatus = String(row.status ?? "OPEN").toLowerCase();
     const rawPriority = String(row.priority ?? "MEDIUM").toLowerCase();
 
-    const tags = Array.isArray(row.tags) ? (row.tags as string[]).filter(Boolean) : [];
     const storeNumber = row.store_number != null && String(row.store_number).trim() !== "" ? String(row.store_number) : null;
     const storeId = row.merchant_store_id != null ? String(row.merchant_store_id) : null;
     const storeParentId = row.store_parent_id != null ? Number(row.store_parent_id) : null;
@@ -570,6 +585,12 @@ export async function GET(
     const parentMerchantId = typeof row.parent_merchant_id === "string" && row.parent_merchant_id.trim() !== "" ? row.parent_merchant_id.trim() : null;
     const parentPhone = typeof row.parent_phone === "string" && row.parent_phone.trim() !== "" ? row.parent_phone.trim() : null;
     const parentOwnerName = typeof row.parent_owner_name === "string" && row.parent_owner_name.trim() !== "" ? row.parent_owner_name.trim() : null;
+    const merchantStoreDisplayLabel =
+      typeof row.store_display_name === "string" && row.store_display_name.trim() !== ""
+        ? row.store_display_name.trim()
+        : typeof row.store_name === "string" && row.store_name.trim() !== ""
+          ? row.store_name.trim()
+          : null;
     const raisedByType = String(row.raised_by_type ?? "").toUpperCase();
     const resolvedRaisedByName =
       raisedByType === "CUSTOMER"
@@ -577,11 +598,12 @@ export async function GET(
         : raisedByType === "RIDER"
           ? (typeof row.rider_name === "string" && row.rider_name.trim() !== "" ? row.rider_name.trim() : null)
           : raisedByType === "MERCHANT"
-            ? (typeof row.parent_owner_name === "string" && row.parent_owner_name.trim() !== ""
+            ? (merchantStoreDisplayLabel ??
+              (typeof row.parent_owner_name === "string" && row.parent_owner_name.trim() !== ""
                 ? row.parent_owner_name.trim()
                 : typeof row.raised_by_name === "string" && row.raised_by_name.trim() !== ""
                   ? row.raised_by_name.trim()
-                  : null)
+                  : null))
             : null;
     const resolvedRaisedByMobile =
       raisedByType === "CUSTOMER"
@@ -589,13 +611,63 @@ export async function GET(
         : raisedByType === "RIDER"
           ? (typeof row.rider_mobile === "string" && row.rider_mobile.trim() !== "" ? row.rider_mobile.trim() : null)
           : raisedByType === "MERCHANT"
-            ? (typeof row.parent_phone === "string" && row.parent_phone.trim() !== "" ? row.parent_phone.trim() : null)
+            ? (storePhone && String(storePhone).trim() !== ""
+                ? String(storePhone).trim()
+                : typeof row.parent_phone === "string" && row.parent_phone.trim() !== ""
+                  ? row.parent_phone.trim()
+                  : typeof row.raised_by_mobile === "string" && row.raised_by_mobile.trim() !== ""
+                    ? row.raised_by_mobile.trim()
+                    : null)
             : null;
 
     const normalizedMetadata =
       row.metadata != null && typeof row.metadata === "object"
         ? { ...(row.metadata as Record<string, unknown>) }
         : {};
+
+    let tags = coerceSqlTextArray(row.tags);
+    if (tags.length === 0) {
+      const mh = normalizedMetadata.merchant_help;
+      if (mh != null && typeof mh === "object" && !Array.isArray(mh)) {
+        const rawTid = (mh as Record<string, unknown>).ticket_title_id;
+        const titleId =
+          typeof rawTid === "number" && Number.isFinite(rawTid) && rawTid > 0
+            ? rawTid
+            : typeof rawTid === "string" && /^\d+$/.test(rawTid.trim())
+              ? Number(rawTid.trim())
+              : NaN;
+        if (Number.isFinite(titleId) && titleId > 0) {
+          try {
+            const tagRows = await sqlClient`
+              SELECT DISTINCT TRIM(xg.tag_code) AS tag_code
+              FROM public.ticket_title_tags ttm
+              INNER JOIN public.ticket_tags xg ON xg.id = ttm.tag_id AND xg.is_active = true
+              WHERE ttm.ticket_title_id = ${titleId}
+            `;
+            const fromM2m = (tagRows || [])
+              .map((r: Record<string, unknown>) => String(r.tag_code ?? "").trim())
+              .filter(Boolean);
+            if (fromM2m.length > 0) {
+              tags = [...new Set(fromM2m)];
+            } else {
+              const legacy = await sqlClient`
+                SELECT TRIM(tg.tag_code) AS tag_code
+                FROM public.ticket_titles tt
+                INNER JOIN public.ticket_tags tg ON tg.id = tt.tag_id AND tg.is_active = true
+                WHERE tt.id = ${titleId}
+                LIMIT 1
+              `;
+              const lc = legacy?.[0] as { tag_code?: unknown } | undefined;
+              const c = lc?.tag_code != null ? String(lc.tag_code).trim() : "";
+              if (c) tags = [c];
+            }
+          } catch {
+            // ticket_title_tags / shape may be missing in some DBs
+          }
+        }
+      }
+    }
+
     const mergedIntoTicketIdFromMeta =
       normalizedMetadata.merged_into_ticket_id != null && String(normalizedMetadata.merged_into_ticket_id).trim() !== ""
         ? Number(normalizedMetadata.merged_into_ticket_id)
@@ -1334,7 +1406,7 @@ export async function PATCH(
         ticket_id: ticketId,
         activity_type: "first_response_marked",
         activity_category: "response",
-        activity_description: "FRT marked and locked",
+        activity_description: "FRT Updated",
         actor_user_id: actorId,
         actor_name: actorName,
         actor_email: actorEmail,

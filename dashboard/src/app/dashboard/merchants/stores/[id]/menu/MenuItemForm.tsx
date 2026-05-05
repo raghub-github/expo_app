@@ -345,10 +345,14 @@ export function MenuItemForm({
   // Selling price is not auto-calculated; offer/discount is set separately. Base and selling show actual API values.
 
   const selectedCuisines: string[] = formData.cuisine_type
-    ? String(formData.cuisine_type)
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter(Boolean)
+    ? Array.from(
+        new Set(
+          String(formData.cuisine_type)
+            .split(",")
+            .map((s: string) => s.trim())
+            .filter(Boolean),
+        ),
+      )
     : [];
   const cuisineLimit = maxCuisinesPerItem ?? 10;
   const cuisineAtLimit = selectedCuisines.length >= cuisineLimit;
@@ -357,7 +361,7 @@ export function MenuItemForm({
       ? selectedCuisines.filter((c) => c !== cuisine)
       : cuisineAtLimit
         ? selectedCuisines
-        : [...selectedCuisines, cuisine];
+        : Array.from(new Set([...selectedCuisines, cuisine]));
     setFormData({ ...formData, cuisine_type: next.length ? next.join(", ") : "" });
   };
 
@@ -744,7 +748,9 @@ export function MenuItemForm({
                       if (cuisineAtLimit) return;
                       const value = cuisineSearch.trim();
                       if (!value) return;
-                      setFormData({ ...formData, cuisine_type: [...selectedCuisines, value].join(", ") });
+                      if (!selectedCuisines.includes(value)) {
+                        setFormData({ ...formData, cuisine_type: [...selectedCuisines, value].join(", ") });
+                      }
                       setCuisineSearch("");
                     }}
                     className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border border-dashed border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 disabled:opacity-50"

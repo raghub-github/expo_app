@@ -7,7 +7,7 @@ import { OrderTable } from '@/components/OrderTable'
 import { FiltersBar } from '@/components/FiltersBar'
 import { supabase } from '@/lib/supabase'
 import { Order } from '@/lib/types'
-import { Toaster } from 'sonner'
+// Toaster mounted globally in /mx/layout
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
 const DEMO_MERCHANT_ID = 'merchant_001'
@@ -61,12 +61,11 @@ export default function CompletedPage() {
 
   return (
     <>
-      <Toaster />
       <MXHeader restaurantName={DEMO_MERCHANT_NAME} />
       <TabNavigation />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        <div className="bg-white border-b border-gray-200 shadow-sm -mx-4 px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 py-4 mb-8">
+        <div className="mx-shell-header shadow-sm -mx-4 px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 !py-3 mb-8">
           <div className="flex items-center gap-3">
             {/* Hamburger menu on left (mobile) */}
             <MobileHamburgerButton />

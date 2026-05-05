@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
@@ -934,11 +934,15 @@ function monthShortName(m: number): string {
 
 function PageTabs({ active }: { active: "complaints" | "reviews" }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const inProfile = pathname.includes("/profile/");
+  const complaintsHref = inProfile ? "/(tabs)/profile/complaints" : "/(tabs)/complaints";
+  const reviewsHref = inProfile ? "/(tabs)/profile/reviews" : "/(tabs)/reviews";
   return (
     <View style={styles.tabsWrap}>
       <View style={styles.tabsBackground}>
         <Pressable
-          onPress={() => router.replace("/(tabs)/profile/complaints" as any)}
+          onPress={() => router.replace(complaintsHref as any)}
           style={({ pressed }) => [
             styles.tabButton,
             pressed && styles.chipPressed,
@@ -962,7 +966,7 @@ function PageTabs({ active }: { active: "complaints" | "reviews" }) {
           </View>
         </Pressable>
         <Pressable
-          onPress={() => router.replace("/(tabs)/profile/reviews" as any)}
+          onPress={() => router.replace(reviewsHref as any)}
           style={({ pressed }) => [
             styles.tabButton,
             pressed && styles.chipPressed,

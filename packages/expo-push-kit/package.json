@@ -1,0 +1,29 @@
+{
+  "name": "@gatimitra/expo-push-kit",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": ["src"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo \"(expo-push-kit) no lint configured\""
+  },
+  "peerDependencies": {
+    "expo-constants": ">=16",
+    "expo-device": ">=7",
+    "expo-linking": ">=7",
+    "expo-notifications": ">=0.30",
+    "react": ">=18",
+    "react-native": ">=0.76"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  }
+}

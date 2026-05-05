@@ -108,20 +108,18 @@ export async function POST(req: NextRequest) {
   for (const day of DAYS) {
     const dayOpen = mergedData[`${day}_open`];
 
-    // Closed day: clear all slots
-    if (!dayOpen) {
-      mergedData[`${day}_slot1_start`] = null;
-      mergedData[`${day}_slot1_end`] = null;
-      mergedData[`${day}_slot2_start`] = null;
-      mergedData[`${day}_slot2_end`] = null;
-      mergedData[`${day}_total_duration_minutes`] = 0;
-      continue;
-    }
-
     let s1s = normalizeTime(mergedData[`${day}_slot1_start`]);
     let s1e = normalizeTime(mergedData[`${day}_slot1_end`]);
     let s2s = normalizeTime(mergedData[`${day}_slot2_start`]);
     let s2e = normalizeTime(mergedData[`${day}_slot2_end`]);
+
+    if (!dayOpen) {
+      mergedData[`${day}_slot1_start`] = s1s;
+      mergedData[`${day}_slot1_end`] = s1e;
+      mergedData[`${day}_slot2_start`] = s2s;
+      mergedData[`${day}_slot2_end`] = s2e;
+      continue;
+    }
 
     // Fix 24-hour: 00:00-00:00 → 00:00-23:59
     if (s1s === '00:00' && s1e === '00:00' && mergedData.is_24_hours) {
@@ -130,8 +128,9 @@ export async function POST(req: NextRequest) {
 
     // Slot1 must have both start and end, or neither
     if ((s1s == null) !== (s1e == null)) {
-      s1s = null;
-      s1e = null;
+      return NextResponse.json({
+        error: `${day}: Slot 1 start and end time must both be set`,
+      }, { status: 400 });
     }
 
     // Validate slot1 order
@@ -143,23 +142,27 @@ export async function POST(req: NextRequest) {
 
     // Slot2 pair check: both must be set or both null
     if ((s2s == null) !== (s2e == null)) {
-      s2s = null;
-      s2e = null;
-      warnings.push(`${day}: Incomplete Slot 2 cleared`);
+      return NextResponse.json({
+        error: `${day}: Slot 2 start and end time must both be set`,
+      }, { status: 400 });
     }
 
-    // Validate slot2 order — if invalid, auto-clear slot2 instead of rejecting
+    if ((s2s || s2e) && (!s1s || !s1e)) {
+      return NextResponse.json({
+        error: `${day}: Fill Slot 1 before saving Slot 2`,
+      }, { status: 400 });
+    }
+
     if (s2s && s2e && toMinutes(s2e) <= toMinutes(s2s)) {
-      warnings.push(`${day}: Slot 2 had invalid times (${s2s}-${s2e}), cleared`);
-      s2s = null;
-      s2e = null;
+      return NextResponse.json({
+        error: `${day}: Slot 2 end time (${s2e}) must be after start time (${s2s})`,
+      }, { status: 400 });
     }
 
-    // Validate overlap — if slot2 starts before slot1 ends, auto-clear slot2
     if (s1e && s2s && toMinutes(s2s) <= toMinutes(s1e)) {
-      warnings.push(`${day}: Slot 2 overlapped with Slot 1, cleared`);
-      s2s = null;
-      s2e = null;
+      return NextResponse.json({
+        error: `${day}: Slot 2 must start after Slot 1 ends (${s1e})`,
+      }, { status: 400 });
     }
 
     mergedData[`${day}_slot1_start`] = s1s;
@@ -210,17 +213,18 @@ export async function GET(req: NextRequest) {
     .from('merchant_store_operating_hours')
     .select('*')
     .eq('store_id', store_id)
-    .single();
+    .maybeSingle();
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-  if (data) {
-    for (const day of DAYS) {
-      for (const suffix of ['_slot1_start', '_slot1_end', '_slot2_start', '_slot2_end']) {
-        const field = `${day}${suffix}`;
-        if (data[field]) {
-          data[field] = normalizeTime(data[field]);
-        }
+  if (!data) {
+    return NextResponse.json(null, { status: 200 });
+  }
+  for (const day of DAYS) {
+    for (const suffix of ['_slot1_start', '_slot1_end', '_slot2_start', '_slot2_end']) {
+      const field = `${day}${suffix}`;
+      if (data[field]) {
+        data[field] = normalizeTime(data[field]);
       }
     }
   }

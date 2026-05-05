@@ -21,6 +21,7 @@ import { colors } from '@/src/theme';
 import { Platform, AppState } from 'react-native';
 import { router } from 'expo-router';
 import { smartPermissionHandler } from '@/src/services/permissions/smartPermissionHandler';
+import { RiderPushSetup } from '@/src/components/RiderPushSetup';
 
 // Initialize Mapbox early for faster map loading
 if (Platform.OS !== 'web') {
@@ -250,6 +251,7 @@ function RootLayoutNav() {
     return (
       <AppProviders>
         <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+          <RiderPushSetup />
           <Stack 
             screenOptions={{ 
               headerShown: false,

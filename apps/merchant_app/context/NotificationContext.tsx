@@ -1,7 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { getStoreNotifications, markStoreNotificationRead, deleteStoreNotification } from "@/services/storeNotificationsApi";
+import {
+  getStoreNotifications,
+  markStoreNotificationRead,
+  markAllStoreNotificationsRead,
+  deleteStoreNotification,
+} from "@/services/storeNotificationsApi";
 import type { StoreNotificationRow } from "@/services/storeNotificationsApi";
 
 export type NotificationType = "order" | "store" | "system" | "earning";
@@ -127,7 +132,7 @@ interface NotificationContextValue {
   notifications: MerchantNotification[];
   unreadCount: number;
   loading: boolean;
-  markAllAsRead: () => void;
+  markAllAsRead: () => Promise<void>;
   markAsRead: (id: string) => void;
   removeNotification: (id: string) => Promise<void>;
   refresh: () => void;
@@ -169,9 +174,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     [notifications]
   );
 
-  const markAllAsRead = useCallback(() => {
+  const markAllAsRead = useCallback(async () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-  }, []);
+    if (token && storeId) {
+      try {
+        await markAllStoreNotificationsRead(storeId, token);
+      } catch {
+        void fetchNotifications();
+      }
+    }
+  }, [token, storeId, fetchNotifications]);
 
   const markAsRead = useCallback(
     async (id: string) => {

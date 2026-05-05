@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useEffect, useState, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
-import { Toaster, toast } from 'sonner';
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
+import { toast } from 'sonner';
 import {
   Clock,
   CheckCircle2,
@@ -20,12 +21,12 @@ import {
   X,
   Printer,
   ChevronLeft,
-  Sparkles,
   LayoutGrid,
   List,
   Phone,
   MapPin,
-  SlidersHorizontal,
+  Search,
+  ChevronDown,
   Loader2,
   Power,
   Check,
@@ -33,13 +34,15 @@ import {
   Bike,
   MoreVertical,
 } from 'lucide-react';
-import { useFoodOrders, type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
+import { type OrdersFoodRow, type FoodOrderStats } from '@/hooks/useFoodOrders';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { fetchStoreById } from '@/lib/database';
 import { MerchantStore } from '@/lib/merchantStore';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
+import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
+import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -54,16 +57,45 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED: 'Cancelled',
 };
 
-const STATUS_FILTERS = [
-  { id: 'CREATED', label: 'Created', color: 'bg-red-100 text-red-800 border-red-200' },
-  { id: 'ACCEPTED', label: 'Accepted', color: 'bg-blue-100 text-blue-800 border-blue-200' },
-  { id: 'PREPARING', label: 'Preparing', color: 'bg-amber-100 text-amber-800 border-amber-200' },
-  { id: 'READY_FOR_PICKUP', label: 'Ready', color: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
-  { id: 'OUT_FOR_DELIVERY', label: 'Dispatch', color: 'bg-purple-100 text-purple-800 border-purple-200' },
-  { id: 'DELIVERED', label: 'Delivered', color: 'bg-green-100 text-green-800 border-green-200' },
-  { id: 'RTO', label: 'RTO', color: 'bg-orange-100 text-orange-800 border-orange-200' },
-  { id: 'CANCELLED', label: 'Cancelled', color: 'bg-gray-100 text-gray-700 border-gray-200' },
-];
+/** Accepted by merchant and in kitchen prep (excludes unaccepted “new” rows). */
+const PREPARING_PIPELINE = new Set(['ACCEPTED', 'PREPARING']);
+
+const FOOD_ORDERS_SIDEBAR_FILTERS = [
+  { id: 'NEW_ORDERS', label: 'New orders' },
+  { id: 'PREPARING', label: 'Preparing' },
+  { id: 'READY_FOR_PICKUP', label: 'Ready' },
+  { id: 'OUT_FOR_DELIVERY', label: 'Picked up' },
+  { id: 'RTO', label: 'RTO' },
+] as const;
+
+type FoodOrdersSidebarFilterId = (typeof FOOD_ORDERS_SIDEBAR_FILTERS)[number]['id'];
+
+/** Normalize any backend/food string (incl. PLACED) to tab filter codes. */
+function normOrderStatus(s: string | null | undefined) {
+  const mapped = mapStateMachineStatusToPartnerUi(s);
+  if (mapped) return mapped;
+  return normFoodStatus(s);
+}
+
+function orderMatchesFoodOrdersSidebar(order: OrdersFoodRow, filterId: string): boolean {
+  const st = normOrderStatus(order.order_status);
+  if (filterId === 'NEW_ORDERS') return st === 'CREATED';
+  if (filterId === 'PREPARING') return PREPARING_PIPELINE.has(st);
+  if (filterId === 'READY_FOR_PICKUP') return st === 'READY_FOR_PICKUP';
+  if (filterId === 'OUT_FOR_DELIVERY') return st === 'OUT_FOR_DELIVERY';
+  if (filterId === 'RTO') return st === 'RTO';
+  return false;
+}
+
+/** Zomato-style pills: orange active, white inactive (GatiMitra partner shell) */
+const SIDEBAR_ACTIVE_CLASS = 'bg-orange-500 text-white border-orange-500 shadow-sm';
+const SIDEBAR_INACTIVE_CLASS = 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50';
+
+function prepDeadlineMs(order: OrdersFoodRow): number {
+  const base = order.accepted_at || order.created_at;
+  const mins = Number(order.preparation_time_minutes) || 30;
+  return new Date(base).getTime() + mins * 60 * 1000;
+}
 
 function formatVegNonVeg(v: string | null): string {
   if (!v || v === 'na') return '—';
@@ -83,19 +115,6 @@ function formatTimeAgo(dateStr: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   return d.toLocaleDateString();
-}
-
-function useNewOrderSound(enabled: boolean) {
-  const play = useCallback(() => {
-    if (!enabled || typeof window === 'undefined') return;
-    try {
-      const audio = new Audio('/notification.wav');
-      audio.volume = 0.8;
-      audio.play().catch(() => {});
-    } catch {}
-  }, [enabled]);
-
-  return play;
 }
 
 const ORDERS_STORAGE_KEY = 'food-orders-ui';
@@ -151,7 +170,7 @@ function OrdersPageContent() {
   const [storeInternalId, setStoreInternalId] = useState<number | null>(null);
   const [orders, setOrders] = useState<OrdersFoodRow[]>([]);
   const [stats, setStats] = useState<FoodOrderStats | null>(null);
-  const [filter, setFilter] = useState<string>('all');
+  const [filter, setFilter] = useState<string>('PREPARING');
   const [selectedOrder, setSelectedOrder] = useState<OrdersFoodRow | null>(null);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rejectModal, setRejectModal] = useState<OrdersFoodRow | null>(null);
@@ -162,6 +181,8 @@ function OrdersPageContent() {
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
   const [ridersLogList, setRidersLogList] = useState<Array<{ rider_id: number; rider_name: string | null; rider_mobile: string | null; selfie_url: string | null; assignment_status: string; assigned_at: string | null; accepted_at: string | null; rejected_at: string | null; reached_merchant_at: string | null; picked_up_at: string | null; delivered_at: string | null; cancelled_at: string | null }>>([]);
   const [ridersLogLoading, setRidersLogLoading] = useState(false);
+  const [acceptanceSettings, setAcceptanceSettings] = useState<{ acceptance_window_minutes: number } | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [headerRtoMenuOpen, setHeaderRtoMenuOpen] = useState(false);
   const headerRtoMenuRef = useRef<HTMLDivElement>(null);
@@ -187,6 +208,24 @@ function OrdersPageContent() {
       .finally(() => setRidersLogLoading(false));
   }, [ridersLogModalOrderId]);
 
+  useEffect(() => {
+    // Tick for countdown labels (accept window).
+    const t = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (ridersLogModalOrderId == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setRidersLogModalOrderId(null);
+        setRidersLogModalOrderLabel(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [ridersLogModalOrderId]);
+
   const [otpInput, setOtpInput] = useState('');
   const [otpVerified, setOtpVerified] = useState<Set<number>>(new Set());
   const [otpCache, setOtpCache] = useState<Record<number, { otp_code: string; otp_type: string }>>({});
@@ -207,7 +246,6 @@ function OrdersPageContent() {
   const [closeReason, setCloseReason] = useState('');
   const [closeReasonOther, setCloseReasonOther] = useState('');
   const [closeConfirmLoading, setCloseConfirmLoading] = useState(false);
-  const [openingTimeForClose, setOpeningTimeForClose] = useState('09:00');
   const [showTurnOnModal, setShowTurnOnModal] = useState(false);
   const [turnOnLoading, setTurnOnLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'card' | 'list'>(() => {
@@ -222,15 +260,13 @@ function OrdersPageContent() {
     } catch { return 'card'; }
   });
 
-  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
-  const hasNotifiedNew = useRef<Set<number>>(new Set());
-
+  const [orderSort, setOrderSort] = useState<'remaining' | 'newest' | 'oldest'>('remaining');
+  const [orderIdSearch, setOrderIdSearch] = useState('');
   const updateUrlParams = useCallback((updates: { filter?: string; orderId?: string | null }) => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(searchParams?.toString() || '');
     if (updates.filter !== undefined) {
-      if (updates.filter === 'all') params.delete('filter');
-      else params.set('filter', updates.filter);
+      params.set('filter', updates.filter);
     }
     if (updates.orderId !== undefined) {
       if (!updates.orderId) params.delete('orderId');
@@ -287,11 +323,8 @@ function OrdersPageContent() {
     setFilter(f);
     setRightPanelOpen(false);
     setSelectedOrder(null);
-    setFilterDrawerOpen(false);
     updateUrlParams({ filter: f, orderId: null });
   }, [updateUrlParams]);
-  const { subscribe } = useFoodOrders(storeId, storeInternalId);
-  const playNewOrderSound = useNewOrderSound(notifyEnabled);
 
   useEffect(() => {
     let id = searchParams?.get('storeId') || searchParams?.get('store_id');
@@ -302,10 +335,14 @@ function OrdersPageContent() {
 
   useEffect(() => {
     const f = searchParams?.get('filter');
-    if (f && ['all', 'active', 'CREATED', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED', 'RTO', 'CANCELLED'].includes(f)) {
-      setFilter(f === 'NEW' ? 'CREATED' : f);
+    const valid = new Set<string>(['NEW_ORDERS', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO']);
+    if (f && valid.has(f)) {
+      setFilter(f);
+    } else {
+      setFilter('PREPARING');
+      updateUrlParams({ filter: 'PREPARING' });
     }
-  }, [searchParams]);
+  }, [searchParams?.toString(), updateUrlParams]);
 
   const orderIdFromUrl = searchParams?.get('orderId') || null;
 
@@ -423,34 +460,57 @@ function OrdersPageContent() {
   }, [fetchStats]);
 
   useEffect(() => {
-    if (!storeInternalId || !storeId) return;
-    const unsub = subscribe(
-      (row) => {
-        setOrders((prev) => {
-          const exists = prev.some((o) => o.id === row.id);
-          if (exists) return prev.map((o) => (o.id === row.id ? row : o));
-          if (row.order_status === 'CREATED' || row.order_status === 'NEW' || !row.order_status) {
-            if (notifyEnabled) {
-              const displayId = row.formatted_order_id || `#${row.order_id}`;
-              toast.success(`New Order ${displayId}`, { duration: 5000 });
-              if (!hasNotifiedNew.current.has(row.id)) {
-                hasNotifiedNew.current.add(row.id);
-                playNewOrderSound();
-              }
-            }
-          }
-          return [row, ...prev];
-        });
-      },
-      (row) => {
-        setOrders((prev) =>
-          prev.map((o) => (o.id === row.id ? row : o))
-        );
-        if (selectedOrder?.id === row.id) setSelectedOrder(row);
+    if (!storeId) return;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/merchant/order-acceptance-settings?store_id=${encodeURIComponent(storeId)}`);
+        const data = (await res.json().catch(() => ({}))) as { settings?: { acceptance_window_minutes?: number } };
+        if (res.ok && data.settings && typeof data.settings.acceptance_window_minutes === 'number') {
+          setAcceptanceSettings({ acceptance_window_minutes: data.settings.acceptance_window_minutes });
+        } else {
+          setAcceptanceSettings({ acceptance_window_minutes: 5 });
+        }
+      } catch {
+        setAcceptanceSettings({ acceptance_window_minutes: 5 });
       }
-    );
-    return unsub;
-  }, [storeInternalId, storeId, subscribe, notifyEnabled, playNewOrderSound, selectedOrder?.id]);
+    })();
+  }, [storeId]);
+
+  /** Source of truth is orders_core; refetch when core or kitchen row changes. */
+  useEffect(() => {
+    if (!storeInternalId || !storeId) return;
+    const supabase = createClient();
+    const reload = () => {
+      void fetchOrders();
+      void fetchStats();
+    };
+    const ch = supabase
+      .channel(`partner_store_orders:${storeInternalId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders_core',
+          filter: `merchant_store_id=eq.${storeInternalId}`,
+        },
+        reload
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders_food',
+          filter: `merchant_store_id=eq.${storeInternalId}`,
+        },
+        reload
+      )
+      .subscribe();
+    return () => {
+      ch.unsubscribe();
+    };
+  }, [storeInternalId, storeId, fetchOrders, fetchStats]);
 
   const fetchOtp = useCallback(
     async (orderId: number) => {
@@ -466,9 +526,9 @@ function OrdersPageContent() {
     [storeId]
   );
 
-  // Auto-fetch OTP for all orders when they're loaded (always visible)
+  // Auto-fetch OTP for all orders when they're loaded (always visible) — OTP rows are on orders_food only
   useEffect(() => {
-    const orderIds = orders.map(o => o.id).filter(Boolean) as number[];
+    const orderIds = orders.filter((o) => !o.core_only).map((o) => o.id);
     orderIds.forEach((orderId) => {
       if (!otpCache[orderId]) {
         fetchOtp(orderId);
@@ -479,10 +539,11 @@ function OrdersPageContent() {
 
   // Auto-fetch OTP when order is selected (for header display)
   useEffect(() => {
-    if (selectedOrder?.id && !otpCache[selectedOrder.id]) {
+    if (!selectedOrder?.id || selectedOrder.core_only) return;
+    if (!otpCache[selectedOrder.id]) {
       fetchOtp(selectedOrder.id);
     }
-  }, [selectedOrder?.id, fetchOtp]);
+  }, [selectedOrder?.id, selectedOrder?.core_only, fetchOtp]);
 
   const validateOtp = useCallback(
     async (orderId: number) => {
@@ -554,45 +615,30 @@ function OrdersPageContent() {
     setCloseClosureType(null);
     setCloseReason('');
     setCloseReasonOther('');
-    fetch(`/api/store-operations?store_id=${encodeURIComponent(storeId)}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.today_slots?.[0]?.start) setOpeningTimeForClose(data.today_slots[0].start);
-      })
-      .catch(() => {});
   }, [showStoreCloseModal, storeId]);
-
-  const formatTimeHMS = useCallback((t: string) => {
-    if (!t) return '00:00:00';
-    const parts = t.split(':');
-    if (parts.length === 2) return `${t}:00`;
-    if (parts.length === 1) return `${t.padStart(2, '0')}:00:00`;
-    return t;
-  }, []);
 
   const confirmStoreClose = useCallback(async () => {
     if (!storeId || !closeClosureType) return;
     setCloseConfirmLoading(true);
-    const now = new Date();
-    let durationMinutes: number | undefined;
+    let manualCloseUntilIso: string | undefined;
     if (closeClosureType === 'temporary') {
       const closedUntil = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
-      durationMinutes = Math.max(1, Math.round((closedUntil.getTime() - now.getTime()) / (1000 * 60)));
-    } else if (closeClosureType === 'today') {
-      const [h, m] = openingTimeForClose.split(':').map(Number);
-      const tomorrowOpen = new Date(now);
-      tomorrowOpen.setDate(tomorrowOpen.getDate() + 1);
-      tomorrowOpen.setHours(h, m, 0, 0);
-      durationMinutes = Math.max(1, Math.round((tomorrowOpen.getTime() - now.getTime()) / (1000 * 60)));
+      manualCloseUntilIso = closedUntil.toISOString();
     }
     const reasonText = closeReason === 'Other' ? (closeReasonOther?.trim() || 'Other') : closeReason;
-    const body: { store_id: string; action: string; closure_type: string; duration_minutes?: number; close_reason?: string } = {
+    const body: {
+      store_id: string;
+      action: string;
+      closure_type: string;
+      manual_close_until?: string;
+      close_reason?: string;
+    } = {
       store_id: storeId,
       action: 'manual_close',
       closure_type: closeClosureType,
       close_reason: reasonText,
     };
-    if (durationMinutes != null) body.duration_minutes = durationMinutes;
+    if (manualCloseUntilIso) body.manual_close_until = manualCloseUntilIso;
     try {
       const res = await fetch('/api/store-operations', {
         method: 'POST',
@@ -611,7 +657,7 @@ function OrdersPageContent() {
         else if (closeClosureType === 'temporary') {
           const until = new Date(`${closeClosureDate}T${closeClosureTime}:00`);
           toast.success(`Store closed until ${until.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}. You can also turn it ON manually anytime.`);
-        } else toast.success(`Store closed for today. Reopens tomorrow at ${openingTimeForClose}`);
+        } else toast.success('Store closed for the rest of today (IST). You can turn it ON anytime.');
       } else {
         toast.error(data.error || 'Failed to close store');
       }
@@ -620,7 +666,7 @@ function OrdersPageContent() {
     } finally {
       setCloseConfirmLoading(false);
     }
-  }, [storeId, closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther, openingTimeForClose]);
+  }, [storeId, closeClosureType, closeClosureDate, closeClosureTime, closeReason, closeReasonOther]);
 
   const handleStoreCloseModalConfirm = useCallback(() => {
     if (!closeClosureType) {
@@ -651,69 +697,245 @@ function OrdersPageContent() {
 
   const updateStatus = useCallback(
     async (order: OrdersFoodRow, newStatus: string, extra?: { rejected_reason?: string }) => {
+      if (!storeId || !String(storeId).trim()) {
+        console.debug('[food-orders-ui] updateStatus blocked: missing storeId', {
+          order_id: order?.order_id,
+          orders_food_id: order?.id,
+          core_only: (order as any)?.core_only,
+          newStatus,
+        });
+        toast.error('Store not selected. Please refresh and select your store again.');
+        return;
+      }
       setActionLoading(order.id);
       const payload = { store_id: storeId, status: newStatus, ...extra };
 
-      const tryUpdate = async (): Promise<{ ok: boolean; data: unknown }> => {
-        const res = await fetch(`/api/food-orders/${order.id}`, {
+      const safeReadBody = async (res: Response): Promise<unknown> => {
+        try {
+          return await res.json();
+        } catch {
+          try {
+            const txt = await res.text();
+            return { error: txt || 'Non-JSON response' };
+          } catch {
+            return { error: 'Could not read response body' };
+          }
+        }
+      };
+
+      const tryUpdateFood = async (): Promise<{ ok: boolean; data: unknown; status: number }> => {
+        const url = `/api/food-orders/${order.id}`;
+        console.debug('[food-orders-ui] PATCH start', {
+          kind: 'orders_food',
+          url,
+          payload,
+          order_id: order.order_id,
+          orders_food_id: order.id,
+        });
+        const res = await fetch(url, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        const data = await res.json();
-        return { ok: res.ok, data };
+        const data = await safeReadBody(res);
+        console.debug('[food-orders-ui] PATCH done', {
+          kind: 'orders_food',
+          url,
+          httpStatus: res.status,
+          ok: res.ok,
+          data,
+        });
+        return { ok: res.ok, data, status: res.status };
+      };
+
+      const tryUpdateCore = async (): Promise<{ ok: boolean; data: unknown; status: number }> => {
+        const url = `/api/merchant/orders-core/${order.order_id}`;
+        console.debug('[food-orders-ui] PATCH start', {
+          kind: 'orders_core',
+          url,
+          payload,
+          core_id: order.order_id,
+        });
+        const res = await fetch(url, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await safeReadBody(res);
+        console.debug('[food-orders-ui] PATCH done', {
+          kind: 'orders_core',
+          url,
+          httpStatus: res.status,
+          ok: res.ok,
+          data,
+        });
+        return { ok: res.ok, data, status: res.status };
       };
 
       try {
-        let result = await tryUpdate();
-        if (!result.ok) {
+        const coreOnly = order.core_only === true;
+        let result = coreOnly ? await tryUpdateCore() : await tryUpdateFood();
+        if (!result.ok && result.status >= 500) {
           await new Promise((r) => setTimeout(r, 1500));
-          result = await tryUpdate();
+          result = coreOnly ? await tryUpdateCore() : await tryUpdateFood();
         }
         if (!result.ok) {
+          console.debug('[food-orders-ui] updateStatus failed', {
+            coreOnly,
+            result,
+            payload,
+            order_id: order.order_id,
+            orders_food_id: order.id,
+          });
           toast.error((result.data as { error?: string })?.error || 'Failed to update');
           return;
         }
-        const data = result.data as { order?: OrdersFoodRow };
-        if (data?.order) {
-          setOrders((prev) => prev.map((o) => (o.id === order.id ? (data.order as OrdersFoodRow) : o)));
-          if (selectedOrder?.id === order.id) {
-            setSelectedOrder(data.order);
-            if (newStatus === 'DELIVERED') {
-              closeOrderPanel();
+        if (coreOnly) {
+          await fetchOrders();
+          toast.success(`Order status updated to ${newStatus}`);
+          // If the currently-open order moved out of this tab, auto-open next matching order.
+          if (selectedOrder?.id === order.id && !orderMatchesFoodOrdersSidebar({ ...order, order_status: newStatus } as any, filter)) {
+            setTimeout(() => {
+              setOrders((prev) => {
+                const next = prev.find((o) => orderMatchesFoodOrdersSidebar(o, filter));
+                if (next) {
+                  setSelectedOrder(next);
+                  setRightPanelOpen(true);
+                } else {
+                  setSelectedOrder(null);
+                  setRightPanelOpen(false);
+                }
+                return prev;
+              });
+            }, 0);
+          }
+        } else {
+          const data = result.data as { order?: OrdersFoodRow };
+          if (data?.order) {
+            setOrders((prev) => prev.map((o) => (o.id === order.id ? (data.order as OrdersFoodRow) : o)));
+            if (selectedOrder?.id === order.id) {
+              setSelectedOrder(data.order);
+              if (newStatus === 'DELIVERED') {
+                closeOrderPanel();
+              }
+            }
+            if (newStatus === 'OUT_FOR_DELIVERY') setDispatchModal(null);
+          }
+          toast.success(`Order status updated to ${newStatus}`);
+          if (selectedOrder?.id === order.id && data?.order) {
+            if (!orderMatchesFoodOrdersSidebar(data.order as OrdersFoodRow, filter)) {
+              setTimeout(() => {
+                setOrders((prev) => {
+                  const next = prev.find((o) => orderMatchesFoodOrdersSidebar(o, filter));
+                  if (next) {
+                    setSelectedOrder(next);
+                    setRightPanelOpen(true);
+                  } else {
+                    setSelectedOrder(null);
+                    setRightPanelOpen(false);
+                  }
+                  return prev;
+                });
+              }, 0);
             }
           }
-          if (newStatus === 'OUT_FOR_DELIVERY') setDispatchModal(null);
         }
-        toast.success(`Order status updated to ${newStatus}`);
-      } catch {
-        toast.error('Failed to update order');
+      } catch (e) {
+        console.debug('[food-orders-ui] updateStatus exception', {
+          message: e instanceof Error ? e.message : String(e),
+          order_id: order?.order_id,
+          orders_food_id: order?.id,
+          newStatus,
+        });
+        toast.error(e instanceof Error ? e.message : 'Failed to update order');
       } finally {
         setActionLoading(null);
       }
     },
-    [storeId, selectedOrder, closeOrderPanel]
+    [storeId, selectedOrder, closeOrderPanel, fetchOrders]
   );
 
-  const norm = (s: string | null | undefined) => (s === 'NEW' ? 'CREATED' : s || 'CREATED');
-  const filteredOrders =
-    filter === 'all'
-      ? orders
-      : filter === 'active'
-        ? orders.filter((o) =>
-            ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(o.order_status || 'CREATED')
-          )
-        : orders.filter((o) => norm(o.order_status) === filter);
+  const acceptCountdown = useMemo(() => {
+    if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
+    const st = normOrderStatus(selectedOrder.order_status);
+    if (st !== 'CREATED') return { label: undefined, disabled: false };
+    const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+    const deadline = new Date(selectedOrder.created_at).getTime() + mins * 60_000;
+    const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
+    const m = Math.floor(secondsLeft / 60);
+    const s = secondsLeft % 60;
+    return {
+      label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
+      disabled: secondsLeft <= 0,
+    };
+  }, [selectedOrder, acceptanceSettings?.acceptance_window_minutes, nowTick]);
 
-  const counts: Record<string, number> = {};
-  orders.forEach((o) => {
-    const s = norm(o.order_status);
-    counts[s] = (counts[s] || 0) + 1;
-  });
+  const acceptCountdownFor = useCallback(
+    (order: OrdersFoodRow) => {
+      const st = normOrderStatus(order.order_status);
+      if (st !== 'CREATED') return { label: undefined as string | undefined, disabled: false };
+      const mins = Math.max(1, Math.min(180, Number(acceptanceSettings?.acceptance_window_minutes ?? 5)));
+      const deadline = new Date(order.created_at).getTime() + mins * 60_000;
+      const secondsLeft = Math.max(0, Math.ceil((deadline - nowTick) / 1000));
+      const m = Math.floor(secondsLeft / 60);
+      const s = secondsLeft % 60;
+      return {
+        label: `Accept (${m}:${s.toString().padStart(2, '0')})`,
+        disabled: secondsLeft <= 0,
+      };
+    },
+    [acceptanceSettings?.acceptance_window_minutes, nowTick]
+  );
+
+  const filteredOrders = orders.filter((o) => orderMatchesFoodOrdersSidebar(o, filter));
+
+  const displayOrders = useMemo(() => {
+    let list = [...filteredOrders];
+    const digitsOnly = orderIdSearch.replace(/\D/g, '');
+    if (digitsOnly.length >= 4) {
+      const last4 = digitsOnly.slice(-4);
+      list = list.filter((o) => {
+        const fd = (o.formatted_order_id || '').replace(/\D/g, '');
+        if (fd.slice(-4) === last4) return true;
+        const oid = String(o.order_id).replace(/\D/g, '');
+        return oid.slice(-4) === last4;
+      });
+    }
+    if (orderSort === 'newest') {
+      list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    } else if (orderSort === 'oldest') {
+      list.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    } else {
+      list.sort((a, b) => prepDeadlineMs(a) - prepDeadlineMs(b));
+    }
+    return list;
+  }, [filteredOrders, orderIdSearch, orderSort]);
+
+  const sidebarFilterCounts: Record<FoodOrdersSidebarFilterId, number> = {
+    NEW_ORDERS: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'NEW_ORDERS')).length,
+    PREPARING: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'PREPARING')).length,
+    READY_FOR_PICKUP: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'READY_FOR_PICKUP')).length,
+    OUT_FOR_DELIVERY: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'OUT_FOR_DELIVERY')).length,
+    RTO: orders.filter((o) => orderMatchesFoodOrdersSidebar(o, 'RTO')).length,
+  };
+
+  const foodOrdersEmptyVariant = useMemo(() => {
+    if (filteredOrders.length > 0 && displayOrders.length === 0) return 'search' as const;
+    if (
+      filter === 'NEW_ORDERS' ||
+      filter === 'PREPARING' ||
+      filter === 'READY_FOR_PICKUP' ||
+      filter === 'OUT_FOR_DELIVERY' ||
+      filter === 'RTO'
+    ) {
+      return filter;
+    }
+    return 'PREPARING' as const;
+  }, [filteredOrders.length, displayOrders.length, filter]);
 
   if (loading && orders.length === 0) {
     return (
-      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} leftSidebarCollapsed>
+      <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''}>
         <PageSkeletonOrders />
       </MXLayoutWhite>
     );
@@ -736,31 +958,103 @@ function OrdersPageContent() {
     </div>
   ) : null;
 
+  function StoreClosedOrdersState() {
+    return (
+      <div className="flex flex-1 min-h-0 items-center justify-center bg-white">
+        <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center px-6 py-14 text-center">
+          <svg viewBox="0 0 360 220" className="h-auto w-full max-w-[520px]" aria-hidden>
+            {/* hanger */}
+            <path
+              d="M120 48 L180 12 L240 48"
+              fill="none"
+              stroke="#cbd5e1"
+              strokeWidth="10"
+              strokeLinecap="round"
+            />
+            <circle cx="180" cy="12" r="10" fill="#34d399" />
+            {/* board */}
+            <g transform="translate(0,0) rotate(-10 180 120)">
+              <rect
+                x="92"
+                y="62"
+                width="176"
+                height="112"
+                rx="16"
+                fill="#f8fafc"
+                stroke="#cbd5e1"
+                strokeWidth="6"
+              />
+              <rect
+                x="108"
+                y="78"
+                width="144"
+                height="80"
+                rx="12"
+                fill="#ffffff"
+                stroke="#e2e8f0"
+                strokeWidth="3"
+              />
+              <text
+                x="180"
+                y="128"
+                textAnchor="middle"
+                fill="#64748b"
+                fontSize="40"
+                fontWeight="800"
+                fontFamily="system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+                letterSpacing="2"
+              >
+                CLOSED
+              </text>
+            </g>
+          </svg>
+
+          <p className="mt-6 text-sm font-semibold text-slate-700">You are offline</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Visit{" "}
+            <button
+              type="button"
+              onClick={() => {
+                window.dispatchEvent(new Event("mx-open-need-help"));
+              }}
+              className="font-semibold text-emerald-600 underline decoration-emerald-300 underline-offset-2 hover:text-emerald-700"
+            >
+              help centre
+            </button>{" "}
+            for more details
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
-    <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} leftSidebarCollapsed mobileMenuExtra={mobileStatsExtra}>
-      <Toaster position="top-right" richColors />
+    <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
+      <PartnerPageHeader title="Food Orders" subtitle={store?.store_name || undefined} />
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
-        {/* Header: full width, extends over sidebar area so controls align with right sidebar */}
-        <header id="food-orders-header" className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0">
-          <div className="w-full px-3 sm:px-4 py-2 sm:py-3">
+        <header id="food-orders-header" className="sticky top-0 z-20 bg-white shrink-0">
+          <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
             {/* Mobile: 2 rows (Row 1 = Today+Active, Row 2 = Filter + status + sound). Desktop: single row */}
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
+            <div className="flex w-full min-w-0 flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-0">
               {/* Row 1 (mobile) / Left (desktop): On mobile Today+Active on right. On desktop title + all stats on left */}
               <div className="flex items-center justify-end md:justify-start md:flex-1 md:items-center md:gap-3 min-w-0 overflow-x-auto hide-scrollbar">
                 {/* Hamburger menu on left (mobile) */}
                 <div className="md:hidden mr-2">
                   <MobileHamburgerButton />
                 </div>
-                {/* Title - always visible on desktop */}
-                <div className="hidden md:flex items-center gap-2 shrink-0">
-                  <Sparkles className="w-5 h-5 text-orange-500 shrink-0" />
-                  <h1 className="text-lg font-bold text-gray-900 whitespace-nowrap">Food Orders</h1>
-                </div>
                 {stats && (
                   <div className="flex items-center gap-2 shrink-0">
-                    <StatBadge label="Today" value={String(stats.ordersToday)} />
-                    <StatBadge label="Active" value={String(stats.activeOrders)} accent />
+                    <StatBadge
+                      label="Today"
+                      value={String(stats.ordersTodayActive ?? stats.ordersToday)}
+                      title="Orders placed today that are still active (not delivered or cancelled)"
+                    />
+                    <StatBadge
+                      label="Active"
+                      value={String(stats.activeOrders ?? stats.ordersTodayActive ?? 0)}
+                      accent
+                    />
                   </div>
                 )}
                 {stats && (
@@ -771,16 +1065,7 @@ function OrdersPageContent() {
                   </div>
                 )}
               </div>
-              {/* Row 2 (mobile) / Right (desktop): Filter, status button, sound (+ grid toggle on desktop) */}
-              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0 lg:w-64 lg:pl-4">
-                <button
-                  onClick={() => setFilterDrawerOpen(true)}
-                  className="lg:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200 whitespace-nowrap"
-                  title="Filter orders"
-                >
-                  <SlidersHorizontal size={14} />
-                  Filter
-                </button>
+              <div className="flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
               <button
                 onClick={handleStoreToggle}
                 disabled={isStoreOpen === null}
@@ -827,13 +1112,62 @@ function OrdersPageContent() {
               </div>
             </div>
           </div>
+          {/* Status pills + sort + search (Zomato-style band) */}
+          <div className="border-t border-gray-200 bg-white px-3 sm:px-4 lg:px-6 py-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                {FOOD_ORDERS_SIDEBAR_FILTERS.map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => handleFilterChange(id)}
+                    className={`px-3.5 py-2 rounded-full text-sm font-semibold border transition-colors shrink-0 ${
+                      filter === id ? SIDEBAR_ACTIVE_CLASS : SIDEBAR_INACTIVE_CLASS
+                    }`}
+                  >
+                    {label} ({sidebarFilterCounts[id]})
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full xl:w-auto xl:shrink-0">
+                <div className="relative w-full sm:w-auto sm:min-w-[180px]">
+                  <select
+                    value={orderSort}
+                    onChange={(e) => setOrderSort(e.target.value as 'remaining' | 'newest' | 'oldest')}
+                    className="w-full appearance-none pl-3 pr-9 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-gray-800 cursor-pointer"
+                    aria-label="Sort orders"
+                  >
+                    <optgroup label="Placed at">
+                      <option value="newest">Newest first</option>
+                      <option value="oldest">Oldest first</option>
+                    </optgroup>
+                    <option value="remaining">Prep time left</option>
+                  </select>
+                  <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 pointer-events-none" aria-hidden />
+                </div>
+                <div className="relative flex-1 sm:min-w-[220px] lg:min-w-[300px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" aria-hidden />
+                  <input
+                    type="search"
+                    inputMode="numeric"
+                    placeholder="Search by the 4 digit order ID"
+                    value={orderIdSearch}
+                    onChange={(e) => setOrderIdSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </header>
 
-        <div className="flex flex-1 min-h-0 lg:pr-64 overflow-hidden">
+        <div className="flex flex-1 min-h-0 overflow-hidden">
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
           <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-hidden">
-            {/* Desktop (lg+): When order open, split layout. Mobile: full-screen overlay on card click */}
-            {rightPanelOpen && selectedOrder ? (
+            {/* Store closed/offline: show dedicated blank-state in the main area */}
+            {isStoreOpen === false ? (
+              <StoreClosedOrdersState />
+            ) : rightPanelOpen && selectedOrder ? (
               <>
                 {/* Order details: single card, actions top-right, reject half width, space used evenly */}
                 <div className="hidden lg:flex flex-1 min-w-0 border-r border-gray-200 bg-gray-50/80 flex-col overflow-hidden order-1 p-3">
@@ -1060,6 +1394,8 @@ function OrdersPageContent() {
                               otpVerified={otpVerified.has(selectedOrder.id)}
                               topRightLayout
                               hideRtoMenu
+                              acceptLabel={acceptCountdown.label}
+                              acceptDisabled={acceptCountdown.disabled}
                             />
                           </div>
                           {/* Items - compact premium with QTY | Price | Amount */}
@@ -1160,6 +1496,8 @@ function OrdersPageContent() {
                     actionLoading={actionLoading === selectedOrder.id}
                     onOpenRidersLog={() => { setRidersLogModalOrderId(selectedOrder.id); setRidersLogModalOrderLabel(selectedOrder.formatted_order_id || `#${selectedOrder.order_id}`); }}
                     onOpenRiderImage={(url) => setRiderImageModalUrl(url)}
+                    acceptLabel={acceptCountdown.label}
+                    acceptDisabled={acceptCountdown.disabled}
                   />
                 </div>
 
@@ -1167,7 +1505,7 @@ function OrdersPageContent() {
                 <div className="hidden lg:flex w-64 shrink-0 flex-col overflow-hidden pl-4 order-2">
                   <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 hide-scrollbar">
                     <div className="space-y-3 pr-1">
-                      {filteredOrders.map((order) => (
+                      {displayOrders.map((order) => (
                         <OrderCard
                           key={order.id}
                           order={order}
@@ -1190,15 +1528,13 @@ function OrdersPageContent() {
                           otpVerified={otpVerified.has(order.id)}
                           onFetchOtp={() => fetchOtp(order.id)}
                           statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                          acceptLabel={acceptCountdownFor(order).label}
+                          acceptDisabled={acceptCountdownFor(order).disabled}
+                          hideDetails
                         />
                       ))}
                     </div>
-                    {filteredOrders.length === 0 && (
-                      <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                        <Package className="w-12 h-12 mb-3 opacity-50" />
-                        <p className="text-sm font-medium">No orders in this filter</p>
-                      </div>
-                    )}
+                    {displayOrders.length === 0 && <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />}
                   </div>
                 </div>
               </>
@@ -1207,179 +1543,77 @@ function OrdersPageContent() {
             {/* Main order cards / list - full width when no order open */}
             <div className="flex-1 overflow-y-auto p-3 sm:p-4 min-w-0 min-h-0 hide-scrollbar" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
               {viewMode === 'card' ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
-                {filteredOrders.map((order) => (
-                  <OrderCard
-                    key={order.id}
-                    order={order}
-                    selected={selectedOrder?.id === order.id}
-                    onClick={() => openOrder(order)}
-                    onAccept={() => updateStatus(order, 'ACCEPTED')}
-                    onReject={() => setRejectModal(order)}
-                    onPreparing={() => updateStatus(order, 'PREPARING')}
-                    onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
-                    onDispatch={() => {
-                      fetchOtp(order.id);
-                      setDispatchModal(order);
-                      setOtpInput('');
-                    }}
-                    onRto={() => setRtoModalOrder(order)}
-                    onComplete={() => updateStatus(order, 'DELIVERED')}
-                    loading={actionLoading === order.id}
-                    otpCode={otpCache[order.id]?.otp_code}
-                    otpType={otpCache[order.id]?.otp_type}
-                    otpVerified={otpVerified.has(order.id)}
-                    onFetchOtp={() => fetchOtp(order.id)}
-                    statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
-                  />
-                ))}
-              </div>
-              ) : (
-              // List view - only shown on large screens (lg+)
-              <div className="hidden lg:block space-y-2">
-                {filteredOrders.map((order) => (
-                  <OrderListRow
-                    key={order.id}
-                    order={order}
-                    selected={selectedOrder?.id === order.id}
-                    onClick={() => openOrder(order)}
-                    onAccept={() => updateStatus(order, 'ACCEPTED')}
-                    onReject={() => setRejectModal(order)}
-                    onPreparing={() => updateStatus(order, 'PREPARING')}
-                    onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
-                    onDispatch={() => setDispatchModal(order)}
-                    onRto={() => setRtoModalOrder(order)}
-                    onComplete={() => updateStatus(order, 'DELIVERED')}
-                    loading={actionLoading === order.id}
-                    otpCode={otpCache[order.id]?.otp_code}
-                    otpType={otpCache[order.id]?.otp_type}
-                    otpVerified={otpVerified.has(order.id)}
-                    onFetchOtp={() => fetchOtp(order.id)}
-                    statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
-                  />
-                ))}
-                {filteredOrders.length === 0 && (
-                  <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                    <Package className="w-12 h-12 mb-3 opacity-50" />
-                    <p className="text-sm font-medium">No orders in this filter</p>
+                displayOrders.length === 0 ? (
+                  <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 sm:gap-3">
+                    {displayOrders.map((order) => (
+                      <OrderCard
+                        key={order.id}
+                        order={order}
+                        selected={selectedOrder?.id === order.id}
+                        onClick={() => openOrder(order)}
+                        onAccept={() => updateStatus(order, 'ACCEPTED')}
+                        onReject={() => setRejectModal(order)}
+                        onPreparing={() => updateStatus(order, 'PREPARING')}
+                        onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                        onDispatch={() => {
+                          fetchOtp(order.id);
+                          setDispatchModal(order);
+                          setOtpInput('');
+                        }}
+                        onRto={() => setRtoModalOrder(order)}
+                        onComplete={() => updateStatus(order, 'DELIVERED')}
+                        loading={actionLoading === order.id}
+                        otpCode={otpCache[order.id]?.otp_code}
+                        otpType={otpCache[order.id]?.otp_type}
+                        otpVerified={otpVerified.has(order.id)}
+                        onFetchOtp={() => fetchOtp(order.id)}
+                        statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                        acceptLabel={acceptCountdownFor(order).label}
+                        acceptDisabled={acceptCountdownFor(order).disabled}
+                      />
+                    ))}
                   </div>
-                )}
-              </div>
-              )}
-              {filteredOrders.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 text-gray-500">
-                  <Package className="w-12 h-12 mb-3 opacity-50" />
-                  <p className="text-sm font-medium">No orders in this filter</p>
+                )
+              ) : (
+                <div className="hidden lg:block space-y-2">
+                  {displayOrders.length === 0 ? (
+                    <FoodOrdersEmptyState variant={foodOrdersEmptyVariant} />
+                  ) : (
+                    displayOrders.map((order) => (
+                      <OrderListRow
+                        key={order.id}
+                        order={order}
+                        selected={selectedOrder?.id === order.id}
+                        onClick={() => openOrder(order)}
+                        onAccept={() => updateStatus(order, 'ACCEPTED')}
+                        onReject={() => setRejectModal(order)}
+                        onPreparing={() => updateStatus(order, 'PREPARING')}
+                        onReady={() => updateStatus(order, 'READY_FOR_PICKUP')}
+                        onDispatch={() => setDispatchModal(order)}
+                        onRto={() => setRtoModalOrder(order)}
+                        onComplete={() => updateStatus(order, 'DELIVERED')}
+                        loading={actionLoading === order.id}
+                        otpCode={otpCache[order.id]?.otp_code}
+                        otpType={otpCache[order.id]?.otp_type}
+                        otpVerified={otpVerified.has(order.id)}
+                        onFetchOtp={() => fetchOtp(order.id)}
+                        statusLabel={STATUS_LABEL[order.order_status || 'CREATED'] || order.order_status}
+                        acceptLabel={acceptCountdownFor(order).label}
+                        acceptDisabled={acceptCountdownFor(order).disabled}
+                      />
+                    ))
+                  )}
                 </div>
               )}
             </div>
               </>
             )}
-
-            {/* Right filters sidebar - fixed on right, starts below header */}
-            <div className="hidden lg:flex fixed right-0 top-16 bottom-0 w-64 flex-col border-l border-gray-200 bg-white shadow-lg z-30">
-              <div className="flex-1 overflow-y-auto hide-scrollbar p-3 pb-20 space-y-1">
-                <button
-                  onClick={() => handleFilterChange('all')}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium ${
-                    filter === 'all' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  All ({orders.length})
-                </button>
-                <button
-                  onClick={() => handleFilterChange('active')}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                    filter === 'active' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                >
-                  Active
-                  <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                    {orders.filter((o) =>
-                      ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(
-                        o.order_status || 'CREATED'
-                      )
-                    ).length}
-                  </span>
-                </button>
-                {STATUS_FILTERS.map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => handleFilterChange(f.id)}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                      filter === f.id ? 'bg-orange-100 text-orange-700' : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    {f.label}
-                    {(counts[f.id] || 0) > 0 && (
-                      <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-                        {counts[f.id]}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
           </div>
         </div>
       </div>
-
-      {/* Mobile filter drawer */}
-      {filterDrawerOpen && (
-        <>
-          <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setFilterDrawerOpen(false)} />
-          <div className="fixed top-0 right-0 bottom-0 w-64 max-w-[85vw] min-w-[240px] bg-white border-l border-gray-200 z-50 lg:hidden overflow-y-auto hide-scrollbar shadow-xl" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}>
-            <div className="p-4 flex items-center justify-between border-b border-gray-200 sticky top-0 bg-white">
-              <h3 className="font-semibold text-gray-900">Filter by status</h3>
-              <button onClick={() => setFilterDrawerOpen(false)} className="p-2 hover:bg-gray-100 rounded-lg">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="p-3 space-y-1">
-              <button
-                onClick={() => handleFilterChange('all')}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium ${
-                  filter === 'all' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                All ({orders.length})
-              </button>
-              <button
-                onClick={() => handleFilterChange('active')}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                  filter === 'active' ? 'bg-orange-100 text-orange-700' : 'text-gray-700 hover:bg-gray-100'
-                }`}
-              >
-                Active
-                <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                  {orders.filter((o) =>
-                    ['CREATED', 'NEW', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'RTO'].includes(
-                      o.order_status || 'CREATED'
-                    )
-                  ).length}
-                </span>
-              </button>
-              {STATUS_FILTERS.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => handleFilterChange(f.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-between ${
-                    filter === f.id ? 'bg-orange-100 text-orange-700' : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {f.label}
-                  {(counts[f.id] || 0) > 0 && (
-                    <span className="text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-                      {counts[f.id]}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Reject modal – portaled so overlay is above sidebar (z-50); backdrop-blur covers full screen */}
       {rejectModal && typeof document !== 'undefined' && createPortal(
@@ -1518,29 +1752,39 @@ function OrdersPageContent() {
         document.body
       )}
 
-      {/* Rider's log modal – all riders assigned to this order */}
+      {/* Rider's log – right sheet (all riders assigned to this order) */}
       {ridersLogModalOrderId != null && typeof document !== 'undefined' && createPortal(
-        <div
-          className="fixed inset-0 bg-black/50 backdrop-blur-md flex items-end sm:items-center justify-center z-[100] p-3 sm:p-4"
-          onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Close modal"
-        >
-          <div
-            className="bg-white rounded-t-xl sm:rounded-xl shadow-xl max-w-md w-full max-h-[85vh] overflow-hidden flex flex-col"
+        <div className="fixed inset-0 z-[95] flex justify-end" role="presentation">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
+            aria-label="Close rider log"
+            onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
+          />
+          <aside
+            className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="riders-log-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="shrink-0 flex items-center justify-between p-4 border-b border-gray-200">
-              <h3 className="font-semibold text-gray-900">
+            <div className="mx-sheet-header justify-between gap-3 !px-4">
+              <h3 id="riders-log-title" className="font-semibold text-gray-900 pr-2">
                 Rider&apos;s log
-                {ridersLogModalOrderLabel && <span className="text-gray-500 font-medium ml-1.5">({ridersLogModalOrderLabel})</span>}
+                {ridersLogModalOrderLabel && (
+                  <span className="text-gray-500 font-medium ml-1.5">({ridersLogModalOrderLabel})</span>
+                )}
               </h3>
-              <button type="button" onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors" aria-label="Close">
+              <button
+                type="button"
+                onClick={() => { setRidersLogModalOrderId(null); setRidersLogModalOrderLabel(null); }}
+                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
+                aria-label="Close"
+              >
                 <X size={18} className="text-gray-500" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
+            <div className="flex-1 overflow-y-auto p-4 min-h-0">
               {ridersLogLoading ? (
                 <p className="text-sm text-gray-500">Loading...</p>
               ) : ridersLogList.length === 0 ? (
@@ -1548,7 +1792,8 @@ function OrdersPageContent() {
               ) : (
                 <ul className="space-y-3">
                   {ridersLogList.map((r, idx) => {
-                    const fmt = (s: string | null) => (s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—');
+                    const fmt = (s: string | null) =>
+                      s ? new Date(s).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—';
                     return (
                       <li key={`${r.rider_id}-${idx}`} className="p-3 rounded-lg border border-gray-200 bg-gray-50/50">
                         <div className="flex items-start gap-3">
@@ -1556,7 +1801,7 @@ function OrdersPageContent() {
                             <button
                               type="button"
                               onClick={() => setRiderImageModalUrl(r.selfie_url)}
-                              className="shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
+                              className="shrink-0 w-10 h-10 rounded-full overflow-hidden border-2 border-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
                             >
                               <img src={r.selfie_url} alt={r.rider_name || 'Rider'} className="w-full h-full object-cover" />
                             </button>
@@ -1568,7 +1813,9 @@ function OrdersPageContent() {
                           <div className="min-w-0 flex-1 text-sm">
                             <p className="font-semibold text-gray-900">{r.rider_name || `Rider #${r.rider_id}`}</p>
                             {r.rider_mobile && (
-                              <a href={`tel:${r.rider_mobile}`} className="text-purple-600 hover:underline">{r.rider_mobile}</a>
+                              <a href={`tel:${r.rider_mobile}`} className="text-purple-600 hover:underline">
+                                {r.rider_mobile}
+                              </a>
                             )}
                             <p className="text-[10px] text-gray-500 mt-1 capitalize">{r.assignment_status?.replace(/_/g, ' ')}</p>
                             <div className="mt-2 text-[10px] text-gray-600 space-y-0.5">
@@ -1588,7 +1835,7 @@ function OrdersPageContent() {
                 </ul>
               )}
             </div>
-          </div>
+          </aside>
         </div>,
         document.body
       )}
@@ -1652,7 +1899,7 @@ function OrdersPageContent() {
                 <input type="radio" name="closureType" checked={closeClosureType === 'today'} onChange={() => setCloseClosureType('today')} className="w-4 h-4" />
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-gray-900">Close for Today</p>
-                  <p className="text-xs text-gray-600">Reopen tomorrow at {formatTimeHMS(openingTimeForClose)}</p>
+                  <p className="text-xs text-gray-600">Closed until end of today (India time). Schedule can resume tomorrow.</p>
                 </div>
               </label>
               <label className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer border-2 ${closeClosureType === 'manual_hold' ? 'bg-amber-50 border-amber-400' : 'border-gray-200 hover:border-amber-200'}`}>
@@ -1751,13 +1998,16 @@ function StatBadge({
   label,
   value,
   accent,
+  title,
 }: {
   label: string;
   value: string;
   accent?: boolean;
+  title?: string;
 }) {
   return (
     <div
+      title={title}
       className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
         accent ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700'
       }`}
@@ -2044,6 +2294,8 @@ function OrderDetailMobile({
   actionLoading,
   onOpenRidersLog,
   onOpenRiderImage,
+  acceptLabel,
+  acceptDisabled,
 }: {
   order: OrdersFoodRow;
   onClose: () => void;
@@ -2064,6 +2316,8 @@ function OrderDetailMobile({
   actionLoading: boolean;
   onOpenRidersLog?: () => void;
   onOpenRiderImage?: (url: string) => void;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const statusColor =
@@ -2349,6 +2603,8 @@ function OrderDetailMobile({
             onRto={onRto}
             loading={actionLoading}
             otpVerified={otpVerified}
+            acceptLabel={acceptLabel}
+            acceptDisabled={acceptDisabled}
           />
         </div>
       </div>
@@ -2373,6 +2629,9 @@ function OrderCard({
   otpVerified,
   onFetchOtp,
   statusLabel,
+  acceptLabel,
+  acceptDisabled,
+  hideDetails,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -2390,6 +2649,10 @@ function OrderCard({
   otpVerified?: boolean;
   onFetchOtp?: () => void;
   statusLabel?: string;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
+  /** Hide the "Details" CTA (used in right slider list) */
+  hideDetails?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const isNew = status === 'CREATED' || status === 'NEW';
@@ -2417,7 +2680,7 @@ function OrderCard({
             fallbackOrderId={order.order_id}
             size="sm"
           />
-          <p className="text-xs text-gray-600 truncate">{order.restaurant_name || '—'}</p>
+      <p className="text-xs text-gray-600 truncate">{order.customer_name || '—'}</p>
         </div>
         <span
           className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
@@ -2488,29 +2751,39 @@ function OrderCard({
           {otpVerified && <span className="text-green-600 text-[10px]">✓ Verified</span>}
         </div>
       )}
-      <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-100">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
-        >
-          Details <ChevronRight size={14} />
-        </button>
-        <ActionBtns
-          order={order}
-          onAccept={onAccept}
-          onReject={onReject}
-          onPreparing={onPreparing}
-          onReady={onReady}
-          onDispatch={onDispatch}
-          onComplete={onComplete}
-          onRto={onRto}
-          loading={loading}
-          otpVerified={otpVerified}
-          compact
-        />
+      <div className="mt-2 pt-2 border-t border-gray-100 flex flex-col gap-2">
+        {/* Actions always in one row (no overlap) */}
+        <div className="w-full" onClick={(e) => e.stopPropagation()}>
+          <ActionBtns
+            order={order}
+            onAccept={onAccept}
+            onReject={onReject}
+            onPreparing={onPreparing}
+            onReady={onReady}
+            onDispatch={onDispatch}
+            onComplete={onComplete}
+            onRto={onRto}
+            loading={loading}
+            otpVerified={otpVerified}
+            compact
+            topRightLayout
+            hideRtoMenu
+            acceptLabel={acceptLabel}
+            acceptDisabled={acceptDisabled}
+          />
+        </div>
+
+        {!hideDetails ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick();
+            }}
+            className="self-start text-xs font-medium text-orange-600 hover:text-orange-700 flex items-center gap-0.5"
+          >
+            Details <ChevronRight size={14} />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -2533,6 +2806,8 @@ function OrderListRow({
   otpVerified,
   onFetchOtp,
   statusLabel,
+  acceptLabel,
+  acceptDisabled,
 }: {
   order: OrdersFoodRow;
   selected: boolean;
@@ -2550,6 +2825,8 @@ function OrderListRow({
   otpVerified?: boolean;
   onFetchOtp?: () => void;
   statusLabel?: string;
+  acceptLabel?: string;
+  acceptDisabled?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const value = Number(order.food_items_total_value || 0);
@@ -2599,7 +2876,7 @@ function OrderListRow({
 
       {/* Restaurant Name */}
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-gray-900 truncate">{order.restaurant_name || '—'}</p>
+        <p className="text-sm font-semibold text-gray-900 truncate">{order.customer_name || '—'}</p>
         <div className="flex items-center gap-3 mt-1">
           <span className="text-xs text-gray-500 flex items-center gap-1">
             <Clock size={11} />
@@ -2653,6 +2930,8 @@ function OrderListRow({
           loading={loading}
           otpVerified={otpVerified}
           compact
+          acceptLabel={acceptLabel}
+          acceptDisabled={acceptDisabled}
         />
       </div>
 
@@ -2685,6 +2964,8 @@ function ActionBtns({
   otpVerified,
   topRightLayout,
   hideRtoMenu,
+  acceptLabel,
+  acceptDisabled,
 }: {
   order: OrdersFoodRow;
   onAccept: () => void;
@@ -2701,6 +2982,10 @@ function ActionBtns({
   topRightLayout?: boolean;
   /** When true: do not render 3-dot RTO menu (e.g. when RTO is in header) */
   hideRtoMenu?: boolean;
+  /** Optional: show accept countdown label */
+  acceptLabel?: string;
+  /** Optional: disable accept when window expired */
+  acceptDisabled?: boolean;
 }) {
   const status = order.order_status || 'CREATED';
   const dis = loading;
@@ -2723,10 +3008,10 @@ function ActionBtns({
       <div className={`flex gap-2 items-center ${topRightLayout ? 'w-full flex-1' : 'flex-wrap'}`}>
         <button
           onClick={(e) => { e.stopPropagation(); onAccept(); }}
-          disabled={dis}
+          disabled={dis || acceptDisabled}
           className={`${btnBase} ${compact ? 'px-4 py-2 text-sm font-semibold' : 'px-5 py-2.5 text-base font-semibold'} ${primaryFull} bg-green-600 text-white hover:bg-green-700 hover:shadow-md border-green-700/20`}
         >
-          Accept
+          {acceptLabel || 'Accept'}
         </button>
         {onReject && (
           <button

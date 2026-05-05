@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants';
 import { ArrowLeft, FileText, Loader2 } from 'lucide-react';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
@@ -51,25 +52,20 @@ function AuditLogsContent() {
 
   return (
     <MXLayoutWhite restaurantName="Audit logs" restaurantId={storeId || DEMO_STORE_ID}>
+      <PartnerPageHeader title="Full audit logs" subtitle="Store activity and changes" />
       <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
         <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5">
           <div className="max-w-4xl mx-auto">
-            <div className="bg-white border-b border-gray-200 shadow-sm -mx-4 px-4 sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8 py-3 sm:py-4 mb-6">
-              <div className="flex items-center gap-3">
-                {/* Hamburger menu on left (mobile) */}
+            <div className="-mx-4 sm:-mx-6 lg:-mx-8 mx-shell-header !px-0 shadow-sm mb-6">
+              <div className="flex items-center gap-3 px-4 sm:px-6 lg:px-8 max-w-4xl mx-auto w-full min-w-0">
                 <MobileHamburgerButton />
-                {/* Back button - hidden on mobile, shown on desktop */}
                 <Link
                   href={storeId ? `/mx/dashboard?storeId=${storeId}` : '/mx/dashboard'}
-                  className="hidden md:flex p-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 transition-colors"
+                  className="hidden md:flex p-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 transition-colors shrink-0"
                 >
                   <ArrowLeft size={18} />
                 </Link>
-                {/* Heading - properly aligned */}
-                <div className="flex-1 min-w-0">
-                  <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-gray-900">Full audit logs</h1>
-                  <p className="text-xs sm:text-sm text-gray-600 mt-0.5">Store activity and changes</p>
-                </div>
+                <div className="flex-1 min-w-0" aria-hidden />
               </div>
             </div>
 

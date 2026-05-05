@@ -13,7 +13,6 @@ import {
   Dimensions,
   RefreshControl,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useEffect, useRef } from "react";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -25,8 +24,7 @@ import {
   SECTION_GAP,
   FONT_PAGE_TITLE,
   FONT_LABEL,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
 import { SwipeableOrderCard } from "@/components/SwipeableOrderCard";
 import { useStoreStatus } from "@/context/StoreStatusContext";
@@ -131,8 +129,16 @@ function formatScheduledOffDateAndTime(value: string | null | undefined): string
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { isOnline, manualCloseUntil, restrictionType, scheduledClosure, upcomingScheduledClosure, refresh } = useStoreStatus();
+  const {
+    isOnline,
+    manualCloseUntil,
+    restrictionType,
+    scheduledClosure,
+    upcomingScheduledClosure,
+    unavailableReason,
+    statusReason,
+    refresh,
+  } = useStoreStatus();
   const [dismissedRecentIds, setDismissedRecentIds] = useState<Set<string>>(new Set());
   const [toastVisible, setToastVisible] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -150,12 +156,21 @@ export default function DashboardScreen() {
   // Show the yellow banner ONLY when store is closed AND closure is manual/scheduled
   // (temp close, closed for today, schedule off, permanent shut). Never show when store is online;
   // hide instantly when store goes online. Do not show for auto/schedule-only closure (outside hours).
+  const unavail = unavailableReason != null ? String(unavailableReason).trim().toLowerCase() : "";
+  const status = statusReason != null ? String(statusReason).trim().toLowerCase() : "";
+  const restriction = restrictionType != null ? String(restrictionType).trim().toLowerCase() : "";
   const hasManualOrScheduledClosure =
     scheduledClosure != null ||
     restrictionType === "PERMANENT_SHUT" ||
     (manualCloseUntil != null &&
       manualCloseUntil !== "" &&
-      new Date(manualCloseUntil).getTime() > Date.now());
+      new Date(manualCloseUntil).getTime() > Date.now()) ||
+    unavail === "manual_close" ||
+    unavail === "manual_indefinite" ||
+    status === "manual_close" ||
+    status === "manual_indefinite" ||
+    restriction === "manual" ||
+    restriction === "manual_hold";
   const showClosedBanner = !isOnline && hasManualOrScheduledClosure;
 
   const recentOrders = useMemo(() => {
@@ -180,7 +195,7 @@ export default function DashboardScreen() {
 
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
-  const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
+  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
   const REFRESH_TIMEOUT_MS = 15000;
 
@@ -203,7 +218,10 @@ export default function DashboardScreen() {
     <View style={styles.screenWrap}>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={[styles.content, { paddingBottom: scrollBottomPadding }]}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: scrollBottomPadding },
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -226,8 +244,10 @@ export default function DashboardScreen() {
               : scheduledClosure
                 ? `Store is closed from ${formatScheduledOffDateAndTime(scheduledClosure.from)} to ${formatScheduledOffDateAndTime(scheduledClosure.to)}.\nReason: ${scheduledClosure.reason}`
                 : manualCloseUntil
-                  ? `Store closed on ${formatScheduledOffDateAndTime(manualCloseUntil)}`
-                  : "Store is scheduled off."}
+                  ? `Store closed until ${formatScheduledOffDateAndTime(manualCloseUntil)}`
+                  : unavail === "manual_indefinite" || status === "manual_indefinite"
+                    ? "Store is closed until you turn it back ON from Store status."
+                    : "Store is scheduled off."}
           </Text>
           <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textSecondary} />
         </Pressable>
@@ -308,7 +328,7 @@ export default function DashboardScreen() {
       </View>
     </ScrollView>
     {toastVisible && (
-      <View style={[styles.toast, { bottom: (insets.bottom || 12) + 56 + 12 }]}>
+      <View style={[styles.toast, { bottom: TAB_BAR_SCROLL_CONTENT_PADDING + 8 }]}>
         <Text style={styles.toastText}>{TOAST_MSG}</Text>
       </View>
     )}
@@ -317,11 +337,12 @@ export default function DashboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  screenWrap: { flex: 1, backgroundColor: GatiMitraMerchant.background },
-  container: { flex: 1, backgroundColor: GatiMitraMerchant.background },
+  screenWrap: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
+  container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
   content: {
     paddingHorizontal: H_PADDING,
     paddingTop: 16,
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
   },
   scheduledOffBanner: {
     flexDirection: "row",

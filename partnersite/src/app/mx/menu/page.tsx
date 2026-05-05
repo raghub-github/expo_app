@@ -28,6 +28,8 @@ interface MenuItem {
   discount_percentage: number;
   tax_percentage: number;
   in_stock?: boolean;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
   has_customizations?: boolean;
   has_addons?: boolean;
   has_variants?: boolean;
@@ -104,12 +106,26 @@ interface Variant {
   is_default?: boolean;
 }
 
+type MenuCombo = {
+  id: number;
+  combo_name: string;
+  description: string | null;
+  combo_price: number;
+  image_url: string | null;
+  is_active?: boolean | null;
+  is_deleted?: boolean | null;
+  display_order?: number | null;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
+};
+
 import React, { useState, useEffect, Suspense, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'next/navigation'
-import { Toaster, toast } from 'sonner'
-import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye } from 'lucide-react'
+import { toast } from 'sonner'
+import { Plus, Edit2, Trash2, X, Upload, Package, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Image as ImageIcon, Info, Search, FileText, Eye, LayoutGrid, ListTree } from 'lucide-react'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 import { 
   fetchStoreById, 
@@ -147,6 +163,8 @@ interface MenuCategory {
   parent_category_id?: number | null;
   display_order?: number | null;
   is_active?: boolean;
+  out_of_stock_manual?: boolean;
+  out_of_stock_until?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -645,74 +663,142 @@ function ItemForm(props: ItemFormProps) {
   const lockOptionsTab = Boolean(onSaveAndNext) && !currentItemId;
 
   return (
-    <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-2 md:mx-0 border border-gray-100">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
-        <div>
-          <h2 className="text-base font-bold text-gray-900">{readOnly ? 'View menu item details' : title}</h2>
-          <p className="text-xs text-gray-500">
-            {readOnly
-              ? 'View only — editing is managed from the agent dashboard'
-              : isEdit
-                ? `Editing: ${currentItemId}`
-                : currentItemId
-                  ? `Item #${currentItemId} — add customizations or variants on the next tab`
-                  : 'Enter details for the menu item'}
+    <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl mx-2 md:mx-0 border border-gray-100 overflow-hidden">
+      <div className="flex min-h-[70vh] max-h-[90vh]">
+        {/* Left: item preview (desktop only) */}
+        <div className="hidden md:flex w-[380px] shrink-0 border-r border-gray-100 bg-gradient-to-b from-gray-50 to-white flex-col items-center justify-between p-4">
+          <div className="flex-1 w-full flex items-center justify-center">
+            <div className="relative w-[250px] h-[520px] rounded-[2.5rem] bg-black shadow-[0_20px_60px_rgba(0,0,0,0.25)] p-[10px]">
+              <div className="absolute top-[8px] left-1/2 -translate-x-1/2 w-[96px] h-[22px] bg-black rounded-b-2xl" />
+              <div className="h-full w-full rounded-[2.1rem] bg-white overflow-hidden border border-black/10">
+                <div className="px-4 pt-4">
+                  <p className="text-sm font-semibold text-gray-900 truncate">
+                    {formData.item_name?.trim() ? formData.item_name : 'Item name'}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                    {formData.item_description?.trim() ? formData.item_description : 'Item description'}
+                  </p>
+                </div>
+                <div className="px-4 mt-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-bold text-gray-900">
+                      ₹{String(formData.selling_price || formData.base_price || '').trim() || '—'}
+                    </p>
+                    <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
+                      Preview
+                    </span>
+                  </div>
+                </div>
+                <div className="px-4 mt-3">
+                  <div className="aspect-square w-full rounded-2xl bg-gray-100 overflow-hidden border border-gray-200 flex items-center justify-center">
+                    {imagePreview ? (
+                      imagePreview.startsWith('blob:') || imagePreview.startsWith('data:') ? (
+                        <img src={imagePreview} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <R2Image src={imagePreview} alt="" className="h-full w-full object-cover" />
+                      )
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-gray-400">
+                        <ImageIcon size={22} />
+                        <p className="mt-2 text-xs font-medium">No image</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="px-4 mt-3">
+                  <div className="h-2 w-24 rounded-full bg-gray-200" />
+                  <div className="mt-2 h-2 w-40 rounded-full bg-gray-200" />
+                  <div className="mt-2 h-2 w-32 rounded-full bg-gray-200" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p className="mt-4 text-xs text-gray-500">
+            Item preview on <span className="font-semibold text-gray-700">GatiMitra</span>
           </p>
         </div>
-        <button type="button" onClick={onCancel} className="p-1.5 hover:bg-gray-100 rounded-lg" aria-label="Close">
-          <X size={18} className="text-gray-600" />
-        </button>
-      </div>
 
-      <div className="flex border-b border-gray-200">
-        <button
-          type="button"
-          onClick={() => setActiveSection('main')}
-          className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'main' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'}`}
-        >
-          Item & pricing
-        </button>
-        <button
-          type="button"
-          title={
-            lockOptionsTab
-              ? 'Use Save and Next on the first tab to create the item, then add options here'
-              : undefined
-          }
-          disabled={lockOptionsTab}
-          onClick={() => {
-            if (lockOptionsTab) return;
-            setActiveSection('customization');
-          }}
-          className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'customization' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'} ${lockOptionsTab ? 'opacity-40 cursor-not-allowed' : ''}`}
-        >
-          Customizations & variants
-        </button>
-      </div>
+        {/* Right: editor */}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 shrink-0">
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-gray-900 truncate">
+                {formData.item_name?.trim()
+                  ? formData.item_name
+                  : (readOnly ? 'View menu item details' : title)}
+              </h2>
+              <p className="text-xs text-gray-500 truncate">
+                {readOnly
+                  ? 'View only — editing is managed from the agent dashboard'
+                  : isEdit
+                    ? `Editing: ${currentItemId}`
+                    : currentItemId
+                      ? `Item #${currentItemId} — add customizations or variants on the next tab`
+                      : 'Enter details for the menu item'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={onCancel}
+                className="p-2 hover:bg-gray-100 rounded-lg"
+                aria-label="Close"
+              >
+                <X size={18} className="text-gray-700" />
+              </button>
+            </div>
+          </div>
 
-      <form
-        className="px-4 py-3 max-h-[70vh] overflow-y-auto"
-        autoComplete="off"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          if (readOnly) return;
-          try {
-            if (activeSection === 'main') {
-              if (onSaveAndNext) {
-                await onSaveAndNext();
+          <div className="flex border-b border-gray-200 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveSection('main')}
+              className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'main' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'}`}
+            >
+              Item & pricing
+            </button>
+            <button
+              type="button"
+              title={
+                lockOptionsTab
+                  ? 'Use Save and Next on the first tab to create the item, then add options here'
+                  : undefined
+              }
+              disabled={lockOptionsTab}
+              onClick={() => {
+                if (lockOptionsTab) return;
                 setActiveSection('customization');
-              } else if (onSubmit) onSubmit();
-            } else {
-              if (onSubmitOptions) await onSubmitOptions();
-              else if (onSubmit) onSubmit();
-            }
-          } catch {
-            /* error state / toast from handler */
-          }
-        }}
-      >
-        {activeSection === 'main' && (
-          <div className="space-y-3">
+              }}
+              className={`px-3 py-2 text-xs font-medium border-b-2 ${activeSection === 'customization' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-500'} ${lockOptionsTab ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              Customizations & variants
+            </button>
+          </div>
+
+          <form
+            className="px-4 py-3 flex-1 min-h-0 overflow-y-auto"
+            autoComplete="off"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (readOnly) return;
+              try {
+                if (activeSection === 'main') {
+                  if (onSaveAndNext) {
+                    await onSaveAndNext();
+                    setActiveSection('customization');
+                  } else if (onSubmit) onSubmit();
+                } else {
+                  if (onSubmitOptions) await onSubmitOptions();
+                  else if (onSubmit) onSubmit();
+                }
+              } catch {
+                /* error state / toast from handler */
+              }
+            }}
+          >
+            {activeSection === 'main' && (
+              <div className="space-y-3">
             {/* Row 1: Name, Category */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div>
@@ -1516,8 +1602,10 @@ function ItemForm(props: ItemFormProps) {
             </button>
           ))}
         </div>
-        {error && <div className="text-red-500 text-xs mt-2">{error}</div>}
-      </form>
+            {error && <div className="text-red-500 text-xs mt-2">{error}</div>}
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1527,6 +1615,9 @@ function MenuContent() {
   const [storeId, setStoreId] = useState<string | null>(null);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
+  const [categoryPillMode, setCategoryPillMode] = useState<'category' | 'sub-category'>('category');
+  const [viewMode, setViewMode] = useState<'card' | 'tree'>('card');
+  const [openTreeGroups, setOpenTreeGroups] = useState<Record<string, boolean>>({});
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [categoryModalMode, setCategoryModalMode] = useState<'add' | 'edit'>('add');
@@ -1540,8 +1631,11 @@ function MenuContent() {
   const [categorySuggestionsOpen, setCategorySuggestionsOpen] = useState(false);
   const [categoryPeerSuggestions, setCategoryPeerSuggestions] = useState<string[]>([]);
   const [categoryPeerSuggestionsLoading, setCategoryPeerSuggestionsLoading] = useState(false);
-  const categoryScrollRef = React.useRef<HTMLDivElement>(null);
   const debouncedCategoryName = useDebouncedValue(categoryForm.category_name ?? '', 280);
+
+  const rootCategories = useMemo(() => categories.filter((c) => !c.parent_category_id), [categories]);
+  const subCategories = useMemo(() => categories.filter((c) => !!c.parent_category_id), [categories]);
+  const categoryScrollRef = React.useRef<HTMLDivElement>(null);
 
   const categoryNameConflictSet = React.useMemo(() => {
     const set = new Set<string>();
@@ -1568,6 +1662,8 @@ function MenuContent() {
     [store]
   );
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [combos, setCombos] = useState<MenuCombo[]>([]);
+  const [comboDetailsById, setComboDetailsById] = useState<Record<number, { components: Array<{ menu_item_id: number }> }>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [cuisineOptions, setCuisineOptions] = useState<string[]>(CUISINE_TYPES);
@@ -1594,7 +1690,29 @@ function MenuContent() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [showStockModal, setShowStockModal] = useState(false);
+  const [oosModal, setOosModal] = useState<
+    | null
+    | { kind: "item"; item_id: string; item_name: string }
+    | { kind: "category"; categoryId: number; categoryName: string }
+    | { kind: "combo"; comboId: number; comboName: string }
+  >(null);
+  const [oosBusy, setOosBusy] = useState(false);
+  const [oosChoice, setOosChoice] = useState<"HOURS" | "NEXT_OPEN" | "CUSTOM" | "MANUAL">("HOURS");
+  const [oosHours, setOosHours] = useState(5);
+  const [oosDate, setOosDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [oosTime, setOosTime] = useState(() => {
+    const d = new Date(Date.now() + 60 * 60 * 1000);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  });
+  const [oosCustomTouched, setOosCustomTouched] = useState(false);
+  const [oosSheetShown, setOosSheetShown] = useState(false);
+  const [restoreConfirm, setRestoreConfirm] = useState<null | {
+    title: string;
+    message: string;
+    onConfirm: () => Promise<void> | void;
+  }>(null);
   const [viewCustModal, setViewCustModal] = useState<{ open: boolean; item: MenuItem | null }>({ open: false, item: null });
   const [viewCustModalTab, setViewCustModalTab] = useState<'customizations' | 'variants'>('customizations');
 
@@ -1703,8 +1821,6 @@ function MenuContent() {
   const [addItemSaved, setAddItemSaved] = useState<{ item_id: string; id: number } | null>(null);
   const [deleteItemId, setDeleteItemId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [stockToggleItem, setStockToggleItem] = useState<{ item_id: string; newStatus: boolean } | null>(null);
-  const [isTogglingStock, setIsTogglingStock] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingMenuItemId, setEditingMenuItemId] = useState<number | null>(null);
 
@@ -1904,6 +2020,53 @@ function MenuContent() {
         const res = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId)}`);
         const items = res.ok ? await res.json() : [];
         setMenuItems(Array.isArray(items) ? items : []);
+
+        let comboRows: MenuCombo[] = [];
+        try {
+          const comboRes = await fetch(`/api/merchant/combos?storeId=${encodeURIComponent(storeId)}`);
+          const comboJson = comboRes.ok ? await comboRes.json().catch(() => null) : null;
+          const raw = comboJson && typeof comboJson === 'object' ? (comboJson as { combos?: unknown }).combos : [];
+          comboRows = Array.isArray(raw) ? (raw as MenuCombo[]) : [];
+          setCombos(comboRows);
+        } catch {
+          comboRows = [];
+          setCombos([]);
+        }
+
+        // Fetch combo details (components) to show component images on combo cards
+        try {
+          const ids = comboRows
+            .map((c) => c.id)
+            .filter((id) => typeof id === 'number' && Number.isFinite(id));
+          if (ids.length > 0) {
+            const missing = ids.filter((id) => comboDetailsById[id] == null);
+            if (missing.length > 0) {
+              const detailPairs = await Promise.all(
+                missing.slice(0, 30).map(async (id) => {
+                  try {
+                    const dRes = await fetch(`/api/merchant/combos/${id}?storeId=${encodeURIComponent(storeId)}`);
+                    const dJson = dRes.ok ? await dRes.json().catch(() => null) : null;
+                    const combo = dJson && typeof dJson === 'object' ? (dJson as any).combo : null;
+                    const components = combo && Array.isArray(combo.components) ? combo.components : [];
+                    return [id, { components }] as const;
+                  } catch {
+                    return null;
+                  }
+                })
+              );
+              setComboDetailsById((prev) => {
+                const next = { ...prev };
+                for (const p of detailPairs) {
+                  if (!p) continue;
+                  next[p[0]] = p[1];
+                }
+                return next;
+              });
+            }
+          }
+        } catch {
+          // ignore
+        }
 
         const status = await getImageUploadStatus(storeId);
         setImageUploadStatus(status);
@@ -3033,51 +3196,370 @@ function MenuContent() {
     }
   }
 
-  async function handleStockToggle() {
-    if (!stockToggleItem || !storeId) return;
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30 * 1000);
+    return () => clearInterval(t);
+  }, []);
 
-    setIsTogglingStock(true);
+  const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
+  const isOosActive = useCallback((manual?: boolean, until?: string | null) => {
+    if (manual) return true;
+    if (!until) return false;
+    const ms = new Date(until).getTime();
+    return Number.isFinite(ms) && ms > nowTick;
+  }, [nowTick]);
+
+  const isCategoryOos = useCallback((categoryId: number | null | undefined) => {
+    if (categoryId == null) return false;
+    const c = categoryById.get(categoryId);
+    return c ? isOosActive(c.out_of_stock_manual, c.out_of_stock_until ?? null) : false;
+  }, [categoryById, isOosActive]);
+
+  const isItemBlockedByCategoryOos = useCallback((item: MenuItem) => {
+    const categoryId = item.category_id ?? null;
+    if (categoryId == null) return false;
+    const c = categoryById.get(categoryId);
+    if (!c) return false;
+    const catOos = isOosActive(c.out_of_stock_manual, c.out_of_stock_until ?? null);
+    if (!catOos) return false;
+    // Category OOS cascades to items by stamping out_of_stock_updated_at with the category marker.
+    // If an item was later manually cleared (has a different marker), it should be allowed In Stock.
+    const catMarker = (c as any).out_of_stock_updated_at ?? null;
+    const itemMarker = (item as any).out_of_stock_updated_at ?? null;
+    if (!catMarker || !itemMarker) return false;
+    return String(itemMarker) === String(catMarker);
+  }, [categoryById, isOosActive]);
+
+  const itemInStockIgnoringCategory = useCallback((item: MenuItem) => {
+    const base = item.in_stock !== false;
+    const itemOos = isOosActive(item.out_of_stock_manual, item.out_of_stock_until ?? null);
+    return base && !itemOos;
+  }, [isOosActive]);
+
+  const effectiveInStock = useCallback((item: MenuItem) => {
+    const baseOk = itemInStockIgnoringCategory(item);
+    if (!baseOk) return false;
+    // Only block by category OOS if the item is still under the category cascade marker.
+    return !isItemBlockedByCategoryOos(item);
+  }, [isItemBlockedByCategoryOos, itemInStockIgnoringCategory]);
+
+  const comboComponentsAvailable = useCallback((comboId: number) => {
+    const details = comboDetailsById[comboId];
+    const componentIds: number[] = Array.isArray((details as any)?.components)
+      ? ((details as any).components as any[]).map((x) => Number((x as any)?.menu_item_id)).filter((n) => Number.isFinite(n))
+      : [];
+    if (componentIds.length === 0) return true;
+    for (const id of componentIds) {
+      const it = menuItems.find((m) => Number(m.item_id) === id);
+      if (it && !effectiveInStock(it)) return false;
+    }
+    return true;
+  }, [comboDetailsById, effectiveInStock, menuItems]);
+
+  const effectiveComboInStock = useCallback((c: MenuCombo) => {
+    const base = c.is_active !== false;
+    const comboOos = isOosActive(c.out_of_stock_manual, c.out_of_stock_until ?? null);
+    const componentsOk = comboComponentsAvailable(c.id);
+    return base && !comboOos && componentsOk;
+  }, [comboComponentsAvailable, isOosActive]);
+
+  const formatOosUntil = useCallback((untilIso: string) => {
+    const d = new Date(untilIso);
+    if (Number.isNaN(d.getTime())) return null;
+    const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+    const date = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    return `${time}, ${date}`;
+  }, []);
+
+  const getComboOosLabel = useCallback((c: MenuCombo) => {
+    if (effectiveComboInStock(c)) return null;
+    // Combo-specific OOS first
+    if (c.out_of_stock_manual) return 'Out of stock';
+    if (c.out_of_stock_until) {
+      const fmt = formatOosUntil(c.out_of_stock_until);
+      return fmt ? `Out of stock till ${fmt}` : 'Out of stock';
+    }
+    // Then component-item blocking
+    if (!comboComponentsAvailable(c.id)) return 'Not available · an item is out of stock';
+    // Fallback (inactive)
+    return 'Out of stock';
+  }, [comboComponentsAvailable, effectiveComboInStock, formatOosUntil]);
+
+  const getItemOosLabel = useCallback((item: MenuItem) => {
+    if (effectiveInStock(item)) return null;
+    // Category OOS takes precedence for messaging.
+    if (item.category_id != null) {
+      const c = categoryById.get(item.category_id);
+      if (c && isItemBlockedByCategoryOos(item)) {
+        if (c.out_of_stock_manual) return 'Out of stock (category) · manual';
+        if (c.out_of_stock_until) {
+          const fmt = formatOosUntil(c.out_of_stock_until);
+          return fmt ? `Out of stock (category) till ${fmt}` : 'Out of stock (category)';
+        }
+        return 'Out of stock (category)';
+      }
+    }
+    if (item.out_of_stock_manual) return 'Out of stock · manual';
+    if (item.out_of_stock_until) {
+      const fmt = formatOosUntil(item.out_of_stock_until);
+      return fmt ? `Out of stock till ${fmt}` : 'Out of stock';
+    }
+    // Fallback: legacy base flag
+    if (item.in_stock === false) return 'Out of stock';
+    return 'Out of stock';
+  }, [categoryById, effectiveInStock, formatOosUntil, isOosActive]);
+
+  async function clearOutOfStockForItem(item: MenuItem) {
+    if (!storeId) return;
+    setOosBusy(true);
     try {
-      const res = await fetch('/api/merchant/menu-items', {
+      const nowIso = new Date().toISOString();
+      const res = await fetch('/api/merchant/menu-out-of-stock', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          item_id: stockToggleItem.item_id,
-          storeId,
-          in_stock: stockToggleItem.newStatus,
-        }),
+        body: JSON.stringify({ storeId, targetType: 'item', id: item.item_id, mode: 'CLEAR' }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error || 'Failed to update stock');
-      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.error || 'Failed to clear out-of-stock');
       setMenuItems((prev) =>
-        prev.map((item) =>
-          item.item_id === stockToggleItem.item_id
-            ? { ...item, in_stock: stockToggleItem.newStatus }
-            : item
+        prev.map((p) =>
+          p.item_id === item.item_id
+            ? { ...p, out_of_stock_manual: false, out_of_stock_until: null, in_stock: true, out_of_stock_updated_at: nowIso }
+            : p
         )
       );
-      setShowStockModal(false);
-      setStockToggleItem(null);
-      toast.success(`Item marked as ${stockToggleItem.newStatus ? 'In Stock' : 'Out of Stock'}!`);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Error updating stock status.';
-      toast.error(message);
+      toast.success('Item marked In Stock!');
+
+      // If this item belongs to a category currently marked OOS, auto-clear the category when all items are back in stock.
+      const catId = item.category_id ?? null;
+      if (catId != null) {
+        const cat = categoryById.get(catId);
+        const catOosActive = cat ? isOosActive((cat as any).out_of_stock_manual, (cat as any).out_of_stock_until ?? null) : false;
+        if (catOosActive) {
+          const allBack = menuItems
+            .filter((it) => (it.category_id ?? null) === catId && (it as any).is_deleted !== true)
+            .every((it) => itemInStockIgnoringCategory(it));
+          if (allBack) {
+            await clearOutOfStockForCategory(catId);
+          }
+        }
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update');
     } finally {
-      setIsTogglingStock(false);
+      setOosBusy(false);
     }
   }
 
-  // Calculate stats
-  const inStock = menuItems.filter(item => item.in_stock).length;
-  const outStock = menuItems.filter(item => !item.in_stock).length;
+  async function clearOutOfStockForCategory(categoryId: number) {
+    if (!storeId) return;
+    setOosBusy(true);
+    try {
+      const prevMarker = (categoryById.get(categoryId) as any)?.out_of_stock_updated_at ?? null;
+      const res = await fetch('/api/merchant/menu-out-of-stock', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, targetType: 'category', id: categoryId, mode: 'CLEAR' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.error || 'Failed to clear out-of-stock');
+      setCategories((prev) =>
+        prev.map((c) =>
+          c.id === categoryId
+            ? { ...c, out_of_stock_manual: false, out_of_stock_until: null, out_of_stock_updated_at: (data as any)?.out_of_stock_updated_at ?? null }
+            : c
+        )
+      );
+      // Locally restore items that were blocked by the previous category cascade marker.
+      if (prevMarker) {
+        setMenuItems((prev) =>
+          prev.map((it) => {
+            if ((it.category_id ?? null) !== categoryId) return it;
+            const itMarker = (it as any).out_of_stock_updated_at ?? null;
+            const wasCascaded = itMarker != null && String(itMarker) === String(prevMarker) && !it.out_of_stock_manual;
+            if (!wasCascaded) return it;
+            return { ...it, out_of_stock_manual: false, out_of_stock_until: null, in_stock: true };
+          })
+        );
+      }
+      toast.success('Category marked In Stock!');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update');
+    } finally {
+      setOosBusy(false);
+    }
+  }
+
+  async function clearOutOfStockForCombo(comboId: number) {
+    if (!storeId) return;
+    setOosBusy(true);
+    try {
+      const res = await fetch('/api/merchant/menu-out-of-stock', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, targetType: 'combo', id: comboId, mode: 'CLEAR' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.error || 'Failed to clear out-of-stock');
+      setCombos((prev) => prev.map((c) => (c.id === comboId ? { ...c, out_of_stock_manual: false, out_of_stock_until: null } : c)));
+      toast.success('Combo marked In Stock!');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update');
+    } finally {
+      setOosBusy(false);
+    }
+  }
+
+  function requestRestoreConfirm(action: () => Promise<void> | void) {
+    setRestoreConfirm({
+      title: 'Bring back in stock?',
+      message: 'This will make it available to customers and start receiving orders.',
+      onConfirm: async () => {
+        setRestoreConfirm(null);
+        await action();
+      },
+    });
+  }
+
+  async function confirmOutOfStock() {
+    if (!storeId || !oosModal) return;
+    setOosBusy(true);
+    try {
+      const mode =
+        oosChoice === 'HOURS'
+          ? 'HOURS'
+          : oosChoice === 'NEXT_OPEN'
+            ? 'NEXT_OPEN'
+            : oosChoice === 'CUSTOM'
+              ? 'CUSTOM'
+              : 'MANUAL';
+
+      const untilIso =
+        oosChoice === 'CUSTOM'
+          ? new Date(`${oosDate}T${oosTime}:00`).toISOString()
+          : undefined;
+
+      const body =
+        oosModal.kind === 'item'
+          ? { storeId, targetType: 'item', id: oosModal.item_id, mode, hours: oosChoice === 'HOURS' ? oosHours : undefined, until: untilIso }
+          : oosModal.kind === 'category'
+            ? { storeId, targetType: 'category', id: oosModal.categoryId, mode, hours: oosChoice === 'HOURS' ? oosHours : undefined, until: untilIso }
+            : { storeId, targetType: 'combo', id: oosModal.comboId, mode, hours: oosChoice === 'HOURS' ? oosHours : undefined, until: untilIso };
+
+      const res = await fetch('/api/merchant/menu-out-of-stock', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.error || 'Failed to update out-of-stock');
+
+      if (oosModal.kind === 'item') {
+        const marker = (data as any)?.out_of_stock_updated_at ?? new Date().toISOString();
+        setMenuItems((prev) =>
+          prev.map((p) =>
+            p.item_id === oosModal.item_id
+              ? { ...p, out_of_stock_manual: Boolean((data as any)?.out_of_stock_manual), out_of_stock_until: (data as any)?.out_of_stock_until ?? null, out_of_stock_updated_at: marker, in_stock: true }
+              : p
+          )
+        );
+      } else if (oosModal.kind === 'category') {
+        const marker = (data as any)?.out_of_stock_updated_at ?? new Date().toISOString();
+        setCategories((prev) =>
+          prev.map((c) =>
+            c.id === oosModal.categoryId
+              ? { ...c, out_of_stock_manual: Boolean((data as any)?.out_of_stock_manual), out_of_stock_until: (data as any)?.out_of_stock_until ?? null, out_of_stock_updated_at: marker }
+              : c
+          )
+        );
+        // Locally cascade to items like the backend does (without overriding already-OOS items).
+        setMenuItems((prev) =>
+          prev.map((it) => {
+            if ((it.category_id ?? null) !== oosModal.categoryId) return it;
+            if ((it as any).is_deleted === true) return it;
+            const itemAlreadyOos = isOosActive(it.out_of_stock_manual, it.out_of_stock_until ?? null);
+            if (itemAlreadyOos) return it;
+            return {
+              ...it,
+              out_of_stock_manual: false,
+              out_of_stock_until: (data as any)?.out_of_stock_until ?? null,
+              out_of_stock_updated_at: marker,
+              in_stock: true,
+            };
+          })
+        );
+      } else {
+        const marker = (data as any)?.out_of_stock_updated_at ?? new Date().toISOString();
+        setCombos((prev) =>
+          prev.map((c) =>
+            c.id === oosModal.comboId
+              ? { ...c, out_of_stock_manual: Boolean((data as any)?.out_of_stock_manual), out_of_stock_until: (data as any)?.out_of_stock_until ?? null, out_of_stock_updated_at: marker }
+              : c
+          )
+        );
+      }
+
+      setOosModal(null);
+      toast.success('Out of stock updated!');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update');
+    } finally {
+      setOosBusy(false);
+    }
+  }
+
+  // Default "Custom date & time" to now + 1 hour, and keep it fresh while sheet is open
+  // until the user changes the custom inputs.
+  useEffect(() => {
+    if (!oosModal) return;
+    setOosSheetShown(false);
+    const raf = requestAnimationFrame(() => setOosSheetShown(true));
+    setOosCustomTouched(false);
+    const d = new Date(Date.now() + 60 * 60 * 1000);
+    setOosDate(d.toISOString().slice(0, 10));
+    setOosTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+    const t = setInterval(() => {
+      setOosDate((prev) => {
+        if (oosCustomTouched) return prev;
+        const dd = new Date(Date.now() + 60 * 60 * 1000);
+        return dd.toISOString().slice(0, 10);
+      });
+      setOosTime((prev) => {
+        if (oosCustomTouched) return prev;
+        const dd = new Date(Date.now() + 60 * 60 * 1000);
+        return `${String(dd.getHours()).padStart(2, '0')}:${String(dd.getMinutes()).padStart(2, '0')}`;
+      });
+    }, 60 * 1000);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(t);
+    };
+  }, [oosModal, oosCustomTouched]);
+
+  // Calculate stats (effective: item + category OOS)
+  const inStock = menuItems.filter((item) => effectiveInStock(item)).length;
+  const outStock = menuItems.filter((item) => !effectiveInStock(item)).length;
   const outStockPercent = menuItems.length ? Math.round((outStock / menuItems.length) * 100) : 0;
 
-  // Filter items by selected category
-  const filteredItems = selectedCategoryId === null
-    ? menuItems
-    : menuItems.filter(item => item.category_id === selectedCategoryId);
+  // Filter items by selected category (category mode includes its sub-categories; sub-category mode is exact match)
+  const filteredItems = (() => {
+    if (selectedCategoryId == null) return menuItems;
+    const selected = categories.find((c) => c.id === selectedCategoryId);
+    if (!selected) return menuItems.filter((item) => item.category_id === selectedCategoryId);
+    const isRoot = !selected.parent_category_id;
+    if (categoryPillMode === 'category' && isRoot) {
+      const childIds = new Set(
+        categories.filter((c) => c.parent_category_id === selected.id).map((c) => c.id)
+      );
+      return menuItems.filter(
+        (item) =>
+          item.category_id === selected.id ||
+          (item.category_id != null && childIds.has(item.category_id))
+      );
+    }
+    return menuItems.filter((item) => item.category_id === selectedCategoryId);
+  })();
 
   // Filter by search term
   const searchedItems = searchTerm
@@ -3086,6 +3568,54 @@ function MenuContent() {
         (item.item_description && item.item_description.toLowerCase().includes(searchTerm.toLowerCase()))
       )
     : filteredItems;
+
+  const searchedCombos = useMemo(() => {
+    if (selectedCategoryId !== null) return [];
+    if (!searchTerm.trim()) return combos;
+    const q = searchTerm.trim().toLowerCase();
+    return combos.filter((c) =>
+      String(c.combo_name ?? '').toLowerCase().includes(q) ||
+      String(c.description ?? '').toLowerCase().includes(q)
+    );
+  }, [combos, searchTerm, selectedCategoryId]);
+
+  const treeGroups = useMemo(() => {
+    const byCat = new Map<string, { key: string; categoryId: number | null; categoryName: string; items: MenuItem[] }>();
+    for (const item of searchedItems) {
+      const categoryId = item.category_id ?? null;
+      const categoryName =
+        categoryId == null
+          ? 'Uncategorized'
+          : categories.find((c) => c.id === categoryId)?.category_name ?? 'Uncategorized';
+      const key = String(categoryId ?? 'uncategorized');
+      const existing = byCat.get(key);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        byCat.set(key, { key, categoryId, categoryName, items: [item] });
+      }
+    }
+    return Array.from(byCat.values()).sort((a, b) => a.categoryName.localeCompare(b.categoryName));
+  }, [searchedItems, categories]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const saved = window.localStorage.getItem('mx_menu_view_mode');
+      if (saved === 'card' || saved === 'tree') setViewMode(saved);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('mx_menu_view_mode', viewMode);
+    } catch {
+      // ignore
+    }
+  }, [viewMode]);
 
   // Plan-driven: no hardcoding. When planLimits is null (no plan) = no restrictions
   const canAddItem = planLimits == null || planLimits.maxMenuItems == null || menuItems.length < planLimits.maxMenuItems;
@@ -3096,6 +3626,13 @@ function MenuContent() {
   const imageUploadAllowed = planLimits == null || planLimits.imageUploadAllowed === true;
   const imageLimitReached = planLimits != null && imageLimit != null && imageUsed >= imageLimit;
   const imageSlotsLeft = imageLimit != null ? Math.max(0, imageLimit - imageUsed) : null;
+
+  const menuPageSubtitle = useMemo(() => {
+    const base = 'Manage your menu items and categories';
+    const pn = planLimits?.planName;
+    if (pn != null && pn !== '') return `${base} · Plan: ${pn}`;
+    return base;
+  }, [planLimits?.planName]);
 
   // Show error if no store is selected
   if (storeError) {
@@ -3123,25 +3660,64 @@ function MenuContent() {
 
   return (
     <MXLayoutWhite restaurantName={store?.store_name || "Loading..."} restaurantId={storeId || "No ID"}>
-      <Toaster richColors position="top-right" style={{ zIndex: 100002 }} />
+      <PartnerPageHeader title="Menu Management" subtitle={menuPageSubtitle} />
       <style>{globalStyles}</style>
       
-      {/* Header - compact */}
-      <div className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-3 sm:px-4 py-2 gap-2">
-          <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
+      <div className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm shrink-0">
+        <div className="mx-shell-header !px-3 sm:!px-4 lg:!px-6 flex flex-wrap items-center gap-2 justify-between">
+          <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
             <MobileHamburgerButton />
-            <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold text-gray-900">Menu Management</h1>
-              <p className="text-gray-500 text-xs mt-0 flex items-center gap-2 flex-wrap">
-                <span>Manage your menu items and categories</span>
-                {planLimits?.planName != null && planLimits.planName !== '' && (
-                  <span className="text-gray-400">· Plan: {planLimits.planName}</span>
-                )}
-              </p>
+            <div className="flex flex-wrap gap-2 items-center">
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
+                <div className="text-gray-500 text-xs font-medium">
+                  Total Items
+                  {planLimits?.maxMenuItems != null && (
+                    <span className="ml-1 text-gray-400">/ {planLimits.maxMenuItems}</span>
+                  )}
+                </div>
+                <div className="text-lg font-bold text-gray-900 leading-tight">{menuItems.length}</div>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
+                <div className="text-gray-500 text-xs font-medium">In Stock</div>
+                <div className="text-lg font-bold text-green-600 leading-tight">{inStock}</div>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[120px]">
+                <div className="text-gray-500 text-xs font-medium">Out of Stock</div>
+                <div className="text-lg font-bold text-red-600 leading-tight">{outStock} ({outStockPercent}%)</div>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[110px]">
+                <div className="text-gray-500 text-xs font-medium">
+                  Categories
+                  {planLimits?.maxMenuCategories != null && (
+                    <span className="ml-1 text-gray-400">/ {planLimits.maxMenuCategories}</span>
+                  )}
+                </div>
+                <div className="text-lg font-bold text-blue-600 leading-tight">{categories.length}</div>
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end min-w-0">
+            <div className="inline-flex rounded-lg border border-gray-200 bg-white overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setViewMode('card')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors ${viewMode === 'card' ? 'bg-gray-900 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                aria-pressed={viewMode === 'card'}
+              >
+                <LayoutGrid size={16} />
+                Card
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('tree')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold transition-colors border-l border-gray-200 ${viewMode === 'tree' ? 'bg-gray-900 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                aria-pressed={viewMode === 'tree'}
+              >
+                <ListTree size={16} />
+                Tree
+              </button>
+            </div>
             <button
               disabled
               title="Adding categories manually is disabled. Upload a menu file instead."
@@ -3175,35 +3751,6 @@ function MenuContent() {
               <Upload size={16} />
               Menu file
             </button>
-          </div>
-        </div>
-        {/* Stats - compact row */}
-        <div className="flex flex-wrap gap-2 px-3 sm:px-4 pb-2">
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">
-              Total Items
-              {planLimits?.maxMenuItems != null && (
-                <span className="ml-1 text-gray-400">/ {planLimits.maxMenuItems}</span>
-              )}
-            </div>
-            <div className="text-lg font-bold text-gray-900 leading-tight">{menuItems.length}</div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">In Stock</div>
-            <div className="text-lg font-bold text-green-600 leading-tight">{inStock}</div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">Out of Stock</div>
-            <div className="text-lg font-bold text-red-600 leading-tight">{outStock} ({outStockPercent}%)</div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-md px-3 py-2 min-w-[100px]">
-            <div className="text-gray-500 text-xs font-medium">
-              Categories
-              {planLimits?.maxMenuCategories != null && (
-                <span className="ml-1 text-gray-400">/ {planLimits.maxMenuCategories}</span>
-              )}
-            </div>
-            <div className="text-lg font-bold text-blue-600 leading-tight">{categories.length}</div>
           </div>
         </div>
 
@@ -3465,7 +4012,7 @@ function MenuContent() {
         )}
 
         {/* Search and Categories - single row, sticky All + horizontal scroll */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 sm:px-4 py-3">
           <div className="flex-1 max-w-sm min-w-0 order-2 sm:order-1">
             <input
               type="text"
@@ -3476,14 +4023,23 @@ function MenuContent() {
             />
           </div>
           <div className="flex-1 min-w-0 order-1 sm:order-2 flex items-center gap-1 overflow-hidden">
-            <button
-              onClick={() => setSelectedCategoryId(null)}
-              className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap ${selectedCategoryId === null ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200'}`}
-            >
-              All Categories
-            </button>
+            <div className="flex-shrink-0 rounded-md text-xs font-medium whitespace-nowrap bg-orange-500 text-white shadow-sm ring-1 ring-orange-200">
+              <select
+                className="bg-transparent px-3 py-1.5 outline-none text-white"
+                value={categoryPillMode}
+                onChange={(e) => {
+                  const v = e.target.value === 'sub-category' ? 'sub-category' : 'category';
+                  setCategoryPillMode(v);
+                  setSelectedCategoryId(null);
+                }}
+              >
+                <option value="category">All Category</option>
+                <option value="sub-category">All Sub-Category</option>
+              </select>
+            </div>
+
             <div className="flex-1 min-w-0 flex items-center gap-0.5 overflow-hidden">
-              {categories.length > 0 && (
+              {(categoryPillMode === 'category' ? rootCategories : subCategories).length > 0 && (
                 <button
                   type="button"
                   onClick={() => categoryScrollRef.current?.scrollBy({ left: -200, behavior: 'smooth' })}
@@ -3498,19 +4054,27 @@ function MenuContent() {
                 className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden scrollbar-hide scroll-smooth touch-pan-x py-0.5"
               >
                 <div className="flex items-center gap-1.5 flex-nowrap">
-                  {categories.map((category) => (
+                  {(categoryPillMode === 'category' ? rootCategories : subCategories).map((category) => (
                     <button
                       key={category.id}
                       onClick={() => setSelectedCategoryId(category.id)}
-                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[140px] truncate ${selectedCategoryId === category.id ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-                      title={category.category_name}
+                      className={`flex-shrink-0 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap max-w-[160px] truncate ${
+                        selectedCategoryId === category.id ? 'bg-orange-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title={
+                        categoryPillMode === 'sub-category' && category.parent_category_id
+                          ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ''} / ${category.category_name}`
+                          : category.category_name
+                      }
                     >
-                      {category.category_name}
+                      {categoryPillMode === 'sub-category' && category.parent_category_id
+                        ? `${categories.find((c) => c.id === category.parent_category_id)?.category_name ?? ''} / ${category.category_name}`
+                        : category.category_name}
                     </button>
                   ))}
                 </div>
               </div>
-              {categories.length > 0 && (
+              {(categoryPillMode === 'category' ? rootCategories : subCategories).length > 0 && (
                 <button
                   type="button"
                   onClick={() => categoryScrollRef.current?.scrollBy({ left: 200, behavior: 'smooth' })}
@@ -3529,7 +4093,7 @@ function MenuContent() {
       <div className="px-3 sm:px-4 py-3 relative">
         {isLoading ? (
           <MenuItemsGridSkeleton />
-        ) : (searchedItems.length === 0 ? (
+        ) : ((searchedItems.length === 0 && searchedCombos.length === 0) ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <Package size={48} className="text-gray-300 mb-4" />
             <h3 className="text-xl font-bold text-gray-700">No menu items found</h3>
@@ -3540,14 +4104,15 @@ function MenuContent() {
               <p className="text-sm text-gray-400 mt-2">You need to create a category first</p>
             )}
           </div>
-        ) : (
+        ) : viewMode === 'card' ? (
+          <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {searchedItems.map((item) => {
               const category = categories.find(cat => cat.id === item.category_id);
               const discount = Number(item.discount_percentage);
               const hasDiscount = discount > 0;
               
-              const isLockedByPlan = !!(item as any).is_locked_by_plan;
+              const isLockedByPlan = false;
               return (
                 <div key={item.item_id} className={`rounded-xl border shadow-sm hover:shadow-md transition-all overflow-hidden ${isLockedByPlan ? 'bg-gray-50 border-gray-300 opacity-75' : 'bg-white border-gray-200'}`}>
                   <div className="flex p-2.5 h-full gap-2.5">
@@ -3573,24 +4138,42 @@ function MenuContent() {
                           <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">
                             {category?.category_name || 'Uncategorized'}
                           </div>
+                          {getItemOosLabel(item) ? (
+                            <div className="text-[11px] font-semibold text-red-600 mt-0.5">
+                              {getItemOosLabel(item)}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] font-semibold text-green-600 mt-0.5">
+                              In stock
+                            </div>
+                          )}
                         </div>
                         <label className={`inline-flex items-center flex-shrink-0 ${isLockedByPlan ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                           <input
                             type="checkbox"
-                            checked={item.in_stock}
+                            checked={effectiveInStock(item)}
                             disabled={isLockedByPlan}
                             onChange={() => {
                               if (isLockedByPlan) {
                                 toast.error('This item is locked. Upgrade your plan to unlock and manage it.');
                                 return;
                               }
-                              setStockToggleItem({ item_id: item.item_id, newStatus: !item.in_stock });
-                              setShowStockModal(true);
+                              const next = !effectiveInStock(item);
+                              if (!next) {
+                                setOosChoice('HOURS');
+                                setOosHours(5);
+                                const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+                                setOosDate(d.toISOString().slice(0, 10));
+                                setOosTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+                                setOosModal({ kind: 'item', item_id: item.item_id, item_name: item.item_name });
+                                return;
+                              }
+                              requestRestoreConfirm(() => clearOutOfStockForItem(item));
                             }}
                             className="sr-only peer"
                           />
                           <div className={`w-7 h-4 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative ${isLockedByPlan ? '!bg-gray-300' : ''}`}>
-                            <div className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${item.in_stock ? 'translate-x-3' : ''}`}></div>
+                            <div className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${effectiveInStock(item) ? 'translate-x-3' : ''}`}></div>
                           </div>
                         </label>
                       </div>
@@ -3666,6 +4249,339 @@ function MenuContent() {
                 </div>
               );
             })}
+          </div>
+
+            {searchedCombos.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-bold text-gray-800">Combos</h4>
+                  <span className="text-xs text-gray-500">{searchedCombos.length}</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {searchedCombos.map((c) => (
+                    <div key={`combo-${c.id}`} className="rounded-xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition-all overflow-hidden">
+                      <div className="flex p-2.5 h-full gap-2.5">
+                        {(() => {
+                          const details = comboDetailsById[c.id];
+                          const componentIds: number[] = Array.isArray(details?.components)
+                            ? (details!.components as any[]).map((x) => Number((x as any)?.menu_item_id)).filter((n) => Number.isFinite(n))
+                            : [];
+                          const imgs = componentIds
+                            .map((id) => menuItems.find((m) => Number(m.item_id) === id)?.item_image_url)
+                            .filter((u): u is string => typeof u === 'string' && u.trim() !== '')
+                            .slice(0, 2);
+
+                          const renderImg = (src: string | null | undefined, key: string) => (
+                            <div key={key} className="w-7 h-14 rounded-lg border border-gray-200 bg-gray-100 overflow-hidden">
+                              <R2Image
+                                src={src}
+                                alt={c.combo_name}
+                                className="w-full h-full object-cover"
+                                fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                              />
+                            </div>
+                          );
+
+                          if (imgs.length >= 2) {
+                            return (
+                              <div className="flex gap-1 flex-shrink-0">
+                                {renderImg(imgs[0], 'i1')}
+                                {renderImg(imgs[1], 'i2')}
+                              </div>
+                            );
+                          }
+                          if (imgs.length === 1) {
+                            return (
+                              <div className="flex gap-1 flex-shrink-0">
+                                {renderImg(imgs[0], 'i1')}
+                                {renderImg(c.image_url, 'i2')}
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 bg-gray-100 overflow-hidden">
+                              <R2Image
+                                src={c.image_url}
+                                alt={c.combo_name}
+                                className="w-full h-full object-cover"
+                                fallbackSrc={ITEM_PLACEHOLDER_SVG}
+                              />
+                            </div>
+                          );
+                        })()}
+                        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+                          <div className="font-bold text-sm text-gray-900 truncate">{c.combo_name}</div>
+                          <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">Combo</div>
+                          {getComboOosLabel(c) ? (
+                            <div className="text-[11px] font-semibold text-red-600 mt-0.5">
+                              {getComboOosLabel(c)}
+                            </div>
+                          ) : null}
+                          {c.description ? (
+                            <p className="text-[11px] text-gray-600 line-clamp-2 mt-1 flex-grow leading-tight">
+                              {c.description}
+                            </p>
+                          ) : (
+                            <div className="flex-grow" />
+                          )}
+                          <div className="mt-1 flex items-center justify-between gap-2">
+                            <div className="text-sm font-extrabold text-orange-600">₹{Number(c.combo_price ?? 0)}</div>
+                            <label className="inline-flex items-center cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={effectiveComboInStock(c)}
+                                onChange={() => {
+                                  const next = !effectiveComboInStock(c);
+                                  if (!next) {
+                                    setOosChoice('HOURS');
+                                    setOosHours(5);
+                                    const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+                                    setOosDate(d.toISOString().slice(0, 10));
+                                    setOosTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+                                    setOosModal({ kind: 'combo', comboId: c.id, comboName: c.combo_name });
+                                    return;
+                                  }
+                                  requestRestoreConfirm(() => clearOutOfStockForCombo(c.id));
+                                }}
+                                className="sr-only peer"
+                              />
+                              <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative">
+                                <div className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${effectiveComboInStock(c) ? 'translate-x-5' : ''}`}></div>
+                              </div>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {treeGroups.map((group) => {
+              const allInStock = group.items.length > 0 && group.items.every((i) => effectiveInStock(i));
+              const isOpen = !!openTreeGroups[group.key];
+              const categoryIdNum = /^\d+$/.test(String(group.key)) ? Number(group.key) : NaN;
+
+              return (
+                <div key={group.key} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                  <div className="px-3 py-2.5 flex items-center justify-between gap-3 bg-gray-50">
+                    <button
+                      type="button"
+                      onClick={() => setOpenTreeGroups((prev) => ({ ...prev, [group.key]: !prev[group.key] }))}
+                      className="min-w-0 flex items-center gap-2 text-left"
+                      aria-expanded={isOpen}
+                    >
+                      <span className="flex-shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">
+                        {isOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="font-semibold text-gray-900 truncate block">
+                          {group.categoryName} <span className="text-gray-400 font-medium">({group.items.length})</span>
+                        </span>
+                      </span>
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-gray-700">In stock</span>
+                      <label className="inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={allInStock}
+                          onChange={async () => {
+                            const target = !allInStock;
+                            if (Number.isFinite(categoryIdNum) && categoryIdNum > 0) {
+                              if (!target) {
+                                setOosChoice('HOURS');
+                                setOosHours(5);
+                                const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+                                setOosDate(d.toISOString().slice(0, 10));
+                                setOosTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+                                const catName = group.categoryName ?? 'Category';
+                                setOosModal({ kind: 'category', categoryId: categoryIdNum, categoryName: catName });
+                                return;
+                              }
+                              requestRestoreConfirm(() => clearOutOfStockForCategory(categoryIdNum));
+                              return;
+                            }
+                            // Uncategorized fallback: legacy per-item base stock.
+                            const itemsToUpdate = group.items.filter((i) => (i.in_stock !== target) && !(i as any).is_locked_by_plan);
+                            if (itemsToUpdate.length === 0) return;
+                            try {
+                              await Promise.all(itemsToUpdate.map(async (i) => {
+                                const res = await fetch('/api/merchant/menu-items', {
+                                  method: 'PATCH',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ item_id: i.item_id, storeId, in_stock: target }),
+                                });
+                                if (!res.ok) throw new Error('Failed to update stock');
+                              }));
+                              setMenuItems((prev) =>
+                                prev.map((p) => (itemsToUpdate.some((x) => x.item_id === p.item_id) ? { ...p, in_stock: target } : p))
+                              );
+                              toast.success(`Updated ${itemsToUpdate.length} item(s).`);
+                            } catch {
+                              toast.error('Failed to update some items.');
+                            }
+                          }}
+                          className="sr-only peer"
+                        />
+                        <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative">
+                          <div className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${allInStock ? 'translate-x-5' : ''}`}></div>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div className="divide-y divide-gray-100">
+                      {group.items.map((item) => {
+                        const isLockedByPlan = !!(item as any).is_locked_by_plan;
+                        return (
+                          <div key={item.item_id} className="px-3 py-2 flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-gray-900 truncate">{item.item_name}</div>
+                              {getItemOosLabel(item) ? (
+                                <div className="text-xs font-semibold text-red-600 mt-0.5">
+                                  {getItemOosLabel(item)}
+                                </div>
+                              ) : (
+                                <div className="text-xs font-semibold text-green-600 mt-0.5">In stock</div>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <div className="text-sm font-bold text-gray-900">₹{item.selling_price}</div>
+                              <label className={`inline-flex items-center ${isLockedByPlan ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={effectiveInStock(item)}
+                                  disabled={isLockedByPlan}
+                                  onChange={() => {
+                                    if (isLockedByPlan) {
+                                      toast.error('This item is locked. Upgrade your plan to unlock and manage it.');
+                                      return;
+                                    }
+                                    const next = !effectiveInStock(item);
+                                    if (!next) {
+                                      setOosChoice('HOURS');
+                                      setOosHours(5);
+                                      const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+                                      setOosDate(d.toISOString().slice(0, 10));
+                                      setOosTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+                                      setOosModal({ kind: 'item', item_id: item.item_id, item_name: item.item_name });
+                                      return;
+                                    }
+                                    requestRestoreConfirm(() => clearOutOfStockForItem(item));
+                                  }}
+                                  className="sr-only peer"
+                                />
+                                <div className={`w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative ${isLockedByPlan ? '!bg-gray-300' : ''}`}>
+                                  <div className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${effectiveInStock(item) ? 'translate-x-5' : ''}`}></div>
+                                </div>
+                              </label>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {searchedCombos.length > 0 && (
+              <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+                {(() => {
+                  const key = 'combos';
+                  const isOpen = !!openTreeGroups[key];
+                  const allActive = searchedCombos.length > 0 && searchedCombos.every((c) => effectiveComboInStock(c));
+                  return (
+                    <>
+                      <div className="px-3 py-2.5 flex items-center justify-between gap-3 bg-gray-50">
+                        <button
+                          type="button"
+                          onClick={() => setOpenTreeGroups((prev) => ({ ...prev, [key]: !prev[key] }))}
+                          className="min-w-0 flex items-center gap-2 text-left"
+                          aria-expanded={isOpen}
+                        >
+                          <span className="flex-shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">
+                            {isOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="font-semibold text-gray-900 truncate block">
+                              Combos <span className="text-gray-400 font-medium">({searchedCombos.length})</span>
+                            </span>
+                          </span>
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-gray-700">In stock</span>
+                          <label className="inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={allActive}
+                              onChange={async () => {
+                                const next = !allActive;
+                                if (!next) {
+                                  setOosChoice('MANUAL');
+                                  setOosModal({ kind: 'combo', comboId: searchedCombos[0]!.id, comboName: 'Combos' });
+                                  return;
+                                }
+                                requestRestoreConfirm(async () => {
+                                  await Promise.all(searchedCombos.map((c) => clearOutOfStockForCombo(c.id)));
+                                });
+                              }}
+                              className="sr-only peer"
+                            />
+                            <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative">
+                              <div className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${allActive ? 'translate-x-5' : ''}`}></div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                      {isOpen && (
+                        <div className="divide-y divide-gray-100">
+                          {searchedCombos.map((c) => (
+                            <div key={`combo-tree-${c.id}`} className="px-3 py-2 flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-gray-900 truncate">{c.combo_name}</div>
+                              </div>
+                              <div className="flex items-center gap-3 shrink-0">
+                                <div className="text-sm font-bold text-gray-900">₹{Number(c.combo_price ?? 0)}</div>
+                                <label className="inline-flex items-center cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={effectiveComboInStock(c)}
+                                    onChange={() => {
+                                      const next = !effectiveComboInStock(c);
+                                      if (!next) {
+                                        setOosChoice('HOURS');
+                                        setOosHours(5);
+                                        const d = new Date(Date.now() + 5 * 60 * 60 * 1000);
+                                        setOosDate(d.toISOString().slice(0, 10));
+                                        setOosTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+                                        setOosModal({ kind: 'combo', comboId: c.id, comboName: c.combo_name });
+                                        return;
+                                      }
+                                      requestRestoreConfirm(() => clearOutOfStockForCombo(c.id));
+                                    }}
+                                    className="sr-only peer"
+                                  />
+                                  <div className="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative">
+                                    <div className={`absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${effectiveComboInStock(c) ? 'translate-x-5' : ''}`}></div>
+                                  </div>
+                                </label>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -4023,48 +4939,227 @@ function MenuContent() {
         document.body
       )}
 
-      {/* Stock Toggle Confirmation Modal */}
-      {showStockModal && stockToggleItem && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 flex items-center justify-center z-[9999] bg-black/40 backdrop-blur-md">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
-            <div className="p-6">
-              <div className="text-center">
-                <div className={`mx-auto flex items-center justify-center h-12 w-12 rounded-full ${stockToggleItem.newStatus ? 'bg-green-100' : 'bg-red-100'} mb-4`}>
-                  {stockToggleItem.newStatus ? (
-                    <div className="h-6 w-6 text-green-600">✓</div>
-                  ) : (
-                    <div className="h-6 w-6 text-red-600">✗</div>
-                  )}
+      {/* Out-of-stock Right Sheet (Item + Category) */}
+      {oosModal && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-black/40 backdrop-blur-sm">
+          <button
+            type="button"
+            className="absolute inset-0 w-full h-full cursor-default"
+            aria-label="Close"
+            onClick={() => (!oosBusy ? setOosModal(null) : null)}
+            disabled={oosBusy}
+          />
+          <aside
+            className={`absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-2xl border-l border-gray-200 transition-transform duration-250 ease-out ${
+              oosSheetShown ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            <div className="h-full flex flex-col">
+              <div className="p-5 border-b border-gray-200">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="text-lg font-bold text-gray-900">
+                      {oosModal.kind === 'category' ? 'Mark Category out of stock' : oosModal.kind === 'combo' ? 'Mark combo out of stock' : 'Mark item out of stock'}
+                    </h3>
+                    <p className="text-sm text-gray-600 truncate">
+                      {oosModal.kind === 'category' ? oosModal.categoryName : oosModal.kind === 'combo' ? oosModal.comboName : oosModal.item_name}
+                    </p>
+                    {oosModal.kind === 'category' ? (
+                      <p className="text-xs text-gray-600 mt-2 leading-5">
+                        If you mark this category as out of stock, all items under this category will automatically be marked as out of stock.
+                        When the category is marked back in stock, all items will be restored automatically.
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => (!oosBusy ? setOosModal(null) : null)}
+                    className="p-2 rounded-lg hover:bg-gray-100 text-gray-600"
+                    aria-label="Close"
+                    disabled={oosBusy}
+                  >
+                    <X size={18} />
+                  </button>
                 </div>
-                <h3 className="text-lg font-bold text-gray-900 mb-2">
-                  {stockToggleItem.newStatus ? 'Mark as In Stock' : 'Mark as Out of Stock'}
-                </h3>
-                <p className="text-gray-600 mb-6">
-                  {stockToggleItem.newStatus 
-                    ? 'This item will be available for customers to order.' 
-                    : 'This item will be hidden from customers and marked as unavailable.'}
-                </p>
               </div>
-              <div className="flex gap-3">
+
+              <div className="flex-1 overflow-y-auto p-5">
+                <div className="border border-gray-200 rounded-xl overflow-hidden">
+                  {/* HOURS */}
+                  <div className="px-4 py-3 bg-white hover:bg-gray-50">
+                    <label className="flex items-center justify-between gap-3 cursor-pointer">
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="oos"
+                          checked={oosChoice === 'HOURS'}
+                          onChange={() => setOosChoice('HOURS')}
+                          disabled={oosBusy}
+                        />
+                        <span className="text-sm font-semibold text-gray-900">For specific time</span>
+                      </span>
+                      <span className={`flex items-center gap-2 ${oosChoice !== 'HOURS' ? 'opacity-50' : ''}`}>
+                        <button
+                          type="button"
+                          onClick={() => setOosHours((h) => Math.max(1, h - 1))}
+                          className="h-7 w-7 rounded-full border border-gray-200 bg-white hover:bg-gray-50"
+                          disabled={oosBusy || oosChoice !== 'HOURS'}
+                        >
+                          −
+                        </button>
+                        <span className="text-sm font-bold text-gray-900">{oosHours} hour</span>
+                        <button
+                          type="button"
+                          onClick={() => setOosHours((h) => Math.min(24 * 14, h + 1))}
+                          className="h-7 w-7 rounded-full border border-gray-200 bg-white hover:bg-gray-50"
+                          disabled={oosBusy || oosChoice !== 'HOURS'}
+                        >
+                          +
+                        </button>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="h-px bg-gray-200" />
+
+                  {/* NEXT OPEN */}
+                  <label className="block px-4 py-3 bg-white hover:bg-gray-50 cursor-pointer">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="oos"
+                        checked={oosChoice === 'NEXT_OPEN'}
+                        onChange={() => setOosChoice('NEXT_OPEN')}
+                        disabled={oosBusy}
+                      />
+                      <span className="text-sm font-semibold text-gray-900">Next business day · Opening time</span>
+                    </span>
+                  </label>
+
+                  <div className="h-px bg-gray-200" />
+
+                  {/* CUSTOM */}
+                  <label className="block px-4 py-3 bg-white hover:bg-gray-50 cursor-pointer">
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="oos"
+                        checked={oosChoice === 'CUSTOM'}
+                        onChange={() => setOosChoice('CUSTOM')}
+                        disabled={oosBusy}
+                      />
+                      <span className="text-sm font-semibold text-gray-900">Custom date &amp; time</span>
+                    </span>
+                  </label>
+                  {/* ALWAYS expanded custom date & time */}
+                  <div className={`px-4 pb-3 bg-white ${oosChoice !== 'CUSTOM' ? 'opacity-60' : ''}`}>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
+                        <input
+                          type="date"
+                          value={oosDate}
+                          onMouseDown={() => { setOosCustomTouched(true); setOosChoice('CUSTOM'); }}
+                          onFocus={() => { setOosCustomTouched(true); setOosChoice('CUSTOM'); }}
+                          onInput={(e) => { setOosCustomTouched(true); setOosChoice('CUSTOM'); setOosDate((e.target as HTMLInputElement).value); }}
+                          onChange={(e) => { setOosCustomTouched(true); setOosChoice('CUSTOM'); setOosDate(e.target.value); }}
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                          disabled={oosBusy}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">Time</label>
+                        <input
+                          type="time"
+                          value={oosTime}
+                          onMouseDown={() => { setOosCustomTouched(true); setOosChoice('CUSTOM'); }}
+                          onFocus={() => { setOosCustomTouched(true); setOosChoice('CUSTOM'); }}
+                          onInput={(e) => { setOosCustomTouched(true); setOosChoice('CUSTOM'); setOosTime((e.target as HTMLInputElement).value); }}
+                          onChange={(e) => { setOosCustomTouched(true); setOosChoice('CUSTOM'); setOosTime(e.target.value); }}
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                          disabled={oosBusy}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="h-px bg-gray-200" />
+
+                  {/* MANUAL */}
+                  <label className="block px-4 py-3 bg-white hover:bg-gray-50 cursor-pointer">
+                    <span className="flex items-start gap-2">
+                      <input
+                        type="radio"
+                        name="oos"
+                        checked={oosChoice === 'MANUAL'}
+                        onChange={() => setOosChoice('MANUAL')}
+                        disabled={oosBusy}
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0">
+                        <span className="text-sm font-semibold text-gray-900 block">I will turn it on manually</span>
+                        <span className="text-xs text-gray-500 block mt-0.5">
+                          Item won&apos;t be visible to customers until you mark it back in stock
+                        </span>
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="p-5 border-t border-gray-200 flex gap-3">
                 <button
-                  onClick={() => setShowStockModal(false)}
-                  className="flex-1 px-4 py-2.5 rounded-lg font-bold text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 transition-all"
-                  disabled={isTogglingStock}
+                  type="button"
+                  onClick={() => (!oosBusy ? setOosModal(null) : null)}
+                  className="flex-1 px-4 py-2.5 rounded-lg font-bold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 transition-all"
+                  disabled={oosBusy}
                 >
-                  Cancel
+                  Back
                 </button>
                 <button
-                  onClick={handleStockToggle}
-                  className={`flex-1 px-4 py-2.5 rounded-lg font-bold text-white transition-all ${
-                    stockToggleItem.newStatus 
-                      ? 'bg-green-500 hover:bg-green-600' 
-                      : 'bg-red-500 hover:bg-red-600'
-                  }`}
-                  disabled={isTogglingStock}
+                  type="button"
+                  onClick={confirmOutOfStock}
+                  className="flex-1 px-4 py-2.5 rounded-lg font-bold text-white bg-orange-500 hover:bg-orange-600 transition-all disabled:opacity-60"
+                  disabled={oosBusy}
                 >
-                  {isTogglingStock ? 'Updating...' : 'Confirm'}
+                  {oosBusy ? 'Updating...' : 'Confirm'}
                 </button>
               </div>
+            </div>
+          </aside>
+        </div>,
+        document.body
+      )}
+
+      {/* Bring back in stock confirm */}
+      {restoreConfirm && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <button
+            type="button"
+            className="absolute inset-0 w-full h-full cursor-default"
+            aria-label="Close"
+            onClick={() => setRestoreConfirm(null)}
+          />
+          <div className="relative w-full max-w-md mx-3 bg-white rounded-2xl border border-gray-200 shadow-2xl p-5">
+            <h3 className="text-lg font-extrabold text-gray-900">{restoreConfirm.title}</h3>
+            <p className="text-sm text-gray-600 mt-2">{restoreConfirm.message}</p>
+            <div className="mt-5 flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setRestoreConfirm(null)}
+                className="px-4 py-2.5 rounded-xl font-bold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50"
+                disabled={oosBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => restoreConfirm.onConfirm()}
+                className="px-4 py-2.5 rounded-xl font-bold text-white bg-green-600 hover:bg-green-700 disabled:opacity-60"
+                disabled={oosBusy}
+              >
+                Bring back in stock
+              </button>
             </div>
           </div>
         </div>,

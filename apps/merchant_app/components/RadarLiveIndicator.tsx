@@ -7,10 +7,10 @@
 import { useEffect, useRef } from "react";
 import { View, StyleSheet, Animated, Easing } from "react-native";
 
-const SIZE = 32;
-const CENTER_DOT = 8;
-const RING_SIZE = SIZE;
-const RADIUS = RING_SIZE / 2;
+const SIZE_DEFAULT = 32;
+const SIZE_COMPACT = 22;
+const CENTER_DOT_DEFAULT = 8;
+const CENTER_DOT_COMPACT = 6;
 const BRAND_GREEN = "#22C55E";
 const RING_PURPLE = "#7C3AED";
 const RING_BLUE = "#2563EB";
@@ -18,7 +18,17 @@ const RING_DARK = "#312E81"; // dark blue-black
 const PULSE_DURATION = 1800;
 const STAGGER_MS = 600;
 
-export function RadarLiveIndicator() {
+type RadarLiveIndicatorProps = {
+  /** Smaller footprint for list rows / dense UI */
+  compact?: boolean;
+};
+
+export function RadarLiveIndicator({ compact }: RadarLiveIndicatorProps) {
+  const SIZE = compact ? SIZE_COMPACT : SIZE_DEFAULT;
+  const CENTER_DOT = compact ? CENTER_DOT_COMPACT : CENTER_DOT_DEFAULT;
+  const RING_SIZE = SIZE;
+  const RADIUS = RING_SIZE / 2;
+
   const s1 = useRef(new Animated.Value(0.25)).current;
   const o1 = useRef(new Animated.Value(0.3)).current;
   const s2 = useRef(new Animated.Value(0.25)).current;
@@ -70,54 +80,73 @@ export function RadarLiveIndicator() {
   }, [s1, o1, s2, o2, s3, o3]);
 
   return (
-    <View style={styles.wrap} pointerEvents="none">
+    <View style={[styles.wrap, { width: SIZE, height: SIZE }]} pointerEvents="none">
       <Animated.View
         style={[
           styles.ring,
           styles.ringPurple,
-          { opacity: o1, transform: [{ scale: s1 }] },
+          {
+            width: RING_SIZE,
+            height: RING_SIZE,
+            borderRadius: RADIUS,
+            opacity: o1,
+            transform: [{ scale: s1 }],
+          },
         ]}
       />
       <Animated.View
         style={[
           styles.ring,
           styles.ringBlue,
-          { opacity: o2, transform: [{ scale: s2 }] },
+          {
+            width: RING_SIZE,
+            height: RING_SIZE,
+            borderRadius: RADIUS,
+            opacity: o2,
+            transform: [{ scale: s2 }],
+          },
         ]}
       />
       <Animated.View
         style={[
           styles.ring,
           styles.ringDark,
-          { opacity: o3, transform: [{ scale: s3 }] },
+          {
+            width: RING_SIZE,
+            height: RING_SIZE,
+            borderRadius: RADIUS,
+            opacity: o3,
+            transform: [{ scale: s3 }],
+          },
         ]}
       />
-      <View style={styles.centerDot} />
+      <View
+        style={[
+          styles.centerDot,
+          {
+            width: CENTER_DOT,
+            height: CENTER_DOT,
+            borderRadius: CENTER_DOT / 2,
+          },
+        ]}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
-    width: SIZE,
-    height: SIZE,
     alignItems: "center",
     justifyContent: "center",
   },
   ring: {
     position: "absolute",
-    width: RING_SIZE,
-    height: RING_SIZE,
-    borderRadius: RADIUS,
     borderWidth: 2,
   },
   ringPurple: { borderColor: RING_PURPLE },
   ringBlue: { borderColor: RING_BLUE },
   ringDark: { borderColor: RING_DARK },
   centerDot: {
-    width: CENTER_DOT,
-    height: CENTER_DOT,
-    borderRadius: CENTER_DOT / 2,
     backgroundColor: BRAND_GREEN,
   },
 });

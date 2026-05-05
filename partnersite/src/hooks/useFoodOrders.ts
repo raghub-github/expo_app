@@ -35,6 +35,8 @@ export interface OrdersFoodRow {
   customer_name?: string | null;
   customer_phone?: string | null;
   customer_email?: string | null;
+  /** Total historical orders for this customer at this store (orders_core count). */
+  customer_order_count?: number | null;
   // Rider details
   rider_id?: number | null;
   rider_name?: string | null;
@@ -70,11 +72,23 @@ export interface OrdersFoodRow {
   cancellation_details?: any; // JSONB
   created_at: string;
   updated_at: string;
+  /** True when this pipeline row is backed only by orders_core (e.g. parcel / before kitchen row exists). */
+  core_only?: boolean;
+  orders_food_row_id?: number | null;
+  core_order_id?: number;
+  core_status?: string | null;
+  /** Kitchen / state machine (PLACED, ACCEPTED, PREPARING, …) — drives tabs with orders_core.status */
+  current_status?: string | null;
+  order_type?: string | null;
 }
 
 export interface FoodOrderStats {
   ordersToday: number;
+  /** Orders placed today that are still in the active pipeline (not delivered / cancelled / RTO). */
+  ordersTodayActive?: number;
+  /** Same pipeline count as ordersTodayActive (today scope). */
   activeOrders: number;
+  pendingCount?: number;
   avgPreparationTimeMinutes: number;
   totalRevenueToday: number;
   completionRatePercent: number;

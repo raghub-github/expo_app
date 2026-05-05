@@ -16,7 +16,7 @@ import {
   X,
   Timer
 } from 'lucide-react'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 
 export const dynamic = 'force-dynamic'
 
@@ -183,7 +183,6 @@ function StoreSettingsContent() {
 
   return (
     <>
-      <Toaster />
       <MXLayoutWhite
         restaurantName={store?.store_name || 'Settings'}
         restaurantId={storeId || DEMO_STORE_ID}

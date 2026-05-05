@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
@@ -21,7 +21,7 @@ function getSupabaseAdmin() {
  * GET /api/merchant-auth/resolve-session
  * Requires valid Supabase session + device_id cookie (set by set-cookie after login).
  */
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     const supabase = await createServerSupabaseClient();
     const { data: { user }, error: userError } = await supabase.auth.getUser();
@@ -79,13 +79,15 @@ export async function GET(request: NextRequest) {
 
     const { data: parentRow } = await db
       .from("merchant_parents")
-      .select("parent_name, owner_name, owner_email, parent_merchant_id")
+      .select("parent_name, owner_name, owner_email, parent_merchant_id, store_logo")
       .eq("id", parentId)
       .single();
 
     const { data: stores, error: storesError } = await db
       .from("merchant_stores")
-      .select("id, store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed")
+      .select(
+        "id, store_id, store_name, full_address, store_phones, approval_status, is_active, current_onboarding_step, onboarding_completed, banner_url"
+      )
       .eq("parent_id", parentId);
 
     if (storesError) {
@@ -96,7 +98,7 @@ export async function GET(request: NextRequest) {
     }
 
     const storeIds = (stores ?? []).map((s) => s.id).filter((id): id is number => id != null);
-    let paymentByStoreId: Record<number, "pending" | "completed"> = {};
+    const paymentByStoreId: Record<number, "pending" | "completed"> = {};
     if (storeIds.length > 0) {
       const { data: payments } = await db
         .from("merchant_onboarding_payments")
@@ -157,6 +159,7 @@ export async function GET(request: NextRequest) {
       parentName: parentRow?.parent_name ?? null,
       ownerName: parentRow?.owner_name ?? null,
       ownerEmail: parentRow?.owner_email ?? null,
+      parentLogo: parentRow?.store_logo ?? null,
       stores: storeList,
       onboardingProgress,
       hasVerifiedStore: verifiedStores.length > 0,

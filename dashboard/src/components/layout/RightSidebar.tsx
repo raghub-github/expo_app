@@ -213,13 +213,14 @@ export function RightSidebar({
       store_id: sidebarStoreData.store_id ?? "",
       full_address: sidebarStoreData.full_address ?? null,
       approval_status: sidebarStoreData.approval_status ?? null,
-      store_phones: sidebarStoreData.store_phones ?? null,
-      store_email: sidebarStoreData.store_email ?? null,
       created_at: sidebarStoreData.created_at ?? null,
     };
   }, [sidebarStoreData]);
 
   const isMerchantsListPage = cleanPathname === "/dashboard/merchants";
+  /** Merchants home (search list only): never show `useStore` cache here — it can be stale from a previous store page and desync from search. */
+  const isMerchantsSearchListRoot =
+    isMerchantsListPage && portal === "merchant" && !storeIdFromPath;
   const showMerchantSearchSkeleton =
     showRightSidebarStoreCard &&
     isMerchantsListPage &&
@@ -240,7 +241,6 @@ export function RightSidebar({
       store_id: s.store_id,
       full_address: s.full_address ?? null,
       approval_status: s.approval_status ?? null,
-      store_phones: s.store_phones ?? null,
     };
   }, [merchantsSearch?.searchResultStore, isMerchantsListPage, portal, showRightSidebarStoreCard]);
 
@@ -889,9 +889,13 @@ export function RightSidebar({
                     )}
                     {/* Store Information Card: merchant portal — only on orders/* or merchants/*; unmounts immediately on other routes (no CSS hide). */}
                     {isOpen && portal === "merchant" && showRightSidebarStoreCard ? (
-                      <div className="mt-3 min-w-0">
+                      <div className="mt-6 mb-5 min-w-0">
                         {showMerchantSearchSkeleton ? (
                           <StoreInfoCardSkeleton />
+                        ) : isMerchantsSearchListRoot ? (
+                          merchantSearchResultStore ? (
+                            <StoreInfoCard store={merchantSearchResultStore} />
+                          ) : null
                         ) : sidebarStore ? (
                           <StoreInfoCard store={sidebarStore} />
                         ) : merchantSearchResultStore ? (

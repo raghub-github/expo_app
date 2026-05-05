@@ -23,6 +23,7 @@ import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
 import { setOnSessionRevoked } from "@/services/api";
+import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
 import { profileService } from "@/services/profile.service";
 import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
@@ -109,6 +110,7 @@ export default function RootLayout() {
         <RootStack onLayoutRootView={onLayoutRootView} />
         <GlobalFloatingCart />
         <LocationModalWrapper />
+        <PushNotificationBootstrap />
       </SafeAreaProvider>
     </QueryClientProvider>
   );

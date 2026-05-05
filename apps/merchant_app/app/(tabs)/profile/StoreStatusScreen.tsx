@@ -23,6 +23,7 @@ import {
   type WeeklyDay,
   type StatusHistoryEntry,
 } from "@/services/storeStatusApi";
+import { formatCloseReasonForCard } from "@/lib/formatCloseReasonForCard";
 
 const CHART_HEIGHT = 120;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -95,21 +96,30 @@ function formatHistoryDateAndTimeIst(iso: string | null | undefined): string {
   }).format(d);
 }
 
+/** Bare `YYYY-MM-DDTHH:mm` from API = IST wall time (same as MerchantHeader / dashboard). */
+function parseCountdownTargetIso(isoStr: string): Date {
+  let normalized = isoStr.replace(" ", "T");
+  if (!/[zZ]$/.test(normalized)) {
+    normalized = normalized.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"); // +hhmm -> +hh:mm
+    normalized = normalized.replace(/([+-]\d{2})$/, "$1:00"); // +hh -> +hh:00
+  }
+  if (!/[zZ]$/.test(normalized) && !/[+-]\d{2}:\d{2}$/.test(normalized) && /^\d{4}-\d{2}-\d{2}T/.test(normalized)) {
+    return new Date(`${normalized}+05:30`);
+  }
+  return new Date(normalized);
+}
+
+/** Dashboard / Partner parity: `Opens in {h}h {m}m {s}s`. */
 function formatCountdown(iso: string | null): string | null {
   if (!iso) return null;
-  const target = new Date(iso);
+  const target = parseCountdownTargetIso(iso.trim());
   const now = new Date();
   const diffMs = target.getTime() - now.getTime();
   if (!Number.isFinite(diffMs) || diffMs <= 0) return null;
-  const totalSeconds = Math.floor(diffMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const parts: string[] = [];
-  if (hours > 0) parts.push(`${String(hours).padStart(2, "0")}h`);
-  parts.push(`${String(minutes).padStart(2, "0")}m`);
-  parts.push(`${String(seconds).padStart(2, "0")}s`);
-  return `Opens in ${parts.join(" ")}`;
+  const h = Math.floor(diffMs / 3600000);
+  const m = Math.floor((diffMs % 3600000) / 60000);
+  const s = Math.floor((diffMs % 60000) / 1000);
+  return `Opens in ${h}h ${m}m ${s}s`;
 }
 
 type StatusBadgeType = "OPEN" | "CLOSED_MANUAL" | "CLOSED_SCHEDULE" | "CLOSED_FORCED";
@@ -211,14 +221,8 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     }, [fetchHistory])
   );
 
-  // Prefer manualCloseUntil when set (temp closed) so countdown shows the exact time the user set.
-  const reopenAtIso = useMemo(() => {
-    if (manualCloseUntil) return manualCloseUntil;
-    if (reopenAtIsoFromContext) return reopenAtIsoFromContext;
-    if (scheduledClosure?.to) return scheduledClosure.to;
-    if (upcomingScheduledClosure?.from) return upcomingScheduledClosure.from;
-    return null;
-  }, [manualCloseUntil, reopenAtIsoFromContext, scheduledClosure, upcomingScheduledClosure]);
+  // Same instant as dashboard: context already applies manual vs legacy EOD vs schedule next_open.
+  const reopenAtIso = reopenAtIsoFromContext;
 
   const closedReasonLabelByStatus: Record<string, string> = {
     manual_lock: "Store locked manually",
@@ -235,12 +239,16 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
     new Date(manualCloseUntil).getTime() > Date.now();
   const closedReason = useMemo(() => {
     if (isOnline) return null;
-    if (isTempClose) return manualCloseReason && String(manualCloseReason).trim() !== "" ? `Temp closed: ${String(manualCloseReason).trim()}` : "Temporarily closed";
+    if (isTempClose)
+      return manualCloseReason && String(manualCloseReason).trim() !== ""
+        ? `Temp closed: ${formatCloseReasonForCard(String(manualCloseReason).trim()) ?? String(manualCloseReason).trim()}`
+        : "Temporarily closed";
     if (statusReason != null && closedReasonLabelByStatus[statusReason])
       return closedReasonLabelByStatus[statusReason];
     if (unavailableReason != null && closedReasonLabelByStatus[unavailableReason])
       return closedReasonLabelByStatus[unavailableReason];
-    if (scheduledClosure?.reason) return scheduledClosure.reason;
+    if (scheduledClosure?.reason)
+      return formatCloseReasonForCard(String(scheduledClosure.reason).trim()) ?? String(scheduledClosure.reason);
     if (restrictionType) return restrictionType;
     if (manualActivationLock) return "Store locked manually";
     return "Manual close";
@@ -260,7 +268,10 @@ export default function StoreStatusScreen({ reopenPromptFromNotification }: Stor
   }, [isOnline, manualActivationLock, statusReason, scheduledClosure, restrictionType]);
 
   const isManualClose = !isOnline && !scheduledClosure?.reason && !restrictionType && !manualActivationLock;
-  const exactReason = isManualClose && manualCloseReason?.trim() ? manualCloseReason.trim() : closedReason;
+  const exactReason =
+    isManualClose && manualCloseReason?.trim()
+      ? formatCloseReasonForCard(manualCloseReason.trim()) ?? manualCloseReason.trim()
+      : closedReason;
 
   const handleRefresh = async () => {
     setRefreshing(true);

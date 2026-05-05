@@ -1,5 +1,6 @@
 import { ulid } from "ulid";
 import { getSql } from "../../db/client.js";
+import { getNextOpenIso, nowInStoreTz } from "../merchant-partner/store-schedule-engine.js";
 import {
   buildFoodLegacyAttributesFromItemRow,
   loadItemAttributes,
@@ -64,20 +65,222 @@ export async function listCategories(storeIdNum: number): Promise<
     cuisine_id: number | null;
     display_order: number;
     is_active: boolean;
+    out_of_stock_manual: boolean;
+    out_of_stock_until: Date | string | null;
+    out_of_stock_active: boolean;
     created_at: Date;
     updated_at: Date;
   }>
 > {
   const sql = getSql();
   const rows = await sql`
-    SELECT id, category_name, category_description, category_image_url,
-           parent_category_id, cuisine_id, display_order, is_active, created_at, updated_at
+    SELECT
+      id,
+      category_name,
+      category_description,
+      category_image_url,
+      parent_category_id,
+      cuisine_id,
+      display_order,
+      is_active,
+      COALESCE(out_of_stock_manual, FALSE) AS out_of_stock_manual,
+      out_of_stock_until,
+      (
+        COALESCE(out_of_stock_manual, FALSE) = TRUE
+        OR (out_of_stock_until IS NOT NULL AND out_of_stock_until > NOW())
+      ) AS out_of_stock_active,
+      created_at,
+      updated_at
     FROM merchant_menu_categories
     WHERE store_id = ${storeIdNum}
       AND COALESCE(is_deleted, FALSE) = FALSE
     ORDER BY parent_category_id NULLS FIRST, display_order ASC, id ASC
   `;
   return rows as any;
+}
+
+export type OutOfStockMode = "CLEAR" | "MANUAL" | "HOURS" | "NEXT_OPEN" | "CUSTOM";
+
+function parsePositiveHours(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const hours = Math.floor(n);
+  if (hours <= 0) return null;
+  return Math.min(hours, 24 * 14); // cap to 14 days
+}
+
+function parseIsoDate(raw: unknown): Date | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+async function computeNextOpenIsoForStore(storeIdNum: number): Promise<string | null> {
+  const sql = getSql();
+  const hoursRows = await sql`
+    SELECT * FROM merchant_store_operating_hours
+    WHERE store_id = ${storeIdNum}
+    LIMIT 1
+  `;
+  const row = hoursRows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const now = new Date();
+  const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
+  return getNextOpenIso(row, dayOfWeek, minutesSinceMidnight, now);
+}
+
+function resolveOutOfStockUpdate(
+  body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
+): { out_of_stock_manual: boolean; out_of_stock_until: Date | null } {
+  const mode = body.mode;
+  if (mode === "CLEAR") return { out_of_stock_manual: false, out_of_stock_until: null };
+  if (mode === "MANUAL") return { out_of_stock_manual: true, out_of_stock_until: null };
+  if (mode === "HOURS") {
+    const hours = parsePositiveHours(body.hours);
+    if (!hours) throw new Error("invalid_hours");
+    const until = new Date(Date.now() + hours * 60 * 60 * 1000);
+    return { out_of_stock_manual: false, out_of_stock_until: until };
+  }
+  if (mode === "CUSTOM") {
+    const until = parseIsoDate(body.until);
+    if (!until) throw new Error("invalid_until");
+    return { out_of_stock_manual: false, out_of_stock_until: until };
+  }
+  // NEXT_OPEN handled by caller (needs store schedule)
+  return { out_of_stock_manual: false, out_of_stock_until: null };
+}
+
+export async function patchCategoryOutOfStock(
+  categoryId: number,
+  storeIdNum: number,
+  body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
+): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
+  const sql = getSql();
+  const [cat] = await sql`
+    SELECT id, out_of_stock_updated_at, out_of_stock_until
+    FROM merchant_menu_categories
+    WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
+    LIMIT 1
+  `;
+  if (!cat) return { ok: false, out_of_stock_until: null, out_of_stock_manual: false };
+
+  let patch = resolveOutOfStockUpdate(body);
+  if (body.mode === "NEXT_OPEN") {
+    const nextIso = await computeNextOpenIsoForStore(storeIdNum);
+    if (!nextIso) throw new Error("next_open_not_available");
+    patch = { out_of_stock_manual: false, out_of_stock_until: new Date(nextIso) };
+  }
+
+  // Use a single timestamp for category + cascading item updates (acts as a marker).
+  const markerIso = new Date().toISOString();
+  const prevMarker = (cat as any)?.out_of_stock_updated_at ?? null;
+  const prevUntil = (cat as any)?.out_of_stock_until ?? null;
+
+  const [row] = await sql`
+    UPDATE merchant_menu_categories
+    SET
+      out_of_stock_manual = ${patch.out_of_stock_manual},
+      out_of_stock_until = ${patch.out_of_stock_until},
+      out_of_stock_updated_at = ${markerIso},
+      updated_at = NOW()
+    WHERE id = ${categoryId} AND store_id = ${storeIdNum}
+      AND COALESCE(is_deleted, FALSE) = FALSE
+    RETURNING out_of_stock_manual, out_of_stock_until, out_of_stock_updated_at
+  `;
+  const r = row as any;
+
+  // Cascade rules:
+  // - When marking category OOS (manual/until): mark items under category as OOS using the same marker,
+  //   but do not override items already independently out-of-stock.
+  // - When clearing category OOS: restore (clear OOS) only for items that were last updated by the previous category marker.
+  const categoryNowOos =
+    Boolean(r?.out_of_stock_manual) ||
+    (r?.out_of_stock_until != null && new Date(r.out_of_stock_until).getTime() > Date.now());
+
+  if (categoryNowOos) {
+    await sql`
+      UPDATE merchant_menu_items
+      SET
+        out_of_stock_manual = FALSE,
+        out_of_stock_until = ${r?.out_of_stock_until ?? null},
+        out_of_stock_updated_at = ${markerIso},
+        updated_at = NOW()
+      WHERE store_id = ${storeIdNum}
+        AND category_id = ${categoryId}
+        AND (is_deleted IS NULL OR is_deleted = FALSE)
+        AND (
+          COALESCE(out_of_stock_manual, FALSE) = FALSE
+          AND (out_of_stock_until IS NULL OR out_of_stock_until <= NOW())
+        )
+    `;
+  } else if (body.mode === "CLEAR" && prevMarker) {
+    await sql`
+      UPDATE merchant_menu_items
+      SET
+        out_of_stock_manual = FALSE,
+        out_of_stock_until = NULL,
+        out_of_stock_updated_at = ${markerIso},
+        updated_at = NOW()
+      WHERE store_id = ${storeIdNum}
+        AND category_id = ${categoryId}
+        AND (is_deleted IS NULL OR is_deleted = FALSE)
+        AND COALESCE(out_of_stock_manual, FALSE) = FALSE
+        AND out_of_stock_updated_at = ${prevMarker}
+        AND (
+          (${prevUntil}::timestamptz IS NULL AND out_of_stock_until IS NULL)
+          OR out_of_stock_until = ${prevUntil}
+        )
+    `;
+  }
+
+  return {
+    ok: true,
+    out_of_stock_manual: Boolean(r?.out_of_stock_manual),
+    out_of_stock_until: r?.out_of_stock_until ? new Date(r.out_of_stock_until).toISOString() : null,
+  };
+}
+
+export async function patchItemOutOfStock(
+  itemId: number,
+  storeIdNum: number,
+  body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
+): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
+  const sql = getSql();
+  const [it] = await sql`
+    SELECT id FROM merchant_menu_items
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+      AND (is_deleted IS NULL OR is_deleted = FALSE)
+    LIMIT 1
+  `;
+  if (!it) return { ok: false, out_of_stock_until: null, out_of_stock_manual: false };
+
+  let patch = resolveOutOfStockUpdate(body);
+  if (body.mode === "NEXT_OPEN") {
+    const nextIso = await computeNextOpenIsoForStore(storeIdNum);
+    if (!nextIso) throw new Error("next_open_not_available");
+    patch = { out_of_stock_manual: false, out_of_stock_until: new Date(nextIso) };
+  }
+
+  const [row] = await sql`
+    UPDATE merchant_menu_items
+    SET
+      out_of_stock_manual = ${patch.out_of_stock_manual},
+      out_of_stock_until = ${patch.out_of_stock_until},
+      out_of_stock_updated_at = NOW(),
+      updated_at = NOW()
+    WHERE id = ${itemId} AND store_id = ${storeIdNum}
+      AND (is_deleted IS NULL OR is_deleted = FALSE)
+    RETURNING out_of_stock_manual, out_of_stock_until
+  `;
+  const r = row as any;
+  return {
+    ok: true,
+    out_of_stock_manual: Boolean(r?.out_of_stock_manual),
+    out_of_stock_until: r?.out_of_stock_until ? new Date(r.out_of_stock_until).toISOString() : null,
+  };
 }
 
 /** Map row to JSON-safe numbers (bigint-safe). */
@@ -537,6 +740,11 @@ export async function listItems(
     base_price: string;
     selling_price: string;
     in_stock: boolean;
+    effective_in_stock: boolean;
+    out_of_stock_manual: boolean;
+    out_of_stock_until: Date | string | null;
+    category_out_of_stock_manual: boolean;
+    category_out_of_stock_until: Date | string | null;
     is_active: boolean;
     is_deleted: boolean | null;
     display_order: number;
@@ -567,40 +775,86 @@ export async function listItems(
     categoryId == null ? sql`true` : sql`category_id = ${categoryId}`;
   const searchPattern = search ? "%" + search + "%" : null;
   const approvalCondition =
-    approvalStatus == null ? sql`true` : sql`approval_status = ${approvalStatus}::merchant_menu_item_approval_status`;
-  const stockCondition =
-    inStock == null ? sql`true` : sql`in_stock = ${inStock}`;
+    approvalStatus == null
+      ? sql`true`
+      : sql`merchant_menu_items.approval_status = ${approvalStatus}::merchant_menu_item_approval_status`;
+  const effectiveStockExpr = sql`(
+    CASE
+      WHEN merchant_menu_items.in_stock = FALSE THEN FALSE
+      WHEN (COALESCE(merchant_menu_items.out_of_stock_manual, FALSE) = TRUE OR (merchant_menu_items.out_of_stock_until IS NOT NULL AND merchant_menu_items.out_of_stock_until > NOW())) THEN FALSE
+      WHEN (COALESCE(c.out_of_stock_manual, FALSE) = TRUE OR (c.out_of_stock_until IS NOT NULL AND c.out_of_stock_until > NOW())) THEN FALSE
+      ELSE TRUE
+    END
+  )`;
+  const stockCondition = inStock == null ? sql`true` : sql`${effectiveStockExpr} = ${inStock}`;
   const changeRequestCondition =
     changeRequestType == null
       ? sql`true`
       : sql`EXISTS (SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' AND r.request_type = ${changeRequestType}::merchant_menu_item_change_request_type)`;
 
   const baseWhere = sql`
-    store_id = ${storeIdNum} AND (is_deleted IS NULL OR is_deleted = false)
+    merchant_menu_items.store_id = ${storeIdNum} AND (merchant_menu_items.is_deleted IS NULL OR merchant_menu_items.is_deleted = false)
     AND ${categoryCondition}
     AND ${approvalCondition}
     AND ${stockCondition}
     AND ${changeRequestCondition}
   `;
   const searchCondition = searchPattern
-    ? sql`AND (item_name ILIKE ${searchPattern} OR item_description ILIKE ${searchPattern})`
+    ? sql`AND (merchant_menu_items.item_name ILIKE ${searchPattern} OR merchant_menu_items.item_description ILIKE ${searchPattern})`
     : sql``;
 
   const countResult = await sql`
-    SELECT COUNT(*)::int AS c FROM merchant_menu_items
+    SELECT COUNT(*)::int AS c
+    FROM merchant_menu_items
+    LEFT JOIN merchant_menu_categories c
+      ON c.id = merchant_menu_items.category_id
+      AND c.store_id = ${storeIdNum}
+      AND COALESCE(c.is_deleted, FALSE) = FALSE
     WHERE ${baseWhere} ${searchCondition}
   `;
 
   const itemsResult = await sql`
-    SELECT id, item_id, item_name, item_description, item_image_url, category_id, food_type, spice_level,
-           base_price, selling_price, discount_percentage, tax_percentage,
-           in_stock, is_active, is_deleted, display_order,
-           has_customizations, has_addons, has_variants, is_popular, is_recommended,
-           preparation_time_minutes, packaging_charges, serves, serves_label, item_size_value, item_size_unit,
-           approval_status,
+    SELECT
+           merchant_menu_items.id,
+           merchant_menu_items.item_id,
+           merchant_menu_items.item_name,
+           merchant_menu_items.item_description,
+           merchant_menu_items.item_image_url,
+           merchant_menu_items.category_id,
+           merchant_menu_items.food_type,
+           merchant_menu_items.spice_level,
+           merchant_menu_items.base_price,
+           merchant_menu_items.selling_price,
+           merchant_menu_items.discount_percentage,
+           merchant_menu_items.tax_percentage,
+           merchant_menu_items.in_stock,
+           ${effectiveStockExpr} AS effective_in_stock,
+           COALESCE(merchant_menu_items.out_of_stock_manual, FALSE) AS out_of_stock_manual,
+           merchant_menu_items.out_of_stock_until,
+           COALESCE(c.out_of_stock_manual, FALSE) AS category_out_of_stock_manual,
+           c.out_of_stock_until AS category_out_of_stock_until,
+           merchant_menu_items.is_active,
+           merchant_menu_items.is_deleted,
+           merchant_menu_items.display_order,
+           merchant_menu_items.has_customizations,
+           merchant_menu_items.has_addons,
+           merchant_menu_items.has_variants,
+           merchant_menu_items.is_popular,
+           merchant_menu_items.is_recommended,
+           merchant_menu_items.preparation_time_minutes,
+           merchant_menu_items.packaging_charges,
+           merchant_menu_items.serves,
+           merchant_menu_items.serves_label,
+           merchant_menu_items.item_size_value,
+           merchant_menu_items.item_size_unit,
+           merchant_menu_items.approval_status,
            (SELECT EXISTS(SELECT 1 FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING')) AS has_pending_change_request,
            (SELECT request_type::text FROM merchant_menu_item_change_requests r WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1) AS pending_change_request_type
     FROM merchant_menu_items
+    LEFT JOIN merchant_menu_categories c
+      ON c.id = merchant_menu_items.category_id
+      AND c.store_id = ${storeIdNum}
+      AND COALESCE(c.is_deleted, FALSE) = FALSE
     WHERE ${baseWhere} ${searchCondition}
     ORDER BY category_id NULLS FIRST, display_order ASC, id ASC
     LIMIT ${limit} OFFSET ${offset}
@@ -1704,12 +1958,29 @@ export async function listCombos(storeIdNum: number): Promise<
     combo_type: string;
     pricing_strategy: string;
     combo_metadata: object;
+    out_of_stock_manual: boolean;
+    out_of_stock_until: Date | string | null;
+    out_of_stock_active: boolean;
+    effective_in_stock: boolean;
   }>
 > {
   const sql = getSql();
   const rows = await sql`
     SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order,
-           combo_type, pricing_strategy, combo_metadata
+           combo_type, pricing_strategy, combo_metadata,
+           COALESCE(out_of_stock_manual, FALSE) AS out_of_stock_manual,
+           out_of_stock_until,
+           (
+             COALESCE(out_of_stock_manual, FALSE) = TRUE
+             OR (out_of_stock_until IS NOT NULL AND out_of_stock_until > NOW())
+           ) AS out_of_stock_active,
+           (
+             COALESCE(is_active, TRUE) = TRUE
+             AND NOT (
+               COALESCE(out_of_stock_manual, FALSE) = TRUE
+               OR (out_of_stock_until IS NOT NULL AND out_of_stock_until > NOW())
+             )
+           ) AS effective_in_stock
     FROM merchant_menu_combos WHERE store_id = ${storeIdNum} AND (is_deleted IS NULL OR is_deleted = false)
     ORDER BY display_order ASC, id ASC
   `;
@@ -1763,12 +2034,29 @@ export async function getCombo(comboId: number, storeIdNum: number): Promise<{
   combo_type: string;
   pricing_strategy: string;
   combo_metadata: object;
+  out_of_stock_manual: boolean;
+  out_of_stock_until: Date | string | null;
+  out_of_stock_active: boolean;
+  effective_in_stock: boolean;
   components: Array<{ id: number; menu_item_id: number; variant_id: number | null; quantity: number; display_order: number }>;
 } | null> {
   const sql = getSql();
   const [c] = await sql`
     SELECT id, combo_name, description, combo_price, image_url, is_active, is_deleted, display_order,
-           combo_type, pricing_strategy, combo_metadata
+           combo_type, pricing_strategy, combo_metadata,
+           COALESCE(out_of_stock_manual, FALSE) AS out_of_stock_manual,
+           out_of_stock_until,
+           (
+             COALESCE(out_of_stock_manual, FALSE) = TRUE
+             OR (out_of_stock_until IS NOT NULL AND out_of_stock_until > NOW())
+           ) AS out_of_stock_active,
+           (
+             COALESCE(is_active, TRUE) = TRUE
+             AND NOT (
+               COALESCE(out_of_stock_manual, FALSE) = TRUE
+               OR (out_of_stock_until IS NOT NULL AND out_of_stock_until > NOW())
+             )
+           ) AS effective_in_stock
     FROM merchant_menu_combos WHERE id = ${comboId} AND store_id = ${storeIdNum}
   `;
   if (!c) return null;
@@ -1777,6 +2065,46 @@ export async function getCombo(comboId: number, storeIdNum: number): Promise<{
     FROM merchant_menu_combo_components WHERE combo_id = ${comboId} ORDER BY display_order ASC, id ASC
   `;
   return { ...(c as any), components: components as any };
+}
+
+export async function patchComboOutOfStock(
+  comboId: number,
+  storeIdNum: number,
+  body: { mode: OutOfStockMode; hours?: unknown; until?: unknown }
+): Promise<{ ok: boolean; out_of_stock_until: string | null; out_of_stock_manual: boolean }> {
+  const sql = getSql();
+  const [c] = await sql`
+    SELECT id FROM merchant_menu_combos
+    WHERE id = ${comboId} AND store_id = ${storeIdNum}
+      AND (is_deleted IS NULL OR is_deleted = FALSE)
+    LIMIT 1
+  `;
+  if (!c) return { ok: false, out_of_stock_until: null, out_of_stock_manual: false };
+
+  let patch = resolveOutOfStockUpdate(body);
+  if (body.mode === "NEXT_OPEN") {
+    const nextIso = await computeNextOpenIsoForStore(storeIdNum);
+    if (!nextIso) throw new Error("next_open_not_available");
+    patch = { out_of_stock_manual: false, out_of_stock_until: new Date(nextIso) };
+  }
+  const markerIso = new Date().toISOString();
+  const [row] = await sql`
+    UPDATE merchant_menu_combos
+    SET
+      out_of_stock_manual = ${patch.out_of_stock_manual},
+      out_of_stock_until = ${patch.out_of_stock_until},
+      out_of_stock_updated_at = ${markerIso},
+      updated_at = NOW()
+    WHERE id = ${comboId} AND store_id = ${storeIdNum}
+      AND (is_deleted IS NULL OR is_deleted = FALSE)
+    RETURNING out_of_stock_manual, out_of_stock_until
+  `;
+  const r = row as any;
+  return {
+    ok: true,
+    out_of_stock_manual: Boolean(r?.out_of_stock_manual),
+    out_of_stock_until: r?.out_of_stock_until ? new Date(r.out_of_stock_until).toISOString() : null,
+  };
 }
 
 export async function updateCombo(

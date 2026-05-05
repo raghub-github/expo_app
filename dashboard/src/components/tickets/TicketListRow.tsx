@@ -435,7 +435,7 @@ export const TicketListRow = React.memo(function TicketListRow({
   return (
     <>
     <div
-      className="flex items-center gap-2.5 border-b border-gray-200 bg-white pl-2 pr-1 py-1.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
+      className="flex items-center gap-2 border-b border-gray-200 bg-white pl-2 pr-1 py-2.5 hover:bg-slate-50/80 transition-colors min-h-0 relative group"
       style={{ overflow: "visible" }}
       onPointerEnter={prefetchThisTicket}
     >
@@ -463,7 +463,7 @@ export const TicketListRow = React.memo(function TicketListRow({
 
       {/* Main content — shared left edge for chips, title, meta */}
       <div className="flex-1 min-w-0 flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-1 w-full min-w-0">
+        <div className="flex flex-nowrap items-center gap-1 w-full min-w-0 overflow-x-auto [scrollbar-width:thin]">
           {showOverdue && (
             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-800">
               <AlertCircle className="h-2.5 w-2.5 shrink-0" />
@@ -538,7 +538,7 @@ export const TicketListRow = React.memo(function TicketListRow({
       </div>
 
       {/* Right: Priority + Status on one row; Group/Agent full width below */}
-      <div className="flex flex-col gap-1 shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-col gap-1.5 shrink-0 items-start w-[288px] min-w-[288px] mr-2" onClick={(e) => e.stopPropagation()}>
         {snoozeCountdown ? (
           <div className="w-full text-right">
             <span
@@ -613,7 +613,7 @@ export const TicketListRow = React.memo(function TicketListRow({
             }
           >
             <FolderGit2 className="h-3.5 w-3.5 text-gray-400 shrink-0" aria-hidden />
-            <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+            <div className="flex-1 min-w-0 flex flex-col gap-1">
               <div className="flex min-w-0 items-center gap-1 text-[11px] leading-snug">
                 <button
                   type="button"

@@ -126,6 +126,29 @@ export type OperatingHours = {
   sunday: DaySlots;
 };
 
+/** Overlapping GET operating-hours (header + Strict Mode) share one in-flight request per store. */
+const operatingHoursInFlight = new Map<number, Promise<OperatingHours | null>>();
+const OPERATING_HOURS_CACHE_TTL_MS = 5 * 60 * 1000;
+const operatingHoursCache = new Map<
+  number,
+  { data: OperatingHours | null; fetchedAt: number }
+>();
+
+export function invalidateOperatingHoursCache(storeId: number): void {
+  const sid = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : Number(storeId);
+  if (!Number.isInteger(sid) || sid < 1) return;
+  operatingHoursCache.delete(sid);
+}
+
+export function peekOperatingHoursCache(storeId: number): OperatingHours | null | undefined {
+  const sid = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : Number(storeId);
+  if (!Number.isInteger(sid) || sid < 1) return undefined;
+  const hit = operatingHoursCache.get(sid);
+  if (!hit) return undefined;
+  if (Date.now() - hit.fetchedAt > OPERATING_HOURS_CACHE_TTL_MS) return undefined;
+  return hit.data;
+}
+
 export async function getOutlet(
   storeId: number,
   token: string
@@ -222,13 +245,47 @@ export async function updatePickupInstruction(
 }
 
 export async function getOperatingHours(storeId: number, token: string): Promise<OperatingHours | null> {
-  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/operating-hours`, token);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || res.statusText || "Failed to load timings");
+  const sid = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : Number(storeId);
+  if (!Number.isInteger(sid) || sid < 1) {
+    return Promise.reject(new Error("Invalid store"));
   }
-  const data = await res.json();
-  return data === null ? null : data;
+  const cached = peekOperatingHoursCache(sid);
+  if (cached !== undefined) return cached;
+  const existing = operatingHoursInFlight.get(sid);
+  if (existing) return existing;
+
+  const p = (async (): Promise<OperatingHours | null> => {
+    const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${sid}/operating-hours`, token);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).error || res.statusText || "Failed to load timings");
+    }
+    const data = await res.json();
+    const normalized: OperatingHours | null = data === null ? null : (data as OperatingHours);
+    operatingHoursCache.set(sid, { data: normalized, fetchedAt: Date.now() });
+    return normalized;
+  })().finally(() => {
+    operatingHoursInFlight.delete(sid);
+  });
+  operatingHoursInFlight.set(sid, p);
+  return p;
+}
+
+export async function getOperatingHoursFresh(storeId: number, token: string): Promise<OperatingHours | null> {
+  invalidateOperatingHoursCache(storeId);
+  return getOperatingHours(storeId, token);
+}
+
+export function prefetchOperatingHours(storeId: number, token: string): void {
+  const sid = typeof storeId === "number" && Number.isFinite(storeId) ? storeId : Number(storeId);
+  if (!Number.isInteger(sid) || sid < 1) return;
+  const cached = peekOperatingHoursCache(sid);
+  if (cached !== undefined) return;
+  const existing = operatingHoursInFlight.get(sid);
+  if (existing) return;
+  getOperatingHours(sid, token).catch(() => {
+    // best-effort; ignore errors (e.g. invalid_token)
+  });
 }
 
 export async function updateOperatingHours(
@@ -244,6 +301,8 @@ export async function updateOperatingHours(
     const err = await res.json().catch(() => ({}));
     throw new Error((err as any).error || res.statusText || "Failed to update timings");
   }
+  // After a successful save, cached hours are stale; force next read to hit the server.
+  invalidateOperatingHoursCache(storeId);
 }
 
 /** Single audit log entry (store profile changes). */

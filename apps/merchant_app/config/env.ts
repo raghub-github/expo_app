@@ -55,15 +55,24 @@ export function getConfig(): {
   storeWebBaseUrl: string;
   /** Mapbox public token for map and geocoding (Edit Address). */
   mapboxPublicToken: string | null;
+  /** Same Supabase project as Auth → Phone / Send SMS hook (optional if using backend-only phone OTP). */
+  supabaseUrl: string | null;
+  supabaseAnonKey: string | null;
+  /**
+   * When true, phone OTP uses `POST /v1/auth/otp/request` (backend + MSG91) like the customer app without Supabase.
+   * Use when SMS does not arrive via Supabase (hook / MSG91 on API server).
+   */
+  phoneOtpUseBackendOnly: boolean;
 } {
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
   const fromExtra =
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
     (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
-  const raw =
+  const raw = (
     asNonEmptyString(fromEnv) ??
     asNonEmptyString(fromExtra) ??
-    "http://localhost:3000";
+    "http://localhost:3000"
+  ).trim();
   const storeIdEnv = process.env.EXPO_PUBLIC_STORE_ID ??
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.STORE_ID ??
     (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.STORE_ID;
@@ -80,11 +89,34 @@ export function getConfig(): {
     asNonEmptyString(process.env.MAPBOX_PUBLIC_TOKEN) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.MAPBOX_PUBLIC_TOKEN) ??
     null;
+
+  const extra = Constants.expoConfig?.extra as Record<string, unknown> | undefined;
+  const supabaseUrl =
+    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_URL) ??
+    asNonEmptyString(extra?.EXPO_PUBLIC_SUPABASE_URL as string) ??
+    null;
+  const supabaseAnonKey =
+    asNonEmptyString(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY) ??
+    asNonEmptyString(extra?.EXPO_PUBLIC_SUPABASE_ANON_KEY as string) ??
+    null;
+
+  const phoneOtpBackendRaw =
+    asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
+    asNonEmptyString(extra?.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND as string);
+  const phoneOtpUseBackendOnly =
+    phoneOtpBackendRaw === "1" ||
+    phoneOtpBackendRaw?.toLowerCase() === "true" ||
+    phoneOtpBackendRaw?.toLowerCase() === "yes" ||
+    phoneOtpBackendRaw?.toLowerCase() === "on";
+
   return {
     apiBaseUrl: resolveApiBaseUrl(raw),
     storeId: parseStoreId(storeIdEnv),
     googleWebClientId,
     storeWebBaseUrl: storeWebBaseUrl.replace(/\/+$/, ""),
     mapboxPublicToken: mapboxToken,
+    supabaseUrl,
+    supabaseAnonKey,
+    phoneOtpUseBackendOnly,
   };
 }

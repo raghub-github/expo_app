@@ -9,10 +9,14 @@
  * Returns a URL that will load the attachment via our proxy (so private R2 works and there is no expiry).
  * Use for img src or link href when displaying ticket attachments.
  */
-export function getTicketAttachmentViewUrl(rawUrlOrKey: string | null | undefined): string {
+export function getTicketAttachmentViewUrl(
+  rawUrlOrKey: string | null | undefined,
+): string {
   if (!rawUrlOrKey || typeof rawUrlOrKey !== "string") return "";
   const s = rawUrlOrKey.trim();
   if (!s) return "";
+  // Already a proxy URL
+  if (s.startsWith("/api/attachments/proxy")) return s;
   // Stored as R2 key (no scheme) → use proxy by key
   if (!s.startsWith("http://") && !s.startsWith("https://")) {
     return `/api/attachments/proxy?key=${encodeURIComponent(s)}`;

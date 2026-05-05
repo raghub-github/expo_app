@@ -88,6 +88,20 @@ export async function deactivateSessionForDevice(deviceId: string): Promise<void
   return deactivateSessionsForDevice(deviceId);
 }
 
+/** Deactivate every active device session for this merchant (logout all devices). */
+export async function deactivateAllSessionsForMerchant(merchantId: number): Promise<void> {
+  if (!merchantId || merchantId < 1) return;
+  const db = getSupabase();
+  const { error } = await db
+    .from("merchant_sessions")
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq("merchant_id", merchantId)
+    .eq("is_active", true);
+  if (error) {
+    console.error("[merchant-session-db] deactivateAllSessionsForMerchant error:", error);
+  }
+}
+
 export async function hasActiveSessionForDevice(
   merchantId: number,
   deviceId: string

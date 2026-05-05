@@ -263,63 +263,92 @@ export const updateStoreInfo = async (storeId: string, updates: Partial<Merchant
   }
 }
 
-// Fetch operating hours for a store
+const OPERATING_DAY_KEYS = [
+  { key: 'monday', label: 'Monday' },
+  { key: 'tuesday', label: 'Tuesday' },
+  { key: 'wednesday', label: 'Wednesday' },
+  { key: 'thursday', label: 'Thursday' },
+  { key: 'friday', label: 'Friday' },
+  { key: 'saturday', label: 'Saturday' },
+  { key: 'sunday', label: 'Sunday' },
+] as const;
+
+/** One `merchant_store_operating_hours` row → day rows for UI (profile, cards). */
+export function mapOperatingHoursRecordToDayList(
+  data: Record<string, any> | null | undefined
+): Array<{
+  day_label: string;
+  open: boolean;
+  slot1_start: string | null;
+  slot1_end: string | null;
+  slot2_start: string | null;
+  slot2_end: string | null;
+  total_duration_minutes: number;
+}> {
+  if (!data) return [];
+  return OPERATING_DAY_KEYS.map((day) => ({
+    day_label: day.label,
+    open: data[`${day.key}_open`] ?? false,
+    slot1_start: data[`${day.key}_slot1_start`] ?? null,
+    slot1_end: data[`${day.key}_slot1_end`] ?? null,
+    slot2_start: data[`${day.key}_slot2_start`] ?? null,
+    slot2_end: data[`${day.key}_slot2_end`] ?? null,
+    total_duration_minutes: data[`${day.key}_total_duration_minutes`] ?? 0,
+  }));
+}
+
+/**
+ * Load timings via `/api/outlet-timings` (service role). Browser Supabase often cannot read
+ * `merchant_store_operating_hours` under RLS — do not use direct table select from the client.
+ */
+export async function fetchStoreOperatingHoursViaApi(internalStoreId: number): Promise<
+  ReturnType<typeof mapOperatingHoursRecordToDayList>
+> {
+  try {
+    const res = await fetch(`/api/outlet-timings?store_id=${internalStoreId}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) return [];
+    const raw = await res.json();
+    if (raw == null) return [];
+    if (typeof raw === 'object' && raw !== null && 'error' in raw && raw.error) return [];
+    return mapOperatingHoursRecordToDayList(raw as Record<string, any>);
+  } catch (e) {
+    console.error('fetchStoreOperatingHoursViaApi:', e);
+    return [];
+  }
+}
+
+// Fetch operating hours for a store (direct Supabase — may return [] under RLS on client)
 export const fetchStoreOperatingHours = async (storeId: string) => {
   try {
-    // First, get the numeric id from merchant_stores using the string storeId
     const { data: storeData, error: storeError } = await supabase
       .from('merchant_stores')
       .select('id')
       .eq('store_id', storeId)
       .maybeSingle();
-    
+
     if (storeError) {
       console.error('Error fetching store:', storeError);
       return [];
     }
-    
+
     if (!storeData || !storeData.id) {
-      // Store not found, return empty array (not an error)
       return [];
     }
-    
-    const storeBigIntId = storeData.id;
+
     const { data, error } = await supabase
       .from('merchant_store_operating_hours')
       .select('*')
-      .eq('store_id', storeBigIntId)
+      .eq('store_id', storeData.id)
       .maybeSingle();
-    
+
     if (error) {
       console.error('Error fetching operating hours:', error);
       return [];
     }
-    
-    // If no operating hours found, return empty array (not an error - store might not have set hours yet)
-    if (!data) {
-      return [];
-    }
-    
-    // Transform to array of days
-    const days = [
-      { key: 'monday', label: 'Monday' },
-      { key: 'tuesday', label: 'Tuesday' },
-      { key: 'wednesday', label: 'Wednesday' },
-      { key: 'thursday', label: 'Thursday' },
-      { key: 'friday', label: 'Friday' },
-      { key: 'saturday', label: 'Saturday' },
-      { key: 'sunday', label: 'Sunday' }
-    ];
-    
-    return days.map(day => ({
-      day_label: day.label,
-      open: data[`${day.key}_open`] ?? false,
-      slot1_start: data[`${day.key}_slot1_start`] ?? null,
-      slot1_end: data[`${day.key}_slot1_end`] ?? null,
-      slot2_start: data[`${day.key}_slot2_start`] ?? null,
-      slot2_end: data[`${day.key}_slot2_end`] ?? null,
-      total_duration_minutes: data[`${day.key}_total_duration_minutes`] ?? 0,
-    }));
+
+    return mapOperatingHoursRecordToDayList(data ?? undefined);
   } catch (error) {
     console.error('Error fetching operating hours:', error);
     return [];

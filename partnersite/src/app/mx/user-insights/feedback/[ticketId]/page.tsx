@@ -7,6 +7,12 @@ export default function TicketFeedbackPage() {
   const params = useParams();
   const router = useRouter();
   const ticketId = params?.ticketId ? parseInt(params.ticketId as string) : null;
+
+  // Legacy route: keep users on Support Inbox and open the feedback drawer there.
+  useEffect(() => {
+    if (!ticketId || !Number.isFinite(ticketId)) return;
+    router.replace(`/mx/support-inbox?ticket=${ticketId}&rate=1`);
+  }, [ticketId, router]);
   
   const [rating, setRating] = useState<number | null>(null);
   const [feedback, setFeedback] = useState('');

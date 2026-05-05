@@ -7,7 +7,7 @@ import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchSt
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
 import { Clock, Phone, Save, AlertCircle, CheckCircle2, X } from 'lucide-react'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 
 export const dynamic = 'force-dynamic'
 
@@ -131,7 +131,6 @@ function StoreSettingsContent() {
 
   return (
     <>
-      <Toaster />
       <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || DEMO_STORE_ID}>
         <div className="min-h-screen bg-white px-4 sm:px-6 lg:px-8 py-8">
           <div className="max-w-3xl mx-auto space-y-6">

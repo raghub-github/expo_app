@@ -21,6 +21,10 @@ import {
   updateItem,
   deleteItem,
   patchItemStock,
+  patchCategoryOutOfStock,
+  patchItemOutOfStock,
+  patchComboOutOfStock,
+  type OutOfStockMode,
   addVariant,
   updateVariant,
   deleteVariant,
@@ -210,6 +214,12 @@ const itemUpdateSchema = z.object({
 const stockPatchSchema = z.object({
   in_stock: z.boolean().optional(),
   available_quantity: z.number().int().min(0).optional().nullable(),
+});
+
+const outOfStockPatchSchema = z.object({
+  mode: z.enum(["CLEAR", "MANUAL", "HOURS", "NEXT_OPEN", "CUSTOM"] as const),
+  hours: z.number().int().positive().max(24 * 14).optional(),
+  until: z.string().optional(),
 });
 
 const variantCreateSchema = z.object({
@@ -840,6 +850,114 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
           if (!ok) return reply.code(404).send({ error: "item_not_found_or_invalid_body" });
           try { const stockDesc = req.body.in_stock !== undefined ? (req.body.in_stock ? "in-stock" : "out-of-stock") : "stock"; await logStoreActivity({ storeId: access.storeIdNum, section: "menu_item", action: "update", entityId: id, summary: `Merchant updated ${stockDesc} for item #${id}`, actorType: "merchant", source: "merchant_app" }); } catch {}
           return reply.send({ ok: true });
+        }
+      );
+
+      protectedApp.patch<{
+        Params: { categoryId: string };
+        Body: z.infer<typeof outOfStockPatchSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/categories/:categoryId/out-of-stock",
+        { schema: { body: outOfStockPatchSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.categoryId, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_category_id" });
+          try {
+            const out = await patchCategoryOutOfStock(id, access.storeIdNum, req.body as any as { mode: OutOfStockMode; hours?: number; until?: string });
+            if (!out.ok) return reply.code(404).send({ error: "category_not_found" });
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "menu_category",
+                action: "update",
+                entityId: id,
+                summary: `Merchant updated out-of-stock for category #${id}`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.send(out);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "out_of_stock_update_failed";
+            return reply.code(400).send({ error: msg });
+          }
+        }
+      );
+
+      protectedApp.patch<{
+        Params: { id: string };
+        Body: z.infer<typeof outOfStockPatchSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/items/:id/out-of-stock",
+        { schema: { body: outOfStockPatchSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_item_id" });
+          try {
+            const out = await patchItemOutOfStock(id, access.storeIdNum, req.body as any as { mode: OutOfStockMode; hours?: number; until?: string });
+            if (!out.ok) return reply.code(404).send({ error: "item_not_found" });
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "menu_item",
+                action: "update",
+                entityId: id,
+                summary: `Merchant updated out-of-stock for item #${id}`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.send(out);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "out_of_stock_update_failed";
+            return reply.code(400).send({ error: msg });
+          }
+        }
+      );
+
+      protectedApp.patch<{
+        Params: { id: string };
+        Body: z.infer<typeof outOfStockPatchSchema>;
+        Querystring: { storeId: string };
+      }>(
+        "/combos/:id/out-of-stock",
+        { schema: { body: outOfStockPatchSchema } },
+        async (req, reply) => {
+          const storeId = (req.query as any).storeId;
+          if (!storeId) return reply.code(400).send({ error: "storeId query required" });
+          const access = await getStore(req, reply, storeId);
+          if (!access) return;
+          const id = parseInt(req.params.id, 10);
+          if (Number.isNaN(id)) return reply.code(400).send({ error: "invalid_combo_id" });
+          try {
+            const out = await patchComboOutOfStock(id, access.storeIdNum, req.body as any as { mode: OutOfStockMode; hours?: number; until?: string });
+            if (!out.ok) return reply.code(404).send({ error: "combo_not_found" });
+            try {
+              await logStoreActivity({
+                storeId: access.storeIdNum,
+                section: "combo",
+                action: "update",
+                entityId: id,
+                summary: `Merchant updated out-of-stock for combo #${id}`,
+                actorType: "merchant",
+                source: "merchant_app",
+              });
+            } catch {}
+            return reply.send(out);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "out_of_stock_update_failed";
+            return reply.code(400).send({ error: msg });
+          }
         }
       );
 

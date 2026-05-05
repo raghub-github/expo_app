@@ -76,13 +76,15 @@ function flatMenuToOnboardingKeys(key: string): string[] {
 /** .../onboarding/menu-{pdf|images|csv}/file or .../onboarding/menu/{pdf|images|csv}/file -> .../menu/file */
 function onboardingMenuToFlatKeys(key: string): string[] {
   const out: string[] = [];
-  const reNew = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/onboarding\/menu-(pdf|images|csv)\/([^/]+)$/i;
+  const reNew =
+    /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/onboarding\/menu-(pdf|images|csv)\/([^/]+)$/i;
   const m1 = key.match(reNew);
   if (m1) {
     const prefix = m1[1].startsWith("docs/") ? m1[1] : `docs/${m1[1]}`;
     out.push(`${prefix}/menu/${m1[3]}`);
   }
-  const reOld = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/onboarding\/menu\/(?:pdf|images|csv)\/([^/]+)$/i;
+  const reOld =
+    /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/onboarding\/menu\/(?:pdf|images|csv)\/([^/]+)$/i;
   const m2 = key.match(reOld);
   if (m2) {
     const prefix = m2[1].startsWith("docs/") ? m2[1] : `docs/${m2[1]}`;
@@ -97,7 +99,7 @@ function onboardingMenuLayoutVariants(key: string): string[] {
   const base = "(?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft)";
   const reNested = new RegExp(
     `^(${base})\\/onboarding\\/menu\\/(pdf|csv|images)\\/([^/]+)$`,
-    "i"
+    "i",
   );
   const m = key.match(reNested);
   if (m) {
@@ -111,7 +113,7 @@ function onboardingMenuLayoutVariants(key: string): string[] {
   }
   const reLegacy = new RegExp(
     `^(${base})\\/onboarding\\/menu-(pdf|images|csv)\\/([^/]+)$`,
-    "i"
+    "i",
   );
   const m2 = key.match(reLegacy);
   if (m2) {
@@ -128,7 +130,8 @@ function onboardingMenuLayoutVariants(key: string): string[] {
 /** Flat `.../onboarding/menu/{file}` (step 3) <-> `.../stores/{id}/menu/{file}` legacy */
 function onboardingFlatMenuReferenceVariants(key: string): string[] {
   const out: string[] = [];
-  const reOnb = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/menu\/([^/]+)$/i;
+  const reOnb =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/menu\/([^/]+)$/i;
   const m = key.match(reOnb);
   if (m) {
     const p = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
@@ -137,7 +140,8 @@ function onboardingFlatMenuReferenceVariants(key: string): string[] {
       out.push(`${p}/menu/${file}`);
     }
   }
-  const reStore = /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/menu\/([^/]+)$/i;
+  const reStore =
+    /^((?:docs\/)?merchants\/[^/]+\/stores\/[^/]+)\/menu\/([^/]+)$/i;
   const m2 = key.match(reStore);
   if (m2 && !m2[0].toLowerCase().includes("/onboarding/")) {
     const p = m2[1].startsWith("docs/") ? m2[1] : `docs/${m2[1]}`;
@@ -160,7 +164,7 @@ function onboardingDocumentsPathVariants(key: string): string[] {
 
   const flatDoc = new RegExp(
     `^((?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft))\\/onboarding\\/documents\\/([^/]+)$`,
-    "i"
+    "i",
   );
   const mFlat = key.match(flatDoc);
   if (mFlat) {
@@ -178,7 +182,7 @@ function onboardingDocumentsPathVariants(key: string): string[] {
 
   const legacyType = new RegExp(
     `^((?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft))\\/onboarding\\/(${LEGACY_ONBOARDING_DOC_SEGMENTS})\\/(.+)$`,
-    "i"
+    "i",
   );
   const mLeg = key.match(legacyType);
   if (mLeg) {
@@ -189,7 +193,7 @@ function onboardingDocumentsPathVariants(key: string): string[] {
 
   const nestedUnderDocuments = new RegExp(
     `^((?:docs\\/)?merchants\\/[^/]+(?:\\/stores\\/[^/]+|\\/draft))\\/onboarding\\/documents\\/(${LEGACY_ONBOARDING_DOC_SEGMENTS})\\/(.+)$`,
-    "i"
+    "i",
   );
   const mNest = key.match(nestedUnderDocuments);
   if (mNest) {
@@ -208,13 +212,15 @@ function onboardingDocumentsPathVariants(key: string): string[] {
 /** Legacy gallery path .../onboarding/store-media/gallery/ <-> .../onboarding/store-media-gallery/ */
 function onboardingStoreMediaGalleryVariants(key: string): string[] {
   const out: string[] = [];
-  const reOld = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media\/gallery\/(.+)$/i;
+  const reOld =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media\/gallery\/(.+)$/i;
   const m = key.match(reOld);
   if (m) {
     const prefix = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
     out.push(`${prefix}/onboarding/store-media-gallery/${m[2]}`);
   }
-  const reNew = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media-gallery\/(.+)$/i;
+  const reNew =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media-gallery\/(.+)$/i;
   const m2 = key.match(reNew);
   if (m2) {
     const prefix = m2[1].startsWith("docs/") ? m2[1] : `docs/${m2[1]}`;
@@ -226,25 +232,29 @@ function onboardingStoreMediaGalleryVariants(key: string): string[] {
 /** `.../onboarding/assets/{banner|gallery}/file` <-> legacy `store-media` / `store-media-gallery` */
 function onboardingStoreAssetsPathVariants(key: string): string[] {
   const out: string[] = [];
-  const reAssetsBanner = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/assets\/banner\/([^/]+)$/i;
+  const reAssetsBanner =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/assets\/banner\/([^/]+)$/i;
   const mb = key.match(reAssetsBanner);
   if (mb) {
     const prefix = mb[1].startsWith("docs/") ? mb[1] : `docs/${mb[1]}`;
     out.push(`${prefix}/onboarding/store-media/${mb[2]}`);
   }
-  const reAssetsGallery = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/assets\/gallery\/([^/]+)$/i;
+  const reAssetsGallery =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/assets\/gallery\/([^/]+)$/i;
   const mg = key.match(reAssetsGallery);
   if (mg) {
     const prefix = mg[1].startsWith("docs/") ? mg[1] : `docs/${mg[1]}`;
     out.push(`${prefix}/onboarding/store-media-gallery/${mg[2]}`);
   }
-  const reLegacyBanner = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media\/(banner[^/]*)$/i;
+  const reLegacyBanner =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media\/(banner[^/]*)$/i;
   const lb = key.match(reLegacyBanner);
   if (lb) {
     const prefix = lb[1].startsWith("docs/") ? lb[1] : `docs/${lb[1]}`;
     out.push(`${prefix}/onboarding/assets/banner/${lb[2]}`);
   }
-  const reLegacyGallery = /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media-gallery\/([^/]+)$/i;
+  const reLegacyGallery =
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/store-media-gallery\/([^/]+)$/i;
   const lg = key.match(reLegacyGallery);
   if (lg) {
     const prefix = lg[1].startsWith("docs/") ? lg[1] : `docs/${lg[1]}`;
@@ -260,14 +270,15 @@ function onboardingStoreAssetsPathVariants(key: string): string[] {
 function onboardingAgreementPathVariants(key: string): string[] {
   const out: string[] = [];
   const m = key.match(
-    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/(agreement|documents)\/([^/]+)$/i
+    /^((?:docs\/)?merchants\/[^/]+(?:\/stores\/[^/]+|\/draft))\/onboarding\/(agreement|documents)\/([^/]+)$/i,
   );
   if (!m) return out;
   const prefix = m[1].startsWith("docs/") ? m[1] : `docs/${m[1]}`;
   const folder = m[2].toLowerCase();
   const file = m[3];
   if (!file || !/\.pdf$/i.test(file)) return out;
-  if (!/^contract-approval-/i.test(file) && !/^partner-agreement/i.test(file)) return out;
+  if (!/^contract-approval-/i.test(file) && !/^partner-agreement/i.test(file))
+    return out;
   const other = folder === "agreement" ? "documents" : "agreement";
   out.push(`${prefix}/onboarding/${other}/${file}`);
   return out;
@@ -322,7 +333,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingMenuToFlatKeys(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -330,7 +342,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingMenuLayoutVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -338,7 +351,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingFlatMenuReferenceVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -349,7 +363,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of menuReferencePathVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -357,7 +372,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingDocumentsPathVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -365,7 +381,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingStoreMediaGalleryVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -373,7 +390,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingStoreAssetsPathVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -381,7 +399,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     for (const ob of onboardingAgreementPathVariants(root)) {
       add(ob);
-      if (ob.startsWith("merchants/") && !ob.startsWith("docs/")) add(`docs/${ob}`);
+      if (ob.startsWith("merchants/") && !ob.startsWith("docs/"))
+        add(`docs/${ob}`);
       else if (ob.startsWith("docs/")) {
         const nd = ob.replace(/^docs\//, "");
         if (nd) add(nd);
@@ -389,7 +408,8 @@ function expandR2LookupCandidates(primary: string): string[] {
     }
     if (/\/menu_sheet_\d+$/.test(root)) {
       add(`${root}.csv`);
-      if (root.startsWith("merchants/") && !root.startsWith("docs/")) add(`docs/${root}.csv`);
+      if (root.startsWith("merchants/") && !root.startsWith("docs/"))
+        add(`docs/${root}.csv`);
     }
   }
 
@@ -399,7 +419,8 @@ function expandR2LookupCandidates(primary: string): string[] {
 /** Allow only our R2-related URLs for security. */
 function isAllowedR2Url(decodedUrl: string): boolean {
   const base = process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, "") ?? "";
-  if (base && (decodedUrl.startsWith(base + "/") || decodedUrl === base)) return true;
+  if (base && (decodedUrl.startsWith(base + "/") || decodedUrl === base))
+    return true;
   if (/\.r2\.cloudflarestorage\.com/i.test(decodedUrl)) return true;
   if (/\.r2\.dev/i.test(decodedUrl)) return true;
   return false;
@@ -416,14 +437,20 @@ export async function GET(request: NextRequest) {
       try {
         key = decodeURIComponent(keyParam.trim());
       } catch {
-        return NextResponse.json({ error: "Invalid key parameter" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Invalid key parameter" },
+          { status: 400 },
+        );
       }
     } else if (urlParam?.trim()) {
       let decodedUrl: string;
       try {
         decodedUrl = decodeURIComponent(urlParam.trim());
       } catch {
-        return NextResponse.json({ error: "Invalid url parameter" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Invalid url parameter" },
+          { status: 400 },
+        );
       }
       if (!isAllowedR2Url(decodedUrl)) {
         return NextResponse.json({ error: "URL not allowed" }, { status: 403 });
@@ -432,28 +459,50 @@ export async function GET(request: NextRequest) {
     }
 
     if (!key?.trim()) {
-      return NextResponse.json({ error: "Missing key or url parameter" }, { status: 400 });
-    }
-
-    key = normalizeR2ObjectKey(key.trim());
-
-    const bucket = process.env.R2_BUCKET_NAME;
-    if (!bucket || !process.env.R2_ACCESS_KEY || !process.env.R2_SECRET_KEY || !process.env.R2_ENDPOINT) {
       return NextResponse.json(
-        { error: "R2 not configured" },
-        { status: 500 }
+        { error: "Missing key or url parameter" },
+        { status: 400 },
       );
     }
 
+    // Some DB rows accidentally store double-encoded keys like `docs%252Fmerchants%252F...`.
+    // Decode repeatedly so both `docs%2F...` and `docs%252F...` work.
+    key = key.trim();
+    for (let i = 0; i < 3; i++) {
+      if (!/%2f/i.test(key)) break;
+      try {
+        const decoded = decodeURIComponent(key);
+        if (decoded === key) break;
+        key = decoded;
+      } catch {
+        break;
+      }
+    }
+    key = normalizeR2ObjectKey(key);
+
+    const bucket = process.env.R2_BUCKET_NAME;
+    if (
+      !bucket ||
+      !process.env.R2_ACCESS_KEY ||
+      !process.env.R2_SECRET_KEY ||
+      !process.env.R2_ENDPOINT
+    ) {
+      return NextResponse.json({ error: "R2 not configured" }, { status: 500 });
+    }
+
     const client = getR2Client();
+    const rangeHeader = request.headers.get("range");
     const candidates = expandR2LookupCandidates(key.trim());
     let lastError: unknown = null;
 
     for (const objectKey of candidates) {
       try {
-        const response = await client.send(
-          new GetObjectCommand({ Bucket: bucket, Key: objectKey })
-        );
+        const cmd = new GetObjectCommand({
+          Bucket: bucket,
+          Key: objectKey,
+          ...(rangeHeader ? { Range: rangeHeader } : {}),
+        });
+        const response = await client.send(cmd);
         if (!response.Body) {
           lastError = new Error("Empty object");
           continue;
@@ -462,15 +511,27 @@ export async function GET(request: NextRequest) {
         const headers = new Headers();
         headers.set("Content-Type", contentType);
         headers.set("Cache-Control", "private, max-age=3600");
+        headers.set("Accept-Ranges", "bytes");
         if (response.ContentLength != null) {
           headers.set("Content-Length", String(response.ContentLength));
         }
+        if (response.ContentRange) {
+          headers.set("Content-Range", response.ContentRange);
+        }
         headers.set("Access-Control-Allow-Origin", "*");
-        return new NextResponse(response.Body as any, { status: 200, headers });
-      } catch (e: any) {
+        const status = rangeHeader && response.ContentRange ? 206 : 200;
+        return new NextResponse(response.Body as unknown as BodyInit, {
+          status,
+          headers,
+        });
+      } catch (e: unknown) {
         lastError = e;
-        if (e?.name === "NoSuchKey") continue;
-        if (e?.name === "NotFound") continue;
+        const name =
+          e && typeof e === "object" && "name" in e
+            ? String((e as { name?: unknown }).name)
+            : "";
+        if (name === "NoSuchKey") continue;
+        if (name === "NotFound") continue;
         console.error("[attachments/proxy] GetObject:", objectKey, e);
         throw e;
       }
@@ -482,35 +543,56 @@ export async function GET(request: NextRequest) {
       const inner = trimmed.slice(bucket.length + 1);
       for (const objectKey of expandR2LookupCandidates(inner)) {
         try {
-          const response = await client.send(
-            new GetObjectCommand({ Bucket: bucket, Key: objectKey })
-          );
+          const cmd = new GetObjectCommand({
+            Bucket: bucket,
+            Key: objectKey,
+            ...(rangeHeader ? { Range: rangeHeader } : {}),
+          });
+          const response = await client.send(cmd);
           if (response.Body) {
-            const contentType = response.ContentType ?? "application/octet-stream";
+            const contentType =
+              response.ContentType ?? "application/octet-stream";
             const headers = new Headers();
             headers.set("Content-Type", contentType);
             headers.set("Cache-Control", "private, max-age=3600");
+            headers.set("Accept-Ranges", "bytes");
             if (response.ContentLength != null) {
               headers.set("Content-Length", String(response.ContentLength));
             }
+            if (response.ContentRange) {
+              headers.set("Content-Range", response.ContentRange);
+            }
             headers.set("Access-Control-Allow-Origin", "*");
-            return new NextResponse(response.Body as any, { status: 200, headers });
+            const status = rangeHeader && response.ContentRange ? 206 : 200;
+            return new NextResponse(response.Body as unknown as BodyInit, {
+              status,
+              headers,
+            });
           }
-        } catch (e: any) {
-          if (e?.name !== "NoSuchKey" && e?.name !== "NotFound") console.error("[attachments/proxy] Retry:", e);
+        } catch (e: unknown) {
+          const name =
+            e && typeof e === "object" && "name" in e
+              ? String((e as { name?: unknown }).name)
+              : "";
+          if (name !== "NoSuchKey" && name !== "NotFound")
+            console.error("[attachments/proxy] Retry:", e);
         }
       }
     }
 
     if (lastError && (lastError as { name?: string }).name !== "NoSuchKey") {
-      console.error("[attachments/proxy] Exhausted keys for:", key.slice(0, 120), lastError);
+      console.error(
+        "[attachments/proxy] Exhausted keys for:",
+        key.slice(0, 120),
+        lastError,
+      );
     }
     return NextResponse.json({ error: "Not found" }, { status: 404 });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[attachments/proxy] Error:", err);
     return NextResponse.json(
       { error: "Failed to load attachment" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

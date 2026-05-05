@@ -17,6 +17,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
     "@gatimitra/contracts": "^0.0.1",
+    "@gatimitra/expo-push-kit": "^0.0.1",
     "@maniac-tech/react-native-expo-read-sms": "^9.1.2",
     "@react-navigation/elements": "^2.9.3",
     "@react-navigation/native": "^7.1.8",
@@ -33,6 +34,7 @@
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "^17.0.10",
     "expo-linear-gradient": "~15.0.8",
+    "expo-linking": "~8.0.11",
     "expo-notifications": "~0.32.16",
     "expo-router": "~6.0.23",
     "expo-secure-store": "~15.0.6",

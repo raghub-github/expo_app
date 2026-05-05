@@ -3,6 +3,42 @@
   z-index: 100002 !important;
 }
 
+/* Prevent toasts from hiding under the fixed partner header/topbar */
+[data-sonner-toaster][data-position^="top"] {
+  top: var(--mx-toast-top, calc(var(--mx-partner-topbar-h, 56px) + 12px)) !important;
+}
+
+/* Global toast styling + smooth slide-in from top */
+.mx-toast {
+  border-radius: 14px !important;
+  border: 1px solid rgba(0,0,0,0.08) !important;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.12) !important;
+  padding: 12px 12px !important;
+  gap: 6px !important;
+}
+.mx-toast__title {
+  font-weight: 800 !important;
+}
+.mx-toast__desc {
+  opacity: 0.95 !important;
+}
+
+@keyframes mxToastSlideIn {
+  from { transform: translateY(-10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes mxToastSlideOut {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-8px); opacity: 0; }
+}
+
+[data-sonner-toast][data-state="open"] {
+  animation: mxToastSlideIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+[data-sonner-toast][data-state="closed"] {
+  animation: mxToastSlideOut 180ms ease both;
+}
+
 /* Phone input custom styles for LoginModal */
 .phone-input-row {
   display: flex;
@@ -157,4 +193,87 @@ body.modal-open-blur aside * {
 
 .animate-pulse-subtle {
   animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* Merchant shell: one band height for left sidebar store row + primary page headers + panel headers */
+:root {
+  /* Fixed partner shell header band (critical for strict dashboards like Support Inbox) */
+  --mx-shell-header-min-h: 3.5rem; /* 56px */
+  --mx-shell-header-pad-y: 0.5rem;
+  /* Partner top bar (fixed 56px) */
+  --mx-partner-topbar-h: 3.5rem;
+}
+
+/* Strict dashboard pages: disable page-level scrolling */
+html.mx-no-page-scroll,
+body.mx-no-page-scroll {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Default pages can scroll inside the main content area. Strict dashboards disable it. */
+.mx-main-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+html.mx-no-page-scroll .mx-main-scroll,
+body.mx-no-page-scroll .mx-main-scroll {
+  overflow: hidden;
+}
+
+/* Right sheets / drawers: header row matches partner top bar */
+.mx-sheet-header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-height: var(--mx-partner-topbar-h);
+  height: var(--mx-partner-topbar-h);
+  flex-shrink: 0;
+  padding: 0 1rem;
+  border-bottom: 1px solid #e8e8e8;
+  background-color: #fff;
+}
+
+.mx-shell-header {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: var(--mx-shell-header-min-h);
+  border-bottom: 1px solid rgb(229 231 235);
+  background-color: #fff;
+  flex-shrink: 0;
+  padding: var(--mx-shell-header-pad-y) 1rem;
+}
+@media (min-width: 1024px) {
+  .mx-shell-header {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
+/* Same vertical band when the sidebar is icon-only — avoids layout jump vs expanded */
+.mx-shell-header--sidebar-collapsed {
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: var(--mx-shell-header-min-h);
+  padding-top: var(--mx-shell-header-pad-y);
+  padding-bottom: var(--mx-shell-header-pad-y);
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+/* Partner portal — radar live indicator (matches merchant app sonar) */
+@keyframes partner-radar-pulse {
+  0% {
+    transform: scale(0.25);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+.partner-radar-ring {
+  animation: partner-radar-pulse 1.8s ease-out infinite;
 }

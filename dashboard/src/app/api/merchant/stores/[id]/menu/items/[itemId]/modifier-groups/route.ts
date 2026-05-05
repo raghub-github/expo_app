@@ -10,6 +10,21 @@ import { logStoreActivity } from "@/lib/db/operations/store-activity-feed";
 
 export const runtime = "nodejs";
 
+async function syncHasAddonsFlag(sql: ReturnType<typeof getSql>, storeId: number, menuItemId: number) {
+  const [row] = await sql`
+    SELECT EXISTS(
+      SELECT 1 FROM merchant_item_modifier_groups img
+      WHERE img.menu_item_id = ${menuItemId}
+    ) AS has_links
+  `;
+  const hasLinks = Boolean((row as any)?.has_links);
+  await sql`
+    UPDATE merchant_menu_items
+    SET has_addons = ${hasLinks}
+    WHERE id = ${menuItemId} AND store_id = ${storeId}
+  `;
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string; itemId: string }> }
@@ -111,6 +126,8 @@ export async function POST(
       INSERT INTO merchant_item_modifier_groups (menu_item_id, modifier_group_id, display_order)
       VALUES (${menuItemId}, ${modifier_group_id}, ${displayOrder})      RETURNING id
     `;
+    // Ensure legacy `has_addons` stays correct for list queries / reports.
+    await syncHasAddonsFlag(sql, storeId, menuItemId);
     try {
       await logStoreActivity({ storeId, section: "addon", action: "link", summary: `Agent linked modifier group to item #${itemId}`, actorType: "agent", source: "dashboard" });
     } catch (_) {}

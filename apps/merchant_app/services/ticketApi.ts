@@ -1,4 +1,5 @@
 import { getConfig, resolveUrlForDevice } from "@/config/env";
+import { ticketDebugLog } from "@/lib/ticketDebugLog";
 import { authFetch } from "@/services/authFetch";
 
 const getBase = () => getConfig().apiBaseUrl;
@@ -28,7 +29,15 @@ function parseJsonFromText(text: string, httpStatus: number): unknown {
 }
 
 async function readApiBody(res: Response): Promise<unknown> {
-  const text = await res.text();
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    const detail = e instanceof Error ? e.message.trim() : String(e);
+    throw new Error(
+      `Failed to read API response (HTTP ${res.status}). ${detail || "Unknown read error."}`
+    );
+  }
   return parseJsonFromText(text, res.status);
 }
 
@@ -42,6 +51,20 @@ function apiErrorMessage(data: unknown, fallback: string): string {
     if (msg) return msg;
   }
   return fallback;
+}
+
+/** POST create/reopen/rating may nest `ticket` under `data` (proxies/wrappers). */
+function extractTicketRecordFromEnvelope(body: unknown): Record<string, unknown> | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  const direct = b.ticket;
+  if (direct && typeof direct === "object") return direct as Record<string, unknown>;
+  const data = b.data;
+  if (data && typeof data === "object") {
+    const nested = (data as Record<string, unknown>).ticket;
+    if (nested && typeof nested === "object") return nested as Record<string, unknown>;
+  }
+  return null;
 }
 
 function extractStorageKeyFromProxyUrl(value: string): string | null {
@@ -163,6 +186,12 @@ export type TicketSummary = {
   snooze_reason?: string | null;
 };
 
+function assertUsableTicketSummary(t: TicketSummary): void {
+  if (!Number.isInteger(t.id) || t.id < 1) {
+    throw new Error("Invalid ticket data from server.");
+  }
+}
+
 function toIsoOrNull(v: unknown): string | null {
   if (v == null) return null;
   if (v instanceof Date) {
@@ -266,31 +295,130 @@ export type TicketMessageAttachmentInput = {
   mimeType?: string;
 };
 
+export type MerchantHelpSection = {
+  ticketTitleId: number;
+  sectionId: string;
+  title: string;
+  subtitle: string | null;
+  quickOptions: string[];
+  displayOrder: number | null;
+  /** Ionicons glyph name from DB (`merchant_help_icon_name`); app may fall back to static map. */
+  helpHubIcon: string | null;
+};
+
+function normalizeMerchantHelpSection(raw: Record<string, unknown>): MerchantHelpSection | null {
+  const sidRaw =
+    (typeof raw.section_id === "string" && raw.section_id) ||
+    (typeof raw.sectionId === "string" && raw.sectionId) ||
+    "";
+  const sid = sidRaw.trim().toLowerCase();
+  const tid = raw.ticket_title_id ?? raw.ticketTitleId;
+  const idNum = typeof tid === "number" ? tid : typeof tid === "string" ? Number(tid.trim()) : NaN;
+  if (!sid || !Number.isFinite(idNum) || idNum < 1) return null;
+  const qo = raw.quick_options ?? raw.quickOptions;
+  const quickOptions = Array.isArray(qo) ? qo.map((x) => String(x).trim()).filter(Boolean) : [];
+  const iconRaw = raw.help_hub_icon ?? raw.helpHubIcon;
+  const helpHubIcon =
+    iconRaw != null && String(iconRaw).trim() ? String(iconRaw).trim() : null;
+  return {
+    ticketTitleId: idNum,
+    sectionId: sid,
+    title: String(raw.title ?? "").trim() || sid,
+    subtitle: raw.subtitle != null && String(raw.subtitle).trim() ? String(raw.subtitle).trim() : null,
+    quickOptions,
+    displayOrder:
+      raw.display_order != null && Number.isFinite(Number(raw.display_order))
+        ? Number(raw.display_order)
+        : raw.displayOrder != null && Number.isFinite(Number(raw.displayOrder))
+          ? Number(raw.displayOrder)
+          : null,
+    helpHubIcon,
+  };
+}
+
+/** Contact Us / help hub rows from ticket_titles (merchant_section_id). */
+export async function fetchMerchantHelpSections(token: string): Promise<MerchantHelpSection[]> {
+  const res = await authFetch(`${getBase()}/v1/merchant-partner/merchant-help-sections`, token);
+  const body = await readApiBody(res);
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(body, res.statusText || "Failed to load help sections"));
+  }
+  const data = body as { ok?: boolean; sections?: unknown[] };
+  const list = Array.isArray(data.sections) ? data.sections : [];
+  return list
+    .map((x) => (x && typeof x === "object" ? normalizeMerchantHelpSection(x as Record<string, unknown>) : null))
+    .filter((x): x is MerchantHelpSection => x != null);
+}
+
 export async function createStoreTicket(
   storeId: number,
   sectionCode: string,
   token: string,
-  opts?: { subject?: string; description?: string; orderId?: number | null }
-): Promise<TicketSummary> {
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/tickets`,
-    token,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        section_code: sectionCode,
-        subject: opts?.subject,
-        description: opts?.description,
-        order_id: opts?.orderId ?? null,
-      }),
-    }
-  );
-  const body = await readApiBody(res);
-  if (!res.ok) {
-    throw new Error(apiErrorMessage(body, res.statusText || "Failed to create support ticket"));
+  opts?: {
+    subject?: string;
+    description?: string;
+    orderId?: number | null;
+    /** Disambiguates multiple help rows that share the same `merchant_section_id`. */
+    ticketTitleId?: number;
   }
-  const data = body as { ok?: boolean; ticket: TicketSummary };
-  return data.ticket;
+): Promise<TicketSummary> {
+  const url = `${getBase()}/v1/merchant-partner/stores/${storeId}/tickets`;
+  const payload = {
+    section_code: sectionCode,
+    ticket_title_id: opts?.ticketTitleId,
+    subject: opts?.subject,
+    description: opts?.description,
+    order_id: opts?.orderId ?? null,
+  };
+  ticketDebugLog("createStoreTicket:start", {
+    url,
+    storeId,
+    sectionCode,
+    ticketTitleId: opts?.ticketTitleId ?? null,
+    descLen: (opts?.description ?? "").length,
+  });
+  let res: Response;
+  try {
+    res = await authFetch(url, token, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    ticketDebugLog("createStoreTicket:fetch_threw", {
+      err: e instanceof Error ? { name: e.name, message: e.message } : String(e),
+    });
+    throw e;
+  }
+  ticketDebugLog("createStoreTicket:http", { status: res.status, ok: res.ok });
+  let body: unknown;
+  try {
+    body = await readApiBody(res);
+  } catch (e) {
+    ticketDebugLog("createStoreTicket:parse_body_failed", {
+      status: res.status,
+      err: e instanceof Error ? { name: e.name, message: e.message } : String(e),
+    });
+    throw e;
+  }
+  if (!res.ok) {
+    const msg = apiErrorMessage(body, res.statusText || "Failed to create support ticket");
+    ticketDebugLog("createStoreTicket:error_response", { status: res.status, msg, bodyPreview: JSON.stringify(body).slice(0, 400) });
+    throw new Error(msg);
+  }
+  const row = extractTicketRecordFromEnvelope(body);
+  if (!row) {
+    ticketDebugLog("createStoreTicket:missing_ticket_envelope", { keys: body && typeof body === "object" ? Object.keys(body as object) : [] });
+    throw new Error("Missing ticket in server response.");
+  }
+  const ticket = mapMessagesApiTicket(row);
+  try {
+    assertUsableTicketSummary(ticket);
+  } catch (e) {
+    ticketDebugLog("createStoreTicket:bad_ticket_id", { id: ticket.id, rowId: row.id });
+    throw e;
+  }
+  ticketDebugLog("createStoreTicket:ok", { ticketId: ticket.id });
+  return ticket;
 }
 
 export async function getStoreTickets(
@@ -461,8 +589,13 @@ export async function rateTicket(
   if (!res.ok) {
     throw new Error(apiErrorMessage(body, res.statusText || "Failed to submit rating"));
   }
-  const data = body as { ok?: boolean; ticket: TicketSummary };
-  return data.ticket;
+  const row = extractTicketRecordFromEnvelope(body);
+  if (!row) {
+    throw new Error("Missing ticket in server response.");
+  }
+  const ticket = mapMessagesApiTicket(row);
+  assertUsableTicketSummary(ticket);
+  return ticket;
 }
 
 export async function reopenTicket(
@@ -479,8 +612,13 @@ export async function reopenTicket(
   if (!res.ok) {
     throw new Error(apiErrorMessage(body, res.statusText || "Failed to reopen ticket"));
   }
-  const data = body as { ok?: boolean; ticket: TicketSummary };
-  return data.ticket;
+  const row = extractTicketRecordFromEnvelope(body);
+  if (!row) {
+    throw new Error("Missing ticket in server response.");
+  }
+  const ticket = mapMessagesApiTicket(row);
+  assertUsableTicketSummary(ticket);
+  return ticket;
 }
 
 export async function postTicketMessage(
@@ -556,6 +694,8 @@ export async function postTicketMessage(
   let idNum: number;
   if (typeof idRaw === "number" && Number.isFinite(idRaw)) {
     idNum = idRaw;
+  } else if (typeof idRaw === "bigint") {
+    idNum = Number(idRaw);
   } else if (typeof idRaw === "string" && idRaw.trim()) {
     idNum = Number(idRaw.trim());
   } else {

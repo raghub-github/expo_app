@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -16,7 +16,8 @@ import {
   LogOut,
   Store,
   Menu,
-  X
+  X,
+  Inbox
 } from 'lucide-react'
 import LogoutConfirmModal from './LogoutConfirmModal'
 
@@ -40,6 +41,7 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
 }) => {
   const pathname = usePathname()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [isMobileOpen, setIsMobileOpen] = useState(false)
   const [expandedMenus, setExpandedMenus] = useState<string[]>(['dashboard'])
 
@@ -65,21 +67,15 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
       submenu: [
         {
           id: 'active-orders',
-          label: 'Active Orders',
+          label: 'Active orders',
           icon: <UtensilsCrossed size={16} />,
-          href: '/mx/food-orders?filter=active',
+          href: '/mx/food-orders',
         },
         {
-          id: 'completed-orders',
-          label: 'Completed',
+          id: 'order-history',
+          label: 'Order history',
           icon: <UtensilsCrossed size={16} />,
-          href: '/mx/food-orders?filter=DELIVERED',
-        },
-        {
-          id: 'cancelled-orders',
-          label: 'Cancelled',
-          icon: <UtensilsCrossed size={16} />,
-          href: '/mx/food-orders?filter=CANCELLED',
+          href: '/mx/order-history',
         },
       ],
     },
@@ -106,6 +102,12 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
       label: 'User Insights',
       icon: <User size={20} />,
       href: '/mx/user-insights',
+    },
+    {
+      id: 'support-inbox',
+      label: 'Support Inbox',
+      icon: <Inbox size={20} />,
+      href: '/mx/support-inbox',
     },
     {
       id: 'store-settings',
@@ -142,7 +144,28 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
     }
   }
 
-  const isActive = (href: string) => pathname === href || (pathname?.startsWith(href + '?') ?? false)
+  const isActive = (href: string) => {
+    const p = pathname || '';
+    const q = searchParams?.toString() || '';
+    const full = q ? `${p}?${q}` : p;
+    const [hrefPath, hrefQuery = ''] = href.split('?');
+    if (hrefQuery) {
+      if (p !== hrefPath) return false;
+      const current = new URLSearchParams(q);
+      const expected = new URLSearchParams(hrefQuery);
+      for (const [k, v] of expected.entries()) {
+        if (current.get(k) !== v) return false;
+      }
+      return true;
+    }
+    // Prevent both "User Insights" and "Support Inbox" being active together.
+    if (href === '/mx/user-insights') {
+      const current = new URLSearchParams(q);
+      if (current.get('view') === 'inbox') return false;
+    }
+    if (href === '/mx/support-inbox') return p === '/mx/support-inbox';
+    return full === href || p === href || (p.startsWith(href + '?') ?? false) || p.startsWith(href + '/');
+  }
 
   const SidebarContent = () => (
     <>

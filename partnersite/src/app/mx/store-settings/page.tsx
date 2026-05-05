@@ -6,14 +6,14 @@ import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
-import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
+import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
-import { Toaster, toast } from 'sonner'
-import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
+import { toast } from 'sonner'
 import { SettingsSidebar } from './components/SettingsSidebar'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
@@ -42,6 +42,12 @@ interface DaySchedule {
   operationalMinutes: number
 }
 
+function getCurrentDayKey(): DayType {
+  const current = new Date().getDay()
+  const map: DayType[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+  return map[current] || 'monday'
+}
+
 function StoreSettingsContent() {
   const searchParams = useSearchParams()
   const [store, setStore] = useState<MerchantStore | null>(null)
@@ -57,6 +63,9 @@ function StoreSettingsContent() {
     }
     return 'plans'
   })
+
+  /** Desktop right settings rail: icon-only vs full labels (matches partner left sidebar behaviour). */
+  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false)
 
   const validTabsList = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'audit', 'gatimitra']
   useEffect(() => {
@@ -95,7 +104,7 @@ function StoreSettingsContent() {
   const [posIntegrationActive, setPosIntegrationActive] = useState(false)
   
   const [showStoreTimingModal, setShowStoreTimingModal] = useState(false)
-  const [expandedDay, setExpandedDay] = useState<DayType | null>(null)
+  const [expandedDay, setExpandedDay] = useState<DayType | null>(getCurrentDayKey())
 
   // Form state
   const [isStoreOpen, setIsStoreOpen] = useState(true)
@@ -198,6 +207,8 @@ function StoreSettingsContent() {
 
   // Outlet timings state - Loaded from Supabase
   const [applyMondayToAll, setApplyMondayToAll] = useState(false)
+  const [showCopyMondayConfirm, setShowCopyMondayConfirm] = useState(false)
+  const [copyMondayConfirmLoading, setCopyMondayConfirmLoading] = useState(false)
   const [force24Hours, setForce24Hours] = useState(false)
   const [closedDay, setClosedDay] = useState<DayType | null>(null)
 
@@ -569,6 +580,14 @@ function StoreSettingsContent() {
     )
   }, [fullAddress, addressLandmark, storeAddress, addressState, addressPostalCode, latitude, longitude])
 
+  /** Customer-facing store page on partner (public `store_id`, e.g. GMMC1025). */
+  const gatimitraCustomerStoreUrl = useMemo(() => {
+    const slug = (store?.store_id ?? storeId ?? '').trim()
+    if (!slug) return null
+    const origin = 'https://partner.gatimitra.com'
+    return `${origin}/restaurant/${encodeURIComponent(slug)}?from=around-you&location=India`
+  }, [store?.store_id, storeId])
+
   // Address search: click outside to close results
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -719,79 +738,107 @@ function StoreSettingsContent() {
     load()
   }, [storeId])
 
-  // Load plans and subscription
+  // Load plans and subscription (plans list unblocks as soon as /plans returns; other calls run in parallel)
   useEffect(() => {
     if (!storeId) return
+    let cancelled = false
+
+    const parseJson = async (res: Response) => {
+      try {
+        return await res.json()
+      } catch (e) {
+        console.error('Failed to parse JSON:', e)
+        return {}
+      }
+    }
+
     const loadPlansAndSubscription = async () => {
       setLoadingPlans(true)
+
+      const plansPromise = fetch('/api/merchant/plans')
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Plans fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
+      const subscriptionPromise = fetch(
+        `/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`
+      )
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Subscription fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
+      const paymentsPromise = fetch(
+        `/api/merchant/subscription/payments?storeId=${encodeURIComponent(storeId)}`
+      )
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Subscription payments fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
+      const onboardingPromise = fetch(
+        `/api/merchant/onboarding-payments?storeId=${encodeURIComponent(storeId)}`
+      )
+        .then(async (res) => ({ res, data: await parseJson(res) }))
+        .catch((err) => {
+          console.error('Onboarding payments fetch failed:', err)
+          return { res: null as Response | null, data: {} }
+        })
+
       try {
-        // Load available plans
-        const plansRes = await fetch('/api/merchant/plans')
-        let plansData;
-        try {
-          plansData = await plansRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse plans JSON:', jsonError);
-        }
-        if (plansRes.ok && plansData?.plans) {
+        const { res: plansRes, data: plansData } = await plansPromise
+        if (!cancelled && plansRes?.ok && plansData?.plans) {
           setPlans(plansData.plans)
         }
+      } catch (error) {
+        console.error('Error loading plans:', error)
+      } finally {
+        if (!cancelled) setLoadingPlans(false)
+      }
 
-        // Load current subscription
-        const subRes = await fetch(`/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`)
-        let subData;
-        try {
-          subData = await subRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse subscription JSON:', jsonError);
-        }
-        if (subRes.ok && subData) {
-          setCurrentSubscription(subData.subscription)
-          setCurrentPlan(subData.plan)
-          // Auto-renew should be off by default
-          setAutoRenew(subData.subscription?.auto_renew === true ? true : false)
-          if (subData.plan?.plan_code) {
-            setSubscriptionPlan(subData.plan.plan_code.toLowerCase() as 'free' | 'pro' | 'enterprise')
-            setMaxMenuItems(subData.plan.max_menu_items)
-            setMaxCuisines(subData.plan.max_cuisines)
-            setImageUploadAllowed(subData.plan.image_upload_allowed || false)
-            setAnalyticsEnabled(subData.plan.analytics_access || false)
-            setAdvancedSecurity(subData.plan.advanced_analytics || false)
-            setPrioritySupport(subData.plan.priority_support || false)
-            setMarketingAutomation(subData.plan.marketing_automation || false)
+      try {
+        const [sub, payments, onboarding] = await Promise.all([
+          subscriptionPromise,
+          paymentsPromise,
+          onboardingPromise,
+        ])
+        if (cancelled) return
+
+        if (sub.res?.ok && sub.data) {
+          setCurrentSubscription(sub.data.subscription)
+          setCurrentPlan(sub.data.plan)
+          setAutoRenew(sub.data.subscription?.auto_renew === true ? true : false)
+          if (sub.data.plan?.plan_code) {
+            setSubscriptionPlan(sub.data.plan.plan_code.toLowerCase() as 'free' | 'pro' | 'enterprise')
+            setMaxMenuItems(sub.data.plan.max_menu_items)
+            setMaxCuisines(sub.data.plan.max_cuisines)
+            setImageUploadAllowed(sub.data.plan.image_upload_allowed || false)
+            setAnalyticsEnabled(sub.data.plan.analytics_access || false)
+            setAdvancedSecurity(sub.data.plan.advanced_analytics || false)
+            setPrioritySupport(sub.data.plan.priority_support || false)
+            setMarketingAutomation(sub.data.plan.marketing_automation || false)
           }
         }
 
-        // Load payment history
-        const paymentsRes = await fetch(`/api/merchant/subscription/payments?storeId=${encodeURIComponent(storeId)}`)
-        let paymentsData;
-        try {
-          paymentsData = await paymentsRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse payments JSON:', jsonError);
-        }
-        if (paymentsRes.ok && paymentsData?.payments) {
-          setPaymentHistory(paymentsData.payments)
+        if (payments.res?.ok && payments.data?.payments) {
+          setPaymentHistory(payments.data.payments)
         }
 
-        // Load onboarding payments
-        const onboardingRes = await fetch(`/api/merchant/onboarding-payments?storeId=${encodeURIComponent(storeId)}`)
-        let onboardingData;
-        try {
-          onboardingData = await onboardingRes.json()
-        } catch (jsonError) {
-          console.error('Failed to parse onboarding payments JSON:', jsonError);
-        }
-        if (onboardingRes.ok && onboardingData?.payments) {
-          setOnboardingPayments(onboardingData.payments)
+        if (onboarding.res?.ok && onboarding.data?.payments) {
+          setOnboardingPayments(onboarding.data.payments)
         }
       } catch (error) {
-        console.error('Error loading plans/subscription:', error)
-      } finally {
-        setLoadingPlans(false)
+        console.error('Error loading subscription details:', error)
       }
     }
     loadPlansAndSubscription()
+    return () => {
+      cancelled = true
+    }
   }, [storeId])
 
   // Load menu items count for capacity display
@@ -1030,10 +1077,18 @@ function StoreSettingsContent() {
       return
     }
     try {
+      const manualCloseUntil = new Date(Date.now() + duration * 60 * 1000).toISOString()
       const res = await fetch('/api/store-operations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_id: storeId, action: 'manual_close', duration_minutes: duration }),
+        body: JSON.stringify({
+          store_id: storeId,
+          action: 'manual_close',
+          closure_type: 'temporary',
+          duration_minutes: duration,
+          manual_close_until: manualCloseUntil,
+          close_reason: 'Temporary break',
+        }),
       })
       let data;
       try {
@@ -1663,12 +1718,6 @@ function StoreSettingsContent() {
           timings[`${prefix}_slot2_start`] = null;
           timings[`${prefix}_slot2_end`] = null;
           timings[`${prefix}_total_duration_minutes`] = 24 * 60;
-        } else if (day.isOutletClosed) {
-          timings[`${prefix}_slot1_start`] = null;
-          timings[`${prefix}_slot1_end`] = null;
-          timings[`${prefix}_slot2_start`] = null;
-          timings[`${prefix}_slot2_end`] = null;
-          timings[`${prefix}_total_duration_minutes`] = 0;
         } else {
           timings[`${prefix}_slot1_start`] = day.slots[0]?.openingTime || null;
           timings[`${prefix}_slot1_end`] = day.slots[0]?.closingTime || null;
@@ -1751,7 +1800,7 @@ function StoreSettingsContent() {
     
     const newSchedule = storeSchedule.map(d => {
       if (d.day === day) {
-        const newSlots = (newIsOpen && !d.is24Hours && !d.isOutletClosed) ? [] : d.slots;
+        const newSlots = d.slots;
         const { hours, minutes } = calculateOperationalTime(newSlots);
         
         return {
@@ -1889,7 +1938,7 @@ function StoreSettingsContent() {
           ...d,
           isOutletClosed: newOutletClosed,
           is24Hours: false,
-          slots: [],
+          slots: d.slots,
           duration: '0.0 hrs',
           operationalHours: 0,
           operationalMinutes: 0
@@ -2054,20 +2103,42 @@ function StoreSettingsContent() {
   }
 
   const copyToAllDays = () => {
+    setShowCopyMondayConfirm(true)
+  }
+
+  const confirmCopyMondayToAllDays = async () => {
     const mondaySchedule = storeSchedule.find(d => d.day === 'monday')
-    if (mondaySchedule) {
-      setStoreSchedule(prev => prev.map(day => ({
+    if (!mondaySchedule) return
+
+    const previousSchedule = storeSchedule
+    const previousApplyMondayToAll = applyMondayToAll
+    const previousClosedDay = closedDay
+    const updatedSchedule = storeSchedule.map(day => ({
         ...mondaySchedule,
         day: day.day,
         label: day.label,
         isOutletClosed: false // Reset outlet closed when copying
-      })))
-      
-      // Enable same for all
-      setApplyMondayToAll(true);
-      // Reset closed day
-      setClosedDay(null);
-      toast.success('Timings copied to all days')
+      }))
+
+    setCopyMondayConfirmLoading(true)
+    setStoreSchedule(updatedSchedule)
+    setApplyMondayToAll(true)
+    setClosedDay(null)
+
+    try {
+      const saved = await saveCompleteTimings(updatedSchedule, true, force24Hours, null)
+      if (saved) {
+        toast.success('Timings copied to all days')
+        setShowCopyMondayConfirm(false)
+        await fetchTimings()
+        await fetchLastUpdatedInfo()
+      } else {
+        setStoreSchedule(previousSchedule)
+        setApplyMondayToAll(previousApplyMondayToAll)
+        setClosedDay(previousClosedDay)
+      }
+    } finally {
+      setCopyMondayConfirmLoading(false)
     }
   }
 
@@ -2212,7 +2283,7 @@ function StoreSettingsContent() {
         ...d, 
         isOutletClosed: true,
         is24Hours: false,
-        slots: [],
+        slots: d.slots,
         duration: '0.0 hrs',
         operationalHours: 0,
         operationalMinutes: 0
@@ -2387,28 +2458,13 @@ function StoreSettingsContent() {
 
   return (
     <>
-      <Toaster />
       <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || DEMO_STORE_ID}>
+        <PartnerPageHeader title="Store Settings" subtitle="Manage store configuration and preferences" />
         <div className="flex h-full min-h-0 bg-gray-50 overflow-hidden">
-          {/* Left: header + main content */}
-          <div className="flex flex-1 min-w-0 flex-col">
-            {/* Compact header – matches Orders page height */}
-            <header className="sticky top-0 z-20 bg-white border-b border-gray-200 shrink-0 shadow-sm">
-              <div className="w-full px-3 sm:px-4 py-2.5 sm:py-3">
-                <div className="flex items-center gap-3">
-                  {/* Hamburger menu on left (mobile) */}
-                  <MobileHamburgerButton />
-                  {/* Heading - properly aligned */}
-                  <div className="flex-1 min-w-0">
-                    <h1 className="text-base sm:text-lg md:text-xl font-bold text-gray-900">Store Settings</h1>
-                    <p className="text-xs sm:text-sm text-gray-600 mt-0.5 hidden sm:block">Manage store configuration and preferences</p>
-                  </div>
-                </div>
-              </div>
-            </header>
-            {/* Main Content Area - Scrollable */}
+          {/* Main scroll area — no duplicate strip under MXPartnerTopBar (hamburger lives in top bar) */}
+          <div className="flex flex-1 min-w-0 flex-col min-h-0">
             <div className="flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar min-h-0">
-            <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-5">
+            <div className="px-4 sm:px-6 lg:px-8 pt-2 pb-4 sm:pb-5">
               <div className="max-w-6xl mx-auto w-full">
               {/* Mobile Tabs */}
               <div className="lg:hidden mb-4 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8">
@@ -4001,7 +4057,12 @@ function StoreSettingsContent() {
 
             {activeTab === 'timings' && (
               <div className="space-y-3">
-                <div className="bg-white rounded-lg border border-gray-200 p-3 shadow-sm space-y-3">
+                <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-4 shadow-sm space-y-3">
+                  <h2 className="flex items-center gap-2 text-base font-semibold text-gray-900">
+                    <Clock size={16} className="text-emerald-700" />
+                    GatiMitra Operations
+                  </h2>
+
                   {/* Last Updated Info */}
                   {lastUpdatedBy && (lastUpdatedBy.email || lastUpdatedBy.at) && (
                     <div className="flex items-center justify-between text-xs text-gray-500 pb-2 border-b border-gray-100">
@@ -4013,375 +4074,268 @@ function StoreSettingsContent() {
                     </div>
                   )}
                   
-                  <div className="flex flex-row flex-wrap gap-3 items-center">
-                    {/* Same Timing Toggle */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-700 whitespace-nowrap">
-                        Same for all days
-                      </span>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={applyMondayToAll}
-                          onChange={toggleSameForAllDays}
-                          className="sr-only"
-                        />
-                        <div className={`w-9 h-5 rounded-full transition-colors ${applyMondayToAll ? 'bg-blue-600' : 'bg-gray-300'}`}>
-                          <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${applyMondayToAll ? 'translate-x-4' : ''}`} />
-                        </div>
-                      </label>
-                    </div>
-
-                    {/* 24 Hours Toggle */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-700 whitespace-nowrap">
-                        Open 24 hours (all days)
-                      </span>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={force24Hours}
-                          onChange={toggle24HoursForAll}
-                          className="sr-only"
-                        />
-                        <div className={`w-9 h-5 rounded-full transition-colors ${force24Hours ? 'bg-blue-600' : 'bg-gray-300'}`}>
-                          <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${force24Hours ? 'translate-x-4' : ''}`} />
-                        </div>
-                      </label>
-                    </div>
-
-                    {/* Closed Day Selector */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-700 whitespace-nowrap">
-                        Outlet closed on
-                      </span>
-                      <select
-                        value={closedDay || ''}
-                        onChange={(e) => {
-                          const value = e.target.value as DayType
-                          if (value) {
-                            handleClosedDayChange(value)
-                          } else {
-                            // Reset closed day
-                            setStoreSchedule(prev =>
-                              prev.map(d => ({ ...d, isOutletClosed: false }))
-                            )
-                            setClosedDay(null)
-                          }
-                        }}
-                        className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="">Select day</option>
-                        {storeSchedule.map(day => (
-                          <option key={day.day} value={day.day}>
-                            {day.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* Weekly Summary */}
-                    <div className="flex items-center gap-2">
-                      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded border border-blue-200 p-2 min-w-[160px] flex flex-col justify-center">
-                        <div className="flex flex-row items-center justify-between gap-4">
-                          <div>
-                            <h4 className="font-semibold text-gray-900 text-[10px] leading-tight mb-0">Weekly Summary</h4>
-                            <p className="text-[9px] text-gray-600 leading-tight mb-0">Total hours this week</p>
-                          </div>
-                          <div className="text-center">
-                            <div className="text-base font-bold text-blue-700 leading-tight">
-                              {storeSchedule.reduce((total, day) => total + day.operationalHours, 0)}h
-                            </div>
-                            <div className="text-[9px] text-gray-600 leading-tight">
-                              {storeSchedule.reduce((total, day) => total + day.operationalMinutes, 0)}m
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
                 </div>
 
-                {/* Compact Days Grid - 7 Cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {storeSchedule.map((daySchedule) => (
-                    <div key={daySchedule.day} className="bg-white rounded-lg border border-gray-200 p-3 hover:shadow-sm transition-all">
-                      {/* Day Header with Open Store Toggle */}
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-1.5">
-                          <div className={`w-7 h-7 rounded flex items-center justify-center ${
-                            daySchedule.isOutletClosed ? 'bg-red-100' : daySchedule.is24Hours ? 'bg-blue-100' : daySchedule.isOpen ? 'bg-emerald-100' : 'bg-red-100'
-                          }`}>
-                            {daySchedule.isOutletClosed ? (
-                              <X size={12} className="text-red-600" />
-                            ) : daySchedule.is24Hours ? (
-                              <Clock size={12} className="text-blue-600" />
-                            ) : daySchedule.isOpen ? (
-                              <CheckCircle2 size={12} className="text-emerald-600" />
-                            ) : (
-                              <X size={12} className="text-red-600" />
-                            )}
-                          </div>
-                          <div>
-                            <h3 className="font-bold text-gray-900 text-xs">{daySchedule.label}</h3>
-                            <p className="text-[10px] text-gray-500">{daySchedule.duration}</p>
-                          </div>
-                        </div>
-                        {/* Open Store Toggle */}
-                        <label className="relative inline-flex items-center cursor-pointer ml-1">
-                          <input
-                            type="checkbox"
-                            checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
-                            onChange={() => handleDayToggle(daySchedule.day)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-7 h-3.5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-2.5 after:w-2.5 after:transition-all peer-checked:bg-emerald-600"></div>
-                        </label>
-                      </div>
-
-                      {/* Status Badge */}
-                      <div className="mb-2">
-                        {daySchedule.isOutletClosed ? (
-                          <span className="inline-block px-1.5 py-0.5 bg-red-50 text-red-700 rounded text-[10px] font-medium border border-red-200">
-                            🔴 CLOSED
-                          </span>
-                        ) : daySchedule.is24Hours ? (
-                          <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px] font-medium border border-blue-200">
-                            ⚡ 24H
-                          </span>
-                        ) : daySchedule.isOpen ? (
-                          <span className="inline-block px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded text-[10px] font-medium border border-emerald-200">
-                            🟢 OPEN
-                          </span>
-                        ) : (
-                          <span className="inline-block px-1.5 py-0.5 bg-red-50 text-red-700 rounded text-[10px] font-medium border border-red-200">
-                            🔴 CLOSED
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Time Slots - Direct Editing */}
-                      {!daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen && (
-                        <div className="space-y-1.5 mb-2">
-                          {daySchedule.slots.map((slot, index) => (
-                            <div key={slot.id} className="space-y-1">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] font-medium text-gray-500">Slot {index + 1}</span>
-                                {daySchedule.slots.length > 1 && (
-                                  <button
-                                    onClick={() => removeTimeSlot(daySchedule.day, slot.id)}
-                                    className="text-gray-400 hover:text-red-600 text-[10px]"
-                                  >
-                                    <Trash2 size={10} />
-                                  </button>
-                                )}
-                              </div>
-                              <div className="grid grid-cols-2 gap-1.5">
-                                <div>
-                                  <label className="text-[10px] text-gray-600 mb-0.5 block">From</label>
-                                  <input
-                                    type="time"
-                                    value={slot.openingTime}
-                                    onChange={(e) => updateTimeSlot(daySchedule.day, slot.id, 'openingTime', e.target.value)}
-                                    className="w-full px-1.5 py-1 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[10px] text-gray-600 mb-0.5 block">To</label>
-                                  <input
-                                    type="time"
-                                    value={slot.closingTime}
-                                    onChange={(e) => updateTimeSlot(daySchedule.day, slot.id, 'closingTime', e.target.value)}
-                                    className="w-full px-1.5 py-1 text-[10px] border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Add Slot Button */}
-                      {!daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen && daySchedule.slots.length < 2 && (
+                <div className="space-y-2.5">
+                  {storeSchedule.map((daySchedule) => {
+                    const isExpanded = expandedDay === daySchedule.day
+                    const isCurrentDay = daySchedule.day === getCurrentDayKey()
+                    const hasSlot2 = !!daySchedule.slots[1]
+                    const isClosed = daySchedule.isOutletClosed || !daySchedule.isOpen
+                    return (
+                      <div key={daySchedule.day} className={`overflow-hidden rounded-xl border shadow-sm transition ${isExpanded ? 'border-emerald-300 bg-white' : 'border-gray-200 bg-white'}`}>
                         <button
-                          onClick={() => addTimeSlot(daySchedule.day)}
-                          className="w-full mb-2 text-[10px] px-2 py-1 border border-dashed border-gray-300 rounded hover:border-blue-400 hover:bg-blue-50 text-blue-600 flex items-center justify-center gap-1"
-                        >
-                          <Plus size={10} />
-                          Add Slot (Max 2)
-                        </button>
-                      )}
-
-                      {/* Save Button - Only show when manual time changes */}
-                      {manualTimeChanges.has(daySchedule.day) && (
-                        <button
-                          onClick={async () => {
-                            setIsSaving(true)
-                            try {
-                              // Save only this day's timings
-                              const dayData = storeSchedule.find(d => d.day === daySchedule.day)
-                              if (dayData && storeId) {
-                                // Client-side validation for slot times
-                                if (dayData.isOpen && !dayData.isOutletClosed && !dayData.is24Hours) {
-                                  const toMin = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; }
-                                  const s1o = dayData.slots[0]?.openingTime
-                                  const s1c = dayData.slots[0]?.closingTime
-                                  if (s1o && s1c && toMin(s1c) <= toMin(s1o)) {
-                                    toast.error(`${daySchedule.label}: Slot 1 end time must be after start time`)
-                                    setIsSaving(false)
-                                    return
-                                  }
-                                  const s2o = dayData.slots[1]?.openingTime
-                                  const s2c = dayData.slots[1]?.closingTime
-                                  if (s2o && s2c && toMin(s2c) <= toMin(s2o)) {
-                                    toast.error(`${daySchedule.label}: Slot 2 end time must be after start time`)
-                                    setIsSaving(false)
-                                    return
-                                  }
-                                  if (s1c && s2o && toMin(s2o) <= toMin(s1c)) {
-                                    toast.error(`${daySchedule.label}: Slot 2 must start after Slot 1 ends (${s1c})`)
-                                    setIsSaving(false)
-                                    return
-                                  }
-                                }
-
-                                const timings: any = {
-                                  store_id: storeId,
-                                  same_for_all: applyMondayToAll,
-                                  force_24_hours: force24Hours,
-                                }
-                                const prefix = dayData.day
-                                timings[`${prefix}_open`] = dayData.isOpen && !dayData.isOutletClosed
-                                if (dayData.is24Hours) {
-                                  timings[`${prefix}_slot1_start`] = '00:00'
-                                  timings[`${prefix}_slot1_end`] = '23:59'
-                                  timings[`${prefix}_slot2_start`] = null
-                                  timings[`${prefix}_slot2_end`] = null
-                                  timings[`${prefix}_total_duration_minutes`] = 24 * 60
-                                } else if (dayData.isOutletClosed) {
-                                  timings[`${prefix}_slot1_start`] = null
-                                  timings[`${prefix}_slot1_end`] = null
-                                  timings[`${prefix}_slot2_start`] = null
-                                  timings[`${prefix}_slot2_end`] = null
-                                  timings[`${prefix}_total_duration_minutes`] = 0
-                                } else {
-                                  timings[`${prefix}_slot1_start`] = dayData.slots[0]?.openingTime || null
-                                  timings[`${prefix}_slot1_end`] = dayData.slots[0]?.closingTime || null
-                                  timings[`${prefix}_slot2_start`] = dayData.slots[1]?.openingTime || null
-                                  timings[`${prefix}_slot2_end`] = dayData.slots[1]?.closingTime || null
-                                  timings[`${prefix}_total_duration_minutes`] = (dayData.operationalHours * 60 + dayData.operationalMinutes)
-                                }
-                                
-                                const { data: { user } } = await supabase.auth.getUser()
-                                timings.updated_by_email = user?.email || ''
-                                timings.updated_by_at = new Date().toISOString()
-
-                                const res = await fetch('/api/outlet-timings', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify(timings),
-                                })
-                                
-                                if (res.ok) {
-                                  const result = await res.json().catch(() => ({}))
-                                  if (result.warnings?.length) {
-                                    result.warnings.forEach((w: string) => toast.warning(w))
-                                  }
-                                  toast.success(`✅ ${daySchedule.label} saved!`)
-                                  setManualTimeChanges(prev => {
-                                    const newSet = new Set(prev);
-                                    newSet.delete(daySchedule.day);
-                                    return newSet;
-                                  });
-                                  await fetchTimings()
-                                  await fetchLastUpdatedInfo()
-                                } else {
-                                  let errMsg = 'Failed to save timings'
-                                  try {
-                                    const errData = await res.json()
-                                    if (errData?.error) errMsg = errData.error
-                                  } catch {}
-                                  toast.error(errMsg)
-                                }
-                              }
-                            } catch (error) {
-                              toast.error('Failed to save timings')
-                            } finally {
-                              setIsSaving(false)
-                            }
-                          }}
-                          disabled={isSaving}
-                          className="w-full mt-2 px-2 py-1.5 bg-blue-600 text-white rounded text-[10px] font-semibold hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
-                        >
-                          <Save size={12} />
-                          {isSaving ? 'Saving...' : 'Save'}
-                        </button>
-                      )}
-
-                      {/* Quick Actions */}
-                      <div className="flex flex-wrap gap-1.5 mt-1.5">
-                        <button
+                          type="button"
                           onClick={() => toggleDayExpansion(daySchedule.day)}
-                          className="flex-1 text-[10px] px-1.5 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-700"
+                          className={`flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left ${isExpanded ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white' : 'bg-white text-gray-900 hover:bg-emerald-50/50'}`}
                         >
-                          {expandedDay === daySchedule.day ? 'Hide' : 'More'}
+                          <div className="flex items-center gap-3">
+                            <div className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${isExpanded ? 'bg-white/20 text-white' : isClosed ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                              {isClosed ? 'Closed' : daySchedule.is24Hours ? '24 Hours' : 'Open'}
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold capitalize">{daySchedule.day}</p>
+                              <p className={`text-xs ${isExpanded ? 'text-emerald-50' : 'text-gray-500'}`}>
+                                {isClosed
+                                  ? 'No service'
+                                  : `${daySchedule.slots[0]?.openingTime || '--:--'} - ${daySchedule.slots[0]?.closingTime || '--:--'}${hasSlot2 ? `, ${daySchedule.slots[1]?.openingTime || '--:--'} - ${daySchedule.slots[1]?.closingTime || '--:--'}` : ''}`}
+                              </p>
+                            </div>
+                            {isCurrentDay ? (
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isExpanded ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'}`}>
+                                Today
+                              </span>
+                            ) : null}
+                          </div>
+                          {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                         </button>
-                      </div>
 
-                      {/* Expanded Options */}
-                      {expandedDay === daySchedule.day && (
-                        <div className="mt-3 pt-3 border-t border-gray-200 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-xs font-medium text-gray-700">24 Hours Mode</p>
-                              <p className="text-xs text-gray-500">Open for 24 hours</p>
+                        {isExpanded ? (
+                          <div className="space-y-3 bg-white p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-2.5">
+                              <div className="flex items-center gap-3">
+                                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
+                                    onChange={() => handleDayToggle(daySchedule.day)}
+                                    className="sr-only peer"
+                                  />
+                                  <span className="relative inline-flex h-5 w-9 items-center rounded-full bg-gray-200 transition peer-checked:bg-emerald-500">
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${daySchedule.isOpen && !daySchedule.isOutletClosed ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                  </span>
+                                  Outlet open
+                                </label>
+                                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">{daySchedule.duration}</span>
+                              </div>
+                              {daySchedule.day === 'monday' ? (
+                                <button
+                                  type="button"
+                                  onClick={copyToAllDays}
+                                  className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+                                >
+                                  <Copy size={14} />
+                                  Copy Monday timing to all days
+                                </button>
+                              ) : null}
                             </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={daySchedule.is24Hours}
-                                onChange={() => handle24HoursToggle(daySchedule.day)}
-                                className="sr-only peer"
-                              />
-                              <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
-                            </label>
-                          </div>
-                          
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-xs font-medium text-gray-700">Close Outlet</p>
-                              <p className="text-xs text-gray-500">Mark outlet as closed</p>
+
+                            {!daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
+                              <div className="space-y-2.5">
+                                <div className="py-1">
+                                  <div className="grid gap-3 lg:grid-cols-[72px_minmax(0,1fr)_28px_minmax(0,1fr)_24px_72px_minmax(0,1fr)_28px_minmax(0,1fr)_48px] lg:items-end">
+                                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 1</div>
+                                    <div>
+                                      <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
+                                      <input
+                                        type="time"
+                                        value={daySchedule.slots[0]?.openingTime || ''}
+                                        onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'openingTime', e.target.value)}
+                                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                                      />
+                                    </div>
+                                    <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
+                                    <div>
+                                      <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
+                                      <input
+                                        type="time"
+                                        value={daySchedule.slots[0]?.closingTime || ''}
+                                        onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'closingTime', e.target.value)}
+                                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                                      />
+                                    </div>
+                                    <div className="hidden lg:block" />
+                                    {hasSlot2 ? (
+                                      <>
+                                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 2</div>
+                                        <div>
+                                          <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
+                                          <input
+                                            type="time"
+                                            value={daySchedule.slots[1]?.openingTime || ''}
+                                            onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'openingTime', e.target.value)}
+                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                                          />
+                                        </div>
+                                        <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
+                                        <div>
+                                          <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
+                                          <input
+                                            type="time"
+                                            value={daySchedule.slots[1]?.closingTime || ''}
+                                            onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'closingTime', e.target.value)}
+                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                                          />
+                                        </div>
+                                        <div className="flex items-end justify-end">
+                                          <button
+                                            type="button"
+                                            onClick={() => removeTimeSlot(daySchedule.day, daySchedule.slots[1].id)}
+                                            className="rounded-xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                          >
+                                            <Trash2 size={14} />
+                                          </button>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <div className="lg:col-start-6 lg:col-end-10 flex items-end justify-end pb-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => addTimeSlot(daySchedule.day)}
+                                          className="inline-flex items-center justify-end gap-2 px-1 text-sm font-medium text-emerald-700 transition hover:text-emerald-800"
+                                        >
+                                          <Plus size={14} />
+                                          Add time slot
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : null}
+
+                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-2.5">
+                              <div className="flex items-center gap-3 text-sm">
+                                <button
+                                  type="button"
+                                  onClick={copyToAllDays}
+                                  className="inline-flex items-center gap-2 text-gray-700"
+                                >
+                                  <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
+                                    <Copy size={11} className="text-gray-500" />
+                                  </span>
+                                  <span className="text-sm">Copy Monday timing to all days</span>
+                                </button>
+                                <span className="hidden sm:block h-4 w-px bg-gray-200" />
+                                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
+                                    onChange={() => handleDayToggle(daySchedule.day)}
+                                    className="sr-only peer"
+                                  />
+                                  <span className="relative inline-flex h-5 w-9 items-center rounded-full bg-gray-200 transition peer-checked:bg-emerald-500">
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${daySchedule.isOpen && !daySchedule.isOutletClosed ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                                  </span>
+                                  Outlet open
+                                </label>
+                              </div>
+
+                              {manualTimeChanges.has(daySchedule.day) ? (
+                                <button
+                                  onClick={async () => {
+                                    setIsSaving(true)
+                                    try {
+                                      const dayData = storeSchedule.find(d => d.day === daySchedule.day)
+                                      if (dayData && storeId) {
+                                        if (dayData.isOpen && !dayData.isOutletClosed && !dayData.is24Hours) {
+                                          const toMin = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m }
+                                          const s1o = dayData.slots[0]?.openingTime
+                                          const s1c = dayData.slots[0]?.closingTime
+                                          if (s1o && s1c && toMin(s1c) <= toMin(s1o)) {
+                                            toast.error(`${daySchedule.label}: Slot 1 end time must be after start time`)
+                                            setIsSaving(false)
+                                            return
+                                          }
+                                          const s2o = dayData.slots[1]?.openingTime
+                                          const s2c = dayData.slots[1]?.closingTime
+                                          if (s2o && s2c && toMin(s2c) <= toMin(s2o)) {
+                                            toast.error(`${daySchedule.label}: Slot 2 end time must be after start time`)
+                                            setIsSaving(false)
+                                            return
+                                          }
+                                          if (s1c && s2o && toMin(s2o) <= toMin(s1c)) {
+                                            toast.error(`${daySchedule.label}: Slot 2 must start after Slot 1 ends (${s1c})`)
+                                            setIsSaving(false)
+                                            return
+                                          }
+                                        }
+
+                                        const timings: any = {
+                                          store_id: storeId,
+                                          same_for_all: applyMondayToAll,
+                                          force_24_hours: force24Hours,
+                                        }
+                                        const prefix = dayData.day
+                                        timings[`${prefix}_open`] = dayData.isOpen && !dayData.isOutletClosed
+                                        if (dayData.is24Hours) {
+                                          timings[`${prefix}_slot1_start`] = '00:00'
+                                          timings[`${prefix}_slot1_end`] = '23:59'
+                                          timings[`${prefix}_slot2_start`] = null
+                                          timings[`${prefix}_slot2_end`] = null
+                                          timings[`${prefix}_total_duration_minutes`] = 24 * 60
+                                        } else {
+                                          timings[`${prefix}_slot1_start`] = dayData.slots[0]?.openingTime || null
+                                          timings[`${prefix}_slot1_end`] = dayData.slots[0]?.closingTime || null
+                                          timings[`${prefix}_slot2_start`] = dayData.slots[1]?.openingTime || null
+                                          timings[`${prefix}_slot2_end`] = dayData.slots[1]?.closingTime || null
+                                          timings[`${prefix}_total_duration_minutes`] = (dayData.operationalHours * 60 + dayData.operationalMinutes)
+                                        }
+                                        const { data: { user } } = await supabase.auth.getUser()
+                                        timings.updated_by_email = user?.email || ''
+                                        timings.updated_by_at = new Date().toISOString()
+                                        const res = await fetch('/api/outlet-timings', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify(timings),
+                                        })
+                                        if (res.ok) {
+                                          toast.success(`✅ ${daySchedule.label} saved!`)
+                                          setManualTimeChanges(prev => {
+                                            const newSet = new Set(prev)
+                                            newSet.delete(daySchedule.day)
+                                            return newSet
+                                          })
+                                          await fetchTimings()
+                                          await fetchLastUpdatedInfo()
+                                        } else {
+                                          let errMsg = 'Failed to save timings'
+                                          try {
+                                            const errData = await res.json()
+                                            if (errData?.error) errMsg = errData.error
+                                          } catch {}
+                                          toast.error(errMsg)
+                                        }
+                                      }
+                                    } catch {
+                                      toast.error('Failed to save timings')
+                                    } finally {
+                                      setIsSaving(false)
+                                    }
+                                  }}
+                                  disabled={isSaving}
+                                  className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <Save size={14} />
+                                  {isSaving ? 'Saving...' : 'Save'}
+                                </button>
+                              ) : <div />}
                             </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={daySchedule.isOutletClosed}
-                                onChange={() => handleOutletClosedToggle(daySchedule.day)}
-                                className="sr-only peer"
-                              />
-                              <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-red-600"></div>
-                            </label>
                           </div>
-                          
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-xs font-medium text-gray-700">Open Store</p>
-                              <p className="text-xs text-gray-500">Toggle store open/closed</p>
-                            </div>
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
-                                onChange={() => handleDayToggle(daySchedule.day)}
-                                className="sr-only peer"
-                              />
-                              <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-600"></div>
-                            </label>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                        ) : null}
+                      </div>
+                    )
+                  })}
                 </div>
 
               </div>
@@ -4391,15 +4345,25 @@ function StoreSettingsContent() {
               <div className="flex flex-col items-center justify-center min-h-[400px] bg-white rounded-xl border border-gray-200 py-12">
                 <img src="/gstore.png" alt="Store" className="w-64 h-64 mb-8" style={{ maxWidth: '320px', maxHeight: '320px' }} />
                 <p className="text-xl font-semibold text-center mb-6" style={{ color: '#08a353ff' }}>Experience your store from a customer's perspective on <span style={{ color: '#a89a03ff' }}>GatiMitra</span>.</p>
-                <a
-                  href="https://gatimitra.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-12 py-4 rounded-xl bg-gradient-to-r from-indigo-400 to-red-400 text-white font-semibold text-lg shadow-md hover:from-indigo-500 hover:to-purple-500 transition text-center"
-                  style={{ display: 'inline-block' }}
-                >
-                  View store now
-                </a>
+                {gatimitraCustomerStoreUrl ? (
+                  <a
+                    href={gatimitraCustomerStoreUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-12 py-4 rounded-xl bg-gradient-to-r from-indigo-400 to-red-400 text-white font-semibold text-lg shadow-md hover:from-indigo-500 hover:to-purple-500 transition text-center"
+                    style={{ display: 'inline-block' }}
+                  >
+                    View store on GatiMitra
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="px-12 py-4 rounded-xl bg-gray-300 text-gray-600 font-semibold text-lg cursor-not-allowed"
+                  >
+                    Loading store link…
+                  </button>
+                )}
               </div>
             )}
 
@@ -4493,12 +4457,33 @@ function StoreSettingsContent() {
           </div>
           </div>
 
-          {/* Right Sidebar Navigation - uses shared list so Packaging Charge is always visible */}
-          <div className="hidden lg:flex lg:flex-col lg:w-64 lg:shrink-0 bg-white border-l border-gray-200">
+          {/* Right nav — collapsible on desktop (icon strip vs full labels) */}
+          <div
+            className={`hidden lg:flex lg:flex-col lg:shrink-0 lg:min-h-0 h-full bg-[#f5f5f5] border-l border-[#e8e8e8] transition-[width] duration-200 ease-out ${
+              settingsSidebarCollapsed ? 'lg:w-14' : 'lg:w-56'
+            }`}
+          >
             <SettingsSidebar
               activeTab={activeTab}
               onTabChange={(tab) => setActiveTab(tab as typeof activeTab)}
+              collapsed={settingsSidebarCollapsed}
             />
+            <div className="flex justify-center py-2 border-t border-[#e8e8e8] shrink-0">
+              <button
+                type="button"
+                onClick={() => setSettingsSidebarCollapsed((c) => !c)}
+                className="p-1.5 rounded-lg hover:bg-gray-200/80 text-gray-600 hover:text-gray-900"
+                title={settingsSidebarCollapsed ? 'Expand settings menu' : 'Collapse settings menu'}
+                aria-expanded={!settingsSidebarCollapsed}
+                aria-label={settingsSidebarCollapsed ? 'Expand settings menu' : 'Collapse settings menu'}
+              >
+                {settingsSidebarCollapsed ? (
+                  <ChevronLeft size={18} aria-hidden />
+                ) : (
+                  <ChevronRight size={18} aria-hidden />
+                )}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -4552,6 +4537,61 @@ function StoreSettingsContent() {
               </div>
             </div>
           </div>,
+          document.body
+        )}
+
+        {/* Auto Renew Confirmation Modal - portaled so backdrop blurs sidebar */}
+        {typeof document !== 'undefined' && showCopyMondayConfirm && createPortal(
+          (
+            <>
+              <div
+                className="fixed inset-0 bg-black/50"
+                onClick={() => !copyMondayConfirmLoading && setShowCopyMondayConfirm(false)}
+                style={{
+                  backdropFilter: 'blur(12px)',
+                  WebkitBackdropFilter: 'blur(12px)',
+                  zIndex: 9999
+                }}
+              />
+              <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: 10000 }}>
+                <div className="bg-white rounded-xl max-w-md w-full pointer-events-auto shadow-2xl">
+                  <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                    <h2 className="text-lg font-bold text-gray-900">Copy Monday timing to all days?</h2>
+                    <button onClick={() => setShowCopyMondayConfirm(false)} disabled={copyMondayConfirmLoading} className="text-gray-500 hover:text-gray-900 disabled:opacity-50">
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                    <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                      <AlertCircle className="text-amber-600 flex-shrink-0 mt-0.5" size={20} />
+                      <div>
+                        <p className="text-sm font-semibold text-gray-900 mb-1">Warning</p>
+                        <p className="text-sm text-gray-700">
+                          This will replace all days with Monday&apos;s current timings and save the same update to the database.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <button
+                        onClick={() => void confirmCopyMondayToAllDays()}
+                        disabled={copyMondayConfirmLoading}
+                        className="w-full px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {copyMondayConfirmLoading ? 'Saving...' : 'OK, Copy'}
+                      </button>
+                      <button
+                        onClick={() => setShowCopyMondayConfirm(false)}
+                        disabled={copyMondayConfirmLoading}
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg hover:bg-gray-50 font-semibold disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
+          ),
           document.body
         )}
 

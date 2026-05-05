@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { extractR2KeyFromUrl, deleteFromR2 } from "@/lib/r2";
+import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { getParentRoot } from "@/lib/r2-paths";
+import { extractR2KeyFromUrl, deleteFromR2, normalizeR2ObjectKey } from "@/lib/r2";
 
 /**
  * POST /api/auth/delete-r2-object
- * Deletes an R2 object by URL or key. Used when merchant replaces an attachment
- * (discard current + upload new) so the previous file is removed from R2.
- * Requires authenticated user.
+ * Deletes a single R2 object by URL or key. Used when merchant replaces an attachment
+ * during registration (discard current + upload new). Only keys under the caller’s
+ * merchant parent folder are allowed — never arbitrary bucket paths.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -14,6 +16,15 @@ export async function POST(req: NextRequest) {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
     if (userError || !user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const validation = await validateMerchantFromSession({
+      id: user.id,
+      email: user.email ?? null,
+      phone: user.phone ?? null,
+    });
+    if (!validation.isValid || validation.merchantParentId == null) {
+      return NextResponse.json({ error: "Merchant access required" }, { status: 403 });
     }
 
     const body = await req.json().catch(() => ({}));
@@ -27,7 +38,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Could not resolve R2 key" }, { status: 400 });
     }
 
-    await deleteFromR2(key);
+    const normalized = normalizeR2ObjectKey(key);
+    const allowedPrefix = `${getParentRoot(validation.merchantParentId)}/`;
+    if (!normalized.startsWith(allowedPrefix)) {
+      return NextResponse.json(
+        { error: "You can only delete files under your merchant storage folder" },
+        { status: 403 }
+      );
+    }
+
+    await deleteFromR2(normalized);
     return NextResponse.json({ success: true });
   } catch (err) {
     console.warn("[delete-r2-object]", err);

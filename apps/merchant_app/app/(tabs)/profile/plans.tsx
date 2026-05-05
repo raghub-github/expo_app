@@ -17,15 +17,13 @@ import {
   NativeScrollEvent,
   type ListRenderItemInfo,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { API_BASE_URL } from "@/services/api";
 import {
   GatiMitraMerchant,
   H_PADDING,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
   BUTTON_RADIUS,
 } from "@/constants/theme";
 import { ACTIVE_PLAN_CODE as FALLBACK_ACTIVE_PLAN_CODE } from "@/lib/activePlan";
@@ -326,7 +324,6 @@ function buildCircularData(plans: MerchantPlan[]): MerchantPlan[] {
 }
 
 export default function PlansScreen() {
-  const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList>(null);
   const [plans, setPlans] = useState<MerchantPlan[]>(DEFAULT_PLANS);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -410,7 +407,7 @@ export default function PlansScreen() {
 
   const snapToOffsets = circularData.map((_, i) => i * CARD_WIDTH);
 
-  const scrollBottomPadding = TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom;
+  const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<MerchantPlan>) => {

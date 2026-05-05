@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import fastifyRawBody from "fastify-raw-body";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
@@ -30,7 +31,9 @@ import { deliveryRateCardModule } from "./modules/delivery-rate-card/deliveryRat
 import { plansRoutes } from "./modules/plans/plans.routes.js";
 import { merchantPartnerRoutes } from "./modules/merchant-partner/merchant-partner.routes.js";
 import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/merchant-partner/store-schedule-engine.js";
+import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
 import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes.js";
+import { pushRoutes } from "./modules/push/push.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
@@ -94,6 +97,15 @@ await app.register(rateLimit, {
       retryAfter: Math.ceil(context.ttl / 1000),
     };
   },
+});
+
+/** Needed for Supabase Send SMS hook signature verification (`POST /v1/auth/supabase-send-sms`). */
+await app.register(fastifyRawBody, {
+  field: "rawBody",
+  global: false,
+  encoding: "utf8",
+  runFirst: true,
+  routes: [],
 });
 
 await app.register(swagger, {
@@ -257,9 +269,11 @@ void distanceRoutes;
 await app.register((await import("./modules/rider-payout/riderPayout.routes.js")).riderPayoutRoutes, { prefix: "/v1/rider-payout" });
 await app.register(geoRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
+await app.register(pushRoutes, { prefix: "/v1/push" });
 
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
 let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;
+let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
@@ -271,6 +285,10 @@ const gracefulShutdown = async (signal: string) => {
   if (pendingPaymentReconcilerInterval) {
     clearInterval(pendingPaymentReconcilerInterval);
     pendingPaymentReconcilerInterval = null;
+  }
+  if (orderAcceptanceTimeoutInterval) {
+    clearInterval(orderAcceptanceTimeoutInterval);
+    orderAcceptanceTimeoutInterval = null;
   }
   try {
     await app.close();
@@ -294,6 +312,14 @@ process.on("uncaughtException", (error) => {
 
 process.on("unhandledRejection", (reason, promise) => {
   app.log.error({ reason, promise }, "Unhandled rejection");
+  // Statement timeout (57014) is often load/index related; don't take down the API process.
+  const code =
+    reason && typeof reason === "object" && "code" in reason
+      ? String((reason as { code?: unknown }).code)
+      : "";
+  if (code === "57014") {
+    return;
+  }
   gracefulShutdown("unhandledRejection");
 });
 
@@ -320,6 +346,12 @@ try {
       { intervalMs: paymentReconcilerIntervalMs, ttlMs: env.PAYMENT_CONFIRM_WINDOW_MS, lateCapturePolicy: env.PAYMENT_LATE_CAPTURE_POLICY },
       "payment reconciler started"
     );
+    // Order acceptance auto-cancel: cold start + every 15s
+    const orderAcceptanceIntervalMs = 15_000;
+    await runOrderAcceptanceTimeoutTick(app.log);
+    orderAcceptanceTimeoutInterval = setInterval(() => {
+      runOrderAcceptanceTimeoutTick(app.log).catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
+    }, orderAcceptanceIntervalMs);
   }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");

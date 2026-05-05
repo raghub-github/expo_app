@@ -20,7 +20,7 @@ import {
   Edit2,
   Settings,
 } from 'lucide-react'
-import { Toaster } from 'sonner'
+// Toaster mounted globally in /mx/layout
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
 export const dynamic = 'force-dynamic'
@@ -76,7 +76,6 @@ export default function RestaurantManagementPage() {
   if (isLoading) {
     return (
       <>
-        <Toaster />
         <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
           <MXHeader
             restaurantName="Loading..."
@@ -96,7 +95,6 @@ export default function RestaurantManagementPage() {
 
   return (
     <>
-      <Toaster />
       <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950">
         {/* Header */}
         <MXHeader

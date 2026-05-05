@@ -200,10 +200,10 @@ export const merchantDashboardRoutes: DashboardSubRoute[] = [
     description: "Menu management",
   },
   {
-    name: "Offers",
+    name: "Subscription Plans",
     href: "/dashboard/merchants/offers",
     icon: Gift,
-    description: "Merchant offers",
+    description: "Merchant subscription plans",
   },
   {
     name: "Tickets",
@@ -231,12 +231,12 @@ export const adminPortalMerchantRoutes: DashboardSubRoute[] = [
   { name: "Verifications", href: "/dashboard/merchants/verifications", icon: CheckCircle, description: "Verify store documents and approve/reject merchants" },
 ];
 
-/** Merchant portal: sidebar from reference (Dashboard, Orders, Menu, Offers, Payments, User Insights, Settings, Profile). */
+/** Merchant portal: sidebar from reference (Dashboard, Orders, Menu, Subscription Plans, Payments, User Insights, Settings, Profile). */
 export const merchantPortalSidebarRoutes: DashboardSubRoute[] = [
   { name: "Dashboard", href: "/dashboard/merchants", icon: LayoutDashboard, description: "Order overview and store dashboard" },
   { name: "Orders", href: "/dashboard/merchants/orders", icon: ClipboardList, description: "Merchant orders" },
   { name: "Menu", href: "/dashboard/merchants/menu", icon: UtensilsCrossed, description: "Menu management" },
-  { name: "Offers", href: "/dashboard/merchants/offers", icon: Zap, description: "Merchant offers" },
+  { name: "Subscription Plans", href: "/dashboard/merchants/offers", icon: Zap, description: "Merchant subscription plans" },
   { name: "Payments", href: "/dashboard/merchants/payments", icon: CreditCard, description: "Payment history" },
   { name: "User Insights", href: "/dashboard/merchants/analytics", icon: UserCircle, description: "Performance analytics" },
   { name: "Settings", href: "/dashboard/merchants/settings", icon: Settings, description: "Settings" },
@@ -263,6 +263,12 @@ export function getStoreScopedMerchantRoutes(storeId: string): DashboardSubRoute
     { name: "Dashboard", href: base, icon: LayoutDashboard, description: "Store overview" },
     { name: "Orders", href: `${base}/orders`, icon: ClipboardList, description: "Order history and status" },
     { name: "Menu", href: `${base}/menu`, icon: UtensilsCrossed, description: "Categories and menu items" },
+    {
+      name: "Menu change requests",
+      href: `${base}/menu-change-requests`,
+      icon: FileText,
+      description: "Review merchant menu edit/delete requests",
+    },
     { name: "Offers", href: `${base}/offers`, icon: Zap, description: "Discounts and promotions" },
     { name: "Payments", href: `${base}/payments`, icon: CreditCard, description: "Wallet, payouts, transactions" },
     { name: "User Insights", href: `${base}/user-insights`, icon: UserCircle, description: "Reviews and complaints (read-only)" },
@@ -625,10 +631,11 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/users/roles": "System roles",
     "/dashboard/users/roles/new": "Add Role",
     "/dashboard/agents": "Agents",
-    "/dashboard/offers": "Offers",
+    "/dashboard/offers": "Subscription Plans",
     "/dashboard/payments": "Payments",
     "/dashboard/audit": "Audit Logs",
     "/dashboard/merchants/verifications": "Verifications",
+    "/dashboard/merchants/offers": "Subscription Plans",
     "/dashboard/merchants/order-overview": "Order Overview",
     "/dashboard/merchants/settings": "Settings",
     "/dashboard/merchants/stores": "Store Dashboard",
@@ -636,6 +643,7 @@ export function getCurrentPageName(pathname: string): string {
     "/dashboard/area-managers/riders": "Riders",
     "/dashboard/area-managers/availability": "Rider Availability",
     "/dashboard/area-managers/activity-logs": "Activity Logs",
+    "/dashboard/super-admin/ticket-settings": "Ticket Management",
   };
   
   // Check exact matches first

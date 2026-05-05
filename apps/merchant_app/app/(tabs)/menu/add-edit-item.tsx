@@ -26,8 +26,7 @@ import {
   H_PADDING,
   CARD_RADIUS,
   BUTTON_RADIUS,
-  TAB_BAR_HEIGHT,
-  SCROLL_BOTTOM_SAFE,
+  TAB_BAR_SCROLL_CONTENT_PADDING,
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
@@ -647,7 +646,11 @@ export default function AddEditItemScreen() {
     setBasePrice(itemData.base_price ?? "");
     setSellingPrice(itemData.selling_price ?? "");
     setPrepTimeMinutes(itemData.preparation_time_minutes != null ? String(itemData.preparation_time_minutes) : "");
-    setPackagingCharges((itemData as { packaging_charges?: number | string | null }).packaging_charges != null ? String((itemData as any).packaging_charges) : "");
+    const packRaw = (itemData as { packaging_charges?: number | string | null }).packaging_charges;
+    const packNum = packRaw == null ? null : Number(packRaw);
+    const hasPackaging = typeof packNum === "number" && !Number.isNaN(packNum) && packNum > 0;
+    setPackagingEnabled(hasPackaging);
+    setPackagingCharges(hasPackaging ? String(packNum) : "");
     setServesLabel(itemData.serves_label ?? "");
     setItemSizeValue(itemData.item_size_value != null ? String(itemData.item_size_value) : "");
     setItemSizeUnit(itemData.item_size_unit ?? "piece");
@@ -864,8 +867,8 @@ export default function AddEditItemScreen() {
           queryClient.invalidateQueries({ queryKey: menuKeys.items(storeId) });
           queryClient.invalidateQueries({ queryKey: menuKeys.item(storeId, itemId) });
           Alert.alert(
-            "Update requested",
-            "Your changes have been submitted for agent review. You will see them after approval.",
+            "Update Submitted Successfully",
+            "Your changes are under review and will be visible once approved.",
             [{ text: "OK", onPress: () => router.back() }]
           );
         } else {
@@ -983,14 +986,6 @@ export default function AddEditItemScreen() {
     );
   }
 
-  if (loading && isEdit) {
-    return (
-      <View style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-      </View>
-    );
-  }
-
   // ── render ──
 
   return (
@@ -1006,13 +1001,23 @@ export default function AddEditItemScreen() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT + SCROLL_BOTTOM_SAFE + insets.bottom + 80 }}
+        contentContainerStyle={{
+          paddingBottom: TAB_BAR_SCROLL_CONTENT_PADDING + 80,
+        }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         {error ? (
           <View style={styles.errorWrap}>
             <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : null}
+        {loading && isEdit ? (
+          <View style={[styles.errorWrap, { backgroundColor: "transparent", borderWidth: 0, paddingVertical: 8 }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <ActivityIndicator size="small" color={GatiMitraMerchant.primary} />
+              <Text style={[styles.errorText, { color: GatiMitraMerchant.textTertiary }]}>Loading item details…</Text>
+            </View>
           </View>
         ) : null}
 

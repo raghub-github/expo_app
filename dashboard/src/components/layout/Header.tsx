@@ -215,9 +215,11 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/analytics": "Analytics",
   "/dashboard/super-admin": "Super Admin",
   "/dashboard/super-admin/store-onboarding-fee": "Store onboarding fee",
+  "/dashboard/super-admin/ticket-settings": "Ticket Management",
 };
 
 const STORE_ONBOARDING_FEE_PATH = "/dashboard/super-admin/store-onboarding-fee";
+const TICKET_SETTINGS_PATH = "/dashboard/super-admin/ticket-settings";
 
 function HeaderComponent() {
   const pathname = usePathname();
@@ -559,6 +561,29 @@ function HeaderComponent() {
               <ArrowLeft className="h-4 w-4" />
             </Link>
             <IndianRupee className="h-5 w-5 shrink-0 text-violet-600" strokeWidth={2} aria-hidden />
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : cleanPathname === TICKET_SETTINGS_PATH ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
+            <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+          </div>
+        ) : cleanPathname.startsWith("/dashboard/super-admin/push") ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <Link
+              href="/dashboard/super-admin"
+              className="shrink-0 rounded-md p-1.5 text-gray-600 transition hover:bg-gray-100"
+              aria-label="Back to Super Admin"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Link>
             <h2 className="min-w-0 truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
           </div>
         ) : (

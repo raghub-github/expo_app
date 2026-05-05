@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
+import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { fetchRestaurantById, fetchRestaurantByName } from '@/lib/database'
 import { Restaurant } from '@/lib/types'
 import { DEMO_RESTAURANT_ID } from '@/lib/constants'
@@ -39,7 +40,7 @@ import {
   FileImage,
 } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
-import { Toaster, toast } from 'sonner'
+import { toast } from 'sonner'
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton'
 
 export const dynamic = 'force-dynamic'
@@ -483,37 +484,32 @@ function PaymentsContent() {
 
   return (
     <>
-      <Toaster />
       <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
-        <div className="min-h-screen bg-[#f8fafc] px-4 sm:px-6 lg:px-8 py-6">
-          <div className="max-w-6xl mx-auto space-y-6">
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-3">
+        <PartnerPageHeader title="Payments & Ledger" subtitle="Wallet balance and full transaction history" />
+        <div className="min-h-screen bg-[#f8fafc]">
+          <div className="mx-shell-header !px-4 sm:!px-6 lg:!px-8 shadow-sm">
+            <div className="max-w-6xl mx-auto w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 min-w-0">
+              <div className="flex flex-wrap items-center gap-3 min-w-0">
                 <MobileHamburgerButton />
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Payments & Ledger</h1>
-                    <Link
-                      href={storeId ? `/mx/refund-policy?storeId=${encodeURIComponent(storeId)}` : '/mx/refund-policy'}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-sm font-medium hover:bg-indigo-100 transition-colors"
-                    >
-                      <FileText size={14} />
-                      View refund policy
-                    </Link>
-                  </div>
-                  <p className="text-sm text-gray-500 mt-0.5">Wallet balance and full transaction history</p>
-                </div>
+                <Link
+                  href={storeId ? `/mx/refund-policy?storeId=${encodeURIComponent(storeId)}` : '/mx/refund-policy'}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 text-sm font-medium hover:bg-indigo-100 transition-colors"
+                >
+                  <FileText size={14} />
+                  View refund policy
+                </Link>
               </div>
               <button
                 onClick={() => setShowWithdrawal(true)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-medium bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm transition-colors shrink-0"
               >
                 <ArrowDownToLine size={18} />
                 Withdraw
               </button>
             </div>
+          </div>
 
+          <div className="px-4 sm:px-6 lg:px-8 py-6 max-w-6xl mx-auto space-y-6">
             {/* Wallet summary cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
               <div className="bg-gradient-to-br from-emerald-600 to-emerald-700 rounded-2xl p-5 text-white shadow-lg">

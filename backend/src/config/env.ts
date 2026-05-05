@@ -182,6 +182,9 @@ const EnvSchema = z.object({
     (v) => v === true || v === "true" || v === "1",
     z.boolean()
   ).default(false),
+
+  /** Secret for POST /v1/push/send-notification (dashboard / internal). */
+  PUSH_NOTIFICATION_ADMIN_SECRET: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

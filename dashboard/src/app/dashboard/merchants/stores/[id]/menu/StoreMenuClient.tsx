@@ -213,6 +213,7 @@ function normalizeItem(
     approval_status: (item.approval_status as any) ?? null,
     has_pending_change_request: Boolean((item as any).has_pending_change_request),
     pending_change_request_type: ((item as any).pending_change_request_type as any) ?? null,
+    linked_modifier_groups: ((item as any).linked_modifier_groups as any) ?? [],
   };
 }
 
@@ -288,11 +289,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [stockFilter, setStockFilter] = useState<"ALL" | "IN_STOCK" | "OUT_OF_STOCK">("ALL");
   const [changeRequestFilter, setChangeRequestFilter] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
   const [visibilityFilter, setVisibilityFilter] = useState<"LIVE" | "REMOVED" | "ALL">("LIVE");
-  const [crStatus, setCrStatus] = useState<"ALL" | "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED">("PENDING");
-  const [crType, setCrType] = useState<"ALL" | "UPDATE" | "DELETE">("ALL");
-  const [crLoading, setCrLoading] = useState(false);
-  const [crActionLoadingId, setCrActionLoadingId] = useState<number | null>(null);
-  const [changeRequests, setChangeRequests] = useState<any[]>([]);
   const [showMenuFileSection, setShowMenuFileSection] = useState(false);
   const menuFileSectionRef = useRef<HTMLDivElement>(null);
   const [menuReferenceFiles, setMenuReferenceFiles] = useState<MenuMediaFile[]>([]);
@@ -417,6 +413,11 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
   const [reviewItem, setReviewItem] = useState<MenuItem | null>(null);
   const [showReviewDrawer, setShowReviewDrawer] = useState(false);
   const [isReviewActionLoading, setIsReviewActionLoading] = useState<"APPROVE" | "REJECT" | null>(null);
+  const [showAppliedAddonsDrawer, setShowAppliedAddonsDrawer] = useState(false);
+  const [appliedAddonsItem, setAppliedAddonsItem] = useState<MenuItem | null>(null);
+  const [appliedAddonsLoading, setAppliedAddonsLoading] = useState(false);
+  const [appliedAddonsError, setAppliedAddonsError] = useState("");
+  const [unlinkingModifierLinkId, setUnlinkingModifierLinkId] = useState<number | null>(null);
   const categoryScrollRef = useRef<HTMLDivElement>(null);
 
   const trackAudit = useCallback((payload: {
@@ -451,33 +452,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       // never block UI
     }
   }, []);
-
-  const storePublicId = (data as any)?.store?.store_id as string | null | undefined;
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!storePublicId) return;
-    setCrLoading(true);
-    const params = new URLSearchParams();
-    params.set("storeId", storePublicId);
-    if (crStatus !== "ALL") params.set("status", crStatus);
-    if (crType !== "ALL") params.set("request_type", crType);
-    params.set("limit", "50");
-    params.set("offset", "0");
-    fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled) return;
-        const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
-        setChangeRequests(list);
-      })
-      .finally(() => {
-        if (!cancelled) setCrLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [storePublicId, crStatus, crType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -599,102 +573,6 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     setCategoryCuisineInput(typed);
     setCategoryForm((prev) => ({ ...prev, cuisine_id: undefined }));
   }, [categoryCuisineInput, cuisineOptions]);
-
-  const handleApproveCr = async (id: number) => {
-    setCrActionLoadingId(id);
-    try {
-      const res = await fetch(`/api/merchant-menu/change-requests/${id}/approve`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.success === false) throw new Error(data?.error || "Approve failed");
-      toast("Change request approved.");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "approve_change_request" },
-        actionStatus: "SUCCESS",
-        requestMethod: "POST",
-      });
-      refreshMenu();
-      if (storePublicId) {
-        const params = new URLSearchParams();
-        params.set("storeId", storePublicId);
-        if (crStatus !== "ALL") params.set("status", crStatus);
-        if (crType !== "ALL") params.set("request_type", crType);
-        params.set("limit", "50");
-        params.set("offset", "0");
-        fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d) => {
-            const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
-            setChangeRequests(list);
-          });
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Approve failed");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "approve_change_request" },
-        actionStatus: "FAILED",
-        errorMessage: e instanceof Error ? e.message : String(e),
-        requestMethod: "POST",
-      });
-    } finally {
-      setCrActionLoadingId(null);
-    }
-  };
-
-  const handleRejectCr = async (id: number) => {
-    setCrActionLoadingId(id);
-    try {
-      const res = await fetch(`/api/merchant-menu/change-requests/${id}/reject`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reviewed_reason: "Rejected by agent" }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.success === false) throw new Error(data?.error || "Reject failed");
-      toast("Change request rejected.");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "reject_change_request" },
-        actionStatus: "SUCCESS",
-        requestMethod: "POST",
-      });
-      refreshMenu();
-      if (storePublicId) {
-        const params = new URLSearchParams();
-        params.set("storeId", storePublicId);
-        if (crStatus !== "ALL") params.set("status", crStatus);
-        if (crType !== "ALL") params.set("request_type", crType);
-        params.set("limit", "50");
-        params.set("offset", "0");
-        fetch(`/api/merchant-menu/change-requests?${params.toString()}`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d) => {
-            const list = (d && Array.isArray(d.change_requests) ? d.change_requests : []) as any[];
-            setChangeRequests(list);
-          });
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Reject failed");
-      trackAudit({
-        actionType: "UPDATE",
-        resourceType: "merchant_menu_item_change_requests",
-        resourceId: String(id),
-        actionDetails: { action: "reject_change_request" },
-        actionStatus: "FAILED",
-        errorMessage: e instanceof Error ? e.message : String(e),
-        requestMethod: "POST",
-      });
-    } finally {
-      setCrActionLoadingId(null);
-    }
-  };
 
   const rawCategories = (data && "categories" in data && Array.isArray(data.categories) ? data.categories : []) as Record<string, unknown>[];
   const categories: MenuCategory[] = rawCategories.map((c, i) => {
@@ -1082,6 +960,26 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
     }
     setShowEditModal(true);
   };
+
+  const openAppliedAddons = useCallback(
+    async (item: MenuItem) => {
+      setShowAppliedAddonsDrawer(true);
+      setAppliedAddonsItem(item);
+      setAppliedAddonsError("");
+      setAppliedAddonsLoading(true);
+      try {
+        const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${item.id}`);
+        const json = await res.json().catch(() => ({}));
+        const full = res.ok && json?.success && json?.item ? (json.item as MenuItem) : null;
+        if (full) setAppliedAddonsItem(full);
+      } catch (e) {
+        setAppliedAddonsError(e instanceof Error ? e.message : "Failed to load addons");
+      } finally {
+        setAppliedAddonsLoading(false);
+      }
+    },
+    [storeId],
+  );
 
   const packagingPayloadForForm = (form: ItemFormData) => {
     if (!form.packaging_enabled) return null;
@@ -2357,110 +2255,7 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 py-3 bg-slate-50">
-          <div className="mb-3 rounded-lg border border-gray-200 bg-white/95 shadow-sm overflow-hidden">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-100">
-              <div>
-                <div className="text-sm font-bold text-gray-900">Change requests</div>
-                <div className="text-xs text-gray-500">
-                  Merchant edit/delete requests for this store (agent review).
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <select
-                  value={crStatus}
-                  onChange={(e) => setCrStatus(e.target.value as any)}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-                  aria-label="Filter change requests by status"
-                >
-                  <option value="ALL">Status: All</option>
-                  <option value="PENDING">Status: Pending</option>
-                  <option value="APPROVED">Status: Approved</option>
-                  <option value="REJECTED">Status: Rejected</option>
-                  <option value="CANCELLED">Status: Cancelled</option>
-                </select>
-                <select
-                  value={crType}
-                  onChange={(e) => setCrType(e.target.value as any)}
-                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white text-gray-900"
-                  aria-label="Filter change requests by type"
-                >
-                  <option value="ALL">Type: All</option>
-                  <option value="UPDATE">Type: Edit</option>
-                  <option value="DELETE">Type: Delete</option>
-                </select>
-              </div>
-            </div>
-            <div className="px-4 py-2.5">
-              {!storePublicId ? (
-                <div className="text-xs text-gray-500">Loading store info…</div>
-              ) : crLoading ? (
-                <div className="text-xs text-gray-500">Loading change requests…</div>
-              ) : changeRequests.length === 0 ? (
-                <div className="text-xs text-gray-500">No change requests found.</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead>
-                      <tr className="text-xs text-gray-500">
-                        <th className="text-left font-semibold py-2 pr-4">Item</th>
-                        <th className="text-left font-semibold py-2 pr-4">Type</th>
-                        <th className="text-left font-semibold py-2 pr-4">Status</th>
-                        <th className="text-left font-semibold py-2 pr-4">Created</th>
-                        <th className="text-right font-semibold py-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {changeRequests.map((r) => (
-                        <tr key={r.id} className="border-t border-gray-100">
-                          <td className="py-2 pr-4">
-                            <div className="font-semibold text-gray-900">{r.item_name ?? "—"}</div>
-                            <div className="text-xs text-gray-500">{r.menu_item_public_id ?? ""}</div>
-                          </td>
-                          <td className="py-2 pr-4">
-                            <span className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-xs font-bold">
-                              {r.request_type}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-4">
-                            <span className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-xs font-bold">
-                              {r.status}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-4 text-xs text-gray-600">
-                            {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
-                          </td>
-                          <td className="py-2 text-right">
-                            {r.status === "PENDING" ? (
-                              <div className="inline-flex items-center gap-2">
-                                <button
-                                  onClick={() => handleRejectCr(Number(r.id))}
-                                  disabled={crActionLoadingId === Number(r.id)}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                  {crActionLoadingId === Number(r.id) ? "…" : "Reject"}
-                                </button>
-                                <button
-                                  onClick={() => handleApproveCr(Number(r.id))}
-                                  disabled={crActionLoadingId === Number(r.id)}
-                                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                                >
-                                  {crActionLoadingId === Number(r.id) ? "…" : "Approve"}
-                                </button>
-                              </div>
-                            ) : (
-                              <span className="text-xs text-gray-500">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </div>
-
+        <div className="flex-1 min-w-0 overflow-y-auto px-3 sm:px-4 pt-3 pb-0 bg-slate-50">
           {loading ? (
             <MenuItemsGridSkeleton />
           ) : searchedItems.length === 0 ? (
@@ -2481,18 +2276,28 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {searchedItems.map((item) => {
                 const categoryDisplayLabel = formatCategoryLabel(categories, item.category_id);
                 const discount = Number(item.discount_percentage);
                 const hasDiscount = discount > 0;
+                const linkedGroupsCount = (item.linked_modifier_groups?.length ?? 0) || 0;
+                const linkedOptionsCount =
+                  item.linked_modifier_groups?.reduce((sum, g) => sum + (g.options?.length ?? 0), 0) ?? 0;
+                const inlineAddonsCount =
+                  (item.customizations ?? []).reduce((sum, c) => sum + (c.addons?.length ?? 0), 0) || 0;
+                const hasAddons =
+                  linkedGroupsCount > 0 ||
+                  (item.has_addons ?? false) ||
+                  linkedOptionsCount > 0 ||
+                  inlineAddonsCount > 0;
                 return (
                   <div
                     key={item.id}
                     className="bg-white/95 rounded-lg border border-gray-200/80 shadow-sm hover:shadow-md transition-all overflow-hidden"
                   >
-                    <div className="flex p-2 h-full gap-3">
-                      <div className="w-16 h-16 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
+                    <div className="flex p-3 h-full gap-3">
+                      <div className="w-20 h-20 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100">
                         <R2Image
                           src={item.item_image_url}
                           alt={item.item_name}
@@ -2524,6 +2329,29 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                                   ? "Rejected"
                                   : "Pending"}
                             </span>
+                            {hasAddons && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void openAppliedAddons(item);
+                                }}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 transition-colors"
+                                title={
+                                  linkedGroupsCount > 0
+                                    ? `${linkedGroupsCount} addon group${linkedGroupsCount !== 1 ? "s" : ""}`
+                                    : "View applied addons"
+                                }
+                              >
+                                <Layers size={12} />
+                                Addons
+                                {linkedGroupsCount > 0
+                                  ? ` · ${linkedGroupsCount}`
+                                  : linkedOptionsCount > 0
+                                    ? ` · ${linkedOptionsCount}`
+                                    : ""}
+                              </button>
+                            )}
                             {item.has_pending_change_request && (
                               <span
                                 className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
@@ -2980,6 +2808,149 @@ export function StoreMenuClient({ storeId, onSwitchToAddonLibrary }: { storeId: 
                 >
                   {isReviewActionLoading === "APPROVE" ? "Approving…" : "Approve"}
                 </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {showAppliedAddonsDrawer &&
+        appliedAddonsItem &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9997] flex items-stretch justify-end bg-black/40 backdrop-blur-sm"
+            onClick={() => {
+              setShowAppliedAddonsDrawer(false);
+              setAppliedAddonsItem(null);
+              setAppliedAddonsError("");
+            }}
+          >
+            <div
+              className="w-full max-w-md bg-white shadow-xl border-l border-gray-200 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Applied addons</div>
+                  <div className="text-sm font-extrabold text-gray-900 truncate">{appliedAddonsItem.item_name}</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
+                    {(appliedAddonsItem.linked_modifier_groups?.length ?? 0)} group
+                    {(appliedAddonsItem.linked_modifier_groups?.length ?? 0) === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAppliedAddonsDrawer(false);
+                    setAppliedAddonsItem(null);
+                    setAppliedAddonsError("");
+                  }}
+                  className="text-xs font-semibold text-gray-500 hover:text-gray-800"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="p-4 flex-1 overflow-auto space-y-3 text-sm bg-gradient-to-b from-white to-slate-50/60">
+                {appliedAddonsError ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    {appliedAddonsError}
+                  </div>
+                ) : (appliedAddonsItem.linked_modifier_groups?.length ?? 0) === 0 ? (
+                  <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-700">
+                    No addon groups are linked to this item.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {appliedAddonsLoading && (
+                      <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm text-sky-800">
+                        Fetching latest addon options…
+                      </div>
+                    )}
+                    {appliedAddonsItem.linked_modifier_groups?.map((g) => (
+                      <div key={g.id} className="rounded-lg border border-gray-200 overflow-hidden">
+                        <div className="px-3 py-2 bg-white flex items-start justify-between gap-3 border-b border-gray-100">
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-gray-900 truncate">{g.title}</div>
+                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                                  g.is_required
+                                    ? "bg-red-50 text-red-700 border-red-200"
+                                    : "bg-gray-50 text-gray-700 border-gray-200"
+                                }`}
+                              >
+                                {g.is_required ? "Required" : "Optional"}
+                              </span>
+                              {(g.min_selection != null || g.max_selection != null) && (
+                                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-50 text-slate-700 border border-slate-200">
+                                  min {g.min_selection ?? 0} / max {g.max_selection ?? "—"}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="text-[11px] font-bold text-gray-600">
+                              {typeof (g as any).options_count === "number"
+                                ? `${Number((g as any).options_count)} option${Number((g as any).options_count) !== 1 ? "s" : ""}`
+                                : `${(g.options?.length ?? 0)} option${(g.options?.length ?? 0) !== 1 ? "s" : ""}`}
+                            </div>
+                            <button
+                              type="button"
+                              disabled={unlinkingModifierLinkId === g.id}
+                              onClick={async () => {
+                                setUnlinkingModifierLinkId(g.id);
+                                try {
+                                  const res = await fetch(
+                                    `/api/merchant/stores/${storeId}/menu/items/${appliedAddonsItem.id}/modifier-groups/${g.id}`,
+                                    { method: "DELETE" }
+                                  );
+                                  const j = await res.json().catch(() => ({}));
+                                  if (!res.ok || j?.success === false) {
+                                    throw new Error(j?.error || "Failed to remove addon group");
+                                  }
+                                  setAppliedAddonsItem((prev) => {
+                                    if (!prev) return prev;
+                                    return {
+                                      ...prev,
+                                      linked_modifier_groups: (prev.linked_modifier_groups ?? []).filter((x) => x.id !== g.id),
+                                    };
+                                  });
+                                  // Also refresh the menu list so badge/count updates.
+                                  await refreshMenu();
+                                } catch (e) {
+                                  setAppliedAddonsError(e instanceof Error ? e.message : "Failed to remove addon group");
+                                } finally {
+                                  setUnlinkingModifierLinkId(null);
+                                }
+                              }}
+                              className="px-2 py-1 rounded-md text-[11px] font-extrabold border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Remove this addon group from item"
+                            >
+                              {unlinkingModifierLinkId === g.id ? "Removing…" : "Remove"}
+                            </button>
+                          </div>
+                        </div>
+                        {(g.options?.length ?? 0) > 0 ? (
+                          <ul className="px-3 py-2 text-sm text-gray-800 space-y-1 bg-gray-50/50">
+                            {g.options!.map((o) => (
+                              <li key={o.id} className="flex items-center justify-between gap-2">
+                                <span className="truncate">{o.name}</span>
+                                <span className="text-xs font-extrabold text-gray-700 shrink-0 tabular-nums">
+                                  {o.price_delta !== "0" ? `+₹${o.price_delta}` : "+₹0"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : appliedAddonsLoading ? (
+                          <div className="px-3 py-2 text-sm text-gray-600 bg-gray-50/50">Loading options…</div>
+                        ) : (
+                          <div className="px-3 py-2 text-sm text-gray-600 bg-gray-50/50">No options in this group.</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>,
