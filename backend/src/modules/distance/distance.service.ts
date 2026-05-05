@@ -6,9 +6,14 @@
  */
 
 import type { LatLng, RouteResult, RoutingProfile } from "./distance.types.js";
+import crypto from "crypto";
+import { and, eq, gt } from "drizzle-orm";
+import { getDb } from "../../db/client.js";
+import { routeDistanceCache } from "../../db/schema.js";
 
 const EARTH_RADIUS_METERS = 6_371_000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const DB_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export type GetRouteOptions = {
   origin: LatLng;
@@ -166,6 +171,89 @@ function haversinePathDistanceMeters(points: LatLng[]): number {
   return sum;
 }
 
+function dbCacheKey(options: GetRouteOptions): string | null {
+  // DB cache only supports simple origin->destination (no waypoints) to keep schema lean.
+  if ((options.waypoints?.length ?? 0) > 0) return null;
+  const profile = options.profile ?? "driving";
+  const o = options.origin;
+  const d = options.destination;
+  const round6 = (n: number) => Math.round(n * 1_000_000) / 1_000_000;
+  const raw = `${profile}:${round6(o.lat)},${round6(o.lng)}:${round6(d.lat)},${round6(d.lng)}`;
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+async function getDbCached(options: GetRouteOptions): Promise<RouteResult | null> {
+  if (process.env.NODE_ENV === "test") return null;
+  const key = dbCacheKey(options);
+  if (!key) return null;
+  const now = new Date();
+  try {
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(routeDistanceCache)
+      .where(and(eq(routeDistanceCache.cacheKey, key), gt(routeDistanceCache.expiresAt, now)))
+      .limit(1);
+    if (!row) return null;
+    return {
+      distanceMeters: Number(row.distanceMeters),
+      durationSeconds: Number(row.durationSeconds),
+      distanceKm: Math.round((Number(row.distanceMeters) / 1000) * 100) / 100,
+      etaMinutes: Math.round(Number(row.durationSeconds) / 60),
+      geometry: row.geometry ?? undefined,
+      polyline: row.geometry ?? undefined,
+      source: (row.provider as any) ?? "mapbox",
+      cached: true,
+      approximate: row.approximate ?? false,
+      fromRoutingEngine: String(row.provider) !== "haversine",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function setDbCached(options: GetRouteOptions, result: RouteResult): Promise<void> {
+  if (process.env.NODE_ENV === "test") return;
+  const key = dbCacheKey(options);
+  if (!key) return;
+  try {
+    const db = getDb();
+    const profile = options.profile ?? "driving";
+    const expiresAt = new Date(Date.now() + DB_CACHE_TTL_MS);
+    await db
+      .insert(routeDistanceCache)
+      .values({
+        cacheKey: key,
+        originLat: String(options.origin.lat),
+        originLng: String(options.origin.lng),
+        destLat: String(options.destination.lat),
+        destLng: String(options.destination.lng),
+        profile,
+        distanceMeters: Math.round(result.distanceMeters),
+        durationSeconds: Math.round(result.durationSeconds),
+        geometry: result.geometry ?? result.polyline ?? null,
+        provider: result.source ?? "mapbox",
+        approximate: result.approximate ?? false,
+        expiresAt,
+        updatedAt: new Date(),
+      } as any)
+      .onConflictDoUpdate({
+        target: routeDistanceCache.cacheKey,
+        set: {
+          distanceMeters: Math.round(result.distanceMeters),
+          durationSeconds: Math.round(result.durationSeconds),
+          geometry: result.geometry ?? result.polyline ?? null,
+          provider: result.source ?? "mapbox",
+          approximate: result.approximate ?? false,
+          expiresAt,
+          updatedAt: new Date(),
+        },
+      });
+  } catch {
+    // ignore cache write failures
+  }
+}
+
 export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
   const profile = options.profile ?? "driving";
   const waypoints = options.waypoints ?? [];
@@ -175,6 +263,11 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
   if (!options.skipCache) {
     const cached = getCached(key);
     if (cached) return cached;
+    const dbCached = await getDbCached(options);
+    if (dbCached) {
+      setCached(key, dbCached);
+      return dbCached;
+    }
   }
 
   const mapboxToken = options.mapboxToken?.trim();
@@ -182,6 +275,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     const mb = await fetchMapboxRoute(points, profile, mapboxToken);
     if (mb) {
       setCached(key, mb);
+      if (!options.skipCache) await setDbCached(options, mb);
       return mb;
     }
   }
@@ -191,6 +285,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     const osrm = await fetchOSRMRoute(points, profile, osrmBaseUrl);
     if (osrm) {
       setCached(key, osrm);
+      if (!options.skipCache) await setDbCached(options, osrm);
       return osrm;
     }
   }
@@ -203,6 +298,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     approximate: true,
   });
   setCached(key, result);
+  if (!options.skipCache) await setDbCached(options, result);
   return result;
 }
 

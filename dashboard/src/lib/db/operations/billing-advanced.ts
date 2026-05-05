@@ -1,5 +1,18 @@
-import { bumpBillingRulesetVersion } from "./billing-admin";
+import { bumpBillingRulesetVersion, sqlJsonb } from "./billing-admin";
 import { getSql } from "../client";
+
+function sanitizePlatformOfferConditions(input: unknown): Record<string, unknown> {
+  if (input != null && typeof input === "object" && !Array.isArray(input)) {
+    const c = { ...(input as Record<string, unknown>) };
+    delete c.geo_targets;
+    // Segment is stored on the row (`customer_segment`); drop legacy duplicate in JSON.
+    delete c.user_segment;
+    // Min cart gate is `min_order_amount` on the row; drop legacy duplicate in JSON.
+    delete c.min_order_value;
+    return c;
+  }
+  return {};
+}
 
 export type DeliveryRateCardAdminRow = {
   id: number;
@@ -128,6 +141,7 @@ export type PlatformOfferAdminRow = {
   name: string | null;
   service_type: string;
   offer_kind: string;
+  offer_audience: string;
   funding_mode: string;
   platform_share_pct: string;
   merchant_share_pct: string;
@@ -163,7 +177,7 @@ export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
   const sql = getSql();
   return sql<PlatformOfferAdminRow[]>`
     SELECT id, name, service_type,
-      offer_kind, funding_mode,
+      offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
       max_platform_contribution::text AS max_platform_contribution,
@@ -188,6 +202,7 @@ export type InsertPlatformOfferInput = {
   name?: string | null;
   service_type?: string;
   offer_kind?: string;
+  offer_audience?: string;
   funding_mode?: string;
   platform_share_pct?: number;
   merchant_share_pct?: number;
@@ -225,7 +240,7 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
   const [row] = await sql<PlatformOfferAdminRow[]>`
     INSERT INTO billing_platform_offers (
       name, service_type,
-      offer_kind, funding_mode, platform_share_pct, merchant_share_pct,
+      offer_kind, offer_audience, funding_mode, platform_share_pct, merchant_share_pct,
       max_platform_contribution, max_merchant_contribution,
       target_scope, geo_level, geo_ids, merchant_ids, customer_segment,
       min_order_amount, max_discount_amount, buy_qty, get_qty, is_stackable, exclusion_group,
@@ -237,6 +252,7 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       ${input.name ?? null},
       ${st},
       ${(input.offer_kind ?? "DISCOUNT").toUpperCase()},
+      ${(input.offer_audience ?? "CUSTOMER").toUpperCase()},
       ${(input.funding_mode ?? "PLATFORM_ONLY").toUpperCase()},
       ${input.platform_share_pct ?? 100},
       ${input.merchant_share_pct ?? 0},
@@ -244,8 +260,8 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       ${input.max_merchant_contribution ?? null},
       ${(input.target_scope ?? "GLOBAL").toUpperCase()},
       ${input.geo_level ?? null},
-      ${Array.isArray(input.geo_ids) ? input.geo_ids : []}::jsonb,
-      ${Array.isArray(input.merchant_ids) ? input.merchant_ids : []}::jsonb,
+      ${sqlJsonb(Array.isArray(input.geo_ids) ? input.geo_ids : [])}::jsonb,
+      ${sqlJsonb(Array.isArray(input.merchant_ids) ? input.merchant_ids : [])}::jsonb,
       ${(input.customer_segment ?? "ALL").toUpperCase()},
       ${input.min_order_amount ?? null},
       ${input.max_discount_amount ?? null},
@@ -264,11 +280,11 @@ export async function insertPlatformOffer(input: InsertPlatformOfferInput): Prom
       ${input.priority ?? 0},
       ${input.is_active ?? true},
       ${input.is_hidden ?? false},
-      ${input.conditions != null && typeof input.conditions === "object" ? input.conditions : {}}::jsonb,
-      ${input.metadata ?? null}
+      ${sqlJsonb(sanitizePlatformOfferConditions(input.conditions))}::jsonb,
+      ${sqlJsonb(input.metadata ?? null)}::jsonb
     )
     RETURNING id, name, service_type,
-      offer_kind, funding_mode,
+      offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
       max_platform_contribution::text AS max_platform_contribution,
@@ -301,6 +317,7 @@ export async function updatePlatformOffer(
       name = ${input.name ?? null},
       service_type = ${st},
       offer_kind = ${(input.offer_kind ?? "DISCOUNT").toUpperCase()},
+      offer_audience = ${(input.offer_audience ?? "CUSTOMER").toUpperCase()},
       funding_mode = ${(input.funding_mode ?? "PLATFORM_ONLY").toUpperCase()},
       platform_share_pct = ${input.platform_share_pct ?? 100},
       merchant_share_pct = ${input.merchant_share_pct ?? 0},
@@ -308,8 +325,8 @@ export async function updatePlatformOffer(
       max_merchant_contribution = ${input.max_merchant_contribution ?? null},
       target_scope = ${(input.target_scope ?? "GLOBAL").toUpperCase()},
       geo_level = ${input.geo_level ?? null},
-      geo_ids = ${Array.isArray(input.geo_ids) ? input.geo_ids : []}::jsonb,
-      merchant_ids = ${Array.isArray(input.merchant_ids) ? input.merchant_ids : []}::jsonb,
+      geo_ids = ${sqlJsonb(Array.isArray(input.geo_ids) ? input.geo_ids : [])}::jsonb,
+      merchant_ids = ${sqlJsonb(Array.isArray(input.merchant_ids) ? input.merchant_ids : [])}::jsonb,
       customer_segment = ${(input.customer_segment ?? "ALL").toUpperCase()},
       min_order_amount = ${input.min_order_amount ?? null},
       max_discount_amount = ${input.max_discount_amount ?? null},
@@ -328,12 +345,12 @@ export async function updatePlatformOffer(
       priority = ${input.priority ?? 0},
       is_active = ${input.is_active ?? true},
       is_hidden = ${input.is_hidden ?? false},
-      conditions = ${input.conditions != null && typeof input.conditions === "object" ? input.conditions : {}}::jsonb,
-      metadata = ${input.metadata ?? null},
+      conditions = ${sqlJsonb(sanitizePlatformOfferConditions(input.conditions))}::jsonb,
+      metadata = ${sqlJsonb(input.metadata ?? null)}::jsonb,
       updated_at = now()
     WHERE id = ${id}
     RETURNING id, name, service_type,
-      offer_kind, funding_mode,
+      offer_kind, offer_audience, funding_mode,
       platform_share_pct::text AS platform_share_pct,
       merchant_share_pct::text AS merchant_share_pct,
       max_platform_contribution::text AS max_platform_contribution,

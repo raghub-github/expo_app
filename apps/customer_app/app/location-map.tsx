@@ -47,6 +47,7 @@ export default function LocationMapScreen() {
     primary?: string;
     fullAddress?: string;
     fromOnboarding?: string;
+    afterSaveReturn?: string;
   }>();
 
   const queryClient = useQueryClient();
@@ -149,6 +150,7 @@ export default function LocationMapScreen() {
           primary: result.primary,
           fullAddress: result.fullAddress,
           fromOnboarding: params.fromOnboarding === "1" ? "1" : undefined,
+          afterSaveReturn: params.afterSaveReturn === "checkout" ? "checkout" : undefined,
         },
       });
     } catch (e) {
@@ -156,7 +158,7 @@ export default function LocationMapScreen() {
     } finally {
       setLoading(false);
     }
-  }, [centerCoord, setAddressAndCoords, addRecentLocation, queryClient, router, params.fromOnboarding]);
+  }, [centerCoord, setAddressAndCoords, addRecentLocation, queryClient, router, params.fromOnboarding, params.afterSaveReturn]);
 
   return (
     <>

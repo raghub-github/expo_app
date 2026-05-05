@@ -50,6 +50,9 @@ const AnimatedSectionList = createAnimatedComponent(SectionList<MenuItem>) as ty
 import { merchantService, type MenuItem, type MerchantSummary } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { getRoute } from "@/services/distance.service";
+import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
+import { addressService } from "@/services/address.service";
+import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
@@ -76,25 +79,6 @@ const CART_BAR_HEIGHT = 64;
 const MENU_FAB_HEIGHT = 48;
 
 type FilterId = "all" | "veg" | "nonveg" | "bestseller" | "quickprep";
-
-function haversineKm(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
 
 /** Group menu by category_id / categoryName from DB. Section title = categoryName or fallback. */
 function groupMenuByCategory(menu: MenuItem[]): { title: string; data: MenuItem[] }[] {
@@ -552,6 +536,18 @@ export default function MerchantDetailScreen() {
     return null;
   }, [merchantId, queryClient]);
 
+  /** Distance from the list API (already backend-computed). Used as a fast fallback while route loads. */
+  const listCachedDistanceKm = useMemo(() => {
+    const entries = queryClient.getQueriesData<MerchantSummary[]>({ queryKey: ["merchants"] });
+    for (const [, list] of entries) {
+      if (!Array.isArray(list)) continue;
+      const m = list.find((x) => x.id === merchantId);
+      const km = (m as { distanceKm?: number | null } | undefined)?.distanceKm ?? null;
+      if (km != null && Number.isFinite(km)) return km;
+    }
+    return null;
+  }, [merchantId, queryClient]);
+
   useFocusEffect(
     useCallback(() => {
       if (merchantId) queryClient.invalidateQueries({ queryKey: ["merchant", merchantId] });
@@ -559,21 +555,99 @@ export default function MerchantDetailScreen() {
   );
 
   const coords = useLocationStore((s) => s.coords);
-  const hasOriginDest =
-    coords &&
-    merchant?.latitude != null &&
-    merchant?.longitude != null;
-  const { data: routeResult } = useQuery({
-    queryKey: ["distance-route", coords?.latitude, coords?.longitude, merchant?.latitude, merchant?.longitude],
-    queryFn: () =>
-      getRoute({
-        origin: { lat: coords!.latitude, lng: coords!.longitude },
-        destination: { lat: merchant!.latitude!, lng: merchant!.longitude! },
-        profile: "driving",
-      }),
-    enabled: !!hasOriginDest && !!merchant?.id,
-    staleTime: 5 * 60 * 1000,
+  const locationSource = useLocationStore((s) => s.locationSource);
+  const { data: activeLocation } = useQuery({
+    queryKey: ["active-location"],
+    queryFn: () => addressService.getActiveLocation(),
+    staleTime: 0,
   });
+
+  const { data: addresses = [] } = useQuery({
+    queryKey: ["addresses"],
+    queryFn: () => addressService.getAddresses(),
+    staleTime: 60 * 1000,
+  });
+
+  const deliveryCoords = useMemo(() => {
+    // If user explicitly selected a location (saved/map pin), that is the delivery point for distance labels.
+    if (coords && locationSource === "selected") {
+      return { latitude: coords.latitude, longitude: coords.longitude };
+    }
+    // Otherwise prefer backend "active location" (saved delivery address) over device GPS drift.
+    if (activeLocation?.latitude != null && activeLocation.longitude != null) {
+      return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
+    }
+    // Final fallback: whatever the current global coords are.
+    return coords;
+  }, [activeLocation?.latitude, activeLocation?.longitude, coords?.latitude, coords?.longitude, locationSource]);
+
+  /**
+   * Same drop coordinates as checkout/billing: when the map pin is "selected", snap to the saved
+   * address within 250m (then active-location / default rules) so route km matches the bill.
+   */
+  const routingDropCoords = useMemo(() => {
+    if (addresses.length === 0) return deliveryCoords;
+    if (locationSource === "selected") {
+      const resolved = resolveCheckoutDeliveryAddress(
+        addresses,
+        coords,
+        locationSource,
+        activeLocation
+      );
+      if (resolved) {
+        return { latitude: resolved.latitude, longitude: resolved.longitude };
+      }
+    }
+    return deliveryCoords;
+  }, [
+    addresses,
+    coords?.latitude,
+    coords?.longitude,
+    locationSource,
+    activeLocation?.latitude,
+    activeLocation?.longitude,
+    deliveryCoords?.latitude,
+    deliveryCoords?.longitude,
+  ]);
+
+  /**
+   * Canonical delivery-address id (snapped from pin/active location to saved address when possible).
+   * Passing this to the backend makes distance_km + delivery_fee identical across every page
+   * (home, search, store details, cart, checkout, order details, tracking).
+   */
+  const resolvedDeliveryAddress = useMemo(() => {
+    return resolveCheckoutDeliveryAddress(addresses, coords, locationSource, activeLocation);
+  }, [
+    addresses,
+    coords?.latitude,
+    coords?.longitude,
+    locationSource,
+    activeLocation?.latitude,
+    activeLocation?.longitude,
+  ]);
+
+  const { data: storeQuote } = useStoreDeliveryQuote({
+    storeId: merchantId ?? "",
+    addressId: resolvedDeliveryAddress?.id ?? null,
+    drop:
+      resolvedDeliveryAddress == null && routingDropCoords
+        ? { lat: routingDropCoords.latitude, lng: routingDropCoords.longitude }
+        : null,
+    enabled: !!merchantId && (!!resolvedDeliveryAddress || !!routingDropCoords),
+  });
+
+  // Kept for legacy fields (polyline for map) while we migrate to canonical quote.
+  void getRoute;
+  const routeResult = useMemo(
+    () =>
+      storeQuote
+        ? {
+            distanceKm: storeQuote.distance_km,
+            etaMinutes: storeQuote.duration_min,
+          }
+        : null,
+    [storeQuote]
+  );
   const addItem = useCartStore((s) => s.addItem);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const cartItems = useCartStore((s) => s.items) ?? [];
@@ -877,12 +951,7 @@ export default function MerchantDetailScreen() {
     );
   }
 
-  const distanceKm =
-    routeResult != null
-      ? routeResult.distanceKm
-      : coords && merchant.latitude != null && merchant.longitude != null
-        ? haversineKm(coords.latitude, coords.longitude, merchant.latitude, merchant.longitude)
-        : null;
+  const distanceKm = routeResult?.distanceKm ?? listCachedDistanceKm ?? null;
   const etaMinutes = routeResult?.etaMinutes ?? null;
   const prepMins = merchant.avgPreparationTimeMinutes != null && merchant.avgPreparationTimeMinutes > 0
     ? `${Math.round(merchant.avgPreparationTimeMinutes)} mins`

@@ -6,37 +6,15 @@
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { randomBytes } from "crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { verifyRazorpaySignature } from "../../services/payment/razorpayService.js";
-import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { auth } from "../../plugins/auth.js";
-import { createPendingOrder, finalizeOrder } from "./order.placement.service.js";
-import { getEnv } from "../../config/env.js";
-import { getRoute } from "../distance/distance.service.js";
-
-/** Em dash / empty → null for DB. Never insert placeholder characters. */
-const EM_DASH = "\u2014";
-function sanitizeOptional<T>(v: T): T | null {
-  if (v == null) return null;
-  if (typeof v === "string") {
-    const t = v.trim();
-    if (t === "" || t === EM_DASH) return null;
-    return t as T;
-  }
-  return v;
-}
+import { createPendingOrder, finalizeOrder, getPendingOrderStatus } from "./order.placement.service.js";
 import { getDb } from "../../db/client.js";
-import { computeBillForOrder } from "../billing/billing.service.js";
-import { normalizeOrderItems } from "./orderNormalizer.js";
 import {
   customers,
-  customerAddresses,
   ordersCore,
   ordersFood,
   ordersCoreItems,
-  ordersCoreItemAddons,
-  ordersCorePayments,
   orderEvents,
   orderEtaSnapshots,
   orderRiderTracking,
@@ -97,13 +75,8 @@ const createOrderBodySchema = z.object({
   pickupLon: z.number().optional(),
   couponCode: z.string().optional().nullable(),
   subscriptionOptIn: z.boolean().optional(),
+  checkoutMetadata: z.record(z.string(), z.unknown()).optional(),
 });
-
-const paymentMethodToEnum = (method: string): "upi" | "card" | "wallet" | "online" | "cod" | "other" => {
-  const m = (method || "").toLowerCase();
-  if (["upi", "card", "wallet", "online", "cod", "netbanking"].includes(m)) return m as "upi" | "card" | "wallet" | "online" | "cod";
-  return "online";
-};
 
 /** Map DB order_status_type to app-facing status (ORDER_PLACED, PREPARING, etc.). */
 function toAppStatus(dbStatus: string | null): string {
@@ -210,6 +183,14 @@ export async function orderRoutes(app: FastifyInstance) {
     pickupLat: z.number().optional(),
     pickupLon: z.number().optional(),
     subscriptionOptIn: z.boolean().optional(),
+    checkoutMetadata: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * Optional: stable key derived from the cart signature + customer so that
+     * rapid double-tap / network retries return the same pending order instead
+     * of creating a duplicate. Preferred transport is the "Idempotency-Key"
+     * HTTP header; this body field is kept for clients that cannot set headers.
+     */
+    idempotencyKey: z.string().min(8).max(128).optional(),
   });
 
   app.post(
@@ -244,6 +225,17 @@ export async function orderRoutes(app: FastifyInstance) {
       if (Number.isNaN(addressIdNum)) {
         return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
       }
+      // Accept Idempotency-Key header per RFC draft. Fallback to request-body
+      // field for older clients.
+      const headerIdemRaw = req.headers["idempotency-key"];
+      const headerIdem = Array.isArray(headerIdemRaw) ? headerIdemRaw[0] : headerIdemRaw;
+      const idempotencyKey =
+        (headerIdem && String(headerIdem).trim()) ||
+        ((req.body as { idempotencyKey?: unknown } | undefined)?.idempotencyKey != null
+          ? String((req.body as { idempotencyKey?: unknown }).idempotencyKey).trim()
+          : "") ||
+        null;
+
       const result = await createPendingOrder(db, {
         customerId: customerPk,
         merchantId: body.merchantId,
@@ -258,6 +250,8 @@ export async function orderRoutes(app: FastifyInstance) {
         pickupLat: body.pickupLat,
         pickupLon: body.pickupLon,
         subscriptionOptIn: body.subscriptionOptIn,
+        checkoutMetadata: body.checkoutMetadata,
+        idempotencyKey,
       });
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });
@@ -339,6 +333,60 @@ export async function orderRoutes(app: FastifyInstance) {
         status: result.status,
         totalAmount: result.totalAmount,
         createdAt: result.createdAt,
+      });
+    }
+  );
+
+  app.get(
+    "/pending/:pendingId",
+    {
+      schema: {
+        params: z.object({ pendingId: z.string().min(1) }),
+        response: {
+          200: z.object({
+            pendingId: z.string(),
+            paymentState: z.string(),
+            finalized: z.boolean(),
+            orderId: z.string().nullable(),
+            refundStatus: z.string().nullable(),
+            paymentConfirmBy: z.string().nullable(),
+            message: z.string().nullable().optional(),
+          }),
+          403: z.object({ error: z.string(), message: z.string().optional() }),
+          404: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const db = getDb();
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk === null) {
+        return reply.status(403).send({ error: "Customer not found" });
+      }
+      const result = await getPendingOrderStatus(db, {
+        pendingId: (req.params as { pendingId: string }).pendingId,
+        customerId: customerPk,
+      });
+      if (!result.ok) {
+        return reply.status(404).send({ error: result.code, message: result.message });
+      }
+      return reply.send({
+        pendingId: result.pendingId,
+        paymentState: result.paymentState,
+        finalized: result.finalized,
+        orderId: result.orderId,
+        refundStatus: result.refundStatus,
+        paymentConfirmBy: result.paymentConfirmBy,
+        message: result.message ?? null,
       });
     }
   );
@@ -481,25 +529,6 @@ export async function orderRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const body = req.body as z.infer<typeof createOrderBodySchema>;
-      const {
-        merchantId,
-        merchantParentId: merchantParentIdRaw,
-        items,
-        addressId,
-        paymentMethod,
-        tipAmount,
-        donationAmount,
-        razorpayOrderId,
-        razorpayPaymentId,
-        razorpaySignature,
-        pickupAddressRaw,
-        pickupLat,
-        pickupLon,
-        couponCode,
-        subscriptionOptIn,
-      } = body;
-
       const sub = req.auth?.sub;
       const role = req.auth?.role;
       if (!sub || role !== "customer") {
@@ -517,288 +546,55 @@ export async function orderRoutes(app: FastifyInstance) {
       if (customerPk === null) {
         return reply.status(403).send({ error: "Customer not found" });
       }
-
-      const addressIdNum = parseInt(addressId, 10);
-      if (Number.isNaN(addressIdNum)) {
-        return reply.status(400).send({ error: "Invalid addressId" });
-      }
-
-      const [addrRow] = await db
-        .select({
-          addressLine1: customerAddresses.addressLine1,
-          addressLine2: customerAddresses.addressLine2,
-          city: customerAddresses.city,
-          state: customerAddresses.state,
-          postalCode: customerAddresses.postalCode,
-          latitude: customerAddresses.latitude,
-          longitude: customerAddresses.longitude,
-        })
-        .from(customerAddresses)
-        .where(
-          and(
-            eq(customerAddresses.id, addressIdNum),
-            eq(customerAddresses.customerId, customerPk),
-            eq(customerAddresses.isActive, true),
-            isNull(customerAddresses.deletedAt)
-          )
-        )
-        .limit(1);
-
-      if (!addrRow) {
-        return reply.status(400).send({ error: "Address not found" });
-      }
-
-      const normOrder = normalizeOrderItems(items);
-      if (!normOrder.ok) {
-        return reply.status(400).send({ error: normOrder.code, message: normOrder.message });
-      }
-      const normItems = normOrder.items;
-
-      const itemTotal = normItems.reduce((s, i) => s + i.basePrice * i.quantity, 0);
-      const addonTotalOrder = normItems.reduce((s, i) => {
-        const lineAddon = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
-        return s + lineAddon;
-      }, 0);
-      let totalAmount = itemTotal + addonTotalOrder + (tipAmount ?? 0) + (donationAmount ?? 0);
-
-      if (getEnv().BILLING_RULES_ENABLED) {
-        const billRes = await computeBillForOrder(db, {
-          customerId: Number(customerPk),
-          merchantId,
-          items: normItems,
-          addressId: addressIdNum,
-          tipAmount: tipAmount ?? 0,
-          donationAmount: donationAmount ?? 0,
-          couponCode: couponCode?.trim() || null,
-          pickupLat,
-          pickupLon,
-          subscriptionOptIn: subscriptionOptIn === true,
-        });
-        if (!billRes.ok) {
-          return reply.status(400).send({ error: billRes.code, message: billRes.message });
-        }
-        totalAmount = billRes.billing.final_amount;
-      }
-
-      const dropAddressRaw =
-        [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
-          .filter(Boolean)
-          .join(", ") || "";
-      const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
-      const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-      const deliveryAddress = dropAddressRaw;
-      const deliveryLat = dropLat;
-      const deliveryLon = dropLon;
-
-      const pickupRaw = pickupAddressRaw ?? dropAddressRaw;
-      const pLat = pickupLat ?? dropLat;
-      const pLon = pickupLon ?? dropLon;
-
-      if (razorpayOrderId && razorpayPaymentId && razorpaySignature) {
-        const valid = verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature);
-        if (!valid) {
-          return reply.status(400).send({
-            error: "invalid_payment",
-            message: "Payment verification failed. Please try again.",
-          });
-        }
-      }
-
-      const paymentStatus = razorpayPaymentId ? "PAID" : "PENDING";
-      const paymentMethodEnum = paymentMethodToEnum(paymentMethod);
-
-      let merchantStoreId: number;
-      let storeForOrder: Awaited<ReturnType<typeof getStoreByIdForOrder>> = null;
-      const parsed = parseInt(String(merchantId).trim(), 10);
-      if (!Number.isNaN(parsed) && parsed >= 1) {
-        merchantStoreId = parsed;
-        storeForOrder = await getStoreByIdForOrder(merchantStoreId);
-      } else {
-        const store = await getStoreByStoreId(merchantId);
-        if (!store) {
-          return reply.status(400).send({
-            error: "Invalid merchantId",
-            message: "Store not found. Please try again from the restaurant page.",
-          });
-        }
-        merchantStoreId = Number(store.id);
-        storeForOrder = {
-          parentId: store.parent_id != null ? Number(store.parent_id) : null,
-          fullAddress: store.full_address ?? null,
-          latitude: store.latitude != null ? Number(store.latitude) : null,
-          longitude: store.longitude != null ? Number(store.longitude) : null,
-          is_accepting_orders: store.is_accepting_orders === true,
-        };
-      }
-
-      if (storeForOrder && storeForOrder.is_accepting_orders === false) {
+      const body = req.body as z.infer<typeof createOrderBodySchema>;
+      if (!body.razorpayOrderId || !body.razorpayPaymentId || !body.razorpaySignature) {
         return reply.status(400).send({
-          error: "store_closed",
-          message: "This store is not accepting orders right now. Please try again later.",
+          error: "payment_required",
+          message: "Use payment-first checkout: create pending order, complete payment, then finalize.",
         });
       }
 
-      const pickupLatNum = storeForOrder?.latitude != null ? storeForOrder.latitude! : pLat;
-      const pickupLonNum = storeForOrder?.longitude != null ? storeForOrder.longitude! : pLon;
-      const pickupAddressNormalized = sanitizeOptional((storeForOrder?.fullAddress ?? pickupRaw).trim() || "") ?? null;
-      const pickupAddressGeocoded =
-        storeForOrder?.latitude != null && storeForOrder?.longitude != null
-          ? JSON.stringify({ lat: storeForOrder.latitude, lng: storeForOrder.longitude })
-          : null;
-
-      const dropAddressNormalized = sanitizeOptional(dropAddressRaw.trim() || "") ?? null;
-      const dropAddressGeocoded =
-        Number.isFinite(dropLat) && Number.isFinite(dropLon)
-          ? JSON.stringify({ lat: dropLat, lng: dropLon })
-          : null;
-
-      // Canonical distance: route-based between store pickup and selected drop address.
-      // Use routing engine with internal fallback to Haversine when providers fail.
-      let distanceKm = 0;
-      try {
-        const env = getEnv();
-        const route = await getRoute({
-          origin: { lat: pickupLatNum, lng: pickupLonNum },
-          destination: { lat: dropLat, lng: dropLon },
-          profile: "driving",
-          mapboxToken: env.MAPBOX_ACCESS_TOKEN || undefined,
-          osrmBaseUrl: env.OSRM_BASE_URL || undefined,
-        });
-        distanceKm = route.distanceKm;
-      } catch {
-        const toRad = (deg: number) => (deg * Math.PI) / 180;
-        const R = 6371;
-        const dLat = toRad(dropLat - pickupLatNum);
-        const dLon = toRad(dropLon - pickupLonNum);
-        const a =
-          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos(toRad(pickupLatNum)) * Math.cos(toRad(dropLat)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        distanceKm = Math.round(R * c * 100) / 100;
+      const addressIdNum = parseInt(body.addressId, 10);
+      if (Number.isNaN(addressIdNum)) {
+        return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
       }
 
-      const merchantParentId = storeForOrder?.parentId ?? null;
+      const pending = await createPendingOrder(db, {
+        customerId: customerPk,
+        merchantId: body.merchantId,
+        merchantParentId: body.merchantParentId != null ? Number(body.merchantParentId) : null,
+        items: body.items,
+        addressId: addressIdNum,
+        paymentMethod: body.paymentMethod,
+        tipAmount: body.tipAmount,
+        donationAmount: body.donationAmount,
+        couponCode: body.couponCode,
+        pickupAddressRaw: body.pickupAddressRaw,
+        pickupLat: body.pickupLat,
+        pickupLon: body.pickupLon,
+        subscriptionOptIn: body.subscriptionOptIn,
+        checkoutMetadata: body.checkoutMetadata,
+      });
+      if (!pending.ok) {
+        return reply.status(400).send({ error: pending.code, message: pending.message });
+      }
 
-      const deliveryAddressForDb = sanitizeOptional(deliveryAddress) ?? null;
-      const { sql } = await import("drizzle-orm");
-
-      let orderIdText: string;
-      try {
-        const txResult = await db.transaction(async (tx) => {
-          const seqResult = await tx.execute(
-            sql`SELECT ('GM' || nextval('order_id_seq'))::text as order_id`
-          );
-          const rows = Array.isArray(seqResult) ? seqResult : (seqResult as { rows?: { order_id: string }[] }).rows ?? [];
-          const idText = rows[0]?.order_id ?? (rows as { order_id?: string }[])[0]?.order_id;
-          if (!idText) throw new Error("Failed to generate order_id");
-
-          const coreInsert = tx.insert(ordersCore) as any;
-          await coreInsert.values({
-            orderId: idText,
-            orderType: "food",
-            orderSource: "internal",
-            customerId: customerPk,
-            merchantStoreId,
-            merchantParentId: merchantParentId ?? undefined,
-            status: "assigned",
-            currentStatus: "PLACED",
-            itemTotal: String(itemTotal.toFixed(2)),
-            addonTotal: String(addonTotalOrder.toFixed(2)),
-            grandTotal: String(totalAmount.toFixed(2)),
-            tipAmount: tipAmount != null ? String(tipAmount.toFixed(2)) : "0",
-            placedAt: new Date(),
-            pickupAddressRaw: pickupAddressNormalized ?? " ",
-            pickupLat: String(pickupLatNum),
-            pickupLon: String(pickupLonNum),
-            dropAddressRaw: dropAddressNormalized ?? " ",
-            dropLat: String(dropLat),
-            dropLon: String(dropLon),
-            deliveryAddress: deliveryAddressForDb ?? undefined,
-            distanceKm: String(distanceKm),
-            paymentStatus: paymentStatus === "PAID" ? "completed" : "pending",
-            paymentMethod: paymentMethodEnum,
-          } as any);
-
-          const itemInserts = normItems.map((i) => {
-            const addonPerUnit = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity, 0);
-            const lineAddonTotal = addonPerUnit * i.quantity;
-            const lineTotal = i.basePrice * i.quantity + lineAddonTotal;
-            return {
-              orderId: idText,
-              menuItemId: i.menuItemId,
-              itemName: i.itemName,
-              categoryName: null,
-              vegNonveg: null,
-              variantId: i.variantId ?? undefined,
-              variantName: i.variantName ?? undefined,
-              quantity: i.quantity,
-              basePrice: String(i.basePrice.toFixed(2)),
-              addonPrice: String(addonPerUnit.toFixed(2)),
-              totalPrice: String(lineTotal.toFixed(2)),
-              itemSnapshot: i.itemSnapshot ?? undefined,
-            };
-          });
-
-          const insertedItems = await (tx.insert(ordersCoreItems) as any)
-            .values(itemInserts as any)
-            .returning({ id: ordersCoreItems.id });
-          for (let idx = 0; idx < normItems.length; idx++) {
-            const row = normItems[idx]!;
-            const addons = row.addons;
-            if (addons.length === 0) continue;
-            const orderItemId = insertedItems[idx]?.id;
-            if (orderItemId == null) continue;
-            await tx.insert(ordersCoreItemAddons).values(
-              addons.map((ad) => {
-                const n = Number(ad.addonId);
-                return {
-                  orderItemId,
-                  addonId: Number.isNaN(n) ? undefined : n,
-                  addonName: ad.addonName,
-                  addonPrice: String(ad.addonPrice.toFixed(2)),
-                  quantity: ad.quantity,
-                };
-              })
-            );
-          }
-
-          const paymentInsert = tx.insert(ordersCorePayments) as any;
-          await paymentInsert.values({
-            orderId: idText,
-            paymentGateway: razorpayPaymentId ? "razorpay" : undefined,
-            paymentMethod: paymentMethodEnum,
-            transactionId: razorpayPaymentId ?? undefined,
-            amount: String(totalAmount.toFixed(2)),
-            currency: "INR",
-            paymentStatus: razorpayPaymentId ? "PAID" : "PENDING",
-            gatewayResponse: razorpayPaymentId ? { razorpayPaymentId, razorpayOrderId } : undefined,
-            paidAt: razorpayPaymentId ? new Date() : undefined,
-          } as any);
-
-          return idText;
-        });
-        orderIdText = txResult as string;
-      } catch (err: unknown) {
-        const e = err as Record<string, unknown>;
-        const errMsg = (e?.message as string) ?? String(err);
-        console.error("[API] orders_core insert failed:", errMsg);
-        if (e?.detail) console.error("[API] detail:", e.detail);
-        if (e?.constraint) console.error("[API] constraint:", e.constraint);
-        if (e?.code) console.error("[API] code:", e.code);
-        if (e?.cause) console.error("[API] cause:", e.cause);
-        console.error("[API] full error:", err);
-        return reply.status(500).send({
-          error: "order_creation_failed",
-          message: "Order could not be created. Please try again.",
-          ...(process.env.NODE_ENV !== "production" && { debug: errMsg }),
-        });
+      const result = await finalizeOrder(db, {
+        pendingId: pending.pendingId,
+        razorpayOrderId: body.razorpayOrderId,
+        razorpayPaymentId: body.razorpayPaymentId,
+        razorpaySignature: body.razorpaySignature,
+        customerId: customerPk,
+      });
+      if (!result.ok) {
+        return reply.status(400).send({ error: result.code, message: result.message });
       }
 
       return reply.send({
-        orderId: orderIdText,
+        orderId: result.orderId,
         status: "ORDER_PLACED",
-        totalAmount,
-        createdAt: new Date().toISOString(),
+        totalAmount: result.totalAmount,
+        createdAt: result.createdAt,
       });
     }
   );

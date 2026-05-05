@@ -524,6 +524,8 @@ export default function SuperAdminBillingPage() {
     busy,
     simBody,
     setSimBody,
+    simCouponCode,
+    setSimCouponCode,
     simResult,
     simBusy,
     resetRuleForm,
@@ -563,7 +565,9 @@ export default function SuperAdminBillingPage() {
   const deliveryEngine = useMemo(() => {
     try {
       const j = JSON.parse(form.value_json || "{}") as { key?: string };
-      return j.key === "GEO_LOCATION_DELIVERY" ? "geo" : "rate_card";
+      if (j.key === "GEO_LOCATION_DELIVERY") return "geo";
+      if (j.key === "DELIVERY_SLABS_GEO_V2") return "slabs_v2";
+      return "rate_card";
     } catch {
       return "rate_card";
     }
@@ -1193,6 +1197,16 @@ export default function SuperAdminBillingPage() {
           from checkout <code className="text-xs bg-white/80 px-1 rounded">tipAmount</code>; never taxed). Donation rows
           work the same way with <code className="text-xs bg-white/80 px-1 rounded">donationAmount</code>.
         </p>
+        <p className="mt-3 text-sky-900/90 leading-relaxed">
+          <strong>Delivery shape (e.g. max of base fare vs per-km × km):</strong> model this with distance slabs on{" "}
+          <Link href="/dashboard/super-admin/delivery-rate-cards" className="text-indigo-700 underline">
+            delivery rate cards
+          </Link>{" "}
+          (engine uses <code className="text-xs bg-white/80 px-1 rounded">base_fare + per_km_rate × km</code> per slab) or
+          via geo <code className="text-xs bg-white/80 px-1 rounded">customer_delivery_fee</code> in pricing rules. For a
+          universal minimum (e.g. ₹25 when distance &gt; 0), set backend env{" "}
+          <code className="text-xs bg-white/80 px-1 rounded">DELIVERY_MIN_FEE_INR</code> after rules and fallbacks.
+        </p>
       </section>
 
       {/* Charge order */}
@@ -1594,7 +1608,12 @@ export default function SuperAdminBillingPage() {
                 className={selectCls}
                 value={deliveryEngine}
                 onChange={(e) => {
-                  const key = e.target.value === "geo" ? "GEO_LOCATION_DELIVERY" : "DELIVERY_RATE_CARD";
+                  const key =
+                    e.target.value === "geo"
+                      ? "GEO_LOCATION_DELIVERY"
+                      : e.target.value === "slabs_v2"
+                        ? "DELIVERY_SLABS_GEO_V2"
+                        : "DELIVERY_RATE_CARD";
                   setForm((f) => ({
                     ...f,
                     value_json: JSON.stringify({ key }),
@@ -1604,6 +1623,7 @@ export default function SuperAdminBillingPage() {
               >
                 <option value="rate_card">Delivery rate cards (city / time / distance)</option>
                 <option value="geo">Location pricing rules (Geo → pincode)</option>
+                <option value="slabs_v2">Progressive geo slabs (base once + per slab km)</option>
               </select>
               <p className="text-xs text-gray-500 mt-1">
                 <strong>Geo</strong> uses Super Admin → Geo <code className="text-[11px] bg-gray-100 px-1 rounded">pricing_rules</code>{" "}
@@ -1991,6 +2011,24 @@ export default function SuperAdminBillingPage() {
                 {p.label}
               </button>
             ))}
+          </div>
+          <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+            <label className={`${labelCls}`} htmlFor="sim-coupon">
+              Coupon code (optional)
+            </label>
+            <input
+              id="sim-coupon"
+              className={inputCls}
+              placeholder="e.g. WELCOME20 — must exist under Super Admin → Offers & coupons"
+              value={simCouponCode}
+              onChange={(e) => setSimCouponCode(e.target.value.toUpperCase())}
+              autoComplete="off"
+            />
+            <p className="mt-1.5 text-xs text-gray-600">
+              Sent as <code className="rounded bg-white px-1 text-[11px]">couponCode</code> on the calculate request (same field as
+              checkout). Leave empty to simulate without a coupon. If you also put{" "}
+              <code className="rounded bg-white px-1 text-[11px]">couponCode</code> in the JSON, this field wins when it is not empty.
+            </p>
           </div>
           <label className={`${labelCls} mt-3`} htmlFor="sim-json">
             Request JSON

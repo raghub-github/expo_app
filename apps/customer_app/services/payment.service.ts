@@ -22,11 +22,13 @@ export const paymentService = {
     amountPaise: number;
     currency?: string;
     receipt?: string;
+    pendingId?: string;
   }): Promise<CreateRazorpayOrderResponse> {
     const { data } = await api.post<CreateRazorpayOrderResponse>(`${PAYMENT_PREFIX}/create-order`, {
       amount: params.amountPaise,
       currency: params.currency ?? "INR",
       receipt: params.receipt,
+      pendingId: params.pendingId,
     });
     return data;
   },

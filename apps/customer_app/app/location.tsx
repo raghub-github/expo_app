@@ -94,7 +94,7 @@ function addressIcon(label: string | null): "home" | "briefcase" | "location" {
 
 export default function SelectLocationScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ fromOnboarding?: string }>();
+  const params = useLocalSearchParams<{ fromOnboarding?: string; afterSaveReturn?: string }>();
   const insets = useSafeAreaInsets();
   const {
     address,
@@ -129,11 +129,20 @@ export default function SelectLocationScreen() {
       router.replace("/(onboarding)/permissions");
       return;
     }
+    if (params.afterSaveReturn === "checkout") {
+      router.replace("/checkout");
+      return;
+    }
     if (typeof router.canGoBack === "function" && router.canGoBack()) {
       router.back();
       return;
     }
     router.replace("/(tabs)/");
+  };
+
+  const forwardParams = {
+    ...(params.fromOnboarding === "1" ? { fromOnboarding: "1" as const } : {}),
+    ...(params.afterSaveReturn === "checkout" ? { afterSaveReturn: "checkout" as const } : {}),
   };
 
   useEffect(() => {
@@ -511,7 +520,7 @@ export default function SelectLocationScreen() {
         longitude: String(latestCoords.longitude),
         primary: latestAddress?.primary ?? "Current location",
         fullAddress: latestAddress?.fullAddress ?? "",
-        ...(params.fromOnboarding === "1" ? { fromOnboarding: "1" } : {}),
+        ...forwardParams,
       },
     });
   };
@@ -530,7 +539,7 @@ export default function SelectLocationScreen() {
         longitude: String(place.longitude),
         primary: place.primary,
         fullAddress: place.fullAddress,
-        ...(params.fromOnboarding === "1" ? { fromOnboarding: "1" } : {}),
+        ...forwardParams,
       },
     });
   };
@@ -546,7 +555,8 @@ export default function SelectLocationScreen() {
       const primary = addr.label ?? "Address";
       setAddressAndCoords(
         { primary, secondary: addr.fullAddress.slice(0, 80), fullAddress: addr.fullAddress },
-        { latitude: addr.latitude, longitude: addr.longitude }
+        { latitude: addr.latitude, longitude: addr.longitude },
+        { source: "selected" }
       );
       safeBack();
     } catch {
@@ -588,7 +598,8 @@ export default function SelectLocationScreen() {
           secondary: (place.fullAddress ?? "").slice(0, 80),
           fullAddress: place.fullAddress ?? place.primary,
         },
-        { latitude: place.latitude, longitude: place.longitude }
+        { latitude: place.latitude, longitude: place.longitude },
+        { source: "selected" }
       );
     } finally {
       safeBack();
@@ -886,7 +897,16 @@ export default function SelectLocationScreen() {
                       style={styles.moreMenuItem}
                       onPress={() => {
                         setMenuForId(null);
-                        router.push("/profile/addresses");
+                        router.push({
+                          pathname: "/location-address",
+                          params: {
+                            latitude: String(saved.latitude),
+                            longitude: String(saved.longitude),
+                            addressId: String(saved.id),
+                            primary: saved.label ?? saved.fullAddress.slice(0, 40),
+                            ...forwardParams,
+                          },
+                        });
                       }}
                     >
                       <Ionicons name="create-outline" size={16} color="#F9FAFB" />

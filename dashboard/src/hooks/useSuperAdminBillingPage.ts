@@ -284,9 +284,8 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
     priority: "0",
     is_active: true,
     is_hidden: false,
-    city: "",
-    min_order_value: "",
-    user_segment: "ALL" as "NEW" | "EXISTING" | "ALL",
+    min_order_amount: "",
+    customer_segment: "ALL" as "NEW" | "EXISTING" | "ALL",
     metadata: "",
   });
   const [ovStoreId, setOvStoreId] = useState("");
@@ -326,6 +325,8 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
   });
 
   const [simBody, setSimBody] = useState(DEFAULT_SIM);
+  /** Merged into simulate payload as `couponCode` when non-empty (same as customer checkout). */
+  const [simCouponCode, setSimCouponCode] = useState("");
   const [simResult, setSimResult] = useState<string | null>(null);
 
   const [localError, setLocalError] = useState<string | null>(null);
@@ -687,8 +688,12 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
         return;
       }
       body = normalizeSimPayload(body);
+      const payload = body as Record<string, unknown>;
+      const cc = simCouponCode.trim();
+      if (cc) payload.couponCode = cc.toUpperCase();
+      else delete payload.couponCode;
       await withBusy("sim.run", async () => {
-        const text = await simulateMut(body).unwrap();
+        const text = await simulateMut(payload).unwrap();
         setSimResult(text);
       });
     } catch (e) {
@@ -710,7 +715,7 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
       }
       setSimResult(JSON.stringify({ error: "SIMULATION_FAILED", message: detail }, null, 2));
     }
-  }, [simBody, simulateMut, withBusy]);
+  }, [simBody, simCouponCode, simulateMut, withBusy]);
 
   const resetSlabForm = useCallback(() => {
     setEditingSlabId(null);
@@ -1046,9 +1051,8 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
       priority: "0",
       is_active: true,
       is_hidden: false,
-      city: "",
-      min_order_value: "",
-      user_segment: "ALL",
+      min_order_amount: "",
+      customer_segment: "ALL",
       metadata: "",
     });
   }, []);
@@ -1204,6 +1208,13 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
     setEditingPlatformOfferId(o.id);
     const cond =
       o.conditions && typeof o.conditions === "object" ? (o.conditions as Record<string, unknown>) : {};
+    const rowSeg = String(o.customer_segment ?? "ALL").toUpperCase();
+    const condSegRaw = cond.user_segment;
+    const condSeg =
+      typeof condSegRaw === "string" && condSegRaw.trim() !== "" ? condSegRaw.toUpperCase() : "ALL";
+    const customer_segment = (
+      rowSeg === "NEW" || rowSeg === "EXISTING" ? rowSeg : condSeg === "NEW" || condSeg === "EXISTING" ? condSeg : "ALL"
+    ) as "NEW" | "EXISTING" | "ALL";
     setPlatformOfferForm({
       name: o.name ?? "",
       service_type: (o.service_type ?? "FOOD").toUpperCase() as "FOOD" | "PARCEL" | "RIDE" | "ALL",
@@ -1214,12 +1225,16 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
       priority: String(o.priority ?? 0),
       is_active: o.is_active ?? true,
       is_hidden: o.is_hidden ?? false,
-      city: typeof cond.city === "string" ? cond.city : "",
-      min_order_value: cond.min_order_value != null ? String(cond.min_order_value) : "",
-      user_segment: (typeof cond.user_segment === "string" ? cond.user_segment : "ALL") as
-        | "NEW"
-        | "EXISTING"
-        | "ALL",
+      min_order_amount: (() => {
+        const row =
+          o.min_order_amount != null && String(o.min_order_amount).trim() !== "" ? String(o.min_order_amount) : "";
+        const json =
+          cond.min_order_value != null && String(cond.min_order_value).trim() !== ""
+            ? String(cond.min_order_value)
+            : "";
+        return row !== "" ? row : json;
+      })(),
+      customer_segment,
       metadata: o.metadata != null ? JSON.stringify(o.metadata, null, 2) : "",
     });
   }, []);
@@ -1234,16 +1249,16 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
       return;
     }
     const conditions: Record<string, unknown> = {};
-    if (platformOfferForm.city.trim()) conditions.city = platformOfferForm.city.trim();
-    if (platformOfferForm.min_order_value.trim()) {
-      const mv = parseFloat(platformOfferForm.min_order_value);
-      if (Number.isFinite(mv)) conditions.min_order_value = mv;
-    }
-    if (platformOfferForm.user_segment !== "ALL") conditions.user_segment = platformOfferForm.user_segment;
-
     const payload = {
       name: platformOfferForm.name || null,
       service_type: platformOfferForm.service_type,
+      customer_segment: platformOfferForm.customer_segment,
+      min_order_amount: (() => {
+        const t = platformOfferForm.min_order_amount.trim();
+        if (t === "") return null;
+        const v = parseFloat(t);
+        return Number.isFinite(v) ? v : null;
+      })(),
       discount_type: platformOfferForm.discount_type,
       value_numeric:
         platformOfferForm.value_numeric.trim() === "" ? null : parseFloat(platformOfferForm.value_numeric),
@@ -1410,6 +1425,8 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
 
     simBody,
     setSimBody,
+    simCouponCode,
+    setSimCouponCode,
     simResult,
     simBusy,
     busy,

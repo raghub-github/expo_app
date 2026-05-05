@@ -242,6 +242,8 @@ export const merchantService = {
     limit?: number;
     offset?: number;
     vegOnly?: boolean;
+    /** air = straight-line, road = backend routing engine (Mapbox/OSRM). */
+    distanceMode?: "air" | "road";
   }): Promise<MerchantSummary[]> {
     try {
       const { data } = await api.get<{ items: MerchantSummary[] }>(MERCHANTS_PREFIX, {
@@ -251,6 +253,7 @@ export const merchantService = {
             : {}),
           limit: params?.limit ?? 20,
           offset: params?.offset ?? 0,
+          distanceMode: params?.distanceMode,
           veg: params?.vegOnly === true ? "true" : undefined,
         },
       });

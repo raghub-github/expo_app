@@ -21,7 +21,8 @@ function GeoTreeNode(props: {
   depth: number;
   filters: GeoTreeFilters;
   onEdit: (row: GeoChildRow) => void;
-  onRiderRates: (row: GeoChildRow) => void;
+  onPlatformOfferMap: (row: GeoChildRow) => void;
+  onDeliverySlabs: (row: GeoChildRow) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [pendingService, setPendingService] = useState<"food" | "parcel" | "ride" | null>(null);
@@ -65,7 +66,8 @@ function GeoTreeNode(props: {
         onToggleExpand={() => setExpanded((e) => !e)}
         onServiceToggle={onServiceToggle}
         onEdit={() => props.onEdit(props.row)}
-        onRiderRates={() => props.onRiderRates(props.row)}
+        onPlatformOfferMap={() => props.onPlatformOfferMap(props.row)}
+        onDeliverySlabs={() => props.onDeliverySlabs(props.row)}
         depth={props.depth}
         pendingService={pendingService}
       />
@@ -79,7 +81,8 @@ function GeoTreeNode(props: {
               depth={props.depth + 1}
               filters={props.filters}
               onEdit={props.onEdit}
-              onRiderRates={props.onRiderRates}
+              onPlatformOfferMap={props.onPlatformOfferMap}
+              onDeliverySlabs={props.onDeliverySlabs}
             />
           ))}
         </div>
@@ -91,7 +94,8 @@ function GeoTreeNode(props: {
 export const GeoTree = React.memo(function GeoTree(props: {
   filters: GeoTreeFilters;
   onEdit: (row: GeoChildRow) => void;
-  onRiderRates: (row: GeoChildRow) => void;
+  onPlatformOfferMap: (row: GeoChildRow) => void;
+  onDeliverySlabs: (row: GeoChildRow) => void;
 }) {
   const q = useMemo(
     () => ({
@@ -116,8 +120,9 @@ export const GeoTree = React.memo(function GeoTree(props: {
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-800">Hierarchy</h3>
           <p className="mt-0.5 text-xs text-slate-500">
-            Customer <strong className="font-medium text-slate-600">base_fee</strong> and rider payout (base + /km) resolve up the chain; use{" "}
-            <strong className="font-medium text-slate-600">Rider payout</strong> to edit rider cards.
+            Customer <strong className="font-medium text-slate-600">base_fee</strong>, rider payout, and{" "}
+            <strong className="font-medium text-slate-600">platform offers</strong> inherit up the chain (nearest wins per offer). Use{" "}
+            <strong className="font-medium text-slate-600">Map offers</strong> on a node to bind offers there.
           </p>
         </div>
         <button
@@ -146,7 +151,8 @@ export const GeoTree = React.memo(function GeoTree(props: {
                 depth={0}
                 filters={props.filters}
                 onEdit={props.onEdit}
-                onRiderRates={props.onRiderRates}
+                onPlatformOfferMap={props.onPlatformOfferMap}
+                onDeliverySlabs={props.onDeliverySlabs}
               />
             ))
           )}

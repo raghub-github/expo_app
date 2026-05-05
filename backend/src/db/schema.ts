@@ -33,7 +33,7 @@ import {
   primaryKey,
   foreignKey,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 // ============================================================================
 // ENUMS
@@ -1317,6 +1317,7 @@ export const ordersCore = pgTable(
     addonTotal: numeric("addon_total", { precision: 12, scale: 2 }),
     grandTotal: numeric("grand_total", { precision: 12, scale: 2 }),
     tipAmount: numeric("tip_amount", { precision: 12, scale: 2 }),
+    donationAmount: numeric("donation_amount", { precision: 12, scale: 2 }),
     placedAt: timestamp("placed_at", { withTimezone: true }),
     paymentStatus: paymentStatusTypeEnum("payment_status"),
     paymentMethod: paymentModeTypeEnum("payment_method"),
@@ -1339,9 +1340,14 @@ export const ordersCore = pgTable(
     actualPickupTime: timestamp("actual_pickup_time", { withTimezone: true }),
     actualDeliveryTime: timestamp("actual_delivery_time", { withTimezone: true }),
     items: jsonb("items"),
+    /** leaveAtDoor, notes, subscriptionOptIn mirror; billing remains in billing_snapshot. */
+    checkoutMetadata: jsonb("checkout_metadata"),
     deliveryLatitude: numeric("delivery_latitude", { precision: 10, scale: 7 }),
     deliveryLongitude: numeric("delivery_longitude", { precision: 10, scale: 7 }),
     deliveryAddress: text("delivery_address"),
+    /** Full billing engine snapshot at checkout (copied from pending_orders on finalize). */
+    billingSnapshot: jsonb("billing_snapshot"),
+    billingRulesetVersion: integer("billing_ruleset_version"),
   },
   (table) => ({
     orderIdIdx: index("orders_core_order_id_idx").on(table.orderId),
@@ -1681,6 +1687,10 @@ export const billingDiscounts = pgTable("billing_discounts", {
   isActive: boolean("is_active").notNull().default(true),
   isHidden: boolean("is_hidden").notNull().default(false),
   serviceType: text("service_type").notNull().default("FOOD"),
+  /** CUSTOMER | MERCHANT | RIDER — must match checkout actor for coupon to apply. */
+  offerAudience: text("offer_audience").notNull().default("CUSTOMER"),
+  /** Max redemptions per actor; null = unlimited per user (total cap is usage_limit). */
+  perUserUsageLimit: integer("per_user_usage_limit"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -1723,6 +1733,7 @@ export const billingPlatformOffers = pgTable(
     deliveryDiscountType: text("delivery_discount_type"),
     deliveryDiscountValue: numeric("delivery_discount_value", { precision: 14, scale: 4 }),
     offerKind: text("offer_kind").notNull().default("DISCOUNT"),
+    offerAudience: text("offer_audience").notNull().default("CUSTOMER"),
     fundingMode: text("funding_mode").notNull().default("PLATFORM_ONLY"),
     platformSharePct: numeric("platform_share_pct", { precision: 5, scale: 2 }).notNull().default("100"),
     merchantSharePct: numeric("merchant_share_pct", { precision: 5, scale: 2 }).notNull().default("0"),
@@ -1801,10 +1812,23 @@ export const pendingOrders = pgTable(
     billingSnapshot: jsonb("billing_snapshot"),
     billingRulesetVersion: integer("billing_ruleset_version"),
     couponCode: text("coupon_code"),
+    checkoutMetadata: jsonb("checkout_metadata"),
     razorpayOrderId: text("razorpay_order_id"),
+    razorpayPaymentId: text("razorpay_payment_id"),
+    paymentState: text("payment_state").notNull().default("created"),
+    paymentStartedAt: timestamp("payment_started_at", { withTimezone: true }),
+    paymentConfirmBy: timestamp("payment_confirm_by", { withTimezone: true }),
+    paymentVerifiedAt: timestamp("payment_verified_at", { withTimezone: true }),
+    paymentFailureCode: text("payment_failure_code"),
+    paymentFailureMessage: text("payment_failure_message"),
+    refundStatus: text("refund_status"),
+    refundReference: text("refund_reference"),
+    refundInitiatedAt: timestamp("refund_initiated_at", { withTimezone: true }),
+    lastGatewayPayload: jsonb("last_gateway_payload"),
     finalizedOrderId: text("finalized_order_id"),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    idempotencyKey: text("idempotency_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1812,8 +1836,102 @@ export const pendingOrders = pgTable(
     pendingIdIdx: index("pending_orders_pending_id_idx").on(table.pendingId),
     customerIdIdx: index("pending_orders_customer_id_idx").on(table.customerId),
     razorpayOrderIdIdx: index("pending_orders_razorpay_order_id_idx").on(table.razorpayOrderId),
+    razorpayPaymentIdIdx: index("pending_orders_razorpay_payment_id_idx").on(table.razorpayPaymentId),
+    paymentStateIdx: index("pending_orders_payment_state_idx").on(table.paymentState, table.createdAt),
+    paymentConfirmByIdx: index("pending_orders_payment_confirm_by_idx").on(table.paymentConfirmBy),
     finalizedOrderIdIdx: index("pending_orders_finalized_order_id_idx").on(table.finalizedOrderId),
     expiresAtIdx: index("pending_orders_expires_at_idx").on(table.expiresAt),
+  })
+);
+
+/**
+ * payment_events (migration 0198): append-only audit log for every observed
+ * state change on a pending_orders row. Never updated, only inserted — gives
+ * us a replayable timeline per payment across API / webhook / reconciler
+ * sources.
+ */
+export const paymentEvents = pgTable(
+  "payment_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    pendingId: text("pending_id"),
+    razorpayOrderId: text("razorpay_order_id"),
+    razorpayPaymentId: text("razorpay_payment_id"),
+    orderId: text("order_id"),
+    eventType: text("event_type").notNull(),
+    source: text("source").notNull(),
+    prevState: text("prev_state"),
+    newState: text("new_state"),
+    amountPaise: bigint("amount_paise", { mode: "number" }),
+    currency: text("currency"),
+    failureCode: text("failure_code"),
+    failureMessage: text("failure_message"),
+    payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pendingIdIdx: index("payment_events_pending_id_idx").on(table.pendingId),
+    razorpayOrderIdIdx: index("payment_events_razorpay_order_id_idx").on(table.razorpayOrderId),
+    razorpayPaymentIdIdx: index("payment_events_razorpay_payment_id_idx").on(table.razorpayPaymentId),
+    orderIdIdx: index("payment_events_order_id_idx").on(table.orderId),
+    eventTypeIdx: index("payment_events_event_type_idx").on(table.eventType, table.createdAt),
+  })
+);
+
+/**
+ * payment_webhook_events (migration 0198): Razorpay event-id dedup. Razorpay
+ * retries webhooks up to ~24 times on non-2xx responses, and occasionally
+ * duplicates on 2xx as well. Unique on `event_id`, so we short-circuit dupes
+ * at the edge.
+ */
+export const paymentWebhookEvents = pgTable(
+  "payment_webhook_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    eventId: text("event_id").notNull().unique(),
+    provider: text("provider").notNull().default("razorpay"),
+    eventType: text("event_type").notNull(),
+    signature: text("signature"),
+    payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    processingError: text("processing_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    eventTypeIdx: index("payment_webhook_events_event_type_idx").on(table.eventType, table.createdAt),
+    processedAtIdx: index("payment_webhook_events_processed_at_idx").on(table.processedAt),
+  })
+);
+
+/**
+ * order_notifications (outbox, migration 0197)
+ * Post-placement fan-out for merchant, rider-dispatch, and customer channels.
+ * Rows are inserted inside the finalize transaction so delivery is at-least-once.
+ * A worker / realtime listener consumes rows with status='pending'.
+ */
+export const orderNotifications = pgTable(
+  "order_notifications",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    orderId: text("order_id").notNull(),
+    audience: text("audience").notNull(), // 'merchant' | 'customer' | 'rider_dispatch'
+    channel: text("channel").notNull(), // 'push' | 'realtime' | 'email' | 'sms' | 'internal'
+    eventType: text("event_type").notNull(), // e.g. 'ORDER_PLACED'
+    recipientType: text("recipient_type"), // 'merchant_store' | 'customer' | 'rider_pool'
+    recipientId: text("recipient_id"),
+    payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    orderIdIdx: index("order_notifications_order_id_idx").on(table.orderId),
+    statusNextIdx: index("order_notifications_status_next_idx").on(table.status, table.nextAttemptAt),
+    audienceStatusIdx: index("order_notifications_audience_status_idx").on(table.audience, table.status),
   })
 );
 
@@ -1932,6 +2050,40 @@ export const orderKitchenTimeline = pgTable(
   },
   (table) => ({
     orderIdIdx: index("order_kitchen_timeline_order_id_idx").on(table.orderId),
+  })
+);
+
+// ============================================================================
+// ROUTE DISTANCE CACHE (Postgres-backed; avoids repeated Mapbox calls)
+// ============================================================================
+
+export const routeDistanceCache = pgTable(
+  "route_distance_cache",
+  {
+    cacheKey: text("cache_key").primaryKey(),
+    originLat: numeric("origin_lat", { precision: 9, scale: 6 }).notNull(),
+    originLng: numeric("origin_lng", { precision: 9, scale: 6 }).notNull(),
+    destLat: numeric("dest_lat", { precision: 9, scale: 6 }).notNull(),
+    destLng: numeric("dest_lng", { precision: 9, scale: 6 }).notNull(),
+    profile: text("profile").notNull().default("driving"),
+    distanceMeters: integer("distance_meters").notNull(),
+    durationSeconds: integer("duration_seconds").notNull(),
+    geometry: text("geometry"),
+    provider: text("provider").notNull().default("mapbox"),
+    approximate: boolean("approximate").notNull().default(false),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    expiresIdx: index("route_distance_cache_expires_idx").on(table.expiresAt),
+    pointsIdx: index("route_distance_cache_points_idx").on(
+      table.originLat,
+      table.originLng,
+      table.destLat,
+      table.destLng,
+      table.profile
+    ),
   })
 );
 

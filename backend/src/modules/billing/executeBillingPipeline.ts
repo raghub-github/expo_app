@@ -2,7 +2,11 @@ import { applyDiscountRule, applyRule, resolveDiscountAppliesOn } from "./applyR
 import { round2 } from "./money.js";
 import { ruleConditionsPass } from "./conditions.js";
 import { applyMerchantStoreOffers } from "./merchantOffersApply.js";
-import { applyPlatformCartOffers, applyPlatformDeliveryOffers } from "./platformOffersApply.js";
+import {
+  applyPlatformCartOffers,
+  applyPlatformDeliveryOffers,
+  applyPlatformFeeBucketOffers,
+} from "./platformOffersApply.js";
 import type {
   AppliedLine,
   BillContext,
@@ -121,6 +125,7 @@ function baseForTax(
 }
 
 function applyCouponDiscount(
+  ctx: BillContext,
   coupon: DiscountRow,
   itemPlusAddon: number,
   state: MutableBillState,
@@ -131,6 +136,21 @@ function applyCouponDiscount(
   if (coupon.validFrom && now < coupon.validFrom) return;
   if (coupon.validUntil && now > coupon.validUntil) return;
   if (coupon.usageLimit != null && coupon.usedCount >= coupon.usageLimit) return;
+
+  const rowAud = String(coupon.offerAudience ?? "CUSTOMER").toUpperCase();
+  const checkoutAud = String(ctx.checkoutAudience ?? "CUSTOMER").toUpperCase();
+  if (rowAud !== checkoutAud) return;
+
+  const meta = (coupon.metadata ?? {}) as Record<string, unknown>;
+  const couponSeg = String(meta.customer_segment ?? "ALL").toUpperCase();
+  if (couponSeg === "NEW" && ctx.userSegment !== "NEW") return;
+  if (couponSeg === "EXISTING" && ctx.userSegment === "NEW") return;
+
+  const perUser = coupon.perUserUsageLimit;
+  if (perUser != null && perUser > 0) {
+    const usedByUser = ctx.couponRedemptionsByUser ?? 0;
+    if (usedByUser >= perUser) return;
+  }
 
   let amt = 0;
   if (coupon.discountType === "FIXED") {
@@ -272,13 +292,14 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
   const disabled = disabledRuleIds(dataset.merchantOverrides);
 
   const state = initialState();
+  // #region agent log
+  fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H4',location:'backend/src/modules/billing/executeBillingPipeline.ts:entry',message:'executeBillingPipeline entry',data:{distanceKm:ctx.distanceKm,deliveryFeeFromSlabsGeoV2:ctx.deliveryFeeFromSlabsGeoV2??null,deliveryFeeFromGeo:ctx.deliveryFeeFromGeo??null,deliveryFeeFromRateCard:ctx.deliveryFeeFromRateCard??null,deliveryChargePerKm:ctx.deliveryChargePerKm,deliveryDefaultBaseInr:ctx.deliveryDefaultBaseInr,deliveryDefaultPerKmInr:ctx.deliveryDefaultPerKmInr,deliveryMinimumInr:ctx.deliveryMinimumInr??null},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 
   const rulesOrdered = [...dataset.rules].sort(
     (a, b) => a.chargeOrderKey - b.chargeOrderKey || a.priority - b.priority || a.id - b.id
   );
   const engineRules = rulesOrdered.filter((r) => r.type !== "TAX");
-  const hasDeliveryRule = engineRules.some((r) => r.type === "DELIVERY");
-
   const chargeRules = engineRules.filter((r) => CHARGE_RULE_TYPES.has(r.type));
   const discountRules = engineRules.filter((r) => r.type === "DISCOUNT" || r.type === "OFFER");
   discountRules.sort((a, b) => {
@@ -290,11 +311,9 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     return a.id - b.id;
   });
 
-  let deliveryApplied = false;
-
   function runChargeBatch(batch: RuleRow[]): void {
     for (const rule of batch) {
-      if (rule.type === "DELIVERY" && deliveryApplied) continue;
+      if (rule.type === "DELIVERY" && state.deliveryFee > 0) continue;
       if (rule.type === "DONATION") continue;
       if (rule.type === "RIDER_TIP") continue;
       if (rule.type === "SUBSCRIPTION" && !ctx.subscriptionOptIn) continue;
@@ -307,19 +326,126 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
       const res = applyRule(rule, ctx, state, dataset, itemPlusAddon);
       if (!res.applied) continue;
       commitApply(state, rule, res);
-      if (rule.type === "DELIVERY" && res.applied) deliveryApplied = true;
     }
   }
 
   runChargeBatch(chargeRules);
 
-  if (!deliveryApplied && !hasDeliveryRule && ctx.deliveryFeeFromRateCard > 0) {
-    state.deliveryFee = ctx.deliveryFeeFromRateCard;
-    state.breakdown_steps.push({
-      step: "Delivery fee (rate card)",
-      amount: ctx.deliveryFeeFromRateCard,
-      meta: { source: "rate_card", legacyFallback: true },
-    });
+  /**
+   * When delivery_fee is still zero:
+   * slabs-v2 → geo → rate card → legacy per-km → env default max(base, per_km×km).
+   * Runs even if a DELIVERY rule "applied" with ₹0 so we never silently skip delivery.
+   */
+  if (state.deliveryFee <= 0) {
+    const fromSlabsRaw = ctx.deliveryFeeFromSlabsGeoV2;
+    const fromSlabs =
+      fromSlabsRaw != null && Number.isFinite(fromSlabsRaw) && fromSlabsRaw > 0 ? round2(fromSlabsRaw) : 0;
+    const fromGeoRaw = ctx.deliveryFeeFromGeo;
+    const fromGeo =
+      fromGeoRaw != null && Number.isFinite(fromGeoRaw) && fromGeoRaw > 0 ? round2(fromGeoRaw) : 0;
+    const fromCard =
+      ctx.deliveryFeeFromRateCard != null &&
+      Number.isFinite(ctx.deliveryFeeFromRateCard) &&
+      ctx.deliveryFeeFromRateCard > 0
+        ? round2(ctx.deliveryFeeFromRateCard)
+        : 0;
+    const dist = ctx.distanceKm;
+    const legacyPerKm =
+      ctx.deliveryChargePerKm > 0 && dist != null && Number.isFinite(dist) && dist > 0
+        ? round2(ctx.deliveryChargePerKm * dist)
+        : 0;
+    const baseD = ctx.deliveryDefaultBaseInr ?? 0;
+    const perKmD = ctx.deliveryDefaultPerKmInr ?? 0;
+    // Env default delivery formula (last resort):
+    // Use base + per_km × distance (monotonic), not max(base, per_km × distance).
+    // `max()` caused flat fees (e.g. ₹25 for 3.2km) whenever perKm×km < base.
+    const defaultFormula =
+      dist != null && Number.isFinite(dist) && dist > 0 && (baseD > 0 || perKmD > 0)
+        ? round2(baseD + perKmD * dist)
+        : 0;
+    const fallbackFee =
+      fromSlabs > 0
+        ? fromSlabs
+        : fromGeo > 0
+          ? fromGeo
+          : fromCard > 0
+            ? fromCard
+            : legacyPerKm > 0
+              ? legacyPerKm
+              : defaultFormula;
+    // #region agent log
+    fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H4',location:'backend/src/modules/billing/executeBillingPipeline.ts:fallback',message:'delivery fallback computed',data:{stateDeliveryFeeBefore:state.deliveryFee,fromSlabs,fromGeo,fromCard,legacyPerKm,defaultFormula,chosen:fallbackFee,dist:dist??null,baseD,perKmD},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    if (fallbackFee > 0) {
+      state.deliveryFee = fallbackFee;
+      const label =
+        fromSlabs > 0
+          ? "Delivery fee (slabs)"
+          : fromGeo > 0
+            ? "Delivery fee (location)"
+            : fromCard > 0
+              ? "Delivery fee"
+              : legacyPerKm > 0
+                ? "Delivery fee (distance)"
+                : "Delivery fee (default)";
+      const sourceMeta =
+        fromSlabs > 0
+          ? ({
+              source: "delivery_slab_geo_v2_fallback" as const,
+              appliedGeo: ctx.deliverySlabsGeoV2AppliedGeo ?? undefined,
+              quote: ctx.deliverySlabsGeoV2Quote ?? undefined,
+            } as const)
+          : fromGeo > 0
+            ? ({ source: "geo_pricing_rules_fallback" as const } as const)
+            : fromCard > 0
+              ? ({ source: "delivery_rate_card_fallback" as const } as const)
+              : legacyPerKm > 0
+                ? ({ source: "legacy_per_km_fallback" as const } as const)
+                : ({ source: "env_default_delivery_formula" as const } as const);
+      state.charges.push({
+        kind: "charge",
+        label,
+        amount: fallbackFee,
+        hidden: false,
+        meta: sourceMeta,
+      });
+      state.breakdown_steps.push({
+        step: label,
+        amount: fallbackFee,
+        meta: { engineFallback: true, ...sourceMeta },
+      });
+    }
+  }
+
+  const minDel = ctx.deliveryMinimumInr;
+  if (
+    minDel != null &&
+    minDel > 0 &&
+    ctx.distanceKm != null &&
+    Number.isFinite(ctx.distanceKm) &&
+    ctx.distanceKm > 0
+  ) {
+    const prev = round2(state.deliveryFee);
+    const next = round2(Math.max(prev, minDel));
+    if (next > prev) {
+      const delta = round2(next - prev);
+      state.deliveryFee = next;
+      // #region agent log
+      fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H5',location:'backend/src/modules/billing/executeBillingPipeline.ts:minimum',message:'delivery minimum floor applied',data:{prev,next,delta,minDel},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      state.charges.push({
+        kind: "charge",
+        label: delta > 0 && prev <= 0 ? "Delivery fee (minimum)" : "Delivery minimum adjustment",
+        amount: delta,
+        hidden: false,
+        meta: { source: "delivery_minimum_floor", floorInr: minDel, previousDeliveryInr: prev },
+      });
+      state.breakdown_steps.push({
+        step: "Delivery minimum",
+        amount: delta,
+        meta: { source: "delivery_minimum_floor", floorInr: minDel },
+      });
+    }
   }
 
   const rem = remFromState(state, itemPlusAddon);
@@ -349,9 +475,11 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
   syncStateFeesFromRem(state, rem);
   applyPlatformDeliveryOffers(ctx, dataset, state, itemPlusAddon, rem);
   syncStateFeesFromRem(state, rem);
+  applyPlatformFeeBucketOffers(ctx, dataset, state, itemPlusAddon, rem);
+  syncStateFeesFromRem(state, rem);
 
   if (dataset.coupon) {
-    applyCouponDiscount(dataset.coupon, itemPlusAddon, state, rem);
+    applyCouponDiscount(ctx, dataset.coupon, itemPlusAddon, state, rem);
   }
   syncStateFeesFromRem(state, rem);
 

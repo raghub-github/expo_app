@@ -35,6 +35,22 @@ export type GstComponentLine = {
 };
 
 export type CalculateBillResponse = {
+  /** Route distance (km) used for delivery pricing; aligns with store→drop routing on server. */
+  distanceKm: number | null;
+  /** Route duration (minutes) from the same routing engine used for distance. */
+  durationMin?: number | null;
+  /** mapbox | osrm | haversine — which engine produced distanceKm. */
+  routingSource: "mapbox" | "osrm" | "haversine" | null;
+  /** True when Mapbox/OSRM unavailable and straight-line ETA was used. */
+  routingApproximate: boolean;
+  routeCached: boolean;
+  dropPostalCode: string | null;
+  /** Server-authoritative: whether delivery is serviceable for this store+drop. */
+  serviceable?: boolean;
+  /** Effective service radius used to compute `serviceable`. */
+  serviceRadiusKm?: number | null;
+  /** Reason when `serviceable=false`, for UI copy. */
+  unserviceableReason?: "out_of_range" | "store_inactive" | null;
   itemTotal: number;
   addonTotal: number;
   discountTotal: number;
@@ -108,9 +124,35 @@ export type CalculateBillPayload = {
   subscriptionOptIn?: boolean;
 };
 
+export type CheckoutOffersResponse = {
+  ok: true;
+  coupons: { code: string; discountType: string; description: string }[];
+  merchantOffers: { id: number; title: string; summary: string }[];
+  platformOffers: { id: number; name: string | null; offerKind: string; summary: string }[];
+};
+
 export const billingService = {
   async calculateBill(payload: CalculateBillPayload): Promise<CalculateBillResponse> {
     const { data } = await api.post<CalculateBillResponse>(`${BILLING_PREFIX}/calculate`, payload);
+    return data;
+  },
+
+  async getCheckoutOffers(params: {
+    merchantId: string;
+    addressId: string;
+    cartSubtotal: number;
+    serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
+    userSegment?: "NEW" | "EXISTING" | "ALL";
+  }): Promise<CheckoutOffersResponse> {
+    const { data } = await api.get<CheckoutOffersResponse>(`${BILLING_PREFIX}/checkout-offers`, {
+      params: {
+        merchantId: params.merchantId,
+        addressId: params.addressId,
+        cartSubtotal: params.cartSubtotal,
+        ...(params.serviceType != null ? { serviceType: params.serviceType } : {}),
+        ...(params.userSegment != null ? { userSegment: params.userSegment } : {}),
+      },
+    });
     return data;
   },
 };

@@ -6,9 +6,8 @@ import type { GeoHierarchyLevel } from "@/lib/geo/geo-shared";
 import { useGeoToggleMutation } from "@/store/api/geoAdminApi";
 import { ServiceSwitch } from "./ServiceSwitch";
 import { cn } from "@/lib/utils";
-import { IndianRupee, Layers, MapPin, PencilLine } from "lucide-react";
-import { formatGeoBaseFee } from "./geoFeeLabel";
-import { RateCardBadge } from "./RateCardBadge";
+import { IndianRupee, Layers, MapPin, PencilLine, Tag, Truck } from "lucide-react";
+import { formatGeoDeliverySlabPreview } from "./geoFeeLabel";
 
 const levelBadge: Record<string, string> = {
   state: "border-violet-200 bg-violet-50 text-violet-800",
@@ -28,6 +27,8 @@ export const ResultTable = React.memo(function ResultTable(props: {
   chainFor: GeoSearchRow | null;
   onChainFor: (row: GeoSearchRow | null) => void;
   onEditRow: (row: GeoSearchRow) => void;
+  onPlatformOfferMap?: (row: GeoSearchRow) => void;
+  onDeliverySlabs?: (row: GeoSearchRow) => void;
   onDataMutated?: () => void;
 }) {
   const { onDataMutated } = props;
@@ -118,11 +119,29 @@ export const ResultTable = React.memo(function ResultTable(props: {
                   <p className="mt-1 text-xs leading-relaxed text-slate-600" title={r.path}>
                     {r.path}
                   </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-1">
-                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Rider payout</span>
-                    <RateCardBadge service="food" detail={r.rider_rate_summaries?.food} />
-                    <RateCardBadge service="parcel" detail={r.rider_rate_summaries?.parcel} />
-                    <RateCardBadge service="ride" detail={r.rider_rate_summaries?.ride} />
+                  <div className="mt-2">
+                    <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Platform offers (effective)</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {(r.effective_platform_offers ?? []).length === 0 ? (
+                        <span className="text-[10px] text-slate-400">—</span>
+                      ) : (
+                        (r.effective_platform_offers ?? []).map((o) => (
+                          <span
+                            key={o.platform_offer_id}
+                            className="inline-flex max-w-full items-center gap-1 rounded-md border border-indigo-100 bg-indigo-50/80 px-1.5 py-0.5 font-mono text-[9px] text-indigo-950"
+                            title={o.offer_setup_summary}
+                          >
+                            <span className="font-bold">#{o.platform_offer_id}</span>
+                            <span className="truncate text-indigo-800/90">{o.service_type}</span>
+                            {o.is_inherited ? (
+                              <span className="shrink-0 rounded bg-amber-100 px-0.5 text-[8px] font-semibold text-amber-900">
+                                Inh
+                              </span>
+                            ) : null}
+                          </span>
+                        ))
+                      )}
+                    </div>
                   </div>
                   <p className="mt-2 font-mono text-[11px] text-slate-500">
                     Pincode: <span className="text-slate-800">{r.pincode ?? "—"}</span>
@@ -155,6 +174,28 @@ export const ResultTable = React.memo(function ResultTable(props: {
                       Pricing
                       <PencilLine className="h-3.5 w-3.5 opacity-70" aria-hidden />
                     </button>
+                    {props.onPlatformOfferMap ? (
+                      <button
+                        type="button"
+                        title="Map platform offers to this geo node"
+                        onClick={() => props.onPlatformOfferMap?.(r)}
+                        className="inline-flex h-9 items-center justify-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50/80 px-3 text-xs font-bold text-indigo-900 shadow-sm transition hover:border-indigo-400 hover:bg-white"
+                      >
+                        <Tag className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                        Map offers
+                      </button>
+                    ) : null}
+                    {props.onDeliverySlabs ? (
+                      <button
+                        type="button"
+                        title="Edit progressive delivery slabs for this geo node"
+                        onClick={() => props.onDeliverySlabs?.(r)}
+                        className="inline-flex h-9 items-center justify-center gap-1 rounded-xl border border-teal-200 bg-teal-50/70 px-3 text-xs font-bold text-teal-900 shadow-sm transition hover:border-teal-400 hover:bg-white"
+                      >
+                        <Truck className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                        Slabs
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -178,7 +219,7 @@ export const ResultTable = React.memo(function ResultTable(props: {
                         onToggle={() => void onServiceToggle(r, "food", !r.is_food_enabled)}
                       />
                       <span className="font-mono text-[8px] font-semibold tabular-nums text-slate-600">
-                        {formatGeoBaseFee(r.effective_food_base_fee)}
+                        {formatGeoDeliverySlabPreview(r.customer_food_delivery_slabs_preview)}
                       </span>
                     </div>
                     <div className="flex flex-col items-center gap-0.5">
@@ -190,7 +231,7 @@ export const ResultTable = React.memo(function ResultTable(props: {
                         onToggle={() => void onServiceToggle(r, "parcel", !r.is_parcel_enabled)}
                       />
                       <span className="font-mono text-[8px] font-semibold tabular-nums text-slate-600">
-                        {formatGeoBaseFee(r.effective_parcel_base_fee)}
+                        {formatGeoDeliverySlabPreview(r.customer_parcel_delivery_slabs_preview)}
                       </span>
                     </div>
                     <div className="flex flex-col items-center gap-0.5">
@@ -202,7 +243,7 @@ export const ResultTable = React.memo(function ResultTable(props: {
                         onToggle={() => void onServiceToggle(r, "ride", !r.is_ride_enabled)}
                       />
                       <span className="font-mono text-[8px] font-semibold tabular-nums text-slate-600">
-                        {formatGeoBaseFee(r.effective_ride_base_fee)}
+                        {formatGeoDeliverySlabPreview(r.customer_ride_delivery_slabs_preview)}
                       </span>
                     </div>
                   </div>

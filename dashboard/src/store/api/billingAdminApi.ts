@@ -84,7 +84,28 @@ export type BillingAdminDiscountRow = {
   used_count: number;
   is_active: boolean;
   is_hidden: boolean;
+  valid_from: string | null;
+  valid_until: string | null;
+  service_type: string;
+  offer_audience: string;
+  per_user_usage_limit: number | null;
   metadata: unknown;
+};
+
+export type BillingAdminDiscountCreateBody = {
+  code: string;
+  discount_type: string;
+  value_numeric?: number | null;
+  max_discount_cap?: number | null;
+  usage_limit?: number | null;
+  per_user_usage_limit?: number | null;
+  is_active?: boolean;
+  is_hidden?: boolean;
+  valid_from?: string | null;
+  valid_until?: string | null;
+  service_type?: string;
+  offer_audience?: string;
+  metadata?: unknown;
 };
 
 function errMsg(body: unknown): string {
@@ -99,6 +120,8 @@ const billingTags = {
   rulesList: { type: "Billing" as const, id: "RULES" },
   reference: { type: "Billing" as const, id: "REFERENCE" },
   taxConfigs: { type: "Billing" as const, id: "TAX_CONFIGS" },
+  platformOffers: { type: "Billing" as const, id: "PLATFORM_OFFERS" },
+  discounts: { type: "Billing" as const, id: "DISCOUNTS" },
   cond: (ruleId: number) => ({ type: "Billing" as const, id: `COND_${ruleId}` }),
 };
 
@@ -142,6 +165,8 @@ export type BillingAdminPlatformOfferRow = {
   name: string | null;
   service_type: string;
   offer_kind: string;
+  /** CUSTOMER | MERCHANT | RIDER — only CUSTOMER offers apply at customer checkout today. */
+  offer_audience: string;
   funding_mode: string;
   platform_share_pct: string;
   merchant_share_pct: string;
@@ -530,19 +555,18 @@ export const billingAdminApi = baseApi.injectEndpoints({
     getBillingDiscounts: build.query<BillingAdminDiscountRow[], void>({
       query: () => "/super-admin/billing/discounts",
       transformResponse: (res: { discounts?: BillingAdminDiscountRow[] }) => res.discounts ?? [],
-      providesTags: [billingTags.reference],
+      providesTags: [billingTags.discounts],
+      refetchOnFocus: false,
+      refetchOnMountOrArgChange: false,
     }),
 
-    createBillingDiscount: build.mutation<
-      BillingAdminDiscountRow,
-      { code: string; discount_type: string; value_numeric?: number | null; is_active?: boolean }
-    >({
+    createBillingDiscount: build.mutation<BillingAdminDiscountRow, BillingAdminDiscountCreateBody>({
       query: (body) => ({ url: "/super-admin/billing/discounts", method: "POST", body }),
       transformResponse: (res: { discount?: BillingAdminDiscountRow; error?: string }) => {
         if (!res?.discount) throw new Error(res?.error ?? errMsg(res));
         return res.discount;
       },
-      invalidatesTags: [billingTags.reference],
+      invalidatesTags: [billingTags.discounts],
     }),
 
     updateBillingDiscount: build.mutation<
@@ -558,7 +582,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
         if (!res?.discount) throw new Error(res?.error ?? errMsg(res));
         return res.discount;
       },
-      invalidatesTags: [billingTags.reference],
+      invalidatesTags: [billingTags.discounts],
     }),
 
     deleteBillingDiscount: build.mutation<void, number>({
@@ -566,7 +590,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
       transformResponse: (res: { error?: string } | undefined) => {
         if (res?.error) throw new Error(res.error);
       },
-      invalidatesTags: [billingTags.reference],
+      invalidatesTags: [billingTags.discounts],
     }),
 
     getMerchantBillingOverride: build.query<{ overrides: unknown } | null, number>({
@@ -640,9 +664,14 @@ export const billingAdminApi = baseApi.injectEndpoints({
       query: () => "/super-admin/billing/platform-offers",
       transformResponse: (res: { offers?: BillingAdminPlatformOfferRow[]; error?: string }) => {
         if (res?.error) throw new Error(res.error);
-        return res.offers ?? [];
+        return (res.offers ?? []).map((o) => ({
+          ...o,
+          offer_audience: String(o.offer_audience ?? "CUSTOMER").toUpperCase(),
+        }));
       },
-      providesTags: [billingTags.reference],
+      providesTags: [billingTags.platformOffers],
+      refetchOnFocus: false,
+      refetchOnMountOrArgChange: false,
     }),
 
     createBillingPlatformOffer: build.mutation<BillingAdminPlatformOfferRow, Record<string, unknown>>({
@@ -651,7 +680,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
         if (!res?.offer) throw new Error(res?.error ?? errMsg(res));
         return res.offer;
       },
-      invalidatesTags: [billingTags.reference],
+      invalidatesTags: [billingTags.platformOffers],
     }),
 
     updateBillingPlatformOffer: build.mutation<
@@ -667,7 +696,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
         if (!res?.offer) throw new Error(res?.error ?? errMsg(res));
         return res.offer;
       },
-      invalidatesTags: [billingTags.reference],
+      invalidatesTags: [billingTags.platformOffers],
     }),
 
     deleteBillingPlatformOffer: build.mutation<void, number>({
@@ -675,7 +704,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
       transformResponse: (res: { error?: string } | undefined) => {
         if (res?.error) throw new Error(res.error);
       },
-      invalidatesTags: [billingTags.reference],
+      invalidatesTags: [billingTags.platformOffers],
     }),
 
     simulateBilling: build.mutation<string, unknown>({
@@ -686,6 +715,7 @@ export const billingAdminApi = baseApi.injectEndpoints({
       }),
       transformResponse: (res: unknown) => JSON.stringify(res, null, 2),
     }),
+
   }),
   /** Allow HMR / duplicate module evaluation to register newer endpoints (e.g. charge-order). */
   overrideExisting: true,

@@ -26,6 +26,8 @@ import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { merchantService } from "@/services/merchant.service";
+import { addressService } from "@/services/address.service";
+import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import {
   fetchUserAppCategories,
   type UserAppCategoryItem,
@@ -169,6 +171,61 @@ export default function FoodMerchantsScreen() {
     requestPermissionAndFetch,
   } = useLocationStore();
   const debouncedCoords = useDebouncedCoords(coords, 400);
+  const { data: addresses = [] } = useQuery({
+    queryKey: ["addresses"],
+    queryFn: () => addressService.getAddresses(),
+    staleTime: 60 * 1000,
+  });
+  const { data: activeLocation } = useQuery({
+    queryKey: ["active-location"],
+    queryFn: () => addressService.getActiveLocation(),
+    staleTime: 0,
+  });
+
+  /**
+   * Canonical delivery anchor for merchant listing distance:
+   * - If user explicitly selected a pin, snap it to a saved address within 250m (same as checkout)
+   * - Else prefer backend "active location" (saved delivery address) over device GPS drift
+   * - Else fallback to current debounced coords
+   *
+   * This ensures distance labels stay consistent across: list → merchant page → checkout.
+   */
+  const merchantsAnchorCoords = useMemo(() => {
+    if (
+      locationSource === "selected" &&
+      debouncedCoords?.latitude != null &&
+      debouncedCoords.longitude != null &&
+      addresses.length > 0
+    ) {
+      const resolved = resolveCheckoutDeliveryAddress(
+        addresses,
+        debouncedCoords,
+        locationSource,
+        activeLocation
+      );
+      if (resolved) {
+        return { latitude: resolved.latitude, longitude: resolved.longitude };
+      }
+    }
+
+    if (
+      activeLocation?.latitude != null &&
+      activeLocation?.longitude != null &&
+      locationSource !== "selected"
+    ) {
+      return { latitude: activeLocation.latitude, longitude: activeLocation.longitude };
+    }
+
+    return debouncedCoords;
+  }, [
+    locationSource,
+    debouncedCoords?.latitude,
+    debouncedCoords?.longitude,
+    addresses,
+    activeLocation?.latitude,
+    activeLocation?.longitude,
+  ]);
+
   const [vegOnly, setVegOnly] = useState(false);
   const [openNow, setOpenNow] = useState(true);
   const [sortBy, setSortBy] = useState<SortOption>("default");
@@ -182,20 +239,21 @@ export default function FoodMerchantsScreen() {
   const { data: merchantsData, isLoading, isFetching, refetch } = useQuery({
     queryKey: [
       "merchants",
-      debouncedCoords?.latitude,
-      debouncedCoords?.longitude,
+      merchantsAnchorCoords?.latitude,
+      merchantsAnchorCoords?.longitude,
       vegOnly,
     ],
     queryFn: () =>
       merchantService.getMerchants({
         limit: 20,
-        ...(debouncedCoords?.latitude != null && debouncedCoords?.longitude != null
-          ? { lat: debouncedCoords.latitude, lng: debouncedCoords.longitude }
+        ...(merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null
+          ? { lat: merchantsAnchorCoords.latitude, lng: merchantsAnchorCoords.longitude }
           : {}),
         vegOnly,
+        distanceMode: "road",
       }),
     // Industry-standard: only fetch restaurants once we have an active location (GPS or user-selected).
-    enabled: debouncedCoords?.latitude != null && debouncedCoords?.longitude != null,
+    enabled: merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
     staleTime: 0,
     refetchOnWindowFocus: true,
   });

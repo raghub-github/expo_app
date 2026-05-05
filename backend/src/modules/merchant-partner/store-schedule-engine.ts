@@ -67,6 +67,27 @@ const SCHEDULE_END_PROMPT_GRACE_MS = 5 * 60 * 1000; // X minutes fallback → AU
 const UPDATED_BY_SYSTEM = "system";
 const UPDATED_BY_ID_SYSTEM: number | null = null;
 
+/** True when a retry may succeed (network blip, pooler cold start). */
+function isTransientPostgresConnectionError(err: unknown): boolean {
+  if (err == null || typeof err !== "object") return false;
+  const o = err as Record<string, unknown>;
+  const code = String(o.code ?? o.errno ?? "");
+  if (code === "CONNECT_TIMEOUT" || code === "ETIMEDOUT" || code === "ECONNRESET" || code === "EPIPE") {
+    return true;
+  }
+  const message = String(o.message ?? err);
+  return (
+    message.includes("CONNECT_TIMEOUT") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("socket hang up")
+  );
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Emit store_status_changed: log and insert into merchant_store_status_change. */
 export async function emitStoreStatusChanged(
   sql: ReturnType<typeof getSql>,
@@ -750,11 +771,35 @@ type StoreRow = {
 };
 
 export async function runStoreScheduleTick(log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }): Promise<void> {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await runStoreScheduleTickOnce(log);
+      return;
+    } catch (err) {
+      const willRetry = attempt < maxAttempts && isTransientPostgresConnectionError(err);
+      if (willRetry) {
+        log.info(
+          { attempt, maxAttempts, err },
+          "store_schedule_tick_transient_db_error_retry"
+        );
+        await sleepMs(800 * attempt);
+        continue;
+      }
+      log.error({ err }, "store_schedule_tick_failed");
+      return;
+    }
+  }
+}
+
+async function runStoreScheduleTickOnce(
+  log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
+): Promise<void> {
   const sql = getSql();
   try {
     const now = new Date();
 
-    const storeRows = await sql`
+  const storeRows = await sql`
       SELECT
         ms.id AS store_id,
         ms.is_accepting_orders,
@@ -901,7 +946,6 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
           }
           continue;
         }
-
         // 5. Forced lock
         if (blockAutoOpen) {
           if (currentlyOpen) {
@@ -955,14 +999,14 @@ export async function runStoreScheduleTick(log: { info: (o: object, msg?: string
               WHERE store_id = ${storeId}
                 AND (manual_close_until IS NULL OR manual_close_until < NOW())
             `;
-          }
         }
-      } catch (e) {
-        log.error({ storeId, err: e }, "store_schedule_tick_update_failed");
       }
+    } catch (e) {
+      log.error({ storeId, err: e }, "store_schedule_tick_update_failed");
     }
+  }
   } catch (err) {
-    log.error({ err }, "store_schedule_tick_failed");
+    log.error({ err }, "store_schedule_tick_query_failed");
   }
 }
 

@@ -1,19 +1,27 @@
 /**
  * Location global state - permission, coords, reverse-geocoded address.
  *
- * Industry-standard behavior (Zomato/Swiggy-style):
+ * Behavior:
  * - During a single app session, user can select a different location and we use it.
- * - On app restart, we DO NOT restore any previously selected location.
- * - No persistence to AsyncStorage/local storage. Everything is in-memory only.
+ * - On app restart, we restore the last explicitly selected location (saved address / pin / recent),
+ *   so home header does not jump back to an older/previous location.
  */
 
 import { create } from "zustand";
 import * as Location from "expo-location";
 import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /** Avoid indefinite hang from getCurrentPositionAsync (common with Highest accuracy indoors). */
 const GPS_ATTEMPT_MS = 14_000;
 const GEOCODE_MS = 10_000;
+const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
+
+type PersistedSelectedLocation = {
+  coords: { latitude: number; longitude: number };
+  address: ReverseGeocodeResult;
+  savedAt: number;
+};
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -89,6 +97,8 @@ type LocationState = {
   /** True after initial in-memory bootstrap attempt (success or empty). */
   locationHydrated: boolean;
   showPermissionModal: boolean;
+  hydrate: () => Promise<void>;
+  clearPersistedSelection: () => Promise<void>;
   requestPermissionAndFetch: (options?: { forceDevice?: boolean }) => Promise<void>;
   setShowPermissionModal: (show: boolean) => void;
   setAddress: (address: ReverseGeocodeResult | null) => void;
@@ -110,6 +120,37 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   locationHydrated: false,
   showPermissionModal: false,
 
+  hydrate: async () => {
+    if (get().locationHydrated) return;
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? (JSON.parse(raw) as PersistedSelectedLocation) : null;
+      if (
+        parsed &&
+        parsed.coords &&
+        typeof parsed.coords.latitude === "number" &&
+        typeof parsed.coords.longitude === "number" &&
+        parsed.address &&
+        typeof parsed.address === "object"
+      ) {
+        set({
+          coords: parsed.coords,
+          address: parsed.address,
+          locationSource: "selected",
+          locationHydrated: true,
+        });
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    set({ locationHydrated: true });
+  },
+
+  clearPersistedSelection: async () => {
+    AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+  },
+
   setShowPermissionModal: (show) => set({ showPermissionModal: show }),
 
   setAddress: (address) => set({ address }),
@@ -117,12 +158,25 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   setAddressAndCoords: (address, coords, meta) => {
     const source: LocationSource = meta?.source ?? "selected";
     set({ address, coords, locationSource: source });
+    if (source === "selected") {
+      const payload: PersistedSelectedLocation = {
+        coords,
+        address,
+        savedAt: Date.now(),
+      };
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload)).catch(() => {});
+    }
   },
 
   requestPermissionAndFetch: async (options) => {
     const forceDevice = options?.forceDevice === true;
-    // Mark hydrated on first attempt (no persistence to restore).
+    // Mark hydrated on first attempt; hydration may also come from AsyncStorage.
     if (!get().locationHydrated) set({ locationHydrated: true });
+
+    // If user explicitly selected a location, do not override it with GPS unless forced.
+    if (!forceDevice && get().locationSource === "selected" && get().coords && get().address) {
+      return;
+    }
 
     set({ loading: true, error: null });
     try {

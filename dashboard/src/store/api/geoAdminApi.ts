@@ -8,6 +8,15 @@ import type {
   RiderRateCardRow,
 } from "@/lib/geo/geo-shared";
 
+export type GeoPlatformOfferBindingRow = {
+  id: string;
+  geo_level: string;
+  geo_ref_id: string;
+  platform_offer_id: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type { GeoHierarchyLevel };
 
 export type GeoChildrenQuery = {
@@ -289,6 +298,37 @@ export const geoAdminApi = baseApi.injectEndpoints({
         },
       }),
     }),
+
+    geoPlatformOfferBindings: build.query<
+      { bindings: GeoPlatformOfferBindingRow[] },
+      { level: Exclude<GeoHierarchyLevel, "root">; refId: string }
+    >({
+      query: (arg) => ({
+        url: "/super-admin/geo/platform-offer-bindings",
+        params: { level: arg.level, refId: arg.refId },
+      }),
+      providesTags: (_r, _e, arg) => [{ type: "Geo", id: `PO_BIND_${arg.refId}` }],
+    }),
+
+    geoPlatformOfferBindingCreate: build.mutation<
+      { binding: GeoPlatformOfferBindingRow },
+      { level: Exclude<GeoHierarchyLevel, "root">; refId: string; platform_offer_id: number }
+    >({
+      query: (body) => ({
+        url: "/super-admin/geo/platform-offer-bindings",
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: [{ type: "Geo" }],
+    }),
+
+    geoPlatformOfferBindingDelete: build.mutation<{ ok: boolean }, { id: number }>({
+      query: ({ id }) => ({
+        url: `/super-admin/geo/platform-offer-bindings/${id}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: [{ type: "Geo" }],
+    }),
   }),
 });
 
@@ -310,4 +350,7 @@ export const {
   useRiderRateCardsByLevelQuery,
   useRiderRateCardUpsertMutation,
   useLazyRiderRateResolveQuery,
+  useGeoPlatformOfferBindingsQuery,
+  useGeoPlatformOfferBindingCreateMutation,
+  useGeoPlatformOfferBindingDeleteMutation,
 } = geoAdminApi;

@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSuperAdminApi } from "@/lib/super-admin-api";
+import { platformOfferKindSchema } from "@/lib/billing/platformOfferKinds";
+import { validatePlatformOfferKindFieldsForApi } from "@/lib/billing/platformOfferKindUi";
 import { insertPlatformOffer, listPlatformOffers } from "@/lib/db/operations/billing-advanced";
 
 export const runtime = "nodejs";
 
+const offerAudienceSchema = z.enum(["CUSTOMER", "MERCHANT", "RIDER"]);
+
 const postSchema = z.object({
   name: z.string().optional().nullable(),
   service_type: z.string().optional(),
-  offer_kind: z.string().optional(),
+  offer_kind: platformOfferKindSchema.optional(),
+  offer_audience: offerAudienceSchema.optional(),
   funding_mode: z.string().optional(),
   platform_share_pct: z.number().min(0).max(100).optional(),
   merchant_share_pct: z.number().min(0).max(100).optional(),
@@ -47,6 +52,18 @@ const postSchema = z.object({
       message: "platform_share_pct + merchant_share_pct must equal 100",
       path: ["platform_share_pct"],
     });
+  }
+  const kindErr = validatePlatformOfferKindFieldsForApi({
+    offer_kind: d.offer_kind,
+    buy_qty: d.buy_qty,
+    get_qty: d.get_qty,
+    conditions: d.conditions,
+    discount_type: d.discount_type,
+    value_numeric: d.value_numeric,
+    delivery_discount_type: d.delivery_discount_type,
+  });
+  if (kindErr) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: kindErr, path: ["offer_kind"] });
   }
 });
 

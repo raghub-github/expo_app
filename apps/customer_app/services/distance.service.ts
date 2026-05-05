@@ -36,3 +36,58 @@ export async function getRoute(params: {
   });
   return data;
 }
+
+/**
+ * Canonical store delivery quote — single source of truth for:
+ *   distance_km, duration_min, delivery_fee, delivery_gst, final_delivery_fee, serviceable
+ *
+ * Use this on EVERY screen that displays distance/ETA/delivery fee for a store:
+ *   - home/store listing
+ *   - search result
+ *   - store details
+ *   - cart
+ *   - checkout
+ *   - order details
+ *   - live tracking
+ *
+ * Pass `addressId` for the customer's selected delivery address (canonical),
+ * or `drop` coords for guest/list-before-address flows. Both routes hit the same
+ * backend engine so numbers stay identical across pages.
+ */
+export type StoreDeliveryQuote = {
+  store_id: string;
+  actor: "customer" | "rider";
+  distance_km: number;
+  duration_min: number;
+  delivery_fee: number;
+  delivery_gst: number;
+  final_delivery_fee: number;
+  serviceable: boolean;
+  unserviceable_reason?: "out_of_range" | "store_inactive" | null;
+  service_radius_km: number;
+  source: "mapbox" | "osrm" | "haversine";
+  cached: boolean;
+  approximate: boolean;
+  pricing_engine: "slab_geo" | "fallback_per_km";
+  slab_quote?: unknown;
+};
+
+export async function getStoreDeliveryQuote(params: {
+  storeId: string;
+  addressId?: number | null;
+  drop?: { lat: number; lng: number; pincode?: string | null; city?: string | null } | null;
+  actor?: "customer" | "rider";
+  serviceType?: "FOOD" | "PARCEL" | "RIDE";
+  skipCache?: boolean;
+}): Promise<StoreDeliveryQuote> {
+  const body: Record<string, unknown> = {
+    storeId: params.storeId,
+    actor: params.actor ?? "customer",
+    serviceType: params.serviceType ?? "FOOD",
+    skipCache: params.skipCache ?? false,
+  };
+  if (params.addressId != null) body.addressId = params.addressId;
+  if (params.drop) body.drop = params.drop;
+  const { data } = await api.post<StoreDeliveryQuote>(`${DISTANCE_PREFIX}/store-quote`, body);
+  return data;
+}

@@ -6,7 +6,7 @@ import type { GeoChildRow, GeoHierarchyLevel, GeoSearchRow } from "@/lib/geo/geo
 import { ServiceSwitch } from "./ServiceSwitch";
 import { cn } from "@/lib/utils";
 import { IndianRupee, Loader2, X } from "lucide-react";
-import { formatGeoBaseFee } from "./geoFeeLabel";
+import { formatGeoDeliverySlabPreview } from "./geoFeeLabel";
 
 const levelBadge: Record<string, string> = {
   state: "border-violet-200 bg-violet-50 text-violet-800",
@@ -132,6 +132,30 @@ export const SearchChainPanel = React.memo(function SearchChainPanel(props: {
                     <p className="mb-2 truncate text-[10px] text-slate-500" title={node.path}>
                       {node.path}
                     </p>
+                    <div className="mb-2">
+                      <p className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Platform offers (effective)</p>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {(node.effective_platform_offers ?? []).length === 0 ? (
+                          <span className="text-[10px] text-slate-400">—</span>
+                        ) : (
+                          (node.effective_platform_offers ?? []).map((o) => (
+                            <span
+                              key={o.platform_offer_id}
+                              className="inline-flex max-w-full items-center gap-1 rounded border border-indigo-100 bg-indigo-50/70 px-1.5 py-0.5 font-mono text-[9px] text-indigo-950"
+                              title={o.offer_setup_summary}
+                            >
+                              <span className="font-bold">#{o.platform_offer_id}</span>
+                              <span className="truncate">{o.service_type}</span>
+                              {o.is_inherited ? (
+                                <span className="shrink-0 rounded bg-amber-100 px-0.5 text-[8px] font-semibold text-amber-900">
+                                  Inh
+                                </span>
+                              ) : null}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    </div>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div
                         className="flex items-end gap-2 rounded-lg border border-slate-200/70 bg-slate-50/50 px-2 py-1.5"
@@ -149,7 +173,7 @@ export const SearchChainPanel = React.memo(function SearchChainPanel(props: {
                             }
                           />
                           <span className="font-mono text-[8px] font-semibold tabular-nums text-slate-600">
-                            {formatGeoBaseFee(node.effective_food_base_fee)}
+                            {formatGeoDeliverySlabPreview(node.customer_food_delivery_slabs_preview)}
                           </span>
                         </div>
                         <div className="flex flex-col items-center gap-0.5">
@@ -163,7 +187,7 @@ export const SearchChainPanel = React.memo(function SearchChainPanel(props: {
                             }
                           />
                           <span className="font-mono text-[8px] font-semibold tabular-nums text-slate-600">
-                            {formatGeoBaseFee(node.effective_parcel_base_fee)}
+                            {formatGeoDeliverySlabPreview(node.customer_parcel_delivery_slabs_preview)}
                           </span>
                         </div>
                         <div className="flex flex-col items-center gap-0.5">
@@ -177,7 +201,7 @@ export const SearchChainPanel = React.memo(function SearchChainPanel(props: {
                             }
                           />
                           <span className="font-mono text-[8px] font-semibold tabular-nums text-slate-600">
-                            {formatGeoBaseFee(node.effective_ride_base_fee)}
+                            {formatGeoDeliverySlabPreview(node.customer_ride_delivery_slabs_preview)}
                           </span>
                         </div>
                       </div>

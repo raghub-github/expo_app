@@ -25,7 +25,7 @@ import { orderRoutes } from "./modules/orders/order.routes.js";
 import { billingModule } from "./modules/billing/billing.routes.js";
 import { addressRoutes } from "./modules/addresses/address.routes.js";
 import { locationSearchRoutes } from "./modules/location-search/location-search.routes.js";
-import { distanceRoutes } from "./modules/distance/distance.routes.js";
+import { distanceRoutes, distanceModule } from "./modules/distance/distance.routes.js";
 import { geoRoutes } from "./modules/geo/geo.routes.js";
 import { deliveryRateCardModule } from "./modules/delivery-rate-card/deliveryRateCard.routes.js";
 import { plansRoutes } from "./modules/plans/plans.routes.js";
@@ -36,6 +36,8 @@ import { merchantMenuRoutes } from "./modules/merchant-menu/merchant-menu.routes
 import { pushRoutes } from "./modules/push/push.routes.js";
 import { errorHandler } from "./plugins/errorHandler.js";
 import { requestLogger } from "./plugins/requestLogger.js";
+import { getDb } from "./db/client.js";
+import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
 
 loadEnv();
 const env = getEnv();
@@ -261,12 +263,16 @@ await app.register(merchantReportRoutes, { prefix: "/v1/merchants" });
 await app.register(bookmarkRoutes, { prefix: "/v1/bookmarks" });
 await app.register(billingModule, { prefix: "/v1/billing" });
 await app.register(orderRoutes, { prefix: "/v1/orders" });
-await app.register(distanceRoutes, { prefix: "/v1/distance" });
+await app.register(distanceModule, { prefix: "/v1/distance" });
+// distanceRoutes kept exported for other test harnesses; register is via distanceModule above.
+void distanceRoutes;
+await app.register((await import("./modules/rider-payout/riderPayout.routes.js")).riderPayoutRoutes, { prefix: "/v1/rider-payout" });
 await app.register(geoRoutes, { prefix: "/v1" });
 await app.register(deliveryRateCardModule, { prefix: "/v1/delivery-fee" });
 await app.register(pushRoutes, { prefix: "/v1/push" });
 
 let storeScheduleInterval: ReturnType<typeof setInterval> | null = null;
+let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = null;
 let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 
 // Graceful shutdown
@@ -275,6 +281,10 @@ const gracefulShutdown = async (signal: string) => {
   if (storeScheduleInterval) {
     clearInterval(storeScheduleInterval);
     storeScheduleInterval = null;
+  }
+  if (pendingPaymentReconcilerInterval) {
+    clearInterval(pendingPaymentReconcilerInterval);
+    pendingPaymentReconcilerInterval = null;
   }
   if (orderAcceptanceTimeoutInterval) {
     clearInterval(orderAcceptanceTimeoutInterval);
@@ -317,21 +327,32 @@ try {
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
   app.log.info({ port: env.PORT, env: env.NODE_ENV }, "Server started successfully");
 
-  // Store Auto Schedule Engine: cold start + every 30s
-  const scheduleIntervalMs = 30_000;
-  await runStoreScheduleTick(app.log);
-  storeScheduleInterval = setInterval(() => {
+  if (env.DISABLE_BACKGROUND_JOBS) {
+    app.log.warn("Background jobs disabled via DISABLE_BACKGROUND_JOBS");
+  } else {
+    // Store Auto Schedule Engine: cold start + every 30s
+    const scheduleIntervalMs = 30_000;
     runStoreScheduleTick(app.log).catch((err) => app.log.error({ err }, "store_schedule_tick"));
-  }, scheduleIntervalMs);
+    storeScheduleInterval = setInterval(() => {
+      runStoreScheduleTick(app.log).catch((err) => app.log.error({ err }, "store_schedule_tick"));
+    }, scheduleIntervalMs);
 
-  // Order acceptance auto-cancel: cold start + every 15s
-  const orderAcceptanceIntervalMs = 15_000;
-  await runOrderAcceptanceTimeoutTick(app.log);
-  orderAcceptanceTimeoutInterval = setInterval(() => {
-    runOrderAcceptanceTimeoutTick(app.log).catch((err) =>
-      app.log.error({ err }, "order_acceptance_timeout_tick")
+    const paymentReconcilerIntervalMs = env.PAYMENT_RECONCILER_INTERVAL_SEC * 1000;
+    reconcilePendingPayments(getDb()).catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
+    pendingPaymentReconcilerInterval = setInterval(() => {
+      reconcilePendingPayments(getDb()).catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
+    }, paymentReconcilerIntervalMs);
+    app.log.info(
+      { intervalMs: paymentReconcilerIntervalMs, ttlMs: env.PAYMENT_CONFIRM_WINDOW_MS, lateCapturePolicy: env.PAYMENT_LATE_CAPTURE_POLICY },
+      "payment reconciler started"
     );
-  }, orderAcceptanceIntervalMs);
+    // Order acceptance auto-cancel: cold start + every 15s
+    const orderAcceptanceIntervalMs = 15_000;
+    await runOrderAcceptanceTimeoutTick(app.log);
+    orderAcceptanceTimeoutInterval = setInterval(() => {
+      runOrderAcceptanceTimeoutTick(app.log).catch((err) => app.log.error({ err }, "order_acceptance_timeout_tick"));
+    }, orderAcceptanceIntervalMs);
+  }
 } catch (error) {
   app.log.error({ error }, "Failed to start server");
   process.exit(1);

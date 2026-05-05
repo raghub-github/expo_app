@@ -6,7 +6,7 @@ import { getDb } from "../../db/client.js";
 import { customers } from "../../db/schema.js";
 import { auth } from "../../plugins/auth.js";
 import { normalizeOrderItems } from "../orders/orderNormalizer.js";
-import { computeBillForOrder } from "./billing.service.js";
+import { computeBillForOrder, listCheckoutBillOffers } from "./billing.service.js";
 import type { BillingResult } from "./types.js";
 
 const addonSchema = z.object({
@@ -27,6 +27,14 @@ const itemSchema = z.object({
   itemSnapshot: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
+const checkoutOffersQuerySchema = z.object({
+  merchantId: z.string().min(1),
+  addressId: z.coerce.number().int().positive(),
+  cartSubtotal: z.coerce.number().nonnegative().optional().default(0),
+  serviceType: z.enum(["FOOD", "PARCEL", "RIDE", "ALL"]).optional(),
+  userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
+});
+
 const calculateBodySchema = z.object({
   merchantId: z.string().min(1),
   items: z.array(itemSchema).min(1),
@@ -42,6 +50,8 @@ const calculateBodySchema = z.object({
   cityName: z.string().optional().nullable(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
   subscriptionOptIn: z.boolean().optional(),
+  checkoutAudience: z.enum(["CUSTOMER", "MERCHANT", "RIDER"]).optional(),
+  couponRedemptionsByUser: z.number().int().nonnegative().optional(),
 });
 
 function isSimRequest(req: { headers: Record<string, string | string[] | undefined> }): boolean {
@@ -61,9 +71,58 @@ function mapGstLine(g: BillingResult["gst_components"]["items"]) {
   };
 }
 
-function mapBillingToResponse(b: BillingResult) {
+function traceFromSnapshot(snap: Record<string, unknown> | undefined) {
+  if (!snap) {
+    return {
+      distanceKm: null as number | null,
+      durationMin: null as number | null,
+      routingSource: null as "mapbox" | "osrm" | "haversine" | null,
+      routingApproximate: false,
+      routeCached: false,
+      dropPostalCode: null as string | null,
+      serviceable: true,
+      serviceRadiusKm: null as number | null,
+      unserviceableReason: null as "out_of_range" | "store_inactive" | null,
+    };
+  }
+  const d = snap.distanceKm;
+  const distanceKm = typeof d === "number" && Number.isFinite(d) ? d : null;
+  const dm = snap.durationMin;
+  const durationMin = typeof dm === "number" && Number.isFinite(dm) ? dm : null;
+  const rs = snap.routingSource;
+  const routingSource =
+    rs === "mapbox" || rs === "osrm" || rs === "haversine" ? rs : null;
+  const sr = snap.serviceRadiusKm;
+  const serviceRadiusKm = typeof sr === "number" && Number.isFinite(sr) ? sr : null;
+  const ur = snap.unserviceableReason;
+  const unserviceableReason =
+    ur === "out_of_range" || ur === "store_inactive" ? (ur as "out_of_range" | "store_inactive") : null;
+  return {
+    distanceKm,
+    durationMin,
+    routingSource,
+    routingApproximate: snap.routingApproximate === true,
+    routeCached: snap.routeCached === true,
+    dropPostalCode:
+      typeof snap.dropPostalCode === "string" && snap.dropPostalCode.trim() !== ""
+        ? snap.dropPostalCode.trim()
+        : null,
+    serviceable: snap.serviceable === false ? false : true,
+    serviceRadiusKm,
+    unserviceableReason,
+  };
+}
+
+function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknown>) {
+  const trace = traceFromSnapshot(snapshot);
   const gc = b.gst_components;
   return {
+    ...trace,
+    deliveryPricingEngine:
+      snapshot && typeof snapshot.deliveryPricingEngine === "string"
+        ? (snapshot.deliveryPricingEngine as string)
+        : null,
+    deliverySlabQuote: snapshot?.deliverySlabQuote,
     itemTotal: b.item_total,
     addonTotal: b.addon_total,
     discountTotal: b.discount_total,
@@ -135,6 +194,17 @@ export async function billingRoutes(app: FastifyInstance) {
         body: calculateBodySchema,
         response: {
           200: z.object({
+            distanceKm: z.number().nullable(),
+            durationMin: z.number().nullable(),
+            routingSource: z.enum(["mapbox", "osrm", "haversine"]).nullable(),
+            routingApproximate: z.boolean(),
+            routeCached: z.boolean(),
+            dropPostalCode: z.string().nullable(),
+            serviceable: z.boolean(),
+            serviceRadiusKm: z.number().nullable(),
+            unserviceableReason: z.enum(["out_of_range", "store_inactive"]).nullable(),
+            deliveryPricingEngine: z.string().nullable().optional(),
+            deliverySlabQuote: z.any().optional(),
             itemTotal: z.number(),
             addonTotal: z.number(),
             discountTotal: z.number(),
@@ -243,11 +313,13 @@ export async function billingRoutes(app: FastifyInstance) {
           cityName: body.cityName ?? null,
           userSegment: body.userSegment,
           subscriptionOptIn: body.subscriptionOptIn,
+          checkoutAudience: body.checkoutAudience,
+          couponRedemptionsByUser: body.couponRedemptionsByUser,
         });
         if (!result.ok) {
           return reply.status(400).send({ error: result.code, message: result.message });
         }
-        return reply.send(mapBillingToResponse(result.billing));
+        return reply.send(mapBillingToResponse(result.billing, result.snapshot as Record<string, unknown>));
       }
 
       const sub = req.auth?.sub;
@@ -288,13 +360,87 @@ export async function billingRoutes(app: FastifyInstance) {
         cityName: body.cityName ?? null,
         userSegment: body.userSegment,
         subscriptionOptIn: body.subscriptionOptIn,
+        checkoutAudience: body.checkoutAudience,
+        couponRedemptionsByUser: body.couponRedemptionsByUser,
       });
 
       if (!result.ok) {
         return reply.status(400).send({ error: result.code, message: result.message });
       }
 
-      return reply.send(mapBillingToResponse(result.billing));
+      return reply.send(mapBillingToResponse(result.billing, result.snapshot as Record<string, unknown>));
+    }
+  );
+
+  app.get(
+    "/checkout-offers",
+    {
+      schema: {
+        querystring: checkoutOffersQuerySchema,
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            coupons: z.array(
+              z.object({
+                code: z.string(),
+                discountType: z.string(),
+                description: z.string(),
+              })
+            ),
+            merchantOffers: z.array(
+              z.object({
+                id: z.number(),
+                title: z.string(),
+                summary: z.string(),
+              })
+            ),
+            platformOffers: z.array(
+              z.object({
+                id: z.number(),
+                name: z.string().nullable(),
+                offerKind: z.string(),
+                summary: z.string(),
+              })
+            ),
+          }),
+          400: z.object({ error: z.string(), message: z.string() }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+
+      const q = req.query as z.infer<typeof checkoutOffersQuerySchema>;
+      const db = getDb();
+
+      const [customerRow] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.customerId, sub))
+        .limit(1);
+      const customerPk = customerRow?.id ?? null;
+      if (customerPk == null) {
+        return reply.status(403).send({ error: "Customer not found" });
+      }
+
+      const result = await listCheckoutBillOffers(db, {
+        customerId: Number(customerPk),
+        merchantId: q.merchantId,
+        addressId: q.addressId,
+        cartSubtotal: q.cartSubtotal,
+        serviceType: q.serviceType,
+        userSegment: q.userSegment,
+      });
+
+      if (!result.ok) {
+        return reply.status(400).send({ error: result.code, message: result.message });
+      }
+
+      return reply.send(result);
     }
   );
 }

@@ -58,6 +58,7 @@ export default function RootLayout() {
   const hydrateCart = useCartStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
+  const hydrateLocation = useLocationStore((s) => s.hydrate);
 
   useEffect(() => {
     hydrateAuth();
@@ -65,12 +66,16 @@ export default function RootLayout() {
     hydrateLanguage();
   }, [hydrateAuth, hydrateCart, hydrateLanguage]);
 
-  // Zomato/Swiggy-style: on every cold app start, always fetch fresh GPS location.
-  // No persistence/restore of previously selected locations.
   useEffect(() => {
     if (!hydrated || !cartHydrated) return;
-    void requestPermissionAndFetch({ forceDevice: true });
-  }, [hydrated, cartHydrated, requestPermissionAndFetch]);
+    // First restore last user-selected location (fast header paint), then fallback to GPS only when nothing exists.
+    void (async () => {
+      await hydrateLocation();
+      const { locationSource, coords, address } = useLocationStore.getState();
+      if (locationSource === "selected" && coords && address) return;
+      await requestPermissionAndFetch({ forceDevice: true });
+    })();
+  }, [hydrated, cartHydrated, hydrateLocation, requestPermissionAndFetch]);
 
   const onLayoutRootView = useCallback(() => {
     if (fontsLoaded && hydrated && cartHydrated) {
@@ -151,7 +156,7 @@ function SessionRevokedHandler() {
     setOnSessionRevoked(() => {
       void useAuthStore.getState().logout().then(() => router.replace("/(auth)/login"));
     });
-    return () => setOnSessionRevoked(null);
+    return () => setOnSessionRevoked(() => {});
   }, [router]);
   return null;
 }
@@ -200,12 +205,12 @@ function LocationPermissionRealtimeSync() {
 }
 
 function LocationModalWrapper() {
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const showPermissionModal = useLocationStore((s) => s.showPermissionModal);
   const setShowPermissionModal = useLocationStore((s) => s.setShowPermissionModal);
   const isAuth = segments[0] === "(auth)";
   const isOnboardingProfilePage =
-    segments[0] === "(onboarding)" && segments[1] !== "permissions";
+    segments[0] === "(onboarding)" && (segments[1] ?? "") !== "permissions";
   const canShowLocationModal = !isAuth && !isOnboardingProfilePage;
   return (
     <LocationPermissionModal

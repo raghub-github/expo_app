@@ -57,6 +57,13 @@ export type CreateOrderItem = {
   itemSnapshot?: Record<string, unknown> | null;
 };
 
+/** Mirrors backend checkout_metadata: leave-at-door, free-text notes, subscription opt-in, etc. */
+export type CheckoutMetadataPayload = {
+  leaveAtDoor?: boolean;
+  deliveryInstructions?: string;
+  subscriptionOptIn?: boolean;
+} & Record<string, unknown>;
+
 export type CreateOrderPayload = {
   merchantId: string;
   merchantParentId?: string | number;
@@ -73,13 +80,22 @@ export type CreateOrderPayload = {
   pickupLon?: number;
   couponCode?: string | null;
   subscriptionOptIn?: boolean;
+  checkoutMetadata?: CheckoutMetadataPayload;
 };
 
 /** Payment-first: create pending order (lock cart). Returns pendingId + amount in paise for Razorpay. */
 export type CreatePendingPayload = Omit<
   CreateOrderPayload,
   "razorpayOrderId" | "razorpayPaymentId" | "razorpaySignature"
->;
+> & {
+  /**
+   * Optional idempotency key. When provided, a second call from the same
+   * customer with the same key returns the existing pendingId (prevents
+   * duplicate pending orders on double-tap / retry). Usually derived once per
+   * checkout attempt and reused for retries until success / cancel.
+   */
+  idempotencyKey?: string | null;
+};
 
 export type CreatePendingResponse = {
   pendingId: string;
@@ -102,6 +118,16 @@ export type FinalizeOrderResponse = {
   createdAt: string;
 };
 
+export type PendingOrderStatusResponse = {
+  pendingId: string;
+  paymentState: string;
+  finalized: boolean;
+  orderId: string | null;
+  refundStatus: string | null;
+  paymentConfirmBy: string | null;
+  message?: string | null;
+};
+
 export const orderService = {
   /** Legacy: single-call create (payment params optional). Prefer createPending + finalize for reliability. */
   async createOrder(payload: CreateOrderPayload): Promise<OrderDetail> {
@@ -110,12 +136,25 @@ export const orderService = {
   },
 
   async createPendingOrder(payload: CreatePendingPayload): Promise<CreatePendingResponse> {
-    const { data } = await api.post<CreatePendingResponse>(`${ORDERS_PREFIX}/pending`, payload);
+    const { idempotencyKey, ...body } = payload;
+    const headers: Record<string, string> = {};
+    if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+    const { data } = await api.post<CreatePendingResponse>(
+      `${ORDERS_PREFIX}/pending`,
+      // Also echo idempotencyKey in body for servers / proxies that strip it.
+      idempotencyKey ? { ...body, idempotencyKey } : body,
+      Object.keys(headers).length ? { headers } : undefined
+    );
     return data;
   },
 
   async finalizeOrder(payload: FinalizeOrderPayload): Promise<FinalizeOrderResponse> {
     const { data } = await api.post<FinalizeOrderResponse>(`${ORDERS_PREFIX}/finalize`, payload);
+    return data;
+  },
+
+  async getPendingOrderStatus(pendingId: string): Promise<PendingOrderStatusResponse> {
+    const { data } = await api.get<PendingOrderStatusResponse>(`${ORDERS_PREFIX}/pending/${pendingId}`);
     return data;
   },
 
