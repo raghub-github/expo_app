@@ -97,6 +97,8 @@ export function OutOfStockModal({
   // Reset defaults whenever sheet opens.
   useEffect(() => {
     if (!visible) return;
+    // Merchant app expectation: toggle-off should map to manual OOS by default.
+    setMode("MANUAL");
     setCustomTouched(false);
     setCustomUntil(new Date(Date.now() + 60 * 60 * 1000));
     Animated.timing(slideY, {
@@ -272,7 +274,12 @@ export function OutOfStockModal({
               <Text style={styles.backBtnText}>Back</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => payload && onConfirm(payload)}
+              onPress={() => {
+                if (!payload) return;
+                void Promise.resolve(onConfirm(payload)).catch(() => {
+                  /* errors surfaced by parent (e.g. Alert) */
+                });
+              }}
               style={[styles.confirmBtn, !canConfirm && styles.confirmBtnDisabled]}
               disabled={!canConfirm}
             >

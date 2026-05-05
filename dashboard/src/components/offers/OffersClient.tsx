@@ -60,6 +60,7 @@ function MerchantPlansTable({
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Plan</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Code</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Price</th>
+            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Applied tax %</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Billing</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Limits</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
@@ -88,6 +89,7 @@ function MerchantPlansTable({
                 <code className="text-sm font-mono bg-gray-100 px-2 py-0.5 rounded text-gray-800">{p.planCode}</code>
               </td>
               <td className="px-4 py-3 text-sm font-medium text-gray-900">₹{p.price}</td>
+              <td className="px-4 py-3 text-sm text-gray-700">{Number(p.gstPercent ?? "0").toFixed(2)}</td>
               <td className="px-4 py-3 text-sm text-gray-600">{p.billingCycle}</td>
               <td className="px-4 py-3 text-sm text-gray-600">
                 {[p.maxMenuItems, p.maxCuisines, p.maxMenuCategories].some((x) => x != null)
@@ -166,6 +168,9 @@ function MerchantPlanCards({
               <IndianRupee className="h-3.5 w-3.5" />
               {p.price} / {p.billingCycle}
             </p>
+            <p className="text-xs text-gray-600">
+              Applied tax: <span className="font-semibold text-gray-900">{Number(p.gstPercent ?? "0").toFixed(2)}%</span>
+            </p>
             {(p.maxMenuItems != null || p.maxCuisines != null || p.maxMenuCategories != null) && (
               <p className="text-xs">
                 Limits: Menu {p.maxMenuItems ?? "—"} • Cuisines {p.maxCuisines ?? "—"} • Categories {p.maxMenuCategories ?? "—"}
@@ -212,9 +217,10 @@ export function OffersClient() {
   const [togglingId, setTogglingId] = useState<number | null>(null);
 
   const limit = 20;
+  const planType = tab === "merchant" ? "MERCHANT" : tab === "rider" ? "RIDER" : "CUSTOMER";
   const filters = useMemo(
-    () => ({ search: searchApplied, status: statusFilter, limit, offset: (page - 1) * limit }),
-    [searchApplied, statusFilter, page, limit]
+    () => ({ type: planType, search: searchApplied, status: statusFilter, limit, offset: (page - 1) * limit }),
+    [planType, searchApplied, statusFilter, page, limit]
   );
 
   const { data, isLoading, error, refetch, isFetching } = useMerchantPlansQuery(filters);
@@ -416,6 +422,7 @@ export function OffersClient() {
         }}
         onSuccess={handleFormSuccess}
         editPlan={editPlan}
+        planType={planType}
       />
 
       {deleteConfirm && (

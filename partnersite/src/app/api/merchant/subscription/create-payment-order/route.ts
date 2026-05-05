@@ -70,6 +70,7 @@ export async function POST(request: NextRequest) {
       .from('merchant_plans')
       .select('*')
       .eq('id', planId)
+      .eq('plan_type', 'MERCHANT')
       .single();
 
     if (!plan) {
@@ -134,7 +135,13 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const amountPaise = Math.round(amountToCharge * 100);
+    const gstPercent = (() => {
+      const gp = Number((plan as any).gst_percent ?? 0);
+      return Number.isFinite(gp) && gp >= 0 && gp <= 100 ? gp : 0;
+    })();
+    const subtotalPaise = Math.round(amountToCharge * 100);
+    const gstAmountPaise = Math.round((subtotalPaise * gstPercent) / 100);
+    const amountPaise = subtotalPaise + gstAmountPaise;
     const receipt = `plan_${isUpgrade ? 'upgrade' : 'new'}_${store.id}_${planId}_${Date.now()}`;
 
     // Create Razorpay order
@@ -176,6 +183,9 @@ export async function POST(request: NextRequest) {
       currency: "INR",
       isUpgrade,
       amountToCharge: amountToCharge,
+      subtotalPaise,
+      gstPercent,
+      gstAmountPaise,
       creditApplied: isUpgrade ? creditApplied : undefined,
       plan: {
         id: plan.id,

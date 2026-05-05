@@ -23,8 +23,10 @@ export interface MerchantPlan {
   id: number;
   planName: string;
   planCode: string;
+  planType?: "MERCHANT" | "RIDER" | "CUSTOMER" | string;
   description: string | null;
   price: number;
+  gstPercent?: string | null;
   billingCycle: string;
   maxMenuItems: number | null;
   maxCuisines: number | null;
@@ -44,6 +46,7 @@ export interface MerchantPlan {
 }
 
 export interface MerchantPlansFilters {
+  type?: "MERCHANT" | "RIDER" | "CUSTOMER";
   search?: string;
   status?: "active" | "inactive" | "";
   limit?: number;
@@ -52,6 +55,7 @@ export interface MerchantPlansFilters {
 
 async function fetchMerchantPlans(filters: MerchantPlansFilters): Promise<{ plans: MerchantPlan[]; total: number }> {
   const params = new URLSearchParams();
+  params.set("type", filters.type ?? "MERCHANT");
   if (filters.search) params.set("search", filters.search);
   if (filters.status) params.set("status", filters.status);
   params.set("limit", String(filters.limit ?? 20));

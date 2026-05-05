@@ -11,6 +11,10 @@ const subscriptionQuerySchema = z.object({
   store_id: z.string().optional(),
 });
 
+const plansQuerySchema = z.object({
+  type: z.enum(["MERCHANT", "RIDER", "CUSTOMER"]).optional().default("MERCHANT"),
+});
+
 const subscriptionResponseSchema = z.object({
   active: z.boolean(),
   plan: z
@@ -31,6 +35,7 @@ const planSchema = z.object({
   plan_code: z.string(),
   description: z.string().nullable(),
   price: z.number(),
+  gst_percent: z.number().optional(),
   billing_cycle: z.string(),
   max_menu_items: z.number().nullable(),
   max_cuisines: z.number().nullable(),
@@ -136,6 +141,7 @@ export async function plansRoutes(app: FastifyInstance) {
     "/plans",
     {
       schema: {
+        querystring: plansQuerySchema,
         response: {
           200: responseSchema,
           500: responseSchema,
@@ -143,11 +149,13 @@ export async function plansRoutes(app: FastifyInstance) {
       },
     },
     async (request, reply) => {
+      const { type } = plansQuerySchema.parse(request.query || {});
       const sql = getSql();
       let rows: Record<string, unknown>[];
       try {
         rows = await sql`
           SELECT id, plan_name, plan_code, description, price, billing_cycle,
+                 gst_percent,
                  max_menu_items, max_cuisines, max_menu_categories,
                  image_upload_allowed, max_image_uploads,
                  analytics_access, advanced_analytics, priority_support,
@@ -155,6 +163,7 @@ export async function plansRoutes(app: FastifyInstance) {
                  display_order, is_popular
           FROM merchant_plans
           WHERE is_active = true
+            AND plan_type = ${type}::public.subscription_plan_type
           ORDER BY display_order ASC NULLS LAST, id ASC
         `;
       } catch (err: any) {
@@ -171,6 +180,7 @@ export async function plansRoutes(app: FastifyInstance) {
         plan_code: String(r.plan_code ?? ""),
         description: r.description != null ? String(r.description) : null,
         price: Number(r.price ?? 0),
+        gst_percent: r.gst_percent != null ? Number(r.gst_percent) : 0,
         billing_cycle: String(r.billing_cycle ?? "MONTHLY"),
         max_menu_items: r.max_menu_items != null ? Number(r.max_menu_items) : null,
         max_cuisines: r.max_cuisines != null ? Number(r.max_cuisines) : null,

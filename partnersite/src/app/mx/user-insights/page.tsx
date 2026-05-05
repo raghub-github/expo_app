@@ -686,6 +686,9 @@ const UserInsightsContent = () => {
   const [tickets, setTickets] = useState<any[]>([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketSearch, setTicketSearch] = useState("");
+  const [datePreset, setDatePreset] = useState<
+    "7d" | "15d" | "1m" | "3m" | "365d" | "custom"
+  >("7d");
   const [dateFrom, setDateFrom] = useState(() => {
     const t = new Date();
     t.setDate(t.getDate() - 7);
@@ -701,6 +704,32 @@ const UserInsightsContent = () => {
     a: string | null;
     b: string | null;
   }>({ a: null, b: null });
+
+  const applyDatePreset = (preset: "7d" | "15d" | "1m" | "3m" | "365d") => {
+    const now = new Date();
+    const to = toYmd(now);
+    const fromD = new Date(now);
+    if (preset === "7d") fromD.setDate(fromD.getDate() - 7);
+    if (preset === "15d") fromD.setDate(fromD.getDate() - 15);
+    if (preset === "1m") fromD.setMonth(fromD.getMonth() - 1);
+    if (preset === "3m") fromD.setMonth(fromD.getMonth() - 3);
+    if (preset === "365d") fromD.setDate(fromD.getDate() - 365);
+
+    setDatePreset(preset);
+    setDateFrom(toYmd(fromD));
+    setDateTo(to);
+    setDatePopoverOpen(false);
+  };
+
+  const openCustomDatePicker = () => {
+    setDatePreset("custom");
+    setRangeSel({ a: dateFrom, b: dateTo });
+    setCalMonth(() => {
+      const d = parseYmd(dateFrom);
+      return new Date(d.getFullYear(), d.getMonth(), 1);
+    });
+    setDatePopoverOpen(true);
+  };
   const [ticketStatusFilter, setTicketStatusFilter] = useState<string | null>(
     () => {
       if (typeof window !== "undefined") {
@@ -1077,9 +1106,6 @@ const UserInsightsContent = () => {
         ticket.id.toString(),
       );
     }
-    router.replace(
-      `/mx/support-inbox?ticket=${ticket.id}`,
-    );
     fetchTicketMessages(ticket.id);
     // Load existing rating if ticket is resolved
     if (
@@ -2091,7 +2117,6 @@ const UserInsightsContent = () => {
     <MXLayoutWhite
       restaurantName={store?.store_name}
       restaurantId={storeId || DEMO_STORE_ID}
-      hideHelpBadge={showTicketDetail && selectedTicket !== null}
       sidebarFilters={ticketFilterCards}
     >
       <PartnerShellHeaderSync title={partnerShellTitle} subtitle={partnerShellSubtitle} />
@@ -2139,9 +2164,38 @@ const UserInsightsContent = () => {
                       </button>
                     </div>
                     <div className="mt-3">
-                      <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700">
+                      <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-700 bg-white">
                         <Calendar size={14} className="text-gray-500" />
-                        <span className="whitespace-nowrap">Last 7 days</span>
+                        <select
+                          value={datePreset}
+                          onChange={(e) => {
+                            const v = e.target.value as
+                              | "7d"
+                              | "15d"
+                              | "1m"
+                              | "3m"
+                              | "365d"
+                              | "custom";
+                            if (v === "custom") {
+                              openCustomDatePicker();
+                            } else {
+                              applyDatePreset(v);
+                            }
+                          }}
+                          className="bg-transparent outline-none text-xs font-medium text-gray-800"
+                          aria-label="Select date range preset"
+                        >
+                          <option value="7d">Last 7 days</option>
+                          <option value="15d">Last 15 days</option>
+                          <option value="1m">Last 1 month</option>
+                          <option value="3m">Last 3 months</option>
+                          <option value="365d">Last 365 days</option>
+                          <option value="custom">Custom</option>
+                        </select>
+                        <span className="text-gray-400">•</span>
+                        <span className="whitespace-nowrap text-gray-600">
+                          {formatRangeSummary(dateFrom, dateTo)}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -3205,25 +3259,40 @@ const UserInsightsContent = () => {
                     <h3 className="text-sm font-semibold text-gray-900">
                       All tickets
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRangeSel({ a: dateFrom, b: dateTo });
-                        setCalMonth(() => {
-                          const d = parseYmd(dateFrom);
-                          return new Date(d.getFullYear(), d.getMonth(), 1);
-                        });
-                        setDatePopoverOpen(true);
-                      }}
-                      className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-800 hover:bg-gray-50"
-                      aria-label="Select date range"
-                    >
+                    <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700">
                       <Calendar size={14} className="text-gray-500" />
-                      <span className="whitespace-nowrap">
+                      <select
+                        value={datePreset}
+                        onChange={(e) => {
+                          const v = e.target.value as
+                            | "7d"
+                            | "15d"
+                            | "1m"
+                            | "3m"
+                            | "365d"
+                            | "custom";
+                          if (v === "custom") {
+                            openCustomDatePicker();
+                          } else {
+                            applyDatePreset(v);
+                          }
+                        }}
+                        className="bg-transparent outline-none text-xs font-medium text-gray-800"
+                        aria-label="Select date range preset"
+                      >
+                        <option value="7d">Last 7 days</option>
+                        <option value="15d">Last 15 days</option>
+                        <option value="1m">Last 1 month</option>
+                        <option value="3m">Last 3 months</option>
+                        <option value="365d">Last 365 days</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                      <span className="text-gray-400">•</span>
+                      <span className="whitespace-nowrap text-gray-600">
                         {formatRangeSummary(dateFrom, dateTo)}
                       </span>
                       <ChevronDown size={14} className="text-gray-500" />
-                    </button>
+                    </div>
                   </div>
                 </div>
 
@@ -3244,6 +3313,7 @@ const UserInsightsContent = () => {
                             : [rangeSel.b, rangeSel.a];
                         setDateFrom(from);
                         setDateTo(to);
+                        setDatePreset("custom");
                       }
                       setDatePopoverOpen(false);
                     }}

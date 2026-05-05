@@ -17,8 +17,10 @@ function toPlanRow(row: Record<string, unknown>) {
     id: Number(row.id),
     planName: row.plan_name as string,
     planCode: row.plan_code as string,
+    planType: (row.plan_type as string) ?? "MERCHANT",
     description: (row.description as string) ?? null,
     price: Number(row.price ?? 0),
+    gstPercent: row.gst_percent != null ? String(row.gst_percent) : "0",
     billingCycle: (row.billing_cycle as string) ?? "MONTHLY",
     maxMenuItems: row.max_menu_items != null ? Number(row.max_menu_items) : null,
     maxCuisines: row.max_cuisines != null ? Number(row.max_cuisines) : null,
@@ -48,6 +50,10 @@ export async function GET(request: NextRequest) {
     }
 
     const searchParams = request.nextUrl.searchParams;
+    const planType = (searchParams.get("type") || "MERCHANT").toUpperCase();
+    if (!["MERCHANT", "RIDER", "CUSTOMER"].includes(planType)) {
+      return NextResponse.json({ success: false, error: "Invalid type" }, { status: 400 });
+    }
     const search = searchParams.get("search")?.trim() || "";
     const status = searchParams.get("status");
     const limit = Math.min(parseInt(searchParams.get("limit") ?? "20", 10), 100);
@@ -58,6 +64,10 @@ export async function GET(request: NextRequest) {
     const conditions: string[] = [];
     const params: unknown[] = [];
     let p = 1;
+
+    conditions.push(`p.plan_type = $${p}::public.subscription_plan_type`);
+    params.push(planType);
+    p++;
 
     if (search) {
       conditions.push(`(p.plan_name ILIKE $${p} OR p.plan_code ILIKE $${p})`);
@@ -119,6 +129,8 @@ export async function POST(request: NextRequest) {
       planCode,
       description,
       price = 0,
+      gstPercent = "0",
+      planType = "MERCHANT",
       billingCycle = "MONTHLY",
       maxMenuItems,
       maxCuisines,
@@ -143,6 +155,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const pt = String(planType).toUpperCase();
+    if (!["MERCHANT", "RIDER", "CUSTOMER"].includes(pt)) {
+      return NextResponse.json({ success: false, error: "planType must be MERCHANT|RIDER|CUSTOMER" }, { status: 400 });
+    }
+
+    const gp = Number(gstPercent);
+    if (!Number.isFinite(gp) || gp < 0 || gp > 100) {
+      return NextResponse.json({ success: false, error: "gstPercent must be 0–100" }, { status: 400 });
+    }
+
     const code = String(planCode).trim().toUpperCase().replace(/\s+/g, "_");
     const validBilling = ["MONTHLY", "QUARTERLY", "YEARLY"].includes(String(billingCycle).toUpperCase())
       ? String(billingCycle).toUpperCase()
@@ -151,7 +173,7 @@ export async function POST(request: NextRequest) {
     const sql = getSql();
     const [inserted] = await sql`
       INSERT INTO merchant_plans (
-        plan_name, plan_code, description, price, billing_cycle,
+        plan_type, plan_name, plan_code, description, price, gst_percent, billing_cycle,
         max_menu_items, max_cuisines, max_menu_categories,
         image_upload_allowed, max_image_uploads,
         analytics_access, advanced_analytics, priority_support,
@@ -159,10 +181,12 @@ export async function POST(request: NextRequest) {
         display_order, is_active, is_popular
       )
       VALUES (
+        ${pt}::public.subscription_plan_type,
         ${String(planName).trim()},
         ${code},
         ${description ? String(description).trim() : null},
         ${Number(price) || 0},
+        ${gp},
         ${validBilling},
         ${maxMenuItems != null ? Number(maxMenuItems) : null},
         ${maxCuisines != null ? Number(maxCuisines) : null},

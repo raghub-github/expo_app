@@ -18,6 +18,8 @@ export type MenuCategory = {
   is_active: boolean;
   out_of_stock_manual?: boolean;
   out_of_stock_until?: string | null;
+  /** Same marker as items under category when category OOS was cascaded. */
+  out_of_stock_updated_at?: string | null;
   out_of_stock_active?: boolean;
   created_at: string;
   updated_at: string;
@@ -38,8 +40,10 @@ export type MenuItemRow = {
   effective_in_stock?: boolean;
   out_of_stock_manual?: boolean;
   out_of_stock_until?: string | null;
+  out_of_stock_updated_at?: string | null;
   category_out_of_stock_manual?: boolean;
   category_out_of_stock_until?: string | null;
+  category_out_of_stock_updated_at?: string | null;
   is_active: boolean;
   is_deleted: boolean | null;
   display_order: number;
@@ -536,27 +540,46 @@ export async function patchItemStock(
 
 export type OutOfStockMode = "CLEAR" | "MANUAL" | "HOURS" | "NEXT_OPEN" | "CUSTOM";
 
-function normalizeOutOfStockBody(body: {
+/**
+ * Build a JSON string safe for React Native fetch (never pass raw Date/objects as body).
+ */
+function serializeMerchantMenuOutOfStockBody(body: {
   mode: OutOfStockMode;
   hours?: number;
   until?: unknown;
-}): { mode: OutOfStockMode; hours?: number; until?: string } {
-  const untilRaw = (body as any).until;
-  const isDateObject =
-    untilRaw != null && Object.prototype.toString.call(untilRaw) === "[object Date]";
-  const until =
-    isDateObject
-      ? new Date(untilRaw as any).toISOString()
-      : typeof untilRaw === "string"
-        ? untilRaw
-        : untilRaw == null
-          ? undefined
-          : String(untilRaw);
-  return {
-    mode: body.mode,
-    hours: body.hours,
-    until,
-  };
+}): string {
+  const out: Record<string, string | number> = { mode: body.mode };
+  if (body.mode === "HOURS" && body.hours != null) {
+    const h = Math.floor(Number(body.hours));
+    if (Number.isFinite(h)) out.hours = h;
+  }
+  if (body.mode === "CUSTOM") {
+    const raw = body.until;
+    if (raw != null) {
+      if (typeof raw === "string") out.until = raw;
+      else if (Object.prototype.toString.call(raw) === "[object Date]") out.until = new Date(raw as Date).toISOString();
+      else out.until = String(raw);
+    }
+  }
+  return JSON.stringify(out);
+}
+
+/**
+ * Parse JSON from a fetch Response without using `Response.text()`.
+ * On some Android/React Native builds, `.text()` can throw:
+ * "The \"string\" argument must be of type string ... Received an instance of Date".
+ */
+async function readJsonResponseSafe(res: Response): Promise<any> {
+  try {
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0) return {};
+    const raw = new TextDecoder("utf-8").decode(buf);
+    const t = raw.trim();
+    if (!t) return {};
+    return JSON.parse(t) as any;
+  } catch {
+    return {};
+  }
 }
 
 export async function patchItemOutOfStock(
@@ -566,22 +589,15 @@ export async function patchItemOutOfStock(
   body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
   const base = getApiBaseUrl();
-  const normalized = normalizeOutOfStockBody(body);
+  const bodyJson = serializeMerchantMenuOutOfStockBody(body);
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
     `${base}/v1/merchant-menu/items/${itemId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
-    { method: "PATCH", body: normalized as any }
+    { method: "PATCH", body: bodyJson }
   );
-  const text = await res.text().catch(() => "");
-  const json = (() => {
-    try {
-      return text ? (JSON.parse(text) as any) : {};
-    } catch {
-      return {};
-    }
-  })();
+  const json = await readJsonResponseSafe(res);
   if (!res.ok) {
     throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
   }
@@ -595,22 +611,15 @@ export async function patchCategoryOutOfStock(
   body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
   const base = getApiBaseUrl();
-  const normalized = normalizeOutOfStockBody(body);
+  const bodyJson = serializeMerchantMenuOutOfStockBody(body);
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
     `${base}/v1/merchant-menu/categories/${categoryId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
-    { method: "PATCH", body: normalized as any }
+    { method: "PATCH", body: bodyJson }
   );
-  const text = await res.text().catch(() => "");
-  const json = (() => {
-    try {
-      return text ? (JSON.parse(text) as any) : {};
-    } catch {
-      return {};
-    }
-  })();
+  const json = await readJsonResponseSafe(res);
   if (!res.ok) {
     throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
   }
@@ -1086,22 +1095,15 @@ export async function patchComboOutOfStock(
   body: { mode: OutOfStockMode; hours?: number; until?: string | Date }
 ): Promise<{ ok: boolean; out_of_stock_manual: boolean; out_of_stock_until: string | null }> {
   const base = getApiBaseUrl();
-  const normalized = normalizeOutOfStockBody(body);
+  const bodyJson = serializeMerchantMenuOutOfStockBody(body);
   const storeIdStr = String(storeId);
   const tokenStr = String(token);
   const res = await authFetch(
     `${base}/v1/merchant-menu/combos/${comboId}/out-of-stock?storeId=${encodeURIComponent(storeIdStr)}`,
     tokenStr,
-    { method: "PATCH", body: normalized as any }
+    { method: "PATCH", body: bodyJson }
   );
-  const text = await res.text().catch(() => "");
-  const json = (() => {
-    try {
-      return text ? (JSON.parse(text) as any) : {};
-    } catch {
-      return {};
-    }
-  })();
+  const json = await readJsonResponseSafe(res);
   if (!res.ok) {
     throw new Error((json as { error?: string; message?: string }).error || (json as any).message || `Out-of-stock update failed: ${res.status}`);
   }

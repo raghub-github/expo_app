@@ -284,6 +284,20 @@ export async function GET(req: NextRequest) {
       ? isWithinOperatingHours(oh as Record<string, unknown>, now, storeTz)
       : false;
 
+    // If today's schedule marks the outlet closed, it must not be treated as online.
+    // This covers both `closed_days` and per-day `<day>_open = false`.
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const { dayIndex: currentDayIndex } = getStoreLocalTime(now, storeTz);
+    const currentDay = dayNames[currentDayIndex];
+    const closedDaysRaw = (oh?.closed_days as string[] | null) ?? null;
+    const closedDaysNorm = Array.isArray(closedDaysRaw)
+      ? closedDaysRaw.map((d) => String(d).trim().toLowerCase()).filter(Boolean)
+      : [];
+    const dayOpenFlag = !!oh && (oh as any)[`${currentDay}_open`] === true;
+    const isTodayScheduledClosed =
+      !!oh &&
+      (closedDaysNorm.includes(String(currentDay).toLowerCase()) || !dayOpenFlag);
+
     trace('initial_read', {
       db_operational_status: store?.operational_status ?? null,
       db_is_accepting_orders: store?.is_accepting_orders ?? null,
@@ -295,15 +309,12 @@ export async function GET(req: NextRequest) {
       within_hours: withinHours,
       has_operating_hours_row: !!oh,
       store_timezone: storeTz,
+      is_today_scheduled_closed: isTodayScheduledClosed,
     });
 
     // Strict: do NOT auto-open when block_auto_open (Until I manually turn it ON)
     // Also check if today is a closed day - if so, don't auto-open
-    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const { dayIndex: currentDayIndex } = getStoreLocalTime(now, storeTz);
-    const currentDay = dayNames[currentDayIndex];
-    const closedDays = oh?.closed_days as string[] | null;
-    const isTodayClosed = closedDays && Array.isArray(closedDays) && closedDays.includes(currentDay);
+    const isTodayClosed = isTodayScheduledClosed;
     
     // Re-fetch store status to avoid overwriting a concurrent manual open (which would show "Auto on" instead of "Opened by X")
     const scheduleAutoOpenBranchEntered =
@@ -476,18 +487,30 @@ export async function GET(req: NextRequest) {
       skipped_due_to_recent_manual_open: skipOutsideHoursAutoClose && outsideHoursGuardCandidate,
     });
 
-    const { today_date, today_slots } = getTodaySlots(oh as Record<string, unknown> | null, storeTz);
+    // Hard rule: if today is scheduled closed, force store CLOSED (even if DB still says OPEN).
+    // This prevents "Online" while the schedule says closed.
+    if (isTodayScheduledClosed && effectiveStatus === 'OPEN' && !manualCloseUntil) {
+      await db
+        .from('merchant_stores')
+        .update({ operational_status: 'CLOSED', ...merchantStoresOnlineFlags(false) })
+        .eq('id', storeInternalId);
+      await db
+        .from('merchant_store_availability')
+        .update({
+          is_available: false,
+          is_accepting_orders: false,
+          last_toggle_type: 'AUTO_CLOSE',
+          last_toggled_at: now.toISOString(),
+        })
+        .eq('store_id', storeInternalId);
+      effectiveStatus = 'CLOSED';
+      trace('after_scheduled_closed_force', { applied: true, effective_status: effectiveStatus });
+    } else {
+      trace('after_scheduled_closed_force', { applied: false, effective_status: effectiveStatus });
+    }
 
-    // Check if today is a scheduled closed day (reuse closedDays from above)
-    const dayNamesCheck = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const { dayIndex: currentDayIndexCheck } = getStoreLocalTime(now, storeTz);
-    const currentDayCheck = dayNamesCheck[currentDayIndexCheck];
-    const closedDaysCheck = oh?.closed_days as string[] | null;
-    const isTodayScheduledClosed = closedDaysCheck && Array.isArray(closedDaysCheck) && closedDaysCheck.includes(currentDayCheck);
-    
-    // Also check if today's _open flag is false
-    const isTodayOpenFlagFalse = oh && oh[`${currentDayCheck}_open`] !== true;
-    const isTodayClosedBySchedule = isTodayScheduledClosed || isTodayOpenFlagFalse;
+    const { today_date, today_slots } = getTodaySlots(oh as Record<string, unknown> | null, storeTz);
+    const isTodayClosedBySchedule = isTodayScheduledClosed;
 
     const nowAfterLogic = new Date();
     const ohRecord = (oh ?? null) as Record<string, unknown> | null;

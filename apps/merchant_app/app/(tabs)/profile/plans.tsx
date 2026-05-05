@@ -38,6 +38,7 @@ export type MerchantPlan = {
   plan_code: string;
   description: string | null;
   price: number;
+  gst_percent?: number;
   billing_cycle: string;
   max_menu_items: number | null;
   max_cuisines: number | null;
@@ -141,6 +142,17 @@ function formatPrice(price: number, billingCycle: string): string {
   return `₹${price}/${cycle === "monthly" ? "mo" : cycle === "yearly" ? "yr" : "qtr"}`;
 }
 
+function normalizeGstPercent(pct: unknown): number {
+  const n = Number(pct ?? 0);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return 0;
+  return n;
+}
+
+function computeTotalWithGst(price: number, gstPercent: number): number {
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  return Math.round((price + (price * gstPercent) / 100) * 100) / 100;
+}
+
 /** All plan features — nothing missing on card. */
 function getAllPlanFeatures(plan: MerchantPlan): { label: string; value: string }[] {
   return [
@@ -204,6 +216,8 @@ function StackCard({
   const rotationDeg = isCenter ? 0 : Math.max(-4, Math.min(4, distance * 3));
   const allFeatures = getAllPlanFeatures(plan);
   const isPremium = isPremiumPlan(plan) && plan.price > 0;
+  const gstPercent = normalizeGstPercent(plan.gst_percent);
+  const totalWithTax = computeTotalWithGst(plan.price, gstPercent);
 
   const cardStyle = [
     styles.cardBase,
@@ -230,6 +244,11 @@ function StackCard({
           <Text style={[styles.price, isPremium && styles.textWhite]} numberOfLines={1}>
             {formatPrice(plan.price, plan.billing_cycle)}
           </Text>
+          {plan.price > 0 && (
+            <Text style={[styles.taxLine, isPremium && styles.textWhite]} numberOfLines={1}>
+              Tax: {gstPercent.toFixed(2)}% • Total ₹{totalWithTax.toFixed(2)}
+            </Text>
+          )}
         </View>
         {isCenter && (plan.is_popular || isPremium) && (
           <View style={[styles.badge, isPremium && styles.badgePremium]}>
@@ -338,7 +357,7 @@ export default function PlansScreen() {
     let cancelled = false;
     const t = setTimeout(() => {
       if (cancelled) return;
-      fetch(`${API_BASE_URL}/v1/plans`, { method: "GET" })
+      fetch(`${API_BASE_URL}/v1/plans?type=MERCHANT`, { method: "GET" })
         .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
         .then((data) => {
           if (cancelled) return;
@@ -536,6 +555,12 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "800",
     color: GatiMitraMerchant.primary,
+    marginTop: 2,
+  },
+  taxLine: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
     marginTop: 2,
   },
   badge: {
