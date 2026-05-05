@@ -83,6 +83,7 @@ export async function POST(request: NextRequest) {
       .from('merchant_plans')
       .select('*')
       .eq('id', planId)
+      .eq('plan_type', 'MERCHANT')
       .single();
 
     if (!plan) {
@@ -123,6 +124,15 @@ export async function POST(request: NextRequest) {
     const now = new Date();
     const expiryDate = new Date(now);
     expiryDate.setMonth(expiryDate.getMonth() + 1); // Default 1 month
+
+    // Amount breakdown for audit (subtotal is plan price; GST derived from plan.gst_percent).
+    const gstPercent = (() => {
+      const gp = Number((plan as any).gst_percent ?? 0);
+      return Number.isFinite(gp) && gp >= 0 && gp <= 100 ? gp : 0;
+    })();
+    const subtotalPaise = Math.round(Number(plan.price ?? 0) * 100);
+    const gstAmountPaise = Math.round((subtotalPaise * gstPercent) / 100);
+    const totalPaise = subtotalPaise + gstAmountPaise;
 
     // Create or update subscription (only consider ACTIVE so we don't touch UPGRADED/EXPIRED)
     const { data: existingSubscription } = await supabase
@@ -190,7 +200,11 @@ export async function POST(request: NextRequest) {
       store_id: store.id,
       subscription_id: subscriptionId,
       plan_id: planId,
-      amount: plan.price,
+      amount: Math.round(totalPaise) / 100,
+      subtotal_paise: subtotalPaise,
+      gst_percent_applied: gstPercent,
+      gst_amount_paise: gstAmountPaise,
+      total_paise: totalPaise,
       payment_gateway: 'RAZORPAY',
       payment_gateway_id: razorpay_payment_id,
       payment_gateway_response: {

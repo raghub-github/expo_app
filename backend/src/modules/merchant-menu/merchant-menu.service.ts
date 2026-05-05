@@ -67,6 +67,7 @@ export async function listCategories(storeIdNum: number): Promise<
     is_active: boolean;
     out_of_stock_manual: boolean;
     out_of_stock_until: Date | string | null;
+    out_of_stock_updated_at: Date | string | null;
     out_of_stock_active: boolean;
     created_at: Date;
     updated_at: Date;
@@ -85,6 +86,7 @@ export async function listCategories(storeIdNum: number): Promise<
       is_active,
       COALESCE(out_of_stock_manual, FALSE) AS out_of_stock_manual,
       out_of_stock_until,
+      out_of_stock_updated_at,
       (
         COALESCE(out_of_stock_manual, FALSE) = TRUE
         OR (out_of_stock_until IS NOT NULL AND out_of_stock_until > NOW())
@@ -117,6 +119,15 @@ function parseIsoDate(raw: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Bind timestamptz as ISO string — postgres.js can throw if a raw Date is interpolated (Node Buffer path). */
+function sqlTimestamptz(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return value;
+  const d = new Date(value as string);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 async function computeNextOpenIsoForStore(storeIdNum: number): Promise<string | null> {
   const sql = getSql();
   const hoursRows = await sql`
@@ -127,8 +138,10 @@ async function computeNextOpenIsoForStore(storeIdNum: number): Promise<string | 
   const row = hoursRows[0] as Record<string, unknown> | undefined;
   if (!row) return null;
   const now = new Date();
-  const { dayOfWeek, minutesSinceMidnight } = nowInStoreTz();
-  return getNextOpenIso(row, dayOfWeek, minutesSinceMidnight, now);
+  const { dayOfWeek } = nowInStoreTz();
+  // Product expectation: NEXT_OPEN means next business day opening,
+  // not a later slot on the same day.
+  return getNextOpenIso(row, dayOfWeek, 24 * 60, now);
 }
 
 function resolveOutOfStockUpdate(
@@ -183,7 +196,7 @@ export async function patchCategoryOutOfStock(
     UPDATE merchant_menu_categories
     SET
       out_of_stock_manual = ${patch.out_of_stock_manual},
-      out_of_stock_until = ${patch.out_of_stock_until},
+      out_of_stock_until = ${sqlTimestamptz(patch.out_of_stock_until)},
       out_of_stock_updated_at = ${markerIso},
       updated_at = NOW()
     WHERE id = ${categoryId} AND store_id = ${storeIdNum}
@@ -205,8 +218,9 @@ export async function patchCategoryOutOfStock(
       UPDATE merchant_menu_items
       SET
         out_of_stock_manual = FALSE,
-        out_of_stock_until = ${r?.out_of_stock_until ?? null},
+        out_of_stock_until = ${sqlTimestamptz(r?.out_of_stock_until as Date | string | null | undefined)},
         out_of_stock_updated_at = ${markerIso},
+        in_stock = FALSE,
         updated_at = NOW()
       WHERE store_id = ${storeIdNum}
         AND category_id = ${categoryId}
@@ -217,21 +231,24 @@ export async function patchCategoryOutOfStock(
         )
     `;
   } else if (body.mode === "CLEAR" && prevMarker) {
+    const prevMarkerIso = sqlTimestamptz(prevMarker as Date | string | null | undefined);
+    const prevUntilIso = sqlTimestamptz(prevUntil as Date | string | null | undefined);
     await sql`
       UPDATE merchant_menu_items
       SET
         out_of_stock_manual = FALSE,
         out_of_stock_until = NULL,
         out_of_stock_updated_at = ${markerIso},
+        in_stock = TRUE,
         updated_at = NOW()
       WHERE store_id = ${storeIdNum}
         AND category_id = ${categoryId}
         AND (is_deleted IS NULL OR is_deleted = FALSE)
         AND COALESCE(out_of_stock_manual, FALSE) = FALSE
-        AND out_of_stock_updated_at = ${prevMarker}
+        AND out_of_stock_updated_at = ${prevMarkerIso}
         AND (
-          (${prevUntil}::timestamptz IS NULL AND out_of_stock_until IS NULL)
-          OR out_of_stock_until = ${prevUntil}
+          (${prevUntilIso}::timestamptz IS NULL AND out_of_stock_until IS NULL)
+          OR out_of_stock_until = ${prevUntilIso}
         )
     `;
   }
@@ -264,12 +281,17 @@ export async function patchItemOutOfStock(
     patch = { out_of_stock_manual: false, out_of_stock_until: new Date(nextIso) };
   }
 
+  const itemNowOos =
+    patch.out_of_stock_manual ||
+    (patch.out_of_stock_until != null && patch.out_of_stock_until.getTime() > Date.now());
+
   const [row] = await sql`
     UPDATE merchant_menu_items
     SET
       out_of_stock_manual = ${patch.out_of_stock_manual},
-      out_of_stock_until = ${patch.out_of_stock_until},
+      out_of_stock_until = ${sqlTimestamptz(patch.out_of_stock_until)},
       out_of_stock_updated_at = NOW(),
+      in_stock = ${!itemNowOos},
       updated_at = NOW()
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
       AND (is_deleted IS NULL OR is_deleted = FALSE)
@@ -743,8 +765,10 @@ export async function listItems(
     effective_in_stock: boolean;
     out_of_stock_manual: boolean;
     out_of_stock_until: Date | string | null;
+    out_of_stock_updated_at: Date | string | null;
     category_out_of_stock_manual: boolean;
     category_out_of_stock_until: Date | string | null;
+    category_out_of_stock_updated_at: Date | string | null;
     is_active: boolean;
     is_deleted: boolean | null;
     display_order: number;
@@ -778,11 +802,17 @@ export async function listItems(
     approvalStatus == null
       ? sql`true`
       : sql`merchant_menu_items.approval_status = ${approvalStatus}::merchant_menu_item_approval_status`;
+  // Partner Site parity: category OOS cascades via matching out_of_stock_updated_at; manual item OOS / CLEAR breaks the link.
   const effectiveStockExpr = sql`(
     CASE
       WHEN merchant_menu_items.in_stock = FALSE THEN FALSE
       WHEN (COALESCE(merchant_menu_items.out_of_stock_manual, FALSE) = TRUE OR (merchant_menu_items.out_of_stock_until IS NOT NULL AND merchant_menu_items.out_of_stock_until > NOW())) THEN FALSE
-      WHEN (COALESCE(c.out_of_stock_manual, FALSE) = TRUE OR (c.out_of_stock_until IS NOT NULL AND c.out_of_stock_until > NOW())) THEN FALSE
+      WHEN (
+        (COALESCE(c.out_of_stock_manual, FALSE) = TRUE OR (c.out_of_stock_until IS NOT NULL AND c.out_of_stock_until > NOW()))
+        AND c.out_of_stock_updated_at IS NOT NULL
+        AND merchant_menu_items.out_of_stock_updated_at IS NOT NULL
+        AND c.out_of_stock_updated_at = merchant_menu_items.out_of_stock_updated_at
+      ) THEN FALSE
       ELSE TRUE
     END
   )`;
@@ -831,8 +861,10 @@ export async function listItems(
            ${effectiveStockExpr} AS effective_in_stock,
            COALESCE(merchant_menu_items.out_of_stock_manual, FALSE) AS out_of_stock_manual,
            merchant_menu_items.out_of_stock_until,
+           merchant_menu_items.out_of_stock_updated_at,
            COALESCE(c.out_of_stock_manual, FALSE) AS category_out_of_stock_manual,
            c.out_of_stock_until AS category_out_of_stock_until,
+           c.out_of_stock_updated_at AS category_out_of_stock_updated_at,
            merchant_menu_items.is_active,
            merchant_menu_items.is_deleted,
            merchant_menu_items.display_order,
@@ -1510,8 +1542,29 @@ export async function patchItemStock(
 ): Promise<boolean> {
   const sql = getSql();
   if (body.in_stock !== undefined) {
+    // Match Partner Site menu: availability is driven by out_of_stock_*; legacy in_stock alone is not enough.
+    if (body.in_stock) {
+      const result = await sql`
+        UPDATE merchant_menu_items
+        SET
+          in_stock = TRUE,
+          out_of_stock_manual = FALSE,
+          out_of_stock_until = NULL,
+          out_of_stock_updated_at = NOW(),
+          updated_at = NOW()
+        WHERE id = ${itemId} AND store_id = ${storeIdNum}
+      `;
+      return (result.count ?? 0) > 0;
+    }
     const result = await sql`
-      UPDATE merchant_menu_items SET in_stock = ${body.in_stock}, updated_at = NOW() WHERE id = ${itemId} AND store_id = ${storeIdNum}
+      UPDATE merchant_menu_items
+      SET
+        in_stock = FALSE,
+        out_of_stock_manual = TRUE,
+        out_of_stock_until = NULL,
+        out_of_stock_updated_at = NOW(),
+        updated_at = NOW()
+      WHERE id = ${itemId} AND store_id = ${storeIdNum}
     `;
     return (result.count ?? 0) > 0;
   }
@@ -2092,7 +2145,7 @@ export async function patchComboOutOfStock(
     UPDATE merchant_menu_combos
     SET
       out_of_stock_manual = ${patch.out_of_stock_manual},
-      out_of_stock_until = ${patch.out_of_stock_until},
+      out_of_stock_until = ${sqlTimestamptz(patch.out_of_stock_until)},
       out_of_stock_updated_at = ${markerIso},
       updated_at = NOW()
     WHERE id = ${comboId} AND store_id = ${storeIdNum}

@@ -1,12 +1,13 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Store, Loader2, User, Building2, ChevronRight, LogOut } from "lucide-react";
-import Link from "next/link";
+import { Store, Loader2, Plus, LogOut } from "lucide-react";
 import LogoutConfirmModal from "@/components/LogoutConfirmModal";
 import { StoreVerificationRejectionsBadge } from "@/components/partner/StoreVerificationRejectionsBadge";
 import type { PartnerVerificationStepRejection } from "@/lib/onboarding/partner-verification-rejections";
+import { normalizeMerchantStoreMediaUrl } from "@/lib/r2";
 
 type StoreItem = {
   store_id: string;
@@ -15,6 +16,7 @@ type StoreItem = {
   store_phones: string[] | null;
   approval_status: string | null;
   is_active: boolean | null;
+  banner_url?: string | null;
   current_onboarding_step?: number | null;
   onboarding_completed?: boolean | null;
   payment_status?: "pending" | "completed";
@@ -137,6 +139,26 @@ export default function PostLoginPage() {
     return { label: approval_status || "Pending", className: "bg-slate-100 text-slate-700" };
   };
 
+  // Important: keep hooks order stable across loading/home/retry renders.
+  const storesOrdered = useMemo(() => {
+    const stores = data?.stores ?? [];
+    const list = [...stores];
+    // Highlighted first, then approved first, then stable by name/id.
+    list.sort((a, b) => {
+      const aHi = highlightStorePublicId && a.store_id === highlightStorePublicId ? 1 : 0;
+      const bHi = highlightStorePublicId && b.store_id === highlightStorePublicId ? 1 : 0;
+      if (aHi !== bHi) return bHi - aHi;
+      const aOk = String(a.approval_status || "").toUpperCase() === "APPROVED" ? 1 : 0;
+      const bOk = String(b.approval_status || "").toUpperCase() === "APPROVED" ? 1 : 0;
+      if (aOk !== bOk) return bOk - aOk;
+      const an = (a.store_name || "").toLowerCase();
+      const bn = (b.store_name || "").toLowerCase();
+      if (an !== bn) return an.localeCompare(bn);
+      return String(a.store_id).localeCompare(String(b.store_id));
+    });
+    return list;
+  }, [data?.stores, highlightStorePublicId]);
+
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-purple-50 px-4">
@@ -192,27 +214,49 @@ export default function PostLoginPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50/50 flex flex-col">
-      {/* Header - minimal content for this page */}
-      <header className="sticky top-0 z-30 flex items-center justify-between px-3 sm:px-6 pr-32 sm:pr-36 py-2.5 sm:py-3 border-b border-slate-200/80 bg-white/95 backdrop-blur-sm shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <img src="/logo.png" alt="GatiMitra" className="h-8 w-auto sm:h-9 object-contain shrink-0" />
-          <span className="hidden sm:inline text-xs font-medium uppercase tracking-wider text-slate-500 ml-1">Partner</span>
+      <header className="shrink-0">
+        {/* Top bar: company logo/name on left */}
+        <div className="px-3 sm:px-6 pt-3 sm:pt-4">
+          <div className="mx-auto max-w-6xl flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <img src="/logo.png" alt="GatiMitra" className="h-8 w-auto sm:h-9 object-contain" />
+              <span className="hidden sm:inline text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Partner
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowLogoutModal(true)}
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white/90 backdrop-blur-sm px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden sm:inline">Sign out</span>
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowLogoutModal(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs sm:text-sm font-medium text-slate-700 hover:bg-slate-50 hover:border-slate-300 shrink-0"
-        >
-          <LogOut className="h-4 w-4" />
-          <span className="hidden sm:inline">Sign out</span>
-        </button>
+
+        {/* Minimal partner header (centered) */}
+        <div className="px-3 sm:px-6 pt-3 sm:pt-4 pb-2 sm:pb-3">
+          <div className="mx-auto max-w-5xl text-center">
+            <p className="text-sm sm:text-base font-semibold text-slate-900">
+              {parentName || ownerName || "Partner"}
+            </p>
+            <p className="text-xs sm:text-sm text-slate-500 font-mono">{parentMerchantId ?? "—"}</p>
+            {ownerEmail ? (
+              <p className="text-[11px] sm:text-xs text-slate-500 truncate max-w-[92vw] mx-auto">
+                {ownerEmail}
+              </p>
+            ) : null}
+          </div>
+        </div>
       </header>
 
-      <main className="flex-1 px-3 sm:px-4 md:px-6 py-4 sm:py-6 overflow-auto">
-        <div className="mx-auto max-w-5xl space-y-4 sm:space-y-5">
+      <main className="flex-1 px-3 sm:px-6 pb-8 sm:pb-10">
+        <div className="mx-auto max-w-6xl">
           {verificationSubmittedBanner && (
             <div
-              className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+              className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 shadow-sm flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between mb-4"
               role="status"
             >
               <p className="leading-relaxed pr-2">
@@ -227,298 +271,157 @@ export default function PostLoginPage() {
               </button>
             </div>
           )}
-          {/* Compact parent details */}
-          <div className="rounded-xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
-                  <User className="h-4 w-4" />
-                </div>
-                <div>
-                  <span className="font-semibold text-slate-900">Partner account</span>
-                  <span className="ml-2 text-slate-500 font-mono text-xs">{parentMerchantId ?? "—"}</span>
-                </div>
-              </div>
-              {parentName && (
-                <span className="text-slate-600">
-                  <span className="text-slate-500">Business:</span> <span className="font-medium text-slate-800">{parentName}</span>
-                </span>
-              )}
-              {ownerName && (
-                <span className="text-slate-600">
-                  <span className="text-slate-500">Owner:</span> <span className="text-slate-800">{ownerName}</span>
-                </span>
-              )}
-              {ownerEmail && (
-                <span className="text-slate-600 truncate max-w-[200px] sm:max-w-none">
-                  <span className="text-slate-500">Email:</span> <span className="text-slate-800">{ownerEmail}</span>
-                </span>
-              )}
-            </div>
+          <div className="text-center mt-2">
+            <p className="text-xs sm:text-sm font-semibold tracking-wide text-slate-500 uppercase">
+              Select Store
+            </p>
           </div>
 
-          {/* Child stores section */}
-          <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 sm:p-4 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <Building2 className="h-5 w-5 text-slate-600 shrink-0" />
-                <h2 className="text-base sm:text-lg font-bold text-slate-900">Your child stores</h2>
-              </div>
-              <button
-                type="button"
-                onClick={addNewChildStore}
-                className="rounded-lg bg-indigo-600 px-3 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-indigo-700 w-full sm:w-auto"
-              >
-                + Add new child store
-              </button>
-            </div>
+          <div className="mt-6 sm:mt-8 flex justify-center">
+            <div className="w-full max-w-6xl">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 sm:gap-10 justify-items-center">
+                {storesOrdered.map((store) => {
+                  const badge = getStatusBadge(store.approval_status);
+                  const isApproved = String(store.approval_status || "").toUpperCase() === "APPROVED";
+                  const hasStepRejections =
+                    Array.isArray(store.verification_step_rejections) &&
+                    store.verification_step_rejections.length > 0;
+                  const anyResubmitted =
+                    hasStepRejections &&
+                    (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
+                  const canContinueOnboarding =
+                    !isApproved &&
+                    (hasStepRejections ||
+                      ((store.approval_status || "").toUpperCase() === "DRAFT") ||
+                      ((store.approval_status || "").toUpperCase() === "REJECTED") ||
+                      (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
+                  const isHighlighted = !!highlightStorePublicId && store.store_id === highlightStorePublicId;
+                  const bannerSrc = store.banner_url
+                    ? (normalizeMerchantStoreMediaUrl(store.banner_url) ?? store.banner_url)
+                    : null;
 
+                  const onCardClick = () => {
+                    if (isApproved) {
+                      goToDashboard(store.store_id);
+                      return;
+                    }
+                    if (canContinueOnboarding && !(anyResubmitted && hasStepRejections)) {
+                      goToOnboarding(store.store_id);
+                      return;
+                    }
+                    // Default: still move user into onboarding for this store (read-only users will be blocked by auth there).
+                    goToOnboarding(store.store_id);
+                  };
 
-            {stores.length === 0 ? (
-              <div className="p-6 sm:p-8 text-center">
-                <p className="text-sm text-slate-500 mb-4">No store registered yet. Add your first store to get started.</p>
-                <button
-                  type="button"
-                  onClick={addNewChildStore}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 px-4 text-sm font-semibold text-slate-700 hover:border-indigo-400 hover:bg-indigo-50/50"
-                >
-                  <Store className="h-5 w-5" />
-                  Start child store onboarding
-                </button>
-              </div>
-            ) : (
-              <>
-                {/* Desktop: table */}
-                <div className="hidden sm:block overflow-x-auto">
-                  <table className="w-full min-w-[720px] text-sm">
-                    <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50/80">
-                        <th className="text-left py-3 px-3 sm:px-4 font-semibold text-slate-700">Store</th>
-                        <th className="text-left py-3 px-3 sm:px-4 font-semibold text-slate-700">Address</th>
-                        <th className="text-left py-3 px-3 sm:px-4 font-semibold text-slate-700">Status</th>
-                        <th className="text-left py-3 px-3 sm:px-4 font-semibold text-slate-700">Payment</th>
-                        <th className="text-left py-3 px-3 sm:px-4 font-semibold text-slate-700">Step</th>
-                        <th className="text-right py-3 px-3 sm:px-4 font-semibold text-slate-700">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stores.map((store) => {
-                        const badge = getStatusBadge(store.approval_status);
-                        const isApproved = store.approval_status === "APPROVED";
-                        const hasStepRejections =
-                          Array.isArray(store.verification_step_rejections) &&
-                          store.verification_step_rejections.length > 0;
-                        const canContinueOnboarding =
-                          !isApproved &&
-                          (hasStepRejections ||
-                            ((store.approval_status || "").toUpperCase() === "DRAFT") ||
-                            ((store.approval_status || "").toUpperCase() === "REJECTED") ||
-                            (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
-                        const step = typeof store.current_onboarding_step === "number"
-                          ? Math.min(Math.max(store.current_onboarding_step, 1), 9)
-                          : null;
-                        const anyResubmitted =
-                          hasStepRejections &&
-                          (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
-                        const isHighlighted =
-                          !!highlightStorePublicId && store.store_id === highlightStorePublicId;
-                        return (
-                          <tr
-                            key={store.store_id}
-                            className={`border-b border-slate-100 hover:bg-slate-50/50 ${
-                              isHighlighted ? "bg-emerald-50/90 ring-2 ring-emerald-200 ring-inset" : ""
+                  return (
+                    <button
+                      key={store.store_id}
+                      type="button"
+                      onClick={onCardClick}
+                      className="group w-full max-w-[200px] sm:max-w-[220px] focus:outline-none"
+                      aria-label={store.store_name ? `Open ${store.store_name}` : `Open store ${store.store_id}`}
+                    >
+                      {/* Circle-only profile */}
+                      <div className="flex flex-col items-center">
+                        <div className="relative">
+                          <div
+                            className={`relative h-[104px] w-[104px] sm:h-[120px] sm:w-[120px] overflow-hidden rounded-full shadow-lg transition-transform duration-200 group-hover:scale-[1.03] group-active:scale-[0.99] ${
+                              isHighlighted ? "ring-4 ring-emerald-300" : "ring-2 ring-slate-200"
                             }`}
                           >
-                            <td className="py-3 px-3 sm:px-4 align-top">
-                              <div className="space-y-1">
-                                <p className="font-medium text-slate-900">{store.store_name || "Unnamed store"}</p>
-                                <p className="text-xs text-slate-500 font-mono">{store.store_id}</p>
-                              </div>
-                            </td>
-                            <td className="py-3 px-3 sm:px-4 text-slate-600 max-w-[180px] truncate align-top" title={store.full_address ?? undefined}>
-                              {store.full_address || "—"}
-                            </td>
-                            <td className="py-3 px-3 sm:px-4 align-top">
-                              <div className="flex max-w-[260px] flex-col gap-1.5">
-                                <span
-                                  className={`inline-flex w-fit shrink-0 text-xs font-medium px-2 py-0.5 rounded-full ${
-                                    hasStepRejections ? `${badge.className} ring-2 ring-red-200/80` : badge.className
-                                  }`}
-                                  title={
-                                    hasStepRejections
-                                      ? "Some onboarding steps need correction — tap for details"
-                                      : undefined
-                                  }
-                                >
-                                  {badge.label}
-                                </span>
-                                {hasStepRejections && (
-                                  <StoreVerificationRejectionsBadge
-                                    rejections={store.verification_step_rejections}
-                                    variant="inline"
-                                    hideInlineResubmittedChip={anyResubmitted}
-                                    className="max-w-full"
-                                  />
-                                )}
-                              </div>
-                            </td>
-                            <td className="py-3 px-3 sm:px-4 align-top">
-                              <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${
-                                store.payment_status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                              }`}>
-                                {store.payment_status === "completed" ? "Completed" : "Pending"}
-                              </span>
-                            </td>
-                            <td className="py-3 px-3 sm:px-4 text-slate-600 align-top">
-                              {step != null ? `${step} / 9` : "—"}
-                            </td>
-                            <td className="py-3 px-3 sm:px-4 text-right align-top">
-                              {isApproved ? (
-                                <button
-                                  type="button"
-                                  onClick={() => goToDashboard(store.store_id)}
-                                  className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-                                >
-                                  Dashboard
-                                  <ChevronRight className="h-4 w-4" />
-                                </button>
-                              ) : canContinueOnboarding ? (
-                                anyResubmitted && hasStepRejections ? (
-                                  <span
-                                    className="inline-flex items-center justify-center rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-900 cursor-default select-none"
-                                    title="Awaiting team review"
-                                  >
-                                    Resubmitted
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => goToOnboarding(store.store_id)}
-                                    className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-                                  >
-                                    {hasStepRejections ? "Review & fix" : "Continue"}
-                                    <ChevronRight className="h-4 w-4" />
-                                  </button>
-                                )
-                              ) : (
-                                <span className="text-xs text-slate-500">Awaiting verification</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Mobile: card list */}
-                <div className="sm:hidden divide-y divide-slate-100">
-                  {stores.map((store) => {
-                    const badge = getStatusBadge(store.approval_status);
-                    const isApproved = store.approval_status === "APPROVED";
-                    const hasStepRejections =
-                      Array.isArray(store.verification_step_rejections) &&
-                      store.verification_step_rejections.length > 0;
-                    const canContinueOnboarding =
-                      !isApproved &&
-                      (hasStepRejections ||
-                        ((store.approval_status || "").toUpperCase() === "DRAFT") ||
-                        ((store.approval_status || "").toUpperCase() === "REJECTED") ||
-                        (typeof store.current_onboarding_step === "number" && store.current_onboarding_step < 9));
-                    const step = typeof store.current_onboarding_step === "number"
-                      ? Math.min(Math.max(store.current_onboarding_step, 1), 9)
-                      : null;
-                    const anyResubmitted =
-                      hasStepRejections &&
-                      (store.verification_step_rejections ?? []).some((r) => r.merchant_resubmitted_at);
-                    const isHighlighted =
-                      !!highlightStorePublicId && store.store_id === highlightStorePublicId;
-                    return (
-                      <div
-                        key={store.store_id}
-                        className={`p-3 flex flex-col gap-2 ${
-                          isHighlighted ? "bg-emerald-50/90 ring-2 ring-emerald-200 ring-inset -mx-0" : ""
-                        }`}
-                      >
-                        <div className="flex justify-between items-start gap-2">
-                          <div className="min-w-0">
-                            <p className="font-medium text-slate-900 truncate">{store.store_name || "Unnamed store"}</p>
-                            <p className="text-xs text-slate-500 font-mono mt-0.5">{store.store_id}</p>
-                            {store.full_address && (
-                              <p className="text-xs text-slate-600 truncate mt-0.5">{store.full_address}</p>
+                            {bannerSrc ? (
+                              <img
+                                src={bannerSrc}
+                                alt=""
+                                className="absolute inset-0 h-full w-full object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="absolute inset-0 bg-gradient-to-br from-slate-100 via-blue-50 to-purple-50" />
                             )}
-                          </div>
-                          <div className="shrink-0 flex flex-col items-end gap-1">
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-black/15 to-transparent" />
+
+                            {/* status chip */}
                             <span
-                              className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                                hasStepRejections ? `${badge.className} ring-2 ring-red-200/80` : badge.className
-                              }`}
-                              title={
-                                hasStepRejections
-                                  ? "Some onboarding steps need correction"
-                                  : undefined
-                              }
+                              className={`absolute bottom-2 left-1/2 -translate-x-1/2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold shadow-sm ${badge.className}`}
                             >
                               {badge.label}
                             </span>
-                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                              store.payment_status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                            }`}>
-                              Payment: {store.payment_status === "completed" ? "Completed" : "Pending"}
-                            </span>
                           </div>
-                        </div>
-                        {hasStepRejections && (
-                          <StoreVerificationRejectionsBadge
-                            rejections={store.verification_step_rejections}
-                            variant="inline"
-                            hideInlineResubmittedChip={anyResubmitted}
-                            className="max-w-full"
-                          />
-                        )}
-                        <div className="flex items-center justify-between gap-2">
-                          {step != null && (
-                            <span className="text-xs text-slate-500">Step {step} / 9</span>
-                          )}
-                          <div className="ml-auto">
-                            {isApproved ? (
-                              <button
-                                type="button"
-                                onClick={() => goToDashboard(store.store_id)}
-                                className="flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
-                              >
-                                Dashboard
-                                <ChevronRight className="h-4 w-4" />
-                              </button>
-                            ) : canContinueOnboarding ? (
-                              anyResubmitted && hasStepRejections ? (
-                                <span
-                                  className="flex items-center justify-center rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-900 cursor-default select-none"
-                                  title="Awaiting team review"
-                                >
-                                  Resubmitted
-                                </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => goToOnboarding(store.store_id)}
-                                  className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
-                                >
-                                  {hasStepRejections ? "Review & fix" : "Continue"}
-                                  <ChevronRight className="h-4 w-4" />
-                                </button>
-                              )
-                            ) : (
-                              <span className="text-xs text-slate-500">Awaiting verification</span>
-                            )}
-                          </div>
+
+                          {/* Store ID below circle */}
+                          <p className="mt-2 text-[11px] sm:text-xs text-slate-600 font-mono truncate max-w-[160px] text-center">
+                            {store.store_id}
+                          </p>
+
+                          {hasStepRejections ? (
+                            <div className="mt-2 w-[160px] sm:w-[180px]">
+                              <StoreVerificationRejectionsBadge
+                                rejections={store.verification_step_rejections}
+                                variant="inline"
+                                hideInlineResubmittedChip={anyResubmitted}
+                                className="max-w-full"
+                              />
+                            </div>
+                          ) : null}
                         </div>
                       </div>
-                    );
-                  })}
+
+                      {/* Store name below (wrap) */}
+                      <div className="mt-2 px-1">
+                        <p className="text-sm sm:text-base font-semibold text-slate-900 leading-snug text-center break-words line-clamp-2">
+                          {store.store_name || "Unnamed store"}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+
+                {/* Add Store card */}
+                <button
+                  type="button"
+                  onClick={addNewChildStore}
+                  className="group w-full max-w-[200px] sm:max-w-[220px] focus:outline-none"
+                  aria-label="Add Store"
+                >
+                  <div className="flex flex-col items-center">
+                    <div
+                      className="relative h-[104px] w-[104px] sm:h-[120px] sm:w-[120px] rounded-full border-2 border-dashed border-indigo-300 bg-white/70 shadow-sm transition-transform duration-200 group-hover:scale-[1.03] group-hover:shadow-md group-active:scale-[0.99]"
+                    >
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="h-14 w-14 sm:h-16 sm:w-16 rounded-full bg-indigo-50 ring-1 ring-indigo-200 flex items-center justify-center">
+                          <Plus className="h-8 w-8 sm:h-9 sm:w-9 text-indigo-700" strokeWidth={2.5} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-2 px-1">
+                    <p className="text-sm sm:text-base font-semibold text-slate-900 leading-snug text-center">
+                      Add Store
+                    </p>
+                    <p className="mt-0.5 text-[11px] sm:text-xs text-slate-500 text-center">
+                      Start a new onboarding
+                    </p>
+                  </div>
+                </button>
+              </div>
+
+              {storesOrdered.length === 0 ? (
+                <div className="mt-8 text-center">
+                  <p className="text-sm text-slate-500 mb-4">
+                    No store registered yet. Add your first store to get started.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={addNewChildStore}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50/50 py-3 px-4 text-sm font-semibold text-slate-700 hover:border-indigo-400 hover:bg-indigo-50/50"
+                  >
+                    <Plus className="h-5 w-5" />
+                    Add your first store
+                  </button>
                 </div>
-              </>
-            )}
+              ) : null}
+            </div>
           </div>
         </div>
       </main>

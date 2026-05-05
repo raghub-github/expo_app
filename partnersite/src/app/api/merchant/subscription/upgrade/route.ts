@@ -97,6 +97,7 @@ export async function POST(req: NextRequest) {
       .from('merchant_plans')
       .select('*')
       .eq('id', newPlanId)
+      .eq('plan_type', 'MERCHANT')
       .single()
 
     if (!newPlan) {
@@ -160,6 +161,13 @@ export async function POST(req: NextRequest) {
 
     const creditToApply = Math.min(remainingCredit, newPlanPrice)
     const amountToCharge = Math.max(0, Math.round((newPlanPrice - creditToApply) * 100) / 100)
+    const gstPercent = (() => {
+      const gp = Number((newPlan as any).gst_percent ?? 0)
+      return Number.isFinite(gp) && gp >= 0 && gp <= 100 ? gp : 0
+    })()
+    const subtotalPaise = Math.round(amountToCharge * 100)
+    const gstAmountPaise = Math.round((subtotalPaise * gstPercent) / 100)
+    const totalPaise = subtotalPaise + gstAmountPaise
 
     if (!hasPayment && amountToCharge > 0) {
       return NextResponse.json(
@@ -232,7 +240,11 @@ export async function POST(req: NextRequest) {
       store_id: store.id,
       subscription_id: newSub.id,
       plan_id: newPlanId,
-      amount: amountToCharge,
+      amount: Math.round(totalPaise) / 100,
+      subtotal_paise: subtotalPaise,
+      gst_percent_applied: gstPercent,
+      gst_amount_paise: gstAmountPaise,
+      total_paise: totalPaise,
       payment_gateway: hasPayment ? 'RAZORPAY' : 'PRORATION_CREDIT',
       payment_gateway_id: hasPayment ? razorpay_payment_id : `upgrade_${newSub.id}_${now.getTime()}`,
       payment_gateway_response: hasPayment
@@ -250,7 +262,10 @@ export async function POST(req: NextRequest) {
       subscriptionId: newSub.id,
       message: 'Upgrade successful. Your new plan is active.',
       creditApplied: creditToApply,
-      amountCharged: amountToCharge,
+      amountCharged: Math.round(totalPaise) / 100,
+      subtotal: amountToCharge,
+      gstPercent,
+      gstAmountPaise,
     });
   } catch (e: unknown) {
     console.error('[upgrade]', e);

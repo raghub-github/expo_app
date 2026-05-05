@@ -10,18 +10,21 @@ interface MerchantPlanFormProps {
   onClose: () => void;
   onSuccess: () => void;
   editPlan: MerchantPlan | null;
+  planType: "MERCHANT" | "RIDER" | "CUSTOMER";
 }
 
 const BILLING_CYCLES = ["MONTHLY", "QUARTERLY", "YEARLY"] as const;
 
-export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: MerchantPlanFormProps) {
+export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan, planType }: MerchantPlanFormProps) {
   const createMutation = useCreateMerchantPlan();
   const updateMutation = useUpdateMerchantPlan();
 
+  const [selectedPlanType, setSelectedPlanType] = useState<"MERCHANT" | "RIDER" | "CUSTOMER">(planType);
   const [planName, setPlanName] = useState("");
   const [planCode, setPlanCode] = useState("");
   const [description, setDescription] = useState("");
   const [price, setPrice] = useState("");
+  const [gstPercent, setGstPercent] = useState("");
   const [billingCycle, setBillingCycle] = useState<"MONTHLY" | "QUARTERLY" | "YEARLY">("MONTHLY");
   const [maxMenuItems, setMaxMenuItems] = useState("");
   const [maxCuisines, setMaxCuisines] = useState("");
@@ -45,10 +48,12 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: Merch
     if (!isOpen) return;
     setError(null);
     if (editPlan) {
+      setSelectedPlanType((String((editPlan as any).planType ?? planType).toUpperCase() as any) || planType);
       setPlanName(editPlan.planName);
       setPlanCode(editPlan.planCode);
       setDescription(editPlan.description ?? "");
       setPrice(String(editPlan.price));
+      setGstPercent(editPlan.gstPercent != null ? String(editPlan.gstPercent) : "0");
       setBillingCycle((editPlan.billingCycle as "MONTHLY" | "QUARTERLY" | "YEARLY") || "MONTHLY");
       setMaxMenuItems(editPlan.maxMenuItems != null ? String(editPlan.maxMenuItems) : "");
       setMaxCuisines(editPlan.maxCuisines != null ? String(editPlan.maxCuisines) : "");
@@ -65,10 +70,12 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: Merch
       setIsActive(editPlan.isActive);
       setIsPopular(editPlan.isPopular);
     } else {
+      setSelectedPlanType(planType);
       setPlanName("");
       setPlanCode("");
       setDescription("");
       setPrice("0");
+      setGstPercent("0");
       setBillingCycle("MONTHLY");
       setMaxMenuItems("");
       setMaxCuisines("");
@@ -85,7 +92,7 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: Merch
       setIsActive(true);
       setIsPopular(false);
     }
-  }, [isOpen, editPlan]);
+  }, [isOpen, editPlan, planType]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,12 +111,19 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: Merch
       setError("Price must be 0 or greater");
       return;
     }
+    const gstNum = parseFloat(gstPercent || "0");
+    if (!Number.isFinite(gstNum) || gstNum < 0 || gstNum > 100) {
+      setError("GST % must be between 0 and 100");
+      return;
+    }
 
     const payload = {
       planName: planName.trim(),
       planCode: planCode.trim().toUpperCase().replace(/\s+/g, "_"),
       description: description.trim() || null,
       price: priceNum,
+      gstPercent: gstNum,
+      planType: selectedPlanType,
       billingCycle,
       maxMenuItems: maxMenuItems ? parseInt(maxMenuItems, 10) : null,
       maxCuisines: maxCuisines ? parseInt(maxCuisines, 10) : null,
@@ -168,9 +182,33 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: Merch
           <div>
             <h3 className="text-sm font-semibold text-gray-800 mb-3">Basic Info</h3>
             <div className="space-y-4">
-              <div>
-                <label className={labelCls}>Plan Name *</label>
-                <input type="text" value={planName} onChange={(e) => setPlanName(e.target.value)} className={inputCls} placeholder="e.g. Starter" />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>Plan Name *</label>
+                  <input
+                    type="text"
+                    value={planName}
+                    onChange={(e) => setPlanName(e.target.value)}
+                    className={inputCls}
+                    placeholder="e.g. Starter"
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Plan Type</label>
+                  <select
+                    value={selectedPlanType}
+                    onChange={(e) => setSelectedPlanType(e.target.value as any)}
+                    className={inputCls}
+                    disabled={isEditing}
+                  >
+                    {(["MERCHANT", "RIDER", "CUSTOMER"] as const).map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                  {isEditing && <p className="text-xs text-gray-500 mt-0.5">Plan type cannot be changed on edit</p>}
+                </div>
               </div>
               <div>
                 <label className={labelCls}>Plan Code *</label>
@@ -200,6 +238,22 @@ export function MerchantPlanForm({ isOpen, onClose, onSuccess, editPlan }: Merch
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>GST %</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={gstPercent}
+                    onChange={(e) => setGstPercent(e.target.value)}
+                    className={inputCls}
+                    placeholder="0"
+                  />
+                  <p className="text-xs text-gray-500 mt-0.5">Applied only to this plan during subscription purchase.</p>
                 </div>
               </div>
             </div>

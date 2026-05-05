@@ -16,8 +16,10 @@ function toPlanRow(row: Record<string, unknown>) {
     id: Number(row.id),
     planName: row.plan_name as string,
     planCode: row.plan_code as string,
+    planType: (row.plan_type as string) ?? "MERCHANT",
     description: (row.description as string) ?? null,
     price: Number(row.price ?? 0),
+    gstPercent: row.gst_percent != null ? String(row.gst_percent) : "0",
     billingCycle: (row.billing_cycle as string) ?? "MONTHLY",
     maxMenuItems: row.max_menu_items != null ? Number(row.max_menu_items) : null,
     maxCuisines: row.max_cuisines != null ? Number(row.max_cuisines) : null,
@@ -81,6 +83,15 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       { key: "planCode", db: "plan_code", fn: (v) => v ? String(v).trim().toUpperCase().replace(/\s+/g, "_") : v },
       { key: "description", db: "description" },
       { key: "price", db: "price", fn: (v) => v != null ? Number(v) : v },
+      {
+        key: "gstPercent",
+        db: "gst_percent",
+        fn: (v) => {
+          const n = v != null ? Number(v) : 0;
+          if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error("gstPercent must be 0–100");
+          return n;
+        },
+      },
       { key: "billingCycle", db: "billing_cycle" },
       { key: "maxMenuItems", db: "max_menu_items", fn: (v) => v != null ? Number(v) : v },
       { key: "maxCuisines", db: "max_cuisines", fn: (v) => v != null ? Number(v) : v },

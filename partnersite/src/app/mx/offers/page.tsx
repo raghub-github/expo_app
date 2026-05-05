@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, Suspense, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useSearchParams } from 'next/navigation'
 import { MXLayoutWhite } from '@/components/MXLayoutWhite'
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
@@ -103,6 +104,13 @@ type Step = 'basic' | 'type' | 'applicability' | 'conditions' | 'stackability'
 const STEPS: Step[] = ['basic', 'type', 'applicability', 'conditions', 'stackability']
 const STEP_LABELS: Record<Step, string> = { basic: 'Basic info', type: 'Offer type', applicability: 'Where it applies', conditions: 'Conditions', stackability: 'Stacking & priority' }
 
+function BodyPortal({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  if (!mounted) return null
+  return createPortal(children, document.body)
+}
+
 function OffersContent() {
   const searchParams = useSearchParams()
   const [store, setStore] = useState<MerchantStore | null>(null)
@@ -110,6 +118,7 @@ function OffersContent() {
   const [isLoading, setIsLoading] = useState(true)
   const [offers, setOffers] = useState<Offer[]>([])
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
+  const [pageTab, setPageTab] = useState<"create" | "track">("create")
   
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([])
   const [showModal, setShowModal] = useState(false)
@@ -117,6 +126,7 @@ function OffersContent() {
   const [isSaving, setIsSaving] = useState(false)
   const [step, setStep] = useState<Step>('basic')
   const [activeTab, setActiveTab] = useState<'basic' | 'type' | 'applicability' | 'conditions' | 'stackability'>('basic')
+  const [sheetVisible, setSheetVisible] = useState(false)
   
   const [formData, setFormData] = useState({
     offer_title: '',
@@ -310,6 +320,27 @@ function OffersContent() {
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [showOfferTypeDropdown, showApplyToDropdown, showMenuItemSuggestions, showModal])
+
+  useEffect(() => {
+    if (showModal) {
+      setSheetVisible(true)
+      return
+    }
+    const t = setTimeout(() => setSheetVisible(false), 220)
+    return () => clearTimeout(t)
+  }, [showModal])
+
+  useEffect(() => {
+    if (!showModal) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowModal(false)
+        resetForm()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [showModal])
 
   // Auto-generate coupon when COUPON type is selected
   useEffect(() => {
@@ -914,27 +945,55 @@ function OffersContent() {
   return (
     <>
       <MXLayoutWhite restaurantName={store?.store_name || "Offers"} restaurantId={storeId || ""}>
-        <PartnerPageHeader
-          title="Offers & Promotions"
-          subtitle={`Manage offers for ${store?.store_name || 'your store'}`}
-        />
-        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-orange-50/30">
-          <div className="bg-white/95 backdrop-blur-sm border-b border-gray-200/80 shadow-sm mx-shell-header !px-4 sm:!px-5 md:!px-6 flex-wrap gap-3 sm:gap-4">
-            <div className="flex flex-wrap items-center gap-3 sm:gap-4 w-full min-w-0 justify-between">
+        <PartnerPageHeader title="Offers" subtitle="" />
+        <div className="h-screen bg-white overflow-y-auto hide-scrollbar">
+          <div className="bg-white border-b border-gray-200 mx-shell-header !px-4 sm:!px-5 md:!px-6">
+            <div className="flex items-center justify-between gap-3">
               <MobileHamburgerButton />
+              <div className="flex-1" />
+            </div>
+
+            <div className="mt-3 flex gap-8 text-sm">
               <button
-                onClick={() => handleOpenModal()}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-xl hover:from-orange-600 hover:to-red-600 transition-all text-sm shadow-md hover:shadow-lg active:scale-[0.98]"
+                type="button"
+                onClick={() => setPageTab("create")}
+                className={`pb-3 border-b-2 transition-colors ${
+                  pageTab === "create" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
               >
-                <Plus size={18} className="shrink-0" />
-                Create Offer
+                Create offers
+              </button>
+              <button
+                type="button"
+                onClick={() => setPageTab("track")}
+                className={`pb-3 border-b-2 transition-colors ${
+                  pageTab === "track" ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                Track offers
               </button>
             </div>
           </div>
 
           {/* Content — responsive padding and max-width */}
           <div className="px-4 sm:px-5 md:px-6 py-4 sm:py-6 max-w-7xl mx-auto">
-            {offers.length === 0 ? (
+            {pageTab === "create" ? (
+              <div className="py-6">
+                <div className="rounded-lg border border-gray-200 bg-white p-6">
+                  <div className="flex flex-col items-center justify-center gap-3 text-center">
+                    <p className="text-sm text-gray-700 font-medium">Create offers</p>
+                    <p className="text-sm text-gray-500">Click below to start creating a new offer.</p>
+                    <button
+                      onClick={() => handleOpenModal()}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                    >
+                      <Plus size={16} className="shrink-0" />
+                      Create offer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : offers.length === 0 ? (
               <div className="bg-white/80 backdrop-blur-sm rounded-2xl border border-gray-200/90 border-dashed shadow-sm p-6 sm:p-8 md:p-10 text-center max-w-xl mx-auto">
                 <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-orange-100 to-red-50 rounded-2xl flex items-center justify-center mx-auto mb-4 sm:mb-5">
                   <Zap size={28} className="sm:w-8 sm:h-8 text-orange-500" />
@@ -1172,13 +1231,31 @@ function OffersContent() {
           </div>
         </div>
 
-        {/* Create/Edit Modal — 5-step enterprise offer wizard */}
-        {showModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 md:p-4 backdrop-blur-sm">
-            <div
-              ref={modalRef}
-              className="bg-white w-full max-w-lg border border-gray-200 shadow-2xl flex flex-col max-h-[92vh] rounded-2xl overflow-hidden"
-            >
+        {/* Create/Edit Right Sheet — 5-step enterprise offer wizard */}
+        {(showModal || sheetVisible) && (
+          <BodyPortal>
+            <div className="fixed inset-0 z-[9999]">
+              {/* Overlay */}
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => { setShowModal(false); resetForm(); }}
+                className={`fixed inset-0 bg-black/35 backdrop-blur-md transition-opacity duration-200 ${
+                  showModal ? "opacity-100" : "opacity-0"
+                }`}
+              />
+
+              {/* Sheet */}
+              <div
+                ref={modalRef}
+                role="dialog"
+                aria-modal="true"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                className={`fixed right-0 top-0 h-dvh w-full sm:max-w-lg bg-white border-l border-gray-200 shadow-2xl flex flex-col overflow-hidden transition-transform duration-200 will-change-transform ${
+                  showModal ? "translate-x-0" : "translate-x-full"
+                }`}
+              >
               {/* Header */}
               <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white">
                 <div>
@@ -1194,9 +1271,9 @@ function OffersContent() {
                 </button>
               </div>
 
-              {/* Step progress */}
-              <div className="flex-shrink-0 px-4 pt-3 pb-2 bg-white border-b border-gray-100">
-                <div className="flex justify-between gap-1">
+              {/* Step progress (scrollable to avoid overlap) */}
+              <div className="flex-shrink-0 px-4 pt-3 pb-2 bg-white border-b border-gray-100 overflow-x-auto hide-scrollbar">
+                <div className="flex gap-1 min-w-max">
                   {STEPS.map((s, i) => (
                     <button
                       key={s}
@@ -1211,7 +1288,7 @@ function OffersContent() {
                           }).catch(() => {})
                         }
                       }}
-                      className={`flex-1 py-2 rounded-lg text-[10px] font-semibold transition-all ${
+                      className={`flex-none min-w-[120px] max-w-[140px] py-2 px-2 rounded-lg text-[10px] font-semibold transition-all whitespace-nowrap overflow-hidden text-ellipsis ${
                         activeTab === s
                           ? 'bg-orange-500 text-white shadow-md'
                           : i < STEPS.indexOf(activeTab)
@@ -1219,7 +1296,9 @@ function OffersContent() {
                             : 'bg-gray-100 text-gray-500'
                       }`}
                     >
-                      {i + 1}. {STEP_LABELS[s]}
+                      <span className="block truncate">
+                        {i + 1}. {STEP_LABELS[s]}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1757,8 +1836,20 @@ function OffersContent() {
                 </form>
               </div>
             </div>
-          </div>
+            </div>
+          </BodyPortal>
         )}
+
+        <style jsx global>{`
+          .hide-scrollbar {
+            -ms-overflow-style: none; /* IE and Edge */
+            scrollbar-width: none; /* Firefox */
+          }
+
+          .hide-scrollbar::-webkit-scrollbar {
+            display: none; /* Chrome, Safari and Opera */
+          }
+        `}</style>
       </MXLayoutWhite>
     </>
   )

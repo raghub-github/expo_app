@@ -80,6 +80,7 @@ async function handleQuote(
       .from('merchant_plans')
       .select('*')
       .eq('id', newPlanId)
+      .eq('plan_type', 'MERCHANT')
       .single()
 
     if (!newPlan) {

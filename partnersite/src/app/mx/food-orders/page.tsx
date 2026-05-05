@@ -1150,7 +1150,7 @@ function OrdersPageContent() {
                   <input
                     type="search"
                     inputMode="numeric"
-                    placeholder="Search by the 4 digit order ID"
+                    placeholder="Search with order id  ..............."
                     value={orderIdSearch}
                     onChange={(e) => setOrderIdSearch(e.target.value)}
                     className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-900 placeholder:text-gray-400 shadow-sm"

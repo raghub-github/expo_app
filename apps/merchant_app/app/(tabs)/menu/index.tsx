@@ -41,6 +41,7 @@ import {
   fetchCombo,
   updateCombo,
   fetchMenuItem,
+  fetchMenuItems,
   fetchModifierGroups,
   patchComboOutOfStock,
   patchItemOutOfStock,
@@ -68,18 +69,68 @@ const FOOD_TYPE_LABELS: Record<string, string> = {
   VEGAN: "Vegan",
 };
 
-function formatOosUntilLabel(untilIso: string) {
-  const d = new Date(untilIso);
-  if (!Number.isFinite(d.getTime())) return null;
-  const dt = new Intl.DateTimeFormat("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
+function parseOosUntilDate(untilValue: unknown): Date | null {
+  if (untilValue == null) return null;
+  if (untilValue instanceof Date) return Number.isFinite(untilValue.getTime()) ? untilValue : null;
+  if (typeof untilValue === "number") {
+    const d = new Date(untilValue);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  if (typeof untilValue === "object") {
+    try {
+      const iso = (untilValue as { toISOString?: () => string })?.toISOString?.();
+      if (iso) {
+        const d = new Date(iso);
+        if (Number.isFinite(d.getTime())) return d;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  const raw = String(untilValue ?? "").trim();
+  if (!raw) return null;
+  // Hermes/Android can fail on some non-ISO timestamp shapes.
+  // Normalize common backend variants:
+  // - "YYYY-MM-DD HH:mm:ss+00" -> "YYYY-MM-DDTHH:mm:ss+00:00"
+  // - "YYYY-MM-DDTHH:mm:ss+0530" -> "...+05:30"
+  const candidates = Array.from(
+    new Set([
+      raw,
+      raw.includes(" ") && !raw.includes("T") ? raw.replace(" ", "T") : raw,
+      raw.replace(/([+\-]\d{2})(\d{2})$/, "$1:$2"),
+      raw.replace(" ", "T").replace(/([+\-]\d{2})(\d{2})$/, "$1:$2"),
+      /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/.test(raw) && !/[zZ]|[+\-][0-9]{2}:[0-9]{2}$/.test(raw) ? `${raw}Z` : raw,
+    ])
+  );
+  const d = candidates
+    .map((s) => new Date(s))
+    .find((x) => Number.isFinite(x.getTime()));
+  return d ?? null;
+}
+
+function formatOosUntilLabel(untilValue: unknown) {
+  const d = parseOosUntilDate(untilValue);
+  if (!d) return null;
+
+  const now = new Date();
+  const isSameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+
+  const time = new Intl.DateTimeFormat("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
   }).format(d);
-  return `Out of stock till ${dt}`;
+  if (isSameDay) return `Out of stock till ${time}`;
+
+  const date = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  }).format(d);
+  return `Out of stock till ${time}, ${date}`;
 }
 
 function MenuItemCard({
@@ -403,7 +454,7 @@ function ComboCard({
     ? comboOosUntil
       ? (formatOosUntilLabel(comboOosUntil) ?? "Out of stock")
       : comboOosManual
-        ? "Out of stock"
+        ? "No time set. Turn item in stock manually"
         : "Marked out of stock"
     : isDisabled
       ? "Not available · an item is out of stock"
@@ -679,40 +730,63 @@ export default function MenuScreen() {
     },
     [nowTick]
   );
-  const isCategoryOos = useCallback(
-    (categoryId: number | null | undefined) => {
+  /** Category OOS blocks an item only when the item row still carries the category cascade marker (Partner Site parity). */
+  const isItemBlockedByCategoryOos = useCallback(
+    (item: MenuItemRow) => {
+      const categoryId = item.category_id ?? null;
       if (categoryId == null) return false;
       const c: any = categoryById.get(categoryId);
       if (!c) return false;
-      return isOosActive(c.out_of_stock_manual, c.out_of_stock_until ?? null);
+      const catOos = isOosActive(c.out_of_stock_manual, c.out_of_stock_until ?? null);
+      if (!catOos) return false;
+      const catMarker = c.out_of_stock_updated_at ?? null;
+      const itemMarker = (item as any).out_of_stock_updated_at ?? null;
+      if (!catMarker || !itemMarker) return false;
+      return String(itemMarker) === String(catMarker);
     },
     [categoryById, isOosActive]
   );
-  const effectiveInStock = useCallback(
+  const itemInStockIgnoringCategory = useCallback(
     (item: MenuItemRow) => {
       const base = item.in_stock !== false;
       const itemOos = isOosActive((item as any).out_of_stock_manual, (item as any).out_of_stock_until ?? null);
-      const catOos = isCategoryOos(item.category_id);
-      return base && !itemOos && !catOos;
+      return base && !itemOos;
     },
-    [isCategoryOos, isOosActive]
+    [isOosActive]
+  );
+  const effectiveInStock = useCallback(
+    (item: MenuItemRow) => {
+      if (!itemInStockIgnoringCategory(item)) return false;
+      return !isItemBlockedByCategoryOos(item);
+    },
+    [isItemBlockedByCategoryOos, itemInStockIgnoringCategory]
   );
   const getItemOosLabel = useCallback(
     (item: MenuItemRow) => {
       if (effectiveInStock(item)) return null;
       if (item.category_id != null) {
         const c: any = categoryById.get(item.category_id);
-        if (c && isOosActive(c.out_of_stock_manual, c.out_of_stock_until ?? null)) {
-          if (c.out_of_stock_until) return formatOosUntilLabel(c.out_of_stock_until) ?? "Out of stock";
+        if (c && isItemBlockedByCategoryOos(item)) {
+          if (c.out_of_stock_manual) return "No time set. Turn item in stock manually";
+          if (c.out_of_stock_until) {
+            const fmt = formatOosUntilLabel(c.out_of_stock_until);
+            return fmt ?? "Out of stock";
+          }
+          const itemUntilInCategory = (item as any).out_of_stock_until as unknown;
+          if (itemUntilInCategory != null) {
+            const fmt = formatOosUntilLabel(itemUntilInCategory);
+            if (fmt) return fmt;
+          }
           return "Out of stock";
         }
       }
+      if ((item as any).out_of_stock_manual) return "No time set. Turn item in stock manually";
       const until = (item as any).out_of_stock_until as string | null | undefined;
       if (until) return formatOosUntilLabel(until) ?? "Out of stock";
-      if ((item as any).out_of_stock_manual) return "Out of stock";
+      if (item.in_stock === false) return "Out of stock";
       return "Out of stock";
     },
-    [categoryById, effectiveInStock, isOosActive]
+    [categoryById, effectiveInStock, isItemBlockedByCategoryOos]
   );
 
   // Combos (kept here so modal counts + UI can use it safely)
@@ -940,7 +1014,7 @@ export default function MenuScreen() {
       }
       // If the category itself is out-of-stock, restoring the item alone won't make it available.
       // Match partnersite behavior: offer to restore the category (and clear item OOS too).
-      if (item.category_id != null && isCategoryOos(item.category_id)) {
+      if (item.category_id != null && isItemBlockedByCategoryOos(item)) {
         const c: any = categoryById.get(item.category_id);
         const categoryName = (c?.category_name as string) ?? "this category";
         setRestoreConfirm({
@@ -986,6 +1060,26 @@ export default function MenuScreen() {
             if (item.in_stock === false) {
               await patchStock.mutateAsync({ itemId: item.id, inStock: true });
             }
+            const catId = item.category_id ?? null;
+            if (catId != null) {
+              const cat = categoryById.get(catId) as any;
+              const catOosActive = cat ? isOosActive(cat.out_of_stock_manual, cat.out_of_stock_until ?? null) : false;
+              if (catOosActive) {
+                const { items: catItems } = await fetchMenuItems(storeId, token, {
+                  categoryId: catId,
+                  limit: 100,
+                  offset: 0,
+                });
+                const allBack = (catItems ?? []).filter((it) => it.is_deleted !== true).every((it) => {
+                  const base = it.in_stock !== false;
+                  const itemOos = isOosActive((it as any).out_of_stock_manual, (it as any).out_of_stock_until ?? null);
+                  return base && !itemOos;
+                });
+                if (allBack) {
+                  await patchCategoryOutOfStock(storeId, catId, token, { mode: "CLEAR" });
+                }
+              }
+            }
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error("[menu] restore item failed", e);
@@ -994,11 +1088,12 @@ export default function MenuScreen() {
             setOosBusy(false);
             setOosModal(null);
             await refetchItems();
+            await refetchCategories();
           }
         },
       });
     },
-    [storeId, token, patchStock, refetchItems, refetchCategories, isCategoryOos, categoryById]
+    [storeId, token, patchStock, refetchItems, refetchCategories, isItemBlockedByCategoryOos, categoryById, isOosActive]
   );
 
   const handleConfirmOos = useCallback(
@@ -1034,6 +1129,9 @@ export default function MenuScreen() {
             until: payload.mode === "CUSTOM" ? payload.until : undefined,
           });
         }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        Alert.alert("Could not update stock", msg);
       } finally {
         setOosBusy(false);
         setOosModal(null);
@@ -1121,6 +1219,21 @@ export default function MenuScreen() {
       return base && !comboOos && componentsOk;
     },
     [effectiveInStock, isComboOosActive]
+  );
+  const getComboOosLabel = useCallback(
+    (combo: ComboRow, detail: ComboDetail | null, map: Map<number, MenuItemRow>) => {
+      if (effectiveComboInStock(combo, detail, map)) return null;
+      const until = (combo as any)?.out_of_stock_until as string | null | undefined;
+      if (until) return formatOosUntilLabel(until) ?? "Out of stock";
+      if (Boolean((combo as any)?.out_of_stock_manual)) return "No time set. Turn item in stock manually";
+      const blockedByItem = (detail?.components ?? []).some((c) => {
+        const it = map.get(c.menu_item_id);
+        return it ? !effectiveInStock(it) : false;
+      });
+      if (blockedByItem) return "Not available · an item is out of stock";
+      return "Out of stock";
+    },
+    [effectiveComboInStock, effectiveInStock]
   );
 
   const handleToggleComboStock = useCallback(
@@ -1852,6 +1965,8 @@ export default function MenuScreen() {
                     const allInStock =
                       (group.items?.length ?? 0) > 0 &&
                       group.items.every((i) => effectiveInStock(i));
+                    const totalItemsInGroup = group.items?.length ?? 0;
+                    const outOfStockInGroup = group.items.filter((i) => !effectiveInStock(i)).length;
                     const categoryIdNum = /^\d+$/.test(group.key) ? parseInt(group.key, 10) : NaN;
 
                     return (
@@ -1881,12 +1996,19 @@ export default function MenuScreen() {
                                 color={GatiMitraMerchant.textSecondary}
                               />
                             </View>
+                            <View style={styles.treeGroupTitleWrap}>
                               <Text style={styles.treeGroupTitle} numberOfLines={1}>
-                              {group.categoryName}{" "}
-                              <Text style={styles.treeCountText}>
-                                ({group.items?.length ?? 0})
+                                {group.categoryName}{" "}
+                                <Text style={styles.treeCountText}>
+                                  ({group.items?.length ?? 0})
+                                </Text>
                               </Text>
-                            </Text>
+                              {outOfStockInGroup > 0 ? (
+                                <Text style={styles.treeGroupMeta} numberOfLines={1}>
+                                  {outOfStockInGroup} out of {totalItemsInGroup} items are out of stock
+                                </Text>
+                              ) : null}
+                            </View>
                           </TouchableOpacity>
 
                           <View style={styles.treeGroupRight}>
@@ -1906,12 +2028,20 @@ export default function MenuScreen() {
                                   }
                                   setRestoreConfirm({
                                     title: "Bring back in stock?",
-                                    message: "This will make it available to customers and start receiving orders.",
+                                    message: "This will mark all items in this category as In Stock and available for orders.",
                                     onConfirm: async () => {
                                       setRestoreConfirm(null);
                                       setOosBusy(true);
                                       try {
                                         await patchCategoryOutOfStock(storeId, categoryIdNum, token, { mode: "CLEAR" });
+                                        await Promise.all(
+                                          group.items.map(async (it) => {
+                                            await patchItemOutOfStock(storeId, it.id, token, { mode: "CLEAR" });
+                                            if (it.in_stock === false) {
+                                              await patchStock.mutateAsync({ itemId: it.id, inStock: true });
+                                            }
+                                          })
+                                        );
                                       } finally {
                                         setOosBusy(false);
                                         await refetchItems();
@@ -1921,12 +2051,21 @@ export default function MenuScreen() {
                                   });
                                   return;
                                 }
-                                // Uncategorised: fallback to legacy per-item toggles.
-                                const toUpdate = group.items.filter((i) => (i.in_stock ?? true) !== target);
+                                // Uncategorised: use same OOS fields as Partner Site (not legacy in_stock-only).
+                                const toUpdate = group.items.filter((i) => effectiveInStock(i) !== target);
                                 if ((toUpdate?.length ?? 0) === 0) return;
                                 try {
                                   await Promise.all(
-                                    toUpdate.map((i) => patchStock.mutateAsync({ itemId: i.id, inStock: target }))
+                                    toUpdate.map(async (i) => {
+                                      if (target) {
+                                        await patchItemOutOfStock(storeId, i.id, token, { mode: "CLEAR" });
+                                        if (i.in_stock === false) {
+                                          await patchStock.mutateAsync({ itemId: i.id, inStock: true });
+                                        }
+                                      } else {
+                                        await patchItemOutOfStock(storeId, i.id, token, { mode: "MANUAL" });
+                                      }
+                                    })
                                   );
                                   await refetchItems();
                                 } catch {
@@ -2080,6 +2219,15 @@ export default function MenuScreen() {
                                       <Text style={styles.treeItemName} numberOfLines={1}>
                                         {combo.combo_name}
                                       </Text>
+                                      {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById) ? (
+                                        <Text style={styles.treeOosSubtext} numberOfLines={1}>
+                                          {getComboOosLabel(combo, comboDetails.get(combo.id) ?? null, itemById)}
+                                        </Text>
+                                      ) : (
+                                        <Text style={styles.treeInStockSubtext} numberOfLines={1}>
+                                          In stock
+                                        </Text>
+                                      )}
                                     </TouchableOpacity>
                                     <View style={styles.treeRowRight}>
                                       <Text style={styles.treePrice}>
@@ -2641,6 +2789,7 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.surfaceSubtle,
   },
   treeGroupTitleBtn: { flexDirection: "row", alignItems: "center", gap: 8, flex: 1, minWidth: 0 },
+  treeGroupTitleWrap: { flex: 1, minWidth: 0 },
   treeChevronBtn: {
     width: 28,
     height: 28,
@@ -2652,6 +2801,7 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.cardBg,
   },
   treeGroupTitle: { flex: 1, fontSize: 15, fontWeight: "800", color: GatiMitraMerchant.textPrimary },
+  treeGroupMeta: { marginTop: 2, fontSize: 11, fontWeight: "700", color: GatiMitraMerchant.error },
   treeCountText: { fontWeight: "700", color: GatiMitraMerchant.textTertiary },
   treeGroupRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   treeInStockLabel: { fontSize: 12, fontWeight: "700", color: GatiMitraMerchant.textSecondary },

@@ -16,6 +16,7 @@ export async function GET(req: NextRequest) {
     const { data: plans, error } = await supabase
       .from('merchant_plans')
       .select('*')
+      .eq('plan_type', 'MERCHANT')
       .eq('is_active', true)
       .order('display_order', { ascending: true })
 

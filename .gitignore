@@ -10,6 +10,12 @@
 /public
 /private
 /config
+
+# Next.js / Turbo (monorepo)
+**/.next/
+**/out/
+**/.turbo/
+**/.vercel/
 # Environment files - NEVER commit these
 .env
 .env.local
