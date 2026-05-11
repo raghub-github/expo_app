@@ -1,15 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import MerchantHelpTicket from "@/components/MerchantHelpTicket";
-
-function getPageContext(pathname: string): string {
-  if (pathname.includes("register-store")) return "store-onboarding";
-  if (pathname.includes("post-login")) return "post-login";
-  if (pathname.includes("register")) return "register";
-  if (pathname.includes("login")) return "login";
-  return "auth";
-}
+import NeedHelpBadge from "@/components/NeedHelpBadge";
 
 /** Routes where Help button should be shown (after user is in a logged-in flow). */
 function showHelpOnRoute(pathname: string): boolean {
@@ -28,7 +20,6 @@ function showHelpOnRoute(pathname: string): boolean {
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const pageContext = getPageContext(pathname ?? "");
   const showHelp = showHelpOnRoute(pathname ?? "");
 
   return (
@@ -36,7 +27,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       {children}
       {showHelp && (
         <div className="fixed top-4 right-4 z-40">
-          <MerchantHelpTicket pageContext={pageContext} />
+          <NeedHelpBadge inline variant="pill" />
         </div>
       )}
     </>

@@ -5,13 +5,24 @@ import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
+const optionalSoundUrl = z.union([z.string().max(4000), z.literal(""), z.null()]).optional();
+
 const upsertSchema = z.object({
   store_type: z.string().min(1).max(64),
   acceptance_window_minutes: z.number().int().min(1).max(180),
   alert_sound_enabled: z.boolean(),
-  alert_sound_url: z.union([z.string().max(4000), z.literal(""), z.null()]).optional(),
+  alert_sound_url: optionalSoundUrl,
+  alert_sound_url_2: optionalSoundUrl,
+  alert_sound_url_3: optionalSoundUrl,
   alert_sound_repeat_count: z.number().int().min(0).max(25),
 });
+
+function normalizeSoundUrl(v: z.infer<typeof optionalSoundUrl>): string | null {
+  if (v == null) return null;
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t === "" ? null : t;
+}
 
 export async function GET(req: NextRequest) {
   const gate = await requireSuperAdminApi();
@@ -24,6 +35,8 @@ export async function GET(req: NextRequest) {
       acceptance_window_minutes,
       alert_sound_enabled,
       alert_sound_url,
+      alert_sound_url_2,
+      alert_sound_url_3,
       alert_sound_repeat_count
     FROM platform_food_acceptance_settings_by_store_type
     ORDER BY store_type ASC
@@ -53,12 +66,9 @@ export async function PUT(req: NextRequest) {
 
   const sql = getSql();
 
-  const soundUrl =
-    input.alert_sound_url == null
-      ? null
-      : typeof input.alert_sound_url === "string" && input.alert_sound_url.trim() === ""
-        ? null
-        : input.alert_sound_url;
+  const soundUrl = normalizeSoundUrl(input.alert_sound_url);
+  const soundUrl2 = normalizeSoundUrl(input.alert_sound_url_2);
+  const soundUrl3 = normalizeSoundUrl(input.alert_sound_url_3);
 
   const storeType = String(input.store_type || "").trim().toUpperCase();
 
@@ -68,6 +78,8 @@ export async function PUT(req: NextRequest) {
       acceptance_window_minutes,
       alert_sound_enabled,
       alert_sound_url,
+      alert_sound_url_2,
+      alert_sound_url_3,
       alert_sound_repeat_count
     )
     VALUES (
@@ -75,15 +87,18 @@ export async function PUT(req: NextRequest) {
       ${input.acceptance_window_minutes}::int,
       ${input.alert_sound_enabled}::boolean,
       ${soundUrl},
+      ${soundUrl2},
+      ${soundUrl3},
       ${input.alert_sound_repeat_count}::int
     )
     ON CONFLICT (store_type) DO UPDATE SET
       acceptance_window_minutes = EXCLUDED.acceptance_window_minutes,
       alert_sound_enabled = EXCLUDED.alert_sound_enabled,
       alert_sound_url = EXCLUDED.alert_sound_url,
+      alert_sound_url_2 = EXCLUDED.alert_sound_url_2,
+      alert_sound_url_3 = EXCLUDED.alert_sound_url_3,
       alert_sound_repeat_count = EXCLUDED.alert_sound_repeat_count
   `;
 
   return NextResponse.json({ ok: true });
 }
-

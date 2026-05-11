@@ -10,7 +10,11 @@ import {
   initializeSession,
 } from "@/lib/auth/session-manager";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
-import { hasActiveSessionForDevice } from "@/lib/auth/merchant-session-db";
+import {
+  generateDeviceId,
+  hasActiveSessionForDevice,
+  replaceSessionForDevice,
+} from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 
 /** Build path + search for redirect param, stripping OAuth code/state so login URL stays clean. */
@@ -25,6 +29,13 @@ function redirectPathWithoutOAuthParams(pathname: string, search: string): strin
 export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const response = NextResponse.next();
+
+  // Permanent route migration: /mx/* → /partners/* (preserve querystring).
+  if (pathname === "/mx" || pathname.startsWith("/mx/")) {
+    const nextUrl = request.nextUrl.clone();
+    nextUrl.pathname = pathname.replace(/^\/mx/, "/partners");
+    return NextResponse.redirect(nextUrl);
+  }
 
   // Let these API routes always run; they handle their own auth/errors.
   // Merchant auth lives under /api/merchant-auth/ to avoid being shadowed by NextAuth catch-all at /api/auth/[...nextauth].
@@ -91,7 +102,7 @@ export async function proxy(request: NextRequest) {
     const isLoginPage = pathname === "/auth/login" || pathname === "/auth/login-store" || pathname === "/auth/login-store/list";
     const isRegisterPage = pathname === "/auth/register" || pathname.startsWith("/auth/register-");
     const isPublic = isPublicRoute || pathname === "/" || pathname.startsWith("/auth/search");
-    const isPostLoginPage = pathname === "/auth/post-login";
+    const isAllStoresPage = pathname === "/partners/all-stores" || pathname === "/auth/post-login";
 
     if (pathname.startsWith("/api/") && hasAuthCookie) {
       const cookieWrapper = { get: (name: string) => request.cookies.get(name) ?? undefined };
@@ -185,13 +196,13 @@ export async function proxy(request: NextRequest) {
       return response;
     }
 
-    if (isPostLoginPage && !session) {
+    if (isAllStoresPage && !session) {
       const redirectUrl = request.nextUrl.clone();
       redirectUrl.pathname = "/auth/login";
       return NextResponse.redirect(redirectUrl);
     }
 
-    const protectedPaths = ["/mx", "/auth/store"];
+    const protectedPaths = ["/mx", "/auth/store", "/partners"];
     const isProtected = protectedPaths.some((p) => pathname.startsWith(p));
 
     if (!session && isProtected && !isPublic) {
@@ -209,30 +220,51 @@ export async function proxy(request: NextRequest) {
     }
 
     if (session && (pathname === "/auth/login" || pathname === "/auth/login-store")) {
-      return NextResponse.redirect(new URL("/auth/post-login", request.url));
+      return NextResponse.redirect(new URL("/partners/all-stores", request.url));
     }
 
     // If already logged in, never show the /auth landing page; always go to post-login.
     if (session && pathname === "/auth") {
-      return NextResponse.redirect(new URL("/auth/post-login", request.url));
+      return NextResponse.redirect(new URL("/partners/all-stores", request.url));
     }
 
     if (session && isProtected) {
-      const deviceId = request.cookies.get(deviceIdCookie())?.value?.trim();
+      const deviceCookieName = deviceIdCookie();
+      const deviceIdFromCookie = request.cookies.get(deviceCookieName)?.value?.trim();
+      const deviceId = deviceIdFromCookie || generateDeviceId();
       let deviceSessionValid = false;
-      if (deviceId) {
-        try {
-          const validation = await validateMerchantFromSession({
-            id: session.user.id,
-            email: session.user.email ?? null,
-            phone: session.user.phone ?? null,
-          });
-          if (validation.isValid && validation.merchantParentId != null) {
-            deviceSessionValid = await hasActiveSessionForDevice(validation.merchantParentId, deviceId);
+      try {
+        const validation = await validateMerchantFromSession({
+          id: session.user.id,
+          email: session.user.email ?? null,
+          phone: session.user.phone ?? null,
+        });
+        if (validation.isValid && validation.merchantParentId != null) {
+          deviceSessionValid = await hasActiveSessionForDevice(validation.merchantParentId, deviceId);
+
+          // Self-heal: if missing (new device / cleared DB row), create it instead of bouncing back to login.
+          if (!deviceSessionValid) {
+            try {
+              await replaceSessionForDevice(deviceId, validation.merchantParentId);
+              deviceSessionValid = true;
+            } catch {
+              // keep invalid
+            }
           }
-        } catch {
-          // treat as invalid
         }
+      } catch {
+        // treat as invalid
+      }
+
+      // Ensure device id cookie exists for subsequent requests.
+      if (!deviceIdFromCookie) {
+        response.cookies.set(deviceCookieName, deviceId, {
+          maxAge: 365 * 24 * 60 * 60,
+          path: "/",
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: "lax",
+        });
       }
       if (!deviceSessionValid) {
         try {

@@ -738,7 +738,55 @@ function StoreSettingsContent() {
     load()
   }, [storeId])
 
-  // Load plans and subscription (plans list unblocks as soon as /plans returns; other calls run in parallel)
+  // Load plans ASAP (independent of storeId) with quick session cache hydration
+  useEffect(() => {
+    let cancelled = false
+    const CACHE_KEY = 'mx_merchant_plans_cache_v1'
+    const CACHE_TTL_MS = 5 * 60 * 1000
+
+    const hydrateFromCache = () => {
+      try {
+        const raw = typeof window !== 'undefined' ? sessionStorage.getItem(CACHE_KEY) : null
+        if (!raw) return false
+        const parsed = JSON.parse(raw) as { ts: number; plans: any[] }
+        if (!parsed || !Array.isArray(parsed.plans) || typeof parsed.ts !== 'number') return false
+        if (Date.now() - parsed.ts > CACHE_TTL_MS) return false
+        setPlans(parsed.plans)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const cached = hydrateFromCache()
+    if (!cached) setLoadingPlans(true)
+
+    const loadPlans = async () => {
+      try {
+        const res = await fetch('/api/merchant/plans')
+        const data = await res.json().catch(() => ({}))
+        if (!cancelled && res.ok && data?.plans) {
+          setPlans(data.plans)
+          try {
+            sessionStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), plans: data.plans }))
+          } catch {
+            // ignore cache write errors
+          }
+        }
+      } catch (e) {
+        console.error('Plans fetch failed:', e)
+      } finally {
+        if (!cancelled) setLoadingPlans(false)
+      }
+    }
+
+    void loadPlans()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Load subscription details (store-specific)
   useEffect(() => {
     if (!storeId) return
     let cancelled = false
@@ -753,15 +801,6 @@ function StoreSettingsContent() {
     }
 
     const loadPlansAndSubscription = async () => {
-      setLoadingPlans(true)
-
-      const plansPromise = fetch('/api/merchant/plans')
-        .then(async (res) => ({ res, data: await parseJson(res) }))
-        .catch((err) => {
-          console.error('Plans fetch failed:', err)
-          return { res: null as Response | null, data: {} }
-        })
-
       const subscriptionPromise = fetch(
         `/api/merchant/subscription?storeId=${encodeURIComponent(storeId)}`
       )
@@ -788,17 +827,6 @@ function StoreSettingsContent() {
           console.error('Onboarding payments fetch failed:', err)
           return { res: null as Response | null, data: {} }
         })
-
-      try {
-        const { res: plansRes, data: plansData } = await plansPromise
-        if (!cancelled && plansRes?.ok && plansData?.plans) {
-          setPlans(plansData.plans)
-        }
-      } catch (error) {
-        console.error('Error loading plans:', error)
-      } finally {
-        if (!cancelled) setLoadingPlans(false)
-      }
 
       try {
         const [sub, payments, onboarding] = await Promise.all([
@@ -2573,50 +2601,6 @@ function StoreSettingsContent() {
 
             {activeTab === 'plans' && (
               <div className="space-y-3 sm:space-y-4">
-                {/* Current Plan Card - Compact */}
-                {currentPlan && (
-                  <div className="bg-gradient-to-br from-orange-50 to-amber-50 rounded-lg border-2 border-orange-200 p-3 sm:p-4 shadow-sm">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex items-center gap-2 sm:gap-3">
-                        <Crown className="text-orange-600" size={18} />
-                        <div>
-                          <h2 className="text-base sm:text-lg font-bold text-gray-900">{currentPlan.plan_name}</h2>
-                          <p className="text-xs sm:text-sm text-gray-600">
-                            {currentPlan.price === 0 ? 'Free Plan' : `₹${currentPlan.price}/${currentPlan.billing_cycle.toLowerCase()}`}
-                          </p>
-                          {currentSubscription && (
-                            <p className="text-xs text-gray-500 mt-1">
-                              Activated: {new Date(currentSubscription.start_date).toLocaleDateString()} • 
-                              Expires: {new Date(currentSubscription.expiry_date).toLocaleDateString()}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="bg-white px-3 py-1 rounded-lg border border-orange-200">
-                        <span className="text-orange-700 font-bold text-xs">ACTIVE</span>
-                      </div>
-                    </div>
-                    {/* Auto Renew Toggle */}
-                    {currentPlan.price > 0 && (
-                      <div className="flex items-center justify-between pt-3 border-t border-orange-200">
-                        <div>
-                          <p className="text-xs sm:text-sm font-semibold text-gray-900">Auto Renew</p>
-                          <p className="text-xs text-gray-600">Automatically renew subscription</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={autoRenew}
-                            onChange={(e) => handleAutoRenewToggle(e.target.checked)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {/* Plans Comparison - Premium SaaS-style */}
                 <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2 mb-4 sm:mb-6">
@@ -2625,7 +2609,7 @@ function StoreSettingsContent() {
                       View refund policy
                     </Link>
                   </div>
-                  {loadingPlans ? (
+                  {loadingPlans && plans.length === 0 ? (
                     <div className="text-center py-8">
                       <div className="animate-spin rounded-full h-8 w-8 border-2 border-orange-500 border-t-transparent mx-auto"></div>
                       <p className="text-gray-600 mt-3 text-sm">Loading plans...</p>
@@ -2646,25 +2630,28 @@ function StoreSettingsContent() {
 
                         const cardStyles = {
                           free: {
-                            wrapper: `rounded-2xl border-2 bg-gradient-to-br from-gray-50 to-gray-100 border-gray-200 shadow-md hover:shadow-lg hover:border-gray-300 hover:scale-[1.02] transition-all duration-300 ${selectedPlanId === plan.id ? 'ring-2 ring-gray-400 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-gray-500 ring-offset-2' : ''}`,
+                            wrapper: `rounded-2xl border-2 bg-white border-gray-200 shadow-sm hover:shadow-md hover:border-gray-300 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden ${selectedPlanId === plan.id ? 'ring-2 ring-gray-400 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-gray-500 ring-offset-2' : ''}`,
+                            headerBg: 'bg-gradient-to-r from-slate-700 to-slate-600',
                             badge: null,
-                            priceColor: 'text-gray-800',
+                            priceColor: 'text-white',
                             featureValue: 'text-gray-700 font-semibold',
                             cta: 'bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200 hover:border-slate-400 active:scale-[0.98] transition-all duration-200',
                           },
                           premium: {
-                            wrapper: `rounded-2xl border-2 bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50 border-orange-400 shadow-lg shadow-orange-100 hover:shadow-xl hover:shadow-orange-200 hover:border-orange-500 hover:scale-[1.02] transition-all duration-300 relative ${selectedPlanId === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`,
-                            badge: 'absolute -top-2.5 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full text-[10px] font-bold tracking-wide bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md',
-                            priceColor: 'text-orange-700',
+                            wrapper: `rounded-2xl border-2 bg-white border-orange-300 shadow-md hover:shadow-lg hover:border-orange-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative lg:-mt-3 lg:scale-[1.03] z-[1] ${selectedPlanId === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`,
+                            headerBg: 'bg-gradient-to-r from-orange-600 to-amber-500',
+                            badge: 'absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
+                            priceColor: 'text-white',
                             featureValue: 'text-orange-700 font-semibold',
-                            cta: 'bg-gradient-to-r from-orange-500 to-amber-500 text-white border-0 shadow-md shadow-orange-200/60 hover:from-orange-600 hover:to-amber-600 hover:shadow-lg hover:shadow-orange-300/70 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200',
+                            cta: 'bg-gradient-to-r from-orange-600 to-amber-600 text-white border-0 shadow-sm hover:from-orange-700 hover:to-amber-700 active:scale-[0.98] transition-all duration-200',
                           },
                           enterprise: {
-                            wrapper: `rounded-2xl border-2 bg-gradient-to-br from-indigo-50 to-purple-100 border-purple-400 shadow-lg shadow-purple-100 hover:shadow-xl hover:shadow-purple-200 hover:border-purple-500 hover:scale-[1.02] transition-all duration-300 relative ${selectedPlanId === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''}`,
-                            badge: 'absolute -top-2.5 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full text-[10px] font-bold tracking-wide bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-md',
-                            priceColor: 'text-purple-800',
+                            wrapper: `rounded-2xl border-2 bg-white border-purple-300 shadow-sm hover:shadow-md hover:border-purple-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative ${selectedPlanId === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''}`,
+                            headerBg: 'bg-gradient-to-r from-indigo-700 to-purple-700',
+                            badge: 'absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
+                            priceColor: 'text-white',
                             featureValue: 'text-purple-700 font-semibold',
-                            cta: 'bg-transparent border-2 border-purple-600 text-purple-700 hover:bg-purple-600 hover:text-white hover:shadow-md hover:shadow-purple-200/50 active:scale-[0.98] transition-all duration-200',
+                            cta: 'bg-gradient-to-r from-indigo-700 to-purple-700 text-white border-0 shadow-sm hover:from-indigo-800 hover:to-purple-800 active:scale-[0.98] transition-all duration-200',
                           },
                         };
                         const style = cardStyles[tier];
@@ -2683,7 +2670,7 @@ function StoreSettingsContent() {
                               setSelectedPlanId((prev) => (prev === plan.id ? null : plan.id));
                             }
                           }}
-                          className={`relative p-4 sm:p-4 cursor-pointer ${isDisabled ? 'opacity-70 cursor-not-allowed' : ''} ${style.wrapper}`}
+                          className={`relative cursor-pointer ${isDisabled ? 'opacity-70 cursor-not-allowed' : ''} ${style.wrapper}`}
                         >
                           {style.badge && (
                             <span className={style.badge}>
@@ -2691,35 +2678,47 @@ function StoreSettingsContent() {
                             </span>
                           )}
 
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                type="checkbox"
-                                checked={selectedPlanId === plan.id || currentPlan?.id === plan.id}
-                                onChange={() => {
-                                  if (!isDisabled && currentPlan?.id !== plan.id) {
-                                    setSelectedPlanId((prev) => (prev === plan.id ? null : plan.id));
-                                  }
-                                }}
-                                disabled={isDisabled || currentPlan?.id === plan.id}
-                                className="w-3.5 h-3.5 rounded border-gray-300 text-orange-600 focus:ring-orange-500 cursor-pointer disabled:opacity-50"
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                              <span className="text-[11px] font-medium text-gray-600">
-                                {currentPlan?.id === plan.id ? 'Current Plan' : 'Select Plan'}
+                          {/* Curved header (keeps light theme; just brand accents) */}
+                          <div className={`relative px-4 pt-4 pb-8 ${style.headerBg}`}>
+                            <div className="absolute inset-x-0 bottom-0 h-10 bg-white rounded-t-[2.25rem]" />
+                            {currentPlan?.id === plan.id && (
+                              <span className="absolute top-3 right-3 px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm">
+                                ACTIVE
                               </span>
+                            )}
+                            <div className="relative flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <h4 className="text-base font-extrabold tracking-tight text-white truncate">{plan.plan_name}</h4>
+                                <div className="mt-1 flex items-end gap-1">
+                                  <span className={`text-2xl sm:text-[28px] leading-none font-extrabold tracking-tight ${style.priceColor}`}>
+                                    ₹{plan.price ?? 0}
+                                  </span>
+                                  <span className="text-[11px] text-white/80 font-medium pb-[2px]">per month</span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 pt-0.5">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPlanId === plan.id || currentPlan?.id === plan.id}
+                                  onChange={() => {
+                                    if (!isDisabled && currentPlan?.id !== plan.id) {
+                                      setSelectedPlanId((prev) => (prev === plan.id ? null : plan.id));
+                                    }
+                                  }}
+                                  disabled={isDisabled || currentPlan?.id === plan.id}
+                                  className="w-4 h-4 rounded border-white/60 bg-white/10 text-white focus:ring-2 focus:ring-white/60 cursor-pointer disabled:opacity-60"
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                                <span className="text-[11px] font-semibold text-white/85 whitespace-nowrap">
+                                  {currentPlan?.id === plan.id ? 'Current' : 'Select'}
+                                </span>
+                              </div>
                             </div>
                           </div>
 
-                          <h4 className="text-base font-bold text-gray-900 mb-0.5">{plan.plan_name}</h4>
-                          <div className="mb-3 pb-3 border-b border-gray-200/80">
-                            <span className={`text-xl sm:text-2xl font-extrabold tracking-tight ${style.priceColor}`}>
-                              ₹{plan.price ?? 0}
-                            </span>
-                            <span className="text-xs text-gray-500 font-normal ml-0.5">/month</span>
-                          </div>
-
-                          <div className="space-y-1.5 text-xs mb-3">
+                          <div className="px-4 pb-4 pt-1">
+                            <div className="space-y-2 text-xs mb-4">
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <Layers className="w-3.5 h-3.5 text-gray-500 shrink-0" />
@@ -2780,6 +2779,27 @@ function StoreSettingsContent() {
                             </div>
                           </div>
 
+                          {/* Auto Renew (shown on active paid plan only) */}
+                          {currentPlan?.id === plan.id && Number(plan.price ?? 0) > 0 && (
+                            <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-[11px] sm:text-xs font-semibold text-gray-900 leading-tight">Auto Renew</p>
+                                <p className="text-[10px] sm:text-[11px] text-gray-600 leading-snug">
+                                  Automatically renew subscription
+                                </p>
+                              </div>
+                              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                <input
+                                  type="checkbox"
+                                  checked={autoRenew}
+                                  onChange={(e) => handleAutoRenewToggle(e.target.checked)}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                              </label>
+                            </div>
+                          )}
+
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2793,7 +2813,7 @@ function StoreSettingsContent() {
                               isDisabled ||
                               (selectedPlanId !== plan.id && currentPlan?.id !== plan.id)
                             }
-                            className={`w-full py-2 rounded-xl font-semibold text-xs sm:text-sm transition-all duration-200 flex items-center justify-center gap-2 ${style.cta} ${
+                            className={`w-full py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition-all duration-200 flex items-center justify-center gap-2 ${style.cta} ${
                               currentPlan?.id === plan.id ? '!bg-gray-100 !text-gray-700 !border !border-gray-300 cursor-not-allowed hover:!scale-100' : ''
                             } ${upgradingPlanId === plan.id ? '!bg-orange-400 !text-white cursor-wait' : ''} ${
                               isDisabled || (selectedPlanId !== plan.id && currentPlan?.id !== plan.id) ? '!bg-gray-100 !text-gray-700 !border !border-gray-300 cursor-not-allowed hover:!scale-100' : ''
@@ -2823,6 +2843,7 @@ function StoreSettingsContent() {
                               'Select to Upgrade'
                             )}
                           </button>
+                          </div>
                         </div>
                         );
                       })}

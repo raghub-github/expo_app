@@ -78,7 +78,7 @@ async function sendWelcomeEmailToOwner(args: { ownerName: string | null; ownerEm
 
   const safeName = (ownerName || '').toString().trim() || 'Partner';
   const safeStoreId = (storePublicId || '').toString().trim();
-  const dashboardUrl = 'https://partner.gatimitra.com/auth/post-login';
+  const dashboardUrl = 'https://partner.gatimitra.com/partners/all-stores';
   const textBody = [
     `Hi ${safeName},`,
     '',

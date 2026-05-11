@@ -8,6 +8,11 @@ import type { OrdersFoodRow } from '@/hooks/useFoodOrders';
 import { fetchStoreById } from '@/lib/database';
 import { createClient } from '@/lib/supabase/client';
 import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import {
+  readPartnerDeviceOrderAlerts,
+  resolveAlertUrlFromSlots,
+  volumeStepTo01,
+} from '@/lib/partner-device-order-alerts';
 import { resolvePartnerPipeline } from '@/lib/partner-orders-unify';
 
 const MUTE_KEY = 'partner_incoming_order_mute_sound';
@@ -21,6 +26,7 @@ type AcceptanceSettings = {
   alert_sound_enabled: boolean;
   alert_sound_url: string | null;
   alert_sound_repeat_count: number;
+  alert_sound_urls_by_slot?: [string | null, string | null, string | null];
 };
 
 const DEFAULT_SETTINGS: AcceptanceSettings = {
@@ -29,6 +35,7 @@ const DEFAULT_SETTINGS: AcceptanceSettings = {
   alert_sound_enabled: true,
   alert_sound_url: null,
   alert_sound_repeat_count: 1,
+  alert_sound_urls_by_slot: [null, null, null],
 };
 
 function orderTotalRs(order: OrdersFoodRow): number {
@@ -46,6 +53,9 @@ async function playChimeSequential(
   url: string | null | undefined,
   repeatCount: number,
   opts: {
+    volume01: number;
+    /** Best-effort hint for mobile browsers (cannot override hardware silent switch). */
+    ringInSilent: boolean;
     /** Unique token for this run; if it changes, playback stops. */
     getRunId: () => number;
     runId: number;
@@ -65,7 +75,16 @@ async function playChimeSequential(
       if (opts.getRunId() !== opts.runId) break;
       const audio = new Audio(src);
       audio.loop = false;
-      audio.volume = 0.75;
+      audio.setAttribute('playsinline', '');
+      audio.preload = 'auto';
+      audio.volume = Math.min(1, Math.max(0, opts.volume01));
+      if (opts.ringInSilent) {
+        try {
+          audio.muted = false;
+        } catch {
+          /* ignore */
+        }
+      }
       opts.setAudioRef(audio);
 
       // Attach listeners BEFORE calling play() so we never miss 'ended'.
@@ -94,15 +113,11 @@ async function playChimeSequential(
   }
 }
 
-/** Align with Food Orders “Sound On” (food-orders-ui) + modal mute toggle. */
-function shouldPlayIncomingSound() {
-  if (typeof window === 'undefined') return false;
-  try {
-    const s = localStorage.getItem('food-orders-ui');
-    if (s && JSON.parse(s).notifyEnabled === false) return false;
-  } catch {
-    /* ignore */
-  }
+/** Device-local partner settings + modal mute toggle (same browser only). */
+function shouldPlayIncomingSound(storeId: string | null | undefined) {
+  if (typeof window === 'undefined' || !storeId) return false;
+  const d = readPartnerDeviceOrderAlerts(storeId);
+  if (!d.orderAlertsEnabled || !d.soundAlertsEnabled) return false;
   try {
     if (localStorage.getItem(MUTE_KEY) === '1') return false;
   } catch {
@@ -206,21 +221,32 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
     })();
   }, [storeId]);
 
-  useEffect(() => {
+  const reloadAcceptanceSettings = useCallback(async () => {
     if (!storeId) return;
-    void (async () => {
-      try {
-        const res = await fetch(
-          `/api/merchant/order-acceptance-settings?store_id=${encodeURIComponent(storeId)}`
-        );
-        const data = (await res.json().catch(() => ({}))) as { settings?: Partial<AcceptanceSettings> };
-        if (res.ok && data.settings) setSettings({ ...DEFAULT_SETTINGS, ...data.settings });
-        else setSettings(DEFAULT_SETTINGS);
-      } catch {
-        setSettings(DEFAULT_SETTINGS);
-      }
-    })();
+    try {
+      const res = await fetch(
+        `/api/merchant/order-acceptance-settings?store_id=${encodeURIComponent(storeId)}`
+      );
+      const data = (await res.json().catch(() => ({}))) as { settings?: Partial<AcceptanceSettings> };
+      if (res.ok && data.settings) setSettings({ ...DEFAULT_SETTINGS, ...data.settings });
+      else setSettings(DEFAULT_SETTINGS);
+    } catch {
+      setSettings(DEFAULT_SETTINGS);
+    }
   }, [storeId]);
+
+  useEffect(() => {
+    void reloadAcceptanceSettings();
+  }, [reloadAcceptanceSettings]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onRefresh = () => {
+      void reloadAcceptanceSettings();
+    };
+    window.addEventListener('partner-order-acceptance-settings-changed', onRefresh);
+    return () => window.removeEventListener('partner-order-acceptance-settings-changed', onRefresh);
+  }, [reloadAcceptanceSettings]);
 
   useEffect(() => {
     if (!storeId) return;
@@ -296,6 +322,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       if (!full) return;
       // If floating UI is disabled, do not open modal or play sound.
       if (storeOpsSettings?.show_floating_orders === false) return;
+      if (!readPartnerDeviceOrderAlerts(storeId).orderAlertsEnabled) return;
       const dismissed = getDismissed();
       if (dismissed.has(full.order_id)) return;
       const ext = full as OrdersFoodRow & { core_status?: string; current_status?: string | null };
@@ -309,10 +336,22 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
       if (shownInsertIds.current.has(dedupeKey)) return;
       shownInsertIds.current.add(dedupeKey);
       setModalOrder(full);
-      if (shouldPlayIncomingSound() && settings.alert_sound_enabled) {
+      if (shouldPlayIncomingSound(storeId) && settings.alert_sound_enabled) {
+        const device = readPartnerDeviceOrderAlerts(storeId);
+        const slots =
+          settings.alert_sound_urls_by_slot ??
+          ([settings.alert_sound_url, null, null] as [
+            string | null,
+            string | null,
+            string | null,
+          ]);
+        const chimeUrl =
+          resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ?? settings.alert_sound_url;
         chimeRunIdRef.current += 1;
         const myRun = chimeRunIdRef.current;
-        void playChimeSequential(settings.alert_sound_url, settings.alert_sound_repeat_count, {
+        void playChimeSequential(chimeUrl, settings.alert_sound_repeat_count, {
+          volume01: volumeStepTo01(device.volumeStep),
+          ringInSilent: device.ringInSilent,
           runId: myRun,
           getRunId: () => chimeRunIdRef.current,
           setAudioRef: (a) => {
@@ -321,7 +360,14 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         });
       }
     },
-    [settings.alert_sound_enabled, settings.alert_sound_repeat_count, settings.alert_sound_url, storeOpsSettings?.show_floating_orders]
+    [
+      storeId,
+      settings.alert_sound_enabled,
+      settings.alert_sound_repeat_count,
+      settings.alert_sound_url,
+      settings.alert_sound_urls_by_slot,
+      storeOpsSettings?.show_floating_orders,
+    ]
   );
 
   const scanForNewOrders = useCallback(async () => {

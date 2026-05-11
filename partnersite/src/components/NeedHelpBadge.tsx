@@ -6,6 +6,8 @@ import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2 } from "lucide-reac
 import { useMerchantSession } from "@/context/MerchantSessionContext";
 
 const badgeColor = "#2ecc9b";
+const HELP_SECTIONS_CACHE_KEY = "mx_help_sections_cache_v1";
+const HELP_SECTIONS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
 type HelpSection = {
   ticket_title_id: number;
@@ -45,31 +47,89 @@ const NeedHelpBadge: React.FC<{
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicketSummary | null>(null);
 
-  const loadSections = useCallback(async () => {
-    setLoadingSections(true);
-    setSectionsError(false);
+  const readCachedSections = useCallback((): HelpSection[] | null => {
+    if (typeof window === "undefined") return null;
     try {
-      const res = await fetch("/api/merchant/help-sections");
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) {
-        setSections([]);
-        setSectionsError(true);
-        return;
-      }
-      const list = Array.isArray(data.sections) ? data.sections : [];
-      setSections(list as HelpSection[]);
+      const raw = localStorage.getItem(HELP_SECTIONS_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { ts?: unknown; sections?: unknown };
+      const ts = typeof parsed.ts === "number" ? parsed.ts : 0;
+      if (!ts || Date.now() - ts > HELP_SECTIONS_CACHE_TTL_MS) return null;
+      if (!Array.isArray(parsed.sections)) return null;
+      return parsed.sections as HelpSection[];
     } catch {
-      setSections([]);
-      setSectionsError(true);
-    } finally {
-      setLoadingSections(false);
+      return null;
     }
   }, []);
+
+  const writeCachedSections = useCallback((next: HelpSection[]) => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(HELP_SECTIONS_CACHE_KEY, JSON.stringify({ ts: Date.now(), sections: next }));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadSections = useCallback(
+    async ({ force = false, background = false }: { force?: boolean; background?: boolean } = {}) => {
+      // If we already have topics, keep UI responsive and refresh in background.
+      if (!force) {
+        const cached = readCachedSections();
+        if (cached && cached.length > 0) {
+          setSections((prev) => (prev.length > 0 ? prev : cached));
+          if (background) return; // caller only wanted instant data
+        }
+      }
+
+      const shouldShowSpinner = !background && sections.length === 0;
+      if (shouldShowSpinner) setLoadingSections(true);
+      setSectionsError(false);
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      try {
+        const res = await fetch("/api/merchant/help-sections", {
+          signal: controller?.signal,
+          // Avoid long-lived caches; we manage our own cache above.
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          if (sections.length === 0) {
+            setSections([]);
+            setSectionsError(true);
+          }
+          return;
+        }
+        const list = Array.isArray(data.sections) ? (data.sections as HelpSection[]) : [];
+        setSections(list);
+        writeCachedSections(list);
+      } catch {
+        if (sections.length === 0) {
+          setSections([]);
+          setSectionsError(true);
+        }
+      } finally {
+        if (shouldShowSpinner) setLoadingSections(false);
+      }
+    },
+    [readCachedSections, sections.length, writeCachedSections]
+  );
+
+  // Warm cache on mount so opening the sheet is instant.
+  useEffect(() => {
+    if (!session.isAuthenticated) return;
+    const cached = readCachedSections();
+    if (cached && cached.length > 0) setSections((prev) => (prev.length > 0 ? prev : cached));
+    // Background refresh (doesn't block UI)
+    void loadSections({ background: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.isAuthenticated]);
 
   useEffect(() => {
     if (!open) return;
     if (session.isAuthenticated) {
-      loadSections();
+      // Show cached topics immediately; refresh in background.
+      void loadSections({ background: true });
     }
   }, [open, session.isAuthenticated, loadSections]);
 

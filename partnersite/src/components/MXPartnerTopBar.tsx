@@ -1,6 +1,14 @@
 'use client';
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -9,14 +17,19 @@ import {
   Bell,
   Calendar,
   Camera,
+  ChevronRight,
   ChevronDown,
   ChevronUp,
   Clock,
   Loader2,
+  Mail,
   MapPin,
+  Megaphone,
   Pencil,
+  Phone,
   Settings,
   Store,
+  Volume2,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -35,6 +48,41 @@ import { WAITING_FOR_ORDER_TITLE } from '@/lib/partner-notification-constants';
 import { clientStoreOpsDebugLog } from '@/lib/store-ops-client-debug';
 import { toStoredDocumentUrl } from '@/lib/r2';
 import NeedHelpBadge from '@/components/NeedHelpBadge';
+import { usePartnerDeviceOrderAlerts } from '@/hooks/usePartnerDeviceOrderAlerts';
+import {
+  migrateDeviceOrderAlertsFromServer,
+  syncFoodOrdersUiNotifyFromDevice,
+} from '@/lib/partner-device-order-alerts';
+
+type PartnerSheetStoreSettings = {
+  show_floating_orders: boolean;
+  communication_settings: {
+    whatsapp_notifications: boolean;
+    reports: {
+      daily_whatsapp: boolean;
+      daily_email: boolean;
+      weekly_whatsapp: boolean;
+      weekly_email: boolean;
+    };
+    live_complaint_notifications: boolean;
+    rider_notifications: boolean;
+  };
+};
+
+const DEFAULT_PARTNER_SHEET_STORE_SETTINGS: PartnerSheetStoreSettings = {
+  show_floating_orders: true,
+  communication_settings: {
+    whatsapp_notifications: false,
+    reports: {
+      daily_whatsapp: false,
+      daily_email: false,
+      weekly_whatsapp: false,
+      weekly_email: false,
+    },
+    live_complaint_notifications: false,
+    rider_notifications: false,
+  },
+};
 
 export type PartnerHeaderSheet = 'notifications' | 'settings' | 'status';
 
@@ -45,7 +93,6 @@ type PendingOutletToggle =
 const SCHEDULE_OFF_REASONS = [
   'Renovation or relocation of restaurant',
   'Closed due to festival',
-  'Permanently shut',
   'Staff availability issues',
   'Going out of station',
   'Other',
@@ -60,7 +107,157 @@ function combineLocalDateTime(dateStr: string, timeStr: string): Date | null {
   return new Date(y, mo - 1, d, hh, mm, 0, 0);
 }
 
+/** dd-mm-yyyy for schedule-off UI (matches design copy). */
+function formatScheduleDateDdMmYyyy(isoDate: string): string {
+  const t = (isoDate || '').trim();
+  if (!t) return '';
+  const [y, m, d] = t.split('-');
+  if (!y || !m || !d) return t;
+  return `${d.padStart(2, '0')}-${m.padStart(2, '0')}-${y}`;
+}
+
+/** Chromium shrinks hit-testing on opacity-0 date/time inputs to the tiny native icon—open via showPicker from a full-area button instead. */
+function openScheduleNativePicker(input: HTMLInputElement | null) {
+  if (!input) return;
+  try {
+    if (typeof input.showPicker === 'function') {
+      void input.showPicker();
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    input.focus({ preventScroll: true });
+    input.click();
+  } catch {
+    /* ignore */
+  }
+}
+
+function ScheduleOffDateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const labelId = useId();
+
+  return (
+    <div>
+      <p id={labelId} className="mb-1.5 text-xs font-normal text-gray-500">
+        {label}
+      </p>
+      {/*
+        Input stays absolute inset-0 for correct picker anchoring (not fixed top-left).
+        Transparent button captures the whole row; native input is pointer-events-none so Chrome's tiny icon-only hit target does not apply.
+      */}
+      <div className="relative w-full rounded-xl">
+        <div className="pointer-events-none relative flex h-11 min-h-[44px] w-full items-center rounded-xl border border-gray-300 bg-white shadow-sm">
+          <Calendar
+            className="absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-gray-400"
+            aria-hidden
+          />
+          <span
+            className={`absolute left-10 right-10 truncate text-sm ${
+              value ? 'font-normal text-gray-900' : 'text-gray-400'
+            }`}
+          >
+            {value ? formatScheduleDateDdMmYyyy(value) : 'Select date'}
+          </span>
+          <ChevronDown
+            className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+            aria-hidden
+          />
+        </div>
+        <input
+          ref={inputRef}
+          type="date"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          tabIndex={-1}
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-[1] h-full min-h-[44px] w-full opacity-0"
+        />
+        <button
+          type="button"
+          aria-labelledby={labelId}
+          className="absolute inset-0 z-[2] m-0 cursor-pointer rounded-xl border-0 bg-transparent p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2"
+          onClick={() => openScheduleNativePicker(inputRef.current)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ScheduleOffTimeField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const labelId = useId();
+
+  return (
+    <div>
+      <p id={labelId} className="mb-1.5 text-xs font-normal text-gray-500">
+        {label}
+      </p>
+      <div className="relative w-full rounded-xl">
+        <div className="pointer-events-none relative flex h-11 min-h-[44px] w-full items-center rounded-xl border border-gray-300 bg-white shadow-sm">
+          <Clock
+            className="absolute left-3 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-gray-400"
+            aria-hidden
+          />
+          <span
+            className={`absolute left-10 right-10 truncate text-sm ${
+              value ? 'font-normal text-gray-900' : 'text-gray-400'
+            }`}
+          >
+            {value ? value : 'Select time'}
+          </span>
+          <ChevronDown
+            className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+            aria-hidden
+          />
+        </div>
+        <input
+          ref={inputRef}
+          type="time"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          tabIndex={-1}
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-[1] h-full min-h-[44px] w-full opacity-0"
+        />
+        <button
+          type="button"
+          aria-labelledby={labelId}
+          className="absolute inset-0 z-[2] m-0 cursor-pointer rounded-xl border-0 bg-transparent p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2"
+          onClick={() => openScheduleNativePicker(inputRef.current)}
+        />
+      </div>
+    </div>
+  );
+}
+
 type StoreOpRow = { open: boolean | null; autoOpen: boolean; manualLock: boolean };
+
+function WhatsappBrandIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden>
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.435 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+    </svg>
+  );
+}
 
 function CompactSwitch({
   on,
@@ -102,7 +299,7 @@ function OutletBannerThumb({ url }: { url: string | null | undefined }) {
   if (!trimmed || isBroken) {
     return (
       <div
-        className="h-12 w-14 shrink-0 rounded-lg bg-gradient-to-br from-slate-100 to-slate-200/90"
+        className="h-14 w-14 shrink-0 rounded-md bg-gradient-to-br from-slate-100 to-slate-200/90"
         aria-hidden
       />
     );
@@ -112,7 +309,7 @@ function OutletBannerThumb({ url }: { url: string | null | undefined }) {
     <img
       src={trimmed}
       alt=""
-      className="h-12 w-14 shrink-0 rounded-lg border border-slate-200/80 bg-slate-100 object-cover"
+      className="h-14 w-14 shrink-0 rounded-md border border-slate-200/80 bg-slate-100 object-cover"
       onError={() => setBrokenUrl(trimmed)}
     />
   );
@@ -173,7 +370,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [autoOpenFromSchedule, setAutoOpenFromSchedule] = useState(true);
   const [manualLock, setManualLock] = useState(false);
   const [storeOpsById, setStoreOpsById] = useState<Record<string, StoreOpRow>>({});
-  const [automationStoreId, setAutomationStoreId] = useState('');
   const prevSheetRef = useRef<PartnerHeaderSheet | null>(null);
   const [scheduleClosures, setScheduleClosures] = useState<
     Array<{ id: number; reason: string; starts_at: string; ends_at: string; status: string }>
@@ -188,7 +384,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const [pendingToggle, setPendingToggle] = useState<PendingOutletToggle | null>(null);
   const [toggleConfirmLoading, setToggleConfirmLoading] = useState(false);
   const [parentPhotoBusy, setParentPhotoBusy] = useState(false);
-  const [refreshAllBusy, setRefreshAllBusy] = useState(false);
   /** When on, outlet list is for picking the active store (with confirm) instead of online toggles. */
   const [switchStoreMode, setSwitchStoreMode] = useState(false);
   const [pendingStoreSwitch, setPendingStoreSwitch] = useState<{
@@ -205,45 +400,48 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     Array<{ id: string; title: string; body: string; read: boolean; created_at?: string }>
   >([]);
   const [partnerNotifLoading, setPartnerNotifLoading] = useState(false);
-  const [storeSettingsLoading, setStoreSettingsLoading] = useState(false);
-  const [storeSettingsSaving, setStoreSettingsSaving] = useState(false);
-  const [storeSettings, setStoreSettings] = useState<{
-    // Keep a subset needed by other parts too
-    show_floating_orders: boolean;
-    // Manage communications (merchant app parity)
-    communication_settings: {
-      whatsapp_notifications: boolean;
-      reports: {
-        daily_whatsapp: boolean;
-        daily_email: boolean;
-        weekly_whatsapp: boolean;
-        weekly_email: boolean;
-      };
-      order_notifications: {
-        enabled: boolean;
-        ring_volume: number; // 0..1
-        ring_in_silent: boolean;
-      };
-      live_complaint_notifications: boolean;
-      rider_notifications: boolean;
-    };
-  } | null>(null);
+  const [storeSettings, setStoreSettings] = useState<PartnerSheetStoreSettings>(
+    () => DEFAULT_PARTNER_SHEET_STORE_SETTINGS
+  );
+
+  const [deviceAcceptanceSlots, setDeviceAcceptanceSlots] = useState<
+    [string | null, string | null, string | null] | null
+  >(null);
+  const [storePrimaryPhoneDisplay, setStorePrimaryPhoneDisplay] = useState<string | null>(null);
+  const [deviceAlerts, setDeviceAlerts] = usePartnerDeviceOrderAlerts(resolvedStoreId || null);
 
   const loadStoreSettings = useCallback(async () => {
     if (!resolvedStoreId) return;
-    setStoreSettingsLoading(true);
     try {
       const res = await fetch(`/api/merchant/store-settings?storeId=${encodeURIComponent(resolvedStoreId)}`, {
         credentials: 'include',
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as {
+        show_floating_orders?: boolean;
+        communication_settings?: Record<string, unknown>;
+        store_phones?: string[];
+        primary_phone?: string | null;
+      };
       if (!res.ok) {
-        setStoreSettings(null);
+        setStorePrimaryPhoneDisplay(null);
         return;
       }
-      const comm = (data.communication_settings ?? {}) as any;
-      const reports = (comm.reports ?? {}) as any;
-      const orderNotifs = (comm.order_notifications ?? {}) as any;
+      const comm = (data.communication_settings ?? {}) as Record<string, unknown>;
+      const reports = (comm.reports ?? {}) as Record<string, unknown>;
+      const orderNotifs = (comm.order_notifications ?? {}) as {
+        enabled?: boolean;
+        ring_volume?: number;
+        ring_in_silent?: boolean;
+      };
+      migrateDeviceOrderAlertsFromServer(resolvedStoreId, orderNotifs);
+      const phonesArr = Array.isArray(data.store_phones)
+        ? data.store_phones.map((x) => String(x).trim()).filter((s) => s.length > 0)
+        : [];
+      const primaryFromApi =
+        typeof data.primary_phone === 'string' && data.primary_phone.trim()
+          ? data.primary_phone.trim()
+          : phonesArr[0] ?? null;
+      setStorePrimaryPhoneDisplay(primaryFromApi);
       setStoreSettings({
         show_floating_orders: data.show_floating_orders === true,
         communication_settings: {
@@ -254,20 +452,12 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             weekly_whatsapp: reports.weekly_whatsapp === true,
             weekly_email: reports.weekly_email === true,
           },
-          order_notifications: {
-            enabled: orderNotifs.enabled !== false,
-            ring_volume:
-              typeof orderNotifs.ring_volume === 'number'
-                ? Math.min(1, Math.max(0, orderNotifs.ring_volume))
-                : 0.6,
-            ring_in_silent: orderNotifs.ring_in_silent !== false,
-          },
           live_complaint_notifications: comm.live_complaint_notifications === true,
           rider_notifications: comm.rider_notifications === true,
         },
       });
-    } finally {
-      setStoreSettingsLoading(false);
+    } catch {
+      setStorePrimaryPhoneDisplay(null);
     }
   }, [resolvedStoreId]);
 
@@ -275,29 +465,61 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     if (sheet === 'settings') void loadStoreSettings();
   }, [sheet, loadStoreSettings]);
 
-  const saveStoreSettings = useCallback(async () => {
-    if (!resolvedStoreId || !storeSettings) return;
-    setStoreSettingsSaving(true);
-    try {
-      const res = await fetch('/api/merchant/store-settings', {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storeId: resolvedStoreId, show_floating_orders: storeSettings.show_floating_orders, communication_settings: storeSettings.communication_settings }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast.error(data.error || 'Could not save settings');
-        return;
-      }
-      toast.success('Settings saved');
-      await loadStoreSettings();
-    } catch {
-      toast.error('Could not save settings');
-    } finally {
-      setStoreSettingsSaving(false);
+  useEffect(() => {
+    if (sheet !== 'settings' || !resolvedStoreId) {
+      setDeviceAcceptanceSlots(null);
+      return;
     }
-  }, [resolvedStoreId, storeSettings, loadStoreSettings]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/merchant/order-acceptance-settings?store_id=${encodeURIComponent(resolvedStoreId)}`
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          settings?: { alert_sound_urls_by_slot?: [string | null, string | null, string | null] };
+        };
+        if (cancelled || !res.ok || !data.settings?.alert_sound_urls_by_slot) {
+          if (!cancelled) setDeviceAcceptanceSlots(null);
+          return;
+        }
+        const s = data.settings.alert_sound_urls_by_slot;
+        setDeviceAcceptanceSlots([s[0] ?? null, s[1] ?? null, s[2] ?? null]);
+      } catch {
+        if (!cancelled) setDeviceAcceptanceSlots(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sheet, resolvedStoreId]);
+
+  const persistStoreSettingsToServer = useCallback(
+    async (payload: PartnerSheetStoreSettings) => {
+      if (!resolvedStoreId) return;
+      try {
+        const res = await fetch('/api/merchant/store-settings', {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            storeId: resolvedStoreId,
+            show_floating_orders: payload.show_floating_orders,
+            communication_settings: payload.communication_settings,
+          }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          toast.error(data.error || 'Could not save settings');
+          await loadStoreSettings();
+        }
+      } catch {
+        toast.error('Could not save settings');
+        await loadStoreSettings();
+      }
+    },
+    [resolvedStoreId, loadStoreSettings]
+  );
 
   const fetchPartnerNotifications = useCallback(async () => {
     if (!resolvedStoreId) {
@@ -527,26 +749,6 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     return { ok, total: ids.length };
   }, [storeList, resolvedStoreId, refetchStoreOp]);
 
-  const handleRefreshAllOutlets = useCallback(async () => {
-    setRefreshAllBusy(true);
-    try {
-      const { ok, total } = await refetchAllStoreOps();
-      if (total === 0) {
-        toast.message('No outlets to refresh');
-      } else if (ok === total) {
-        toast.success('Outlets refreshed successfully');
-      } else if (ok > 0) {
-        toast.success(`Refreshed ${ok} of ${total} outlets`);
-      } else {
-        toast.error('Could not refresh outlet status');
-      }
-    } catch {
-      toast.error('Could not refresh outlets');
-    } finally {
-      setRefreshAllBusy(false);
-    }
-  }, [refetchAllStoreOps]);
-
   useEffect(() => {
     if (!resolvedStoreId) return;
     refreshStoreOperations();
@@ -571,11 +773,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   }, [sheet, refetchAllStoreOps]);
 
   useEffect(() => {
-    if (sheet === 'status' && prevSheetRef.current !== 'status' && resolvedStoreId) {
-      setAutomationStoreId(resolvedStoreId);
-    }
     prevSheetRef.current = sheet;
-  }, [sheet, resolvedStoreId]);
+  }, [sheet]);
 
   // Keep a global CSS var in sync with header height so Sonner toasts never overlap it.
   useLayoutEffect(() => {
@@ -652,7 +851,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const switchToStore = (id: string) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', id);
     setSheet(null);
-    const base = (pathname || '/mx/dashboard').split('?')[0];
+    const base = (pathname || '/partners/dashboard').split('?')[0];
     const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
     params.set('storeId', id);
     window.location.href = `${base}?${params.toString()}`;
@@ -660,7 +859,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
 
   const goToAllStores = () => {
     setSheet(null);
-    window.location.href = '/auth/post-login';
+    window.location.href = '/partners/all-stores';
   };
 
   const clearPartnerLocalStorage = () => {
@@ -813,6 +1012,25 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     }
   };
 
+  /** Matches `submitScheduleOff` gates so the primary action reads “active” only when submit would succeed. */
+  const scheduleFormSubmitReady = useMemo(() => {
+    const sid = (scheduleStorePick || resolvedStoreId || '').trim();
+    if (!sid) return false;
+    if (!schedReason.trim()) return false;
+    const startsAt = combineLocalDateTime(schedStartDate, schedStartTime);
+    const endsAt = combineLocalDateTime(schedEndDate, schedEndTime);
+    if (!startsAt || !endsAt || endsAt.getTime() <= startsAt.getTime()) return false;
+    return true;
+  }, [
+    scheduleStorePick,
+    resolvedStoreId,
+    schedReason,
+    schedStartDate,
+    schedStartTime,
+    schedEndDate,
+    schedEndTime,
+  ]);
+
   const submitScheduleOff = async () => {
     const sid = scheduleStorePick || resolvedStoreId;
     if (!sid) {
@@ -823,23 +1041,16 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       toast.error('Select a reason');
       return;
     }
-    const permanent = schedReason === 'Permanently shut';
-    if (!permanent) {
-      const startsAt = combineLocalDateTime(schedStartDate, schedStartTime);
-      const endsAt = combineLocalDateTime(schedEndDate, schedEndTime);
-      if (!startsAt || !endsAt || endsAt.getTime() <= startsAt.getTime()) {
-        toast.error('Enter valid start and end date/time');
-        return;
-      }
+    const startsAtCheck = combineLocalDateTime(schedStartDate, schedStartTime);
+    const endsAtCheck = combineLocalDateTime(schedEndDate, schedEndTime);
+    if (!startsAtCheck || !endsAtCheck || endsAtCheck.getTime() <= startsAtCheck.getTime()) {
+      toast.error('Enter valid start and end date/time');
+      return;
     }
     setSchedSaving(true);
     try {
-      const startsAt = permanent
-        ? null
-        : combineLocalDateTime(schedStartDate, schedStartTime)!.toISOString();
-      const endsAt = permanent
-        ? null
-        : combineLocalDateTime(schedEndDate, schedEndTime)!.toISOString();
+      const startsAt = combineLocalDateTime(schedStartDate, schedStartTime)!.toISOString();
+      const endsAt = combineLocalDateTime(schedEndDate, schedEndTime)!.toISOString();
       const res = await fetch('/api/merchant/schedule-off', {
         method: 'POST',
         credentials: 'include',
@@ -847,7 +1058,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         body: JSON.stringify({
           store_id: sid,
           reason: schedReason,
-          permanent,
+          permanent: false,
           starts_at: startsAt,
           ends_at: endsAt,
         }),
@@ -857,7 +1068,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         toast.error((data as any).message || (data as any).error || 'Schedule failed');
         return;
       }
-      toast.success(permanent ? 'Permanent closure recorded' : 'Scheduled time-off set');
+      toast.success('Scheduled time-off set');
       setSchedReason('');
       setSchedStartDate('');
       setSchedStartTime('');
@@ -951,8 +1162,8 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   const onlineGreen = storeOpen === true;
 
   const q = resolvedStoreId ? `?storeId=${encodeURIComponent(resolvedStoreId)}` : '';
-  const settingsHref = `/mx/store-settings${q}`;
-  const profileHref = `/mx/profile${q}`;
+  const settingsHref = `/partners/store-settings${q}`;
+  const profileHref = `/partners/profile${q}`;
 
   const resolvedHeaderTitle = (
     partnerShellHeader?.header.title?.trim() ||
@@ -1003,7 +1214,12 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
           return 0;
         });
 
-  const automationRow = automationStoreId ? storeOpsById[automationStoreId] : undefined;
+  // If only one outlet exists, hide/disable switching.
+  useEffect(() => {
+    if (outletsOrderedForStatus.length <= 1 && switchStoreMode) {
+      setSwitchStoreMode(false);
+    }
+  }, [outletsOrderedForStatus.length, switchStoreMode]);
 
   const sheetBody = () => {
     if (!sheet) return null;
@@ -1087,311 +1303,418 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       case 'settings':
         return (
           <div className="space-y-3">
-            {storeSettingsLoading || !storeSettings ? (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-4 text-sm text-gray-600">
-                Loading settings…
-              </div>
-            ) : (
-              <>
-                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">WhatsApp notifications</p>
-                  <p className="text-[10px] text-gray-500">
-                    Receive updates and reminders related to your restaurant on WhatsApp.
-                  </p>
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-gray-900">WhatsApp notifications</span>
-                    <CompactSwitch
-                      on={storeSettings.communication_settings.whatsapp_notifications}
-                      ariaLabel="WhatsApp notifications"
-                      onToggle={() =>
-                        setStoreSettings((p) =>
-                          p
-                            ? {
-                                ...p,
-                                communication_settings: {
-                                  ...p.communication_settings,
-                                  whatsapp_notifications: !p.communication_settings.whatsapp_notifications,
-                                },
-                              }
-                            : p
-                        )
-                      }
-                    />
-                  </label>
-                </div>
-
-                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Business reports</p>
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-gray-900">Daily reports</p>
-                    <p className="text-[10px] text-gray-500">Every morning for previous day</p>
-                    <label className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-gray-900">Share on WhatsApp</span>
-                      <CompactSwitch
-                        on={storeSettings.communication_settings.reports.daily_whatsapp}
-                        ariaLabel="Daily WhatsApp report"
-                        onToggle={() =>
-                          setStoreSettings((p) =>
-                            p
-                              ? {
-                                  ...p,
-                                  communication_settings: {
-                                    ...p.communication_settings,
-                                    reports: { ...p.communication_settings.reports, daily_whatsapp: !p.communication_settings.reports.daily_whatsapp },
-                                  },
-                                }
-                              : p
-                          )
-                        }
-                      />
-                    </label>
-                    <label className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-gray-900">Share on Email</span>
-                      <CompactSwitch
-                        on={storeSettings.communication_settings.reports.daily_email}
-                        ariaLabel="Daily email report"
-                        onToggle={() =>
-                          setStoreSettings((p) =>
-                            p
-                              ? {
-                                  ...p,
-                                  communication_settings: {
-                                    ...p.communication_settings,
-                                    reports: { ...p.communication_settings.reports, daily_email: !p.communication_settings.reports.daily_email },
-                                  },
-                                }
-                              : p
-                          )
-                        }
-                      />
-                    </label>
+                <div className="flex gap-3 pb-1">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                    <WhatsappBrandIcon className="h-5 w-5" />
                   </div>
-                  <div className="h-px bg-gray-100" />
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-gray-900">Weekly reports</p>
-                    <p className="text-[10px] text-gray-500">Every Monday for previous week</p>
-                    <label className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-gray-900">Share on WhatsApp</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold text-gray-900">WhatsApp alerts</p>
+                    <p className="mt-0.5 text-xs leading-snug text-gray-500">
+                      Receive updates and other reminders related to your restaurant on WhatsApp
+                    </p>
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      {storePrimaryPhoneDisplay ? (
+                        <p className="min-w-0 shrink text-sm font-bold tabular-nums text-gray-900">
+                          {storePrimaryPhoneDisplay}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-400">No primary number on file</p>
+                      )}
                       <CompactSwitch
-                        on={storeSettings.communication_settings.reports.weekly_whatsapp}
-                        ariaLabel="Weekly WhatsApp report"
+                        on={storeSettings.communication_settings.whatsapp_notifications}
+                        ariaLabel="WhatsApp alerts"
                         onToggle={() =>
-                          setStoreSettings((p) =>
-                            p
-                              ? {
-                                  ...p,
-                                  communication_settings: {
-                                    ...p.communication_settings,
-                                    reports: { ...p.communication_settings.reports, weekly_whatsapp: !p.communication_settings.reports.weekly_whatsapp },
-                                  },
-                                }
-                              : p
-                          )
+                          setStoreSettings((p) => {
+                            const next = {
+                              ...p,
+                              communication_settings: {
+                                ...p.communication_settings,
+                                whatsapp_notifications: !p.communication_settings.whatsapp_notifications,
+                              },
+                            };
+                            void persistStoreSettingsToServer(next);
+                            return next;
+                          })
                         }
                       />
-                    </label>
-                    <label className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-medium text-gray-900">Share on Email</span>
-                      <CompactSwitch
-                        on={storeSettings.communication_settings.reports.weekly_email}
-                        ariaLabel="Weekly email report"
-                        onToggle={() =>
-                          setStoreSettings((p) =>
-                            p
-                              ? {
-                                  ...p,
-                                  communication_settings: {
-                                    ...p.communication_settings,
-                                    reports: { ...p.communication_settings.reports, weekly_email: !p.communication_settings.reports.weekly_email },
-                                  },
-                                }
-                              : p
-                          )
-                        }
-                      />
-                    </label>
+                    </div>
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Order notifications</p>
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-gray-900">Order notifications</span>
-                    <CompactSwitch
-                      on={storeSettings.communication_settings.order_notifications.enabled}
-                      ariaLabel="Order notifications"
-                      onToggle={() =>
-                        setStoreSettings((p) =>
-                          p
-                            ? {
-                                ...p,
-                                communication_settings: {
-                                  ...p.communication_settings,
-                                  order_notifications: {
-                                    ...p.communication_settings.order_notifications,
-                                    enabled: !p.communication_settings.order_notifications.enabled,
-                                  },
-                                },
+                <div className="space-y-2">
+                  <p className="text-sm font-bold text-gray-900">Business reports</p>
+                  <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm font-bold text-gray-900">Daily reports</p>
+                        <p className="mt-0.5 text-xs text-gray-500">Every morning for previous day</p>
+                        <div className="mt-3 space-y-3">
+                          <label className="flex cursor-pointer items-center justify-between gap-2">
+                            <span className="flex min-w-0 items-center gap-2.5 text-sm font-medium text-gray-900">
+                              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+                                <WhatsappBrandIcon className="h-[18px] w-[18px]" />
+                              </span>
+                              <span className="leading-tight">Share reports on whatsapp</span>
+                            </span>
+                            <CompactSwitch
+                              on={storeSettings.communication_settings.reports.daily_whatsapp}
+                              ariaLabel="Daily WhatsApp report"
+                              onToggle={() =>
+                                setStoreSettings((p) => {
+                                  const next = {
+                                    ...p,
+                                    communication_settings: {
+                                      ...p.communication_settings,
+                                      reports: {
+                                        ...p.communication_settings.reports,
+                                        daily_whatsapp: !p.communication_settings.reports.daily_whatsapp,
+                                      },
+                                    },
+                                  };
+                                  void persistStoreSettingsToServer(next);
+                                  return next;
+                                })
                               }
-                            : p
-                        )
-                      }
-                    />
-                  </label>
-                  <p className="text-[10px] text-gray-500">Receive order notifications on this device.</p>
+                            />
+                          </label>
+                          <label className="flex cursor-pointer items-center justify-between gap-2">
+                            <span className="flex min-w-0 items-center gap-2.5 text-sm font-medium text-gray-900">
+                              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                                <Mail className="h-[18px] w-[18px]" aria-hidden />
+                              </span>
+                              <span className="leading-tight">Share reports on email</span>
+                            </span>
+                            <CompactSwitch
+                              on={storeSettings.communication_settings.reports.daily_email}
+                              ariaLabel="Daily email report"
+                              onToggle={() =>
+                                setStoreSettings((p) => {
+                                  const next = {
+                                    ...p,
+                                    communication_settings: {
+                                      ...p.communication_settings,
+                                      reports: {
+                                        ...p.communication_settings.reports,
+                                        daily_email: !p.communication_settings.reports.daily_email,
+                                      },
+                                    },
+                                  };
+                                  void persistStoreSettingsToServer(next);
+                                  return next;
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
 
-                  <div className="flex items-center justify-between gap-3">
+                      <div className="h-px bg-gray-100" />
+
+                      <div>
+                        <p className="text-sm font-bold text-gray-900">Weekly reports</p>
+                        <p className="mt-0.5 text-xs text-gray-500">Every Monday for previous week</p>
+                        <div className="mt-3 space-y-3">
+                          <label className="flex cursor-pointer items-center justify-between gap-2">
+                            <span className="flex min-w-0 items-center gap-2.5 text-sm font-medium text-gray-900">
+                              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+                                <WhatsappBrandIcon className="h-[18px] w-[18px]" />
+                              </span>
+                              <span className="leading-tight">Share reports on whatsapp</span>
+                            </span>
+                            <CompactSwitch
+                              on={storeSettings.communication_settings.reports.weekly_whatsapp}
+                              ariaLabel="Weekly WhatsApp report"
+                              onToggle={() =>
+                                setStoreSettings((p) => {
+                                  const next = {
+                                    ...p,
+                                    communication_settings: {
+                                      ...p.communication_settings,
+                                      reports: {
+                                        ...p.communication_settings.reports,
+                                        weekly_whatsapp: !p.communication_settings.reports.weekly_whatsapp,
+                                      },
+                                    },
+                                  };
+                                  void persistStoreSettingsToServer(next);
+                                  return next;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="flex cursor-pointer items-center justify-between gap-2">
+                            <span className="flex min-w-0 items-center gap-2.5 text-sm font-medium text-gray-900">
+                              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                                <Mail className="h-[18px] w-[18px]" aria-hidden />
+                              </span>
+                              <span className="leading-tight">Share reports on email</span>
+                            </span>
+                            <CompactSwitch
+                              on={storeSettings.communication_settings.reports.weekly_email}
+                              ariaLabel="Weekly email report"
+                              onToggle={() =>
+                                setStoreSettings((p) => {
+                                  const next = {
+                                    ...p,
+                                    communication_settings: {
+                                      ...p.communication_settings,
+                                      reports: {
+                                        ...p.communication_settings.reports,
+                                        weekly_email: !p.communication_settings.reports.weekly_email,
+                                      },
+                                    },
+                                  };
+                                  void persistStoreSettingsToServer(next);
+                                  return next;
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                  <p className="mb-3 text-base font-bold text-gray-900">Order management</p>
+
+                  <div className="divide-y divide-gray-100">
+                    <div className="flex gap-3 pb-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-600">
+                        <Bell size={18} aria-hidden />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm font-semibold text-gray-900">Order alerts</p>
+                          <CompactSwitch
+                            on={deviceAlerts.orderAlertsEnabled}
+                            ariaLabel="Order alerts"
+                            onToggle={() => {
+                              const next = !deviceAlerts.orderAlertsEnabled;
+                              setDeviceAlerts({ orderAlertsEnabled: next });
+                            }}
+                          />
+                        </div>
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          You will receive all order related alerts on this device.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 py-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-600">
+                        <Megaphone size={18} aria-hidden />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm font-semibold text-gray-900">Sound alerts</p>
+                          <CompactSwitch
+                            on={deviceAlerts.soundAlertsEnabled}
+                            ariaLabel="Sound alerts"
+                            onToggle={() => {
+                              const next = !deviceAlerts.soundAlertsEnabled;
+                              setDeviceAlerts({ soundAlertsEnabled: next });
+                              syncFoodOrdersUiNotifyFromDevice(resolvedStoreId, next);
+                            }}
+                          />
+                        </div>
+                        <p className="mt-0.5 text-xs text-gray-500">
+                          You will receive sound alerts on this device.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 py-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-600">
+                        <Phone size={18} aria-hidden />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <p className="text-sm font-semibold text-gray-900">Select ringtone</p>
+                        {(() => {
+                          const slots = deviceAcceptanceSlots ?? [null, null, null];
+                          const ringtoneOptions: { slot: number; label: string }[] = [];
+                          slots.forEach((u, i) => {
+                            if (u && String(u).trim())
+                              ringtoneOptions.push({
+                                slot: i,
+                                label: `Gmitra Notification - ${i + 1}`,
+                              });
+                          });
+                          const selectSlot = ringtoneOptions.some((o) => o.slot === deviceAlerts.alertSoundSlot)
+                            ? deviceAlerts.alertSoundSlot
+                            : (ringtoneOptions[0]?.slot ?? 0);
+                          return ringtoneOptions.length === 0 ? (
+                            <p className="text-xs text-gray-500">No ringtones configured for this store yet.</p>
+                          ) : (
+                            <div className="relative">
+                              <select
+                                value={selectSlot}
+                                onChange={(e) =>
+                                  setDeviceAlerts({ alertSoundSlot: Math.max(0, Math.min(2, Number(e.target.value))) })
+                                }
+                                className="w-full appearance-none rounded-lg border border-gray-200 bg-white py-2.5 pl-3 pr-9 text-sm font-medium text-gray-900 outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                              >
+                                {ringtoneOptions.map((o) => (
+                                  <option key={o.slot} value={o.slot}>
+                                    {o.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <ChevronDown
+                                className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                                aria-hidden
+                              />
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 pt-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-600">
+                        <Volume2 size={18} aria-hidden />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <p className="text-sm font-semibold text-gray-900">Volume</p>
+                        <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50/80 px-2 py-1.5">
+                          <button
+                            type="button"
+                            className="flex h-9 w-9 items-center justify-center rounded-md text-lg font-semibold text-sky-600 hover:bg-white"
+                            aria-label="Decrease volume"
+                            onClick={() =>
+                              setDeviceAlerts({ volumeStep: Math.max(0, deviceAlerts.volumeStep - 1) })
+                            }
+                          >
+                            −
+                          </button>
+                          <span className="min-w-[2.5rem] text-center text-sm font-semibold tabular-nums text-gray-900">
+                            {deviceAlerts.volumeStep * 10}
+                          </span>
+                          <button
+                            type="button"
+                            className="flex h-9 w-9 items-center justify-center rounded-md text-lg font-semibold text-sky-600 hover:bg-white"
+                            aria-label="Increase volume"
+                            onClick={() =>
+                              setDeviceAlerts({ volumeStep: Math.min(10, deviceAlerts.volumeStep + 1) })
+                            }
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
+                      <span className="text-sm font-medium text-gray-900">Ring in silent mode</span>
+                      <CompactSwitch
+                        on={deviceAlerts.ringInSilent}
+                        ariaLabel="Ring in silent mode"
+                        onToggle={() => setDeviceAlerts({ ringInSilent: !deviceAlerts.ringInSilent })}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Other notifications</p>
+                  <div className="mt-3 space-y-4">
                     <div>
-                      <p className="text-sm font-medium text-gray-900">Ring volume</p>
-                      <p className="text-[10px] text-gray-500">
-                        {Math.round(storeSettings.communication_settings.order_notifications.ring_volume * 100)}%
+                      <label className="flex cursor-pointer items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-gray-900">Live complaint notifications</span>
+                        <CompactSwitch
+                          on={storeSettings.communication_settings.live_complaint_notifications}
+                          ariaLabel="Live complaint notifications"
+                          onToggle={() =>
+                            setStoreSettings((p) => {
+                              const next = {
+                                ...p,
+                                communication_settings: {
+                                  ...p.communication_settings,
+                                  live_complaint_notifications:
+                                    !p.communication_settings.live_complaint_notifications,
+                                },
+                              };
+                              void persistStoreSettingsToServer(next);
+                              return next;
+                            })
+                          }
+                        />
+                      </label>
+                      <p className="mt-1 text-[10px] leading-snug text-gray-500">
+                        Receive a notification whenever a customer raises a complaint on an order.
                       </p>
                     </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round(storeSettings.communication_settings.order_notifications.ring_volume * 100)}
-                      onChange={(e) => {
-                        const v = Math.max(0, Math.min(100, Math.floor(Number(e.target.value || 0))));
-                        setStoreSettings((p) =>
-                          p
-                            ? {
-                                ...p,
-                                communication_settings: {
-                                  ...p.communication_settings,
-                                  order_notifications: {
-                                    ...p.communication_settings.order_notifications,
-                                    ring_volume: v / 100,
-                                  },
-                                },
-                              }
-                            : p
-                        );
-                      }}
-                      className="w-40"
-                    />
-                  </div>
 
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-gray-900">Ring in silent mode</span>
-                    <CompactSwitch
-                      on={storeSettings.communication_settings.order_notifications.ring_in_silent}
-                      ariaLabel="Ring in silent mode"
-                      onToggle={() =>
-                        setStoreSettings((p) =>
-                          p
-                            ? {
-                                ...p,
-                                communication_settings: {
-                                  ...p.communication_settings,
-                                  order_notifications: {
-                                    ...p.communication_settings.order_notifications,
-                                    ring_in_silent: !p.communication_settings.order_notifications.ring_in_silent,
-                                  },
-                                },
-                              }
-                            : p
-                        )
-                      }
-                    />
-                  </label>
-                </div>
+                    <div className="h-px bg-gray-100" />
 
-                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">Other notifications</p>
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-gray-900">Live complaint notifications</span>
-                    <CompactSwitch
-                      on={storeSettings.communication_settings.live_complaint_notifications}
-                      ariaLabel="Live complaint notifications"
-                      onToggle={() =>
-                        setStoreSettings((p) =>
-                          p
-                            ? {
-                                ...p,
-                                communication_settings: {
-                                  ...p.communication_settings,
-                                  live_complaint_notifications: !p.communication_settings.live_complaint_notifications,
-                                },
-                              }
-                            : p
-                        )
-                      }
-                    />
-                  </label>
-                  <p className="text-[10px] text-gray-500">
-                    Receive a notification whenever a customer raises a complaint on an order.
-                  </p>
-                  <div className="h-px bg-gray-100" />
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-gray-900">Rider notifications</span>
-                    <CompactSwitch
-                      on={storeSettings.communication_settings.rider_notifications}
-                      ariaLabel="Rider notifications"
-                      onToggle={() =>
-                        setStoreSettings((p) =>
-                          p
-                            ? {
+                    <div>
+                      <label className="flex cursor-pointer items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-gray-900">Rider notifications</span>
+                        <CompactSwitch
+                          on={storeSettings.communication_settings.rider_notifications}
+                          ariaLabel="Rider notifications"
+                          onToggle={() =>
+                            setStoreSettings((p) => {
+                              const next = {
                                 ...p,
                                 communication_settings: {
                                   ...p.communication_settings,
                                   rider_notifications: !p.communication_settings.rider_notifications,
                                 },
-                              }
-                            : p
-                        )
-                      }
-                    />
-                  </label>
-                  <p className="text-[10px] text-gray-500">Get alerts when your rider is assigned, delayed or changes status.</p>
-                </div>
+                              };
+                              void persistStoreSettingsToServer(next);
+                              return next;
+                            })
+                          }
+                        />
+                      </label>
+                      <p className="mt-1 text-[10px] leading-snug text-gray-500">
+                        Get alerts when your rider is assigned, delayed or changes status.
+                      </p>
+                    </div>
 
-                <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wide text-gray-500">UI</p>
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-gray-900">Show floating orders</span>
-                    <CompactSwitch
-                      on={storeSettings.show_floating_orders}
-                      ariaLabel="Show floating orders"
-                      onToggle={() => setStoreSettings((p) => (p ? { ...p, show_floating_orders: !p.show_floating_orders } : p))}
-                    />
-                  </label>
-                </div>
+                    <div className="h-px bg-gray-100" />
 
-                <button
-                  type="button"
-                  disabled={storeSettingsSaving}
-                  onClick={() => void saveStoreSettings()}
-                  className="w-full rounded-lg bg-sky-600 py-3 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
-                >
-                  {storeSettingsSaving ? 'Saving…' : 'Save settings'}
-                </button>
-              </>
-            )}
+                    <label className="flex cursor-pointer items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-gray-900">Show floating orders</span>
+                      <CompactSwitch
+                        on={storeSettings.show_floating_orders}
+                        ariaLabel="Show floating orders"
+                        onToggle={() =>
+                          setStoreSettings((p) => {
+                            const next = { ...p, show_floating_orders: !p.show_floating_orders };
+                            void persistStoreSettingsToServer(next);
+                            return next;
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
           </div>
         );
       case 'status':
         return (
-          <div className="space-y-2.5">
-            <div className="-mx-0.5 flex border-b border-gray-200/90">
+          <div className="space-y-5">
+            <div className="flex rounded-2xl bg-slate-100/90 p-1 ring-1 ring-slate-200/70">
               <button
                 type="button"
-                className={`flex-1 border-b-2 py-2 text-xs font-semibold ${
+                className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
                   statusTab === 'manage'
-                    ? 'border-sky-600 text-sky-700'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
+                    : 'text-slate-500 hover:text-slate-800'
                 }`}
                 onClick={() => setStatusTab('manage')}
               >
-                Manage outlet
+                Manage Outlet
               </button>
               <button
                 type="button"
-                className={`flex-1 border-b-2 py-2 text-xs font-semibold ${
+                className={`flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all ${
                   statusTab === 'schedule'
-                    ? 'border-sky-600 text-sky-700'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/60'
+                    : 'text-slate-500 hover:text-slate-800'
                 }`}
                 onClick={() => setStatusTab('schedule')}
               >
@@ -1400,23 +1723,37 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
             </div>
 
             {statusTab === 'manage' ? (
-              <>
-                <div className="rounded-lg border border-slate-200/90 bg-gradient-to-b from-slate-50/95 to-white p-2 shadow-sm">
-                  <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-slate-200/80 bg-white px-2 py-1.5">
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-gray-900">Switch store</p>
-                      <p className="text-[10px] leading-snug text-gray-500">
-                        {switchStoreMode
-                          ? 'Tap another outlet to make it active'
-                          : 'Turn on to pick a different outlet'}
-                      </p>
+              <div className="space-y-5">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200/90 bg-white py-3.5 text-sm font-semibold text-slate-800 shadow-sm ring-1 ring-slate-100 transition hover:border-sky-200/80 hover:bg-sky-50/60 hover:text-sky-950"
+                  onClick={() => {
+                    setSheet(null);
+                    router.push('/partners/all-stores');
+                  }}
+                >
+                  View all outlets
+                  <ChevronRight className="h-4 w-4 text-sky-600" aria-hidden />
+                </button>
+
+                <div className="overflow-hidden rounded-2xl border border-slate-200/70 bg-gradient-to-b from-white to-slate-50/40 p-3 shadow-[0_2px_8px_rgba(15,23,42,0.06)] ring-1 ring-slate-100/90">
+                  {outletsOrderedForStatus.length > 1 ? (
+                    <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white px-2.5 py-2 shadow-sm">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-gray-900">Switch store</p>
+                        <p className="text-[10px] leading-snug text-gray-500">
+                          {switchStoreMode
+                            ? 'Tap another outlet to make it active'
+                            : 'Turn on to pick a different outlet'}
+                        </p>
+                      </div>
+                      <CompactSwitch
+                        on={switchStoreMode}
+                        ariaLabel="Switch store mode"
+                        onToggle={() => setSwitchStoreMode((v) => !v)}
+                      />
                     </div>
-                    <CompactSwitch
-                      on={switchStoreMode}
-                      ariaLabel="Switch store mode"
-                      onToggle={() => setSwitchStoreMode((v) => !v)}
-                    />
-                  </div>
+                  ) : null}
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
                       All outlets
@@ -1439,30 +1776,22 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                         return (
                           <li
                             key={s.store_id}
-                            className={`flex items-center gap-2 rounded-md border px-2 py-1.5 transition-colors ${
+                            className={`flex items-center gap-3 rounded-lg border bg-white px-4 py-3 shadow-sm transition-colors ${
                               isCurrent
-                                ? 'border-sky-200/90 bg-sky-50/90 ring-1 ring-sky-100'
-                                : 'border-slate-100 bg-white hover:border-slate-200'
+                                ? 'border-sky-200/90 ring-1 ring-sky-100'
+                                : 'border-gray-200 hover:border-gray-300'
                             }`}
                           >
                             <OutletBannerThumb url={s.banner_url} />
                             <div className="min-w-0 flex-1">
-                              <div className="flex min-w-0 items-center gap-1.5">
-                                <p className="min-w-0 truncate text-xs font-semibold leading-tight text-gray-900">
-                                  {s.store_name}
-                                </p>
-                                {isCurrent && !switchStoreMode ? (
-                                  <span
-                                    className="shrink-0 rounded-full bg-sky-600/15 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-sky-800"
-                                    title="Currently managing this outlet"
-                                  >
-                                    Active
-                                  </span>
-                                ) : null}
-                              </div>
-                              <p className="truncate text-[10px] leading-tight text-gray-500">
-                                {s.store_id}
-                                {city ? ` · ${city}` : ''}
+                              <p className="text-sm font-semibold leading-snug text-gray-900 sm:text-[15px]">
+                                {s.store_name}
+                              </p>
+                              <p className="mt-0.5 text-xs leading-snug text-gray-500">
+                                <span className="font-medium text-gray-500">ID:</span>{' '}
+                                <span className="font-mono text-[12px] text-gray-600">{s.store_id}</span>
+                                {city ? <span className="text-gray-300"> | </span> : null}
+                                {city ? <span className="text-gray-500">{city}</span> : null}
                               </p>
                             </div>
                             {switchStoreMode ? (
@@ -1487,13 +1816,17 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                                 )}
                               </div>
                             ) : (
-                              <div className="flex shrink-0 flex-col items-end gap-0.5">
+                              <div className="flex shrink-0 items-center gap-3">
                                 <span
-                                  className={`text-[9px] font-bold uppercase tracking-wide ${
-                                    isOn == null ? 'text-gray-400' : isOn ? 'text-emerald-600' : 'text-rose-600'
+                                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                    isOn == null
+                                      ? 'bg-gray-200 text-gray-600'
+                                      : isOn
+                                        ? 'bg-emerald-500 text-white'
+                                        : 'bg-gray-200 text-gray-700'
                                   }`}
                                 >
-                                  {isOn == null ? '…' : isOn ? 'On' : 'Off'}
+                                  {isOn == null ? '—' : isOn ? 'Online' : 'Offline'}
                                 </span>
                                 <CompactSwitch
                                   on={isOn === true}
@@ -1521,86 +1854,18 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     </ul>
                   )}
                 </div>
-
-                <div className="rounded-lg border border-slate-200/90 bg-white p-2 shadow-sm">
-                  <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                    Schedule automation
-                  </p>
-                  <p className="mb-1.5 text-[10px] text-gray-500">Applies to the outlet you select below.</p>
-                  <select
-                    className="mb-2 w-full rounded-md border border-slate-200 bg-slate-50/90 py-1.5 pl-2 pr-8 text-xs font-medium text-gray-800"
-                    value={automationStoreId || resolvedStoreId || ''}
-                    onChange={(e) => setAutomationStoreId(e.target.value)}
-                  >
-                    {outletsOrderedForStatus.map((s) => (
-                      <option key={s.store_id} value={s.store_id}>
-                        {s.store_name}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2 rounded-md border border-slate-100 bg-slate-50/50 px-2 py-1.5">
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-gray-900">Auto-open from schedule</p>
-                        <p className="text-[10px] leading-snug text-gray-500">Match saved timings</p>
-                      </div>
-                      <CompactSwitch
-                        on={automationRow?.autoOpen !== false}
-                        disabled={!automationStoreId}
-                        ariaLabel="Auto-open from schedule"
-                        onToggle={() =>
-                          setPendingToggle({
-                            kind: 'autoOpen',
-                            storeId: automationStoreId || resolvedStoreId,
-                            nextEnabled: !(automationRow?.autoOpen !== false),
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center justify-between gap-2 rounded-md border border-slate-100 bg-slate-50/50 px-2 py-1.5">
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium text-gray-900">Manual activation lock</p>
-                        <p className="text-[10px] leading-snug text-gray-500">Stay closed until you open</p>
-                      </div>
-                      <CompactSwitch
-                        on={automationRow?.manualLock === true}
-                        disabled={!automationStoreId}
-                        ariaLabel="Manual activation lock"
-                        onToggle={() =>
-                          setPendingToggle({
-                            kind: 'manualLock',
-                            storeId: automationStoreId || resolvedStoreId,
-                            nextEnabled: !(automationRow?.manualLock === true),
-                          })
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={refreshAllBusy}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white py-2 text-xs font-semibold text-gray-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  onClick={() => void handleRefreshAllOutlets()}
-                >
-                  {refreshAllBusy ? (
-                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-gray-600" aria-hidden />
-                  ) : null}
-                  {refreshAllBusy ? 'Refreshing…' : 'Refresh all'}
-                </button>
-              </>
+              </div>
             ) : (
-              <>
+              <div className="space-y-5 pb-1">
                 <div>
-                  <p className="mb-2 text-sm font-semibold text-gray-900">Select a restaurant</p>
+                  <label className="mb-2 block text-sm font-bold tracking-tight text-slate-900">Select a restaurant</label>
                   <div className="relative">
                     <MapPin
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                      className="pointer-events-none absolute left-3 top-1/2 z-[1] h-[18px] w-[18px] -translate-y-1/2 text-gray-400"
                       aria-hidden
                     />
                     <select
-                      className="w-full appearance-none rounded-lg border border-gray-200 py-2.5 pl-9 pr-9 text-sm text-gray-900"
+                      className="w-full min-w-0 appearance-none truncate rounded-xl border border-gray-300 bg-white py-3 pl-10 pr-10 text-left text-sm font-normal text-gray-900 shadow-sm outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
                       value={scheduleStorePick}
                       onChange={(e) => setScheduleStorePick(e.target.value)}
                     >
@@ -1613,7 +1878,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                         <option value={resolvedStoreId}>{restaurantName}</option>
                       ) : null}
                     </select>
-                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 z-[1] h-4 w-4 -translate-y-1/2 text-gray-400" />
                   </div>
                 </div>
 
@@ -1631,91 +1896,68 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                   </div>
                 )}
 
-                {schedReason !== 'Permanently shut' ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="mb-1 block text-xs font-semibold text-gray-800">Start date</label>
-                      <div className="relative">
-                        <Calendar className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="date"
-                          className="w-full rounded-lg border border-gray-200 py-2 pl-8 pr-2 text-xs"
-                          value={schedStartDate}
-                          onChange={(e) => setSchedStartDate(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-semibold text-gray-800">Start time</label>
-                      <div className="relative">
-                        <Clock className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="time"
-                          className="w-full rounded-lg border border-gray-200 py-2 pl-8 pr-2 text-xs"
-                          value={schedStartTime}
-                          onChange={(e) => setSchedStartTime(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-semibold text-gray-800">End date</label>
-                      <div className="relative">
-                        <Calendar className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="date"
-                          className="w-full rounded-lg border border-gray-200 py-2 pl-8 pr-2 text-xs"
-                          value={schedEndDate}
-                          onChange={(e) => setSchedEndDate(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs font-semibold text-gray-800">End time</label>
-                      <div className="relative">
-                        <Clock className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                        <input
-                          type="time"
-                          className="w-full rounded-lg border border-gray-200 py-2 pl-8 pr-2 text-xs"
-                          value={schedEndTime}
-                          onChange={(e) => setSchedEndTime(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-xs text-red-700">
-                    Permanent shut cannot be undone here. Confirm below when you submit.
-                  </p>
-                )}
-
-                <div>
-                  <p className="mb-2 text-sm font-semibold text-gray-900">Reason for turn-off</p>
-                  <select
-                    className="w-full rounded-lg border border-gray-200 py-2.5 px-3 text-sm"
-                    value={schedReason}
-                    onChange={(e) => setSchedReason(e.target.value)}
-                  >
-                    <option value="">Select a reason</option>
-                    {SCHEDULE_OFF_REASONS.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-4">
+                  <ScheduleOffDateField
+                    label="Start date"
+                    value={schedStartDate}
+                    onChange={setSchedStartDate}
+                  />
+                  <ScheduleOffTimeField
+                    label="Start time"
+                    value={schedStartTime}
+                    onChange={setSchedStartTime}
+                  />
+                  <ScheduleOffDateField
+                    label="End date"
+                    value={schedEndDate}
+                    onChange={setSchedEndDate}
+                  />
+                  <ScheduleOffTimeField
+                    label="End time"
+                    value={schedEndTime}
+                    onChange={setSchedEndTime}
+                  />
                 </div>
 
-                <button
-                  type="button"
-                  disabled={schedSaving}
-                  className="w-full rounded-lg bg-gray-800 py-3 text-sm font-semibold text-white hover:bg-gray-900 disabled:opacity-50"
-                  onClick={() => void submitScheduleOff()}
-                >
-                  {schedSaving ? 'Saving…' : 'Set this schedule'}
-                </button>
-                <p className="text-center text-xs text-gray-500">
-                  You will not receive orders during a scheduled closure window (same rules as the merchant app).
-                </p>
-              </>
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-black">Reason for turn-off</label>
+                  <div className="relative">
+                    <select
+                      className={`w-full appearance-none rounded-xl border border-gray-300 bg-white py-3 pl-3 pr-10 text-sm shadow-sm outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400 ${
+                        schedReason ? 'font-normal text-gray-900' : 'text-gray-400'
+                      }`}
+                      value={schedReason}
+                      onChange={(e) => setSchedReason(e.target.value)}
+                    >
+                      <option value="">Select a reason</option>
+                      {SCHEDULE_OFF_REASONS.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={schedSaving}
+                    className={`w-full rounded-xl py-3.5 text-center text-sm font-semibold text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-55 ${
+                      scheduleFormSubmitReady && !schedSaving
+                        ? 'bg-black hover:bg-neutral-900 active:bg-neutral-950'
+                        : 'bg-gray-500 hover:bg-gray-600'
+                    }`}
+                    onClick={() => void submitScheduleOff()}
+                  >
+                    {schedSaving ? 'Saving…' : 'Set this schedule'}
+                  </button>
+                  <p className="text-center text-xs leading-relaxed text-gray-500">
+                    You will not receive any orders in this duration
+                  </p>
+                </div>
+              </div>
             )}
           </div>
         );
@@ -1742,7 +1984,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
         >
           <MobileHamburgerButton className="shrink-0 md:hidden" />
           <Link
-            href="/mx/dashboard"
+            href="/partners/dashboard"
             className="flex min-w-0 max-w-full items-center overflow-hidden py-1 hover:opacity-90"
           >
             <Image
@@ -1869,20 +2111,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               aria-hidden
             />
             <aside
-              className="relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l border-gray-200 bg-white shadow-2xl"
+              className={`relative flex h-dvh min-h-0 w-full max-w-md flex-col border-l shadow-2xl ${
+                sheet === 'status'
+                  ? 'border-slate-200/70 bg-gradient-to-b from-slate-50/90 via-white to-white'
+                  : 'border-gray-200 bg-white'
+              }`}
               role="dialog"
               aria-modal="true"
               aria-labelledby="partner-sheet-title"
               onClick={(e) => e.stopPropagation()}
             >
               <div
-                className={`mx-sheet-header items-start justify-between gap-3 !px-4 !py-3 !h-auto min-h-[var(--mx-partner-topbar-h)] ${
-                  sheet === 'status' ? 'sm:py-3.5' : ''
+                className={`mx-sheet-header items-start justify-between gap-2 !h-auto ${
+                  sheet === 'status'
+                    ? '!min-h-0 border-b border-slate-200/80 !bg-white/85 !px-5 !py-4 backdrop-blur-md sm:!py-4'
+                    : '!px-4 !py-3 min-h-[var(--mx-partner-topbar-h)] gap-3'
                 }`}
               >
                 <div className="min-w-0 flex-1 pr-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 id="partner-sheet-title" className="truncate text-sm font-semibold text-gray-900 sm:text-base">
+                    <h2 id="partner-sheet-title" className="truncate text-sm font-semibold leading-tight text-gray-900 sm:text-base">
                       {sheetTitle[sheet]}
                     </h2>
                     {sheet === 'notifications' && partnerUnreadCount > 0 ? (
@@ -1896,26 +2144,30 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
                     ) : null}
                   </div>
                   {sheet === 'status' && activeOutletSummary ? (
-                    <p className="mt-1 line-clamp-2 text-xs leading-snug text-gray-600">
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-                        Active outlet{' '}
-                      </span>
-                      <span className="font-medium text-gray-800">{activeOutletSummary.name}</span>
-                      <span className="text-gray-400"> · </span>
-                      <span className="font-mono text-[11px] text-gray-700">{activeOutletSummary.id}</span>
+                    <p className="mt-1 text-xs leading-snug text-gray-700">
+                      <span className="mr-1 font-semibold text-emerald-600">ACTIVE OUTLET</span>
+                      <span className="font-medium text-gray-800 break-words">{activeOutletSummary.name}</span>
+                      <span className="mx-1 text-gray-300">·</span>
+                      <span className="font-mono text-[11px] text-gray-600 break-all">{activeOutletSummary.id}</span>
                     </p>
                   ) : null}
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 rounded-lg p-2 text-gray-500 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
+                  className="shrink-0 self-start rounded-lg p-2 text-gray-500 hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
                   aria-label="Close"
                   onClick={() => setSheet(null)}
                 >
                   <X size={20} />
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4 hide-scrollbar">{sheetBody()}</div>
+              <div
+                className={`min-h-0 flex-1 overflow-y-auto hide-scrollbar ${
+                  sheet === 'status' ? 'px-5 py-2 pb-6 md:py-3' : 'p-4'
+                }`}
+              >
+                {sheetBody()}
+              </div>
             </aside>
           </div>,
           document.body

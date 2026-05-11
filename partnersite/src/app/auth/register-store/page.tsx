@@ -401,7 +401,7 @@ const StoreRegistrationForm = () => {
     const q = new URLSearchParams();
     q.set('verification_updates_submitted', '1');
     if (sid) q.set('highlight_store', sid);
-    return `/auth/post-login?${q.toString()}`;
+    return `/partners/all-stores?${q.toString()}`;
   }, [selectedStorePublicId, currentStoreId, draftStorePublicId]);
 
   const showVerificationNotice = useCallback(
@@ -3354,7 +3354,7 @@ const StoreRegistrationForm = () => {
   };
 
   const handleViewStore = () => {
-    window.location.href = '/auth/post-login';
+    window.location.href = '/partners/all-stores';
   };
 
   const stepLabels = [
@@ -3583,7 +3583,7 @@ const StoreRegistrationForm = () => {
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
-              onClick={() => { window.location.href = '/auth/post-login'; }}
+              onClick={() => { window.location.href = '/partners/all-stores'; }}
               className="hidden sm:inline-flex text-xs sm:text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1.5 sm:px-3 rounded-lg hover:bg-indigo-100"
             >
               ← All Stores
@@ -3622,7 +3622,7 @@ const StoreRegistrationForm = () => {
             <div className="p-4 space-y-3 overflow-y-auto hide-scrollbar">
               <button
                 type="button"
-                onClick={() => { setShowMobileMenu(false); window.location.href = '/auth/post-login'; }}
+                onClick={() => { setShowMobileMenu(false); window.location.href = '/partners/all-stores'; }}
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold hover:bg-indigo-100 hover:border-indigo-300 shadow-sm transition-colors"
               >
                 <span aria-hidden="true">←</span>

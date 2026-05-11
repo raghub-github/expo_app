@@ -29,6 +29,8 @@ function messageFromReason(reason: string | null): string {
       return 'Your session expired or was invalid. Please sign in again.';
     case 'session_expired':
       return 'Your session has expired. Please sign in again.';
+    case 'device_session_invalid':
+      return 'Your session is not valid for this device. Please sign in again.';
     default:
       return '';
   }
@@ -58,7 +60,7 @@ function LoginPageContent() {
       sessionStorage.setItem('auth_redirect', redirectTo);
     } else {
       // Ensure after login we always go to child store list, not auth home (no stale /auth)
-      sessionStorage.setItem('auth_redirect', '/auth/post-login');
+      sessionStorage.setItem('auth_redirect', '/partners/all-stores');
     }
   }, [redirectTo]);
 
@@ -130,12 +132,12 @@ function LoginPageContent() {
           let next =
             (typeof window !== 'undefined' && sessionStorage.getItem('auth_redirect')) ||
             redirectTo ||
-            '/auth/post-login';
+            '/partners/all-stores';
           if (typeof window !== 'undefined' && sessionStorage.getItem('auth_redirect')) {
             sessionStorage.removeItem('auth_redirect');
           }
-          if (next === '/auth' || next === '/auth/') next = '/auth/post-login';
-          window.location.href = next.startsWith('/') ? next : '/auth/post-login';
+          if (next === '/auth' || next === '/auth/') next = '/partners/all-stores';
+          window.location.href = next.startsWith('/') ? next : '/partners/all-stores';
           return;
         }
         throw new Error('Server temporarily unavailable (502). Please try again.');
@@ -146,12 +148,12 @@ function LoginPageContent() {
     let next =
       (typeof window !== 'undefined' && sessionStorage.getItem('auth_redirect')) ||
       redirectTo ||
-      '/auth/post-login';
+      '/partners/all-stores';
     if (typeof window !== 'undefined' && sessionStorage.getItem('auth_redirect')) {
       sessionStorage.removeItem('auth_redirect');
     }
-    if (next === '/auth' || next === '/auth/') next = '/auth/post-login';
-    window.location.href = next.startsWith('/') ? next : '/auth/post-login';
+    if (next === '/auth' || next === '/auth/') next = '/partners/all-stores';
+    window.location.href = next.startsWith('/') ? next : '/partners/all-stores';
   };
 
   const handleGoogleLogin = async () => {

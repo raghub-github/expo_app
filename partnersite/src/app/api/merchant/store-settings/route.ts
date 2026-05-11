@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
       db
         .from('merchant_stores')
         .select(
-          'delivery_radius_km, full_address, landmark, city, state, postal_code, latitude, longitude, packaging_charge_amount, packaging_charge_last_updated_at, delivery_charge_per_km, delivery_charge_per_km_last_updated_at'
+          'delivery_radius_km, store_phones, full_address, landmark, city, state, postal_code, latitude, longitude, packaging_charge_amount, packaging_charge_last_updated_at, delivery_charge_per_km, delivery_charge_per_km_last_updated_at'
         )
         .eq('store_id', storeId)
         .maybeSingle(),
@@ -87,6 +87,14 @@ export async function GET(req: NextRequest) {
     const deliveryRadiusKm = storeData?.delivery_radius_km != null && !Number.isNaN(Number(storeData.delivery_radius_km))
       ? Number(storeData.delivery_radius_km)
       : undefined;
+
+    const phonesRaw = (storeData as { store_phones?: unknown } | null)?.store_phones;
+    const store_phones: string[] = Array.isArray(phonesRaw)
+      ? phonesRaw.map((x) => String(x).trim()).filter((s) => s.length > 0)
+      : typeof phonesRaw === 'string' && phonesRaw.trim()
+        ? [phonesRaw.trim()]
+        : [];
+    const primary_phone = store_phones[0] ?? null;
 
     const metadata = settingsData?.settings_metadata as Record<string, unknown> | null | undefined;
     const preparationBufferMinutes =
@@ -174,6 +182,8 @@ export async function GET(req: NextRequest) {
       show_floating_orders: (settingsData as any)?.show_floating_orders ?? true,
 
       ...(preparationBufferMinutes !== undefined && { preparation_buffer_minutes: preparationBufferMinutes }),
+      store_phones,
+      primary_phone,
       communication_settings,
       ...(deliveryRadiusKm !== undefined && { delivery_radius_km: deliveryRadiusKm }),
       ...(address && { address }),

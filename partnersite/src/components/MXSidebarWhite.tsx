@@ -148,61 +148,61 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       id: 'dashboard',
       label: 'Dashboard',
       icon: <LayoutDashboard size={20} />, 
-      href: '/mx/dashboard'
+      href: '/partners/dashboard'
     },
     {
       id: 'orders',
       label: 'Orders',
       icon: <ClipboardList size={20} />, 
-      href: '/mx/food-orders'
+      href: '/partners/orders'
     },
     {
       id: 'menu',
       label: 'Menu',
       icon: <UtensilsCrossed size={20} />, 
-      href: '/mx/menu'
+      href: '/partners/menu'
     },
     {
       id: 'order-history',
       label: 'Order History',
       icon: <History size={20} />,
-      href: '/mx/order-history'
+      href: '/partners/order-history'
     },
     {
       id: 'offers',
       label: 'Offers',
       icon: <Zap size={20} />, 
-      href: '/mx/offers'
+      href: '/partners/offers'
     },
     {
       id: 'payments',
       label: 'Payments',
       icon: <CreditCard size={20} />, 
-      href: '/mx/payments'
+      href: '/partners/payments'
     },
     {
       id: 'user-insights',
       label: 'User Insights',
       icon: <Users size={20} />, 
-      href: '/mx/user-insights'
+      href: '/partners/user-insights'
     },
     {
       id: 'support-inbox',
       label: 'Support Inbox',
       icon: <Inbox size={20} />,
-      href: '/mx/support-inbox'
+      href: '/partners/support-inbox'
     },
     {
       id: 'settings',
       label: 'Settings',
       icon: <Settings size={20} />, 
-      href: '/mx/store-settings'
+      href: '/partners/store-settings'
     },
     {
       id: 'profile',
       label: 'Profile',
       icon: <User size={20} />, 
-      href: '/mx/profile'
+      href: '/partners/profile'
     }
   ]
 
@@ -232,15 +232,15 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     }
 
     // Prevent both "User Insights" and "Support Inbox" being active together.
-    if (href === '/mx/user-insights') {
+    if (href === '/partners/user-insights') {
       const current = new URLSearchParams(q);
       if (current.get('view') === 'inbox') return false;
     }
 
     // Dedicated inbox route should activate Support Inbox only.
-    if (href === '/mx/support-inbox') return p === '/mx/support-inbox';
+    if (href === '/partners/support-inbox') return p === '/partners/support-inbox';
 
-    if (href === '/mx/order-history') return p === href || p.startsWith(`${href}/`);
+    if (href === '/partners/order-history') return p === href || p.startsWith(`${href}/`);
     return full === href || p === href || p.startsWith(`${href}?`) || p.startsWith(`${href}/`);
   }
 
@@ -248,7 +248,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', storeId);
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
-    const base = (pathname || '/mx/dashboard').split('?')[0];
+    const base = (pathname || '/partners/dashboard').split('?')[0];
     const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
     params.set('storeId', storeId);
     window.location.href = `${base}?${params.toString()}`;
@@ -257,7 +257,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const goToAllStores = () => {
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
-    window.location.href = '/auth/post-login';
+    window.location.href = '/partners/all-stores';
   };
 
   const handleLogout = async () => {
