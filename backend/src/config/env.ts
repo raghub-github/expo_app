@@ -62,6 +62,21 @@ const EnvSchema = z.object({
   RAZORPAY_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, z.string().min(10).optional()),
 
   /**
+   * Dummy payment mode — bypasses Razorpay entirely. When true the /create-order
+   * endpoint returns synthetic order/key IDs and the customer app shows a
+   * "Simulate Success / Simulate Failure" sheet. The existing finalize flow
+   * (signature check, order creation, merchant + rider + push notifications,
+   * ledger, realtime) is unchanged — only the gateway call is stubbed.
+   *
+   * Also relaxes the production guard for missing RAZORPAY_* secrets, so
+   * preview/production builds can run end-to-end without a real Razorpay account.
+   */
+  PAYMENT_DUMMY_MODE: z.preprocess(
+    (v) => v === true || v === "true" || v === "1",
+    z.boolean()
+  ).default(false),
+
+  /**
    * Hard TTL (ms) between the user starting a payment and us considering the
    * attempt stale. Past this point the reconciler will auto-refund any captured
    * payment (customer has likely reordered elsewhere) and fail the pending
@@ -198,6 +213,26 @@ export function getEnv(): Env {
     console.error(parsed.error.flatten().fieldErrors);
     throw new Error("Invalid environment variables");
   }
+
+  // Production hard-requirements that we want to allow as optional for local dev
+  // but MUST be present once NODE_ENV=production. These are checked here (not in
+  // the schema) so dev startup is forgiving but production refuses to boot
+  // without the security-critical secrets.
+  if (parsed.data.NODE_ENV === "production" && !parsed.data.PAYMENT_DUMMY_MODE) {
+    const missingProdSecrets: string[] = [];
+    if (!parsed.data.RAZORPAY_KEY_ID) missingProdSecrets.push("RAZORPAY_KEY_ID");
+    if (!parsed.data.RAZORPAY_KEY_SECRET) missingProdSecrets.push("RAZORPAY_KEY_SECRET");
+    if (!parsed.data.RAZORPAY_WEBHOOK_SECRET) missingProdSecrets.push("RAZORPAY_WEBHOOK_SECRET");
+    if (missingProdSecrets.length > 0) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `Missing required production env vars: ${missingProdSecrets.join(", ")}. ` +
+          `Without these, payments cannot run. Configure them in your secrets store and redeploy.`
+      );
+      throw new Error("Missing required production environment variables");
+    }
+  }
+
   return parsed.data;
 }
 

@@ -14,12 +14,18 @@ import {
 import { fetchMenuItems, type MenuItemRow } from "@/services/menuApi";
 
 const OFFER_TYPES: { value: OfferType; label: string; icon: string }[] = [
-  { value: "PERCENTAGE", label: "Percentage Off", icon: "trending-down-outline" },
-  { value: "FLAT", label: "Flat Discount", icon: "cash-outline" },
-  { value: "BUY_N_GET_M", label: "Buy N Get M", icon: "gift-outline" },
-  { value: "COUPON", label: "Coupon Code", icon: "ticket-outline" },
-  { value: "FREE_DELIVERY", label: "Free Delivery", icon: "bicycle-outline" },
-  { value: "FREE_ITEM", label: "Free Item", icon: "fast-food-outline" },
+  { value: "PERCENTAGE",      label: "% Off Items",     icon: "trending-down-outline" },
+  { value: "FLAT",            label: "Flat ₹ Off",      icon: "cash-outline" },
+  { value: "CART_PERCENTAGE", label: "% Off Cart",      icon: "cart-outline" },
+  { value: "CART_FLAT",       label: "Flat ₹ Cart",     icon: "wallet-outline" },
+  { value: "BUY_X_GET_Y",    label: "Buy X Get Y",     icon: "gift-outline" },
+  { value: "BUY_N_GET_M",    label: "Buy N Get M",     icon: "gift-outline" },
+  { value: "BOGO",            label: "Buy 1 Get 1",     icon: "copy-outline" },
+  { value: "COUPON",          label: "Coupon Code",     icon: "ticket-outline" },
+  { value: "FREE_DELIVERY",   label: "Free Delivery",   icon: "bicycle-outline" },
+  { value: "FREE_ITEM",       label: "Free Item",       icon: "fast-food-outline" },
+  { value: "TIERED",          label: "Tiered Discount", icon: "podium-outline" },
+  { value: "BUNDLE",          label: "Bundle Deal",     icon: "layers-outline" },
 ];
 
 function formatDate(d: string | null): string {
@@ -69,6 +75,11 @@ export default function OffersScreen() {
   const [validFrom, setValidFrom] = useState("");
   const [validTill, setValidTill] = useState("");
   const [autoApply, setAutoApply] = useState(true);
+  const [maxDiscountAmount, setMaxDiscountAmount] = useState("");
+  const [maxUsesTotal, setMaxUsesTotal] = useState("");
+  const [maxUsesPerUser, setMaxUsesPerUser] = useState("");
+  const [firstOrderOnly, setFirstOrderOnly] = useState(false);
+  const [newUserOnly, setNewUserOnly] = useState(false);
   const [imageFile, setImageFile] = useState<{ uri: string; type: string; name: string } | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -128,6 +139,8 @@ export default function OffersScreen() {
     setTitle(""); setDescription(""); setOfferType("PERCENTAGE"); setDiscountValue("");
     setMinOrder(""); setCouponCode(""); setBuyQty(""); setGetQty("");
     setValidFrom(""); setValidTill(""); setAutoApply(true);
+    setMaxDiscountAmount(""); setMaxUsesTotal(""); setMaxUsesPerUser("");
+    setFirstOrderOnly(false); setNewUserOnly(false);
     setImageFile(null); setImagePreview(null); setUploadingImage(false);
     setApplyToSpecificItems(false);
     setSelectedItemIds([]);
@@ -171,7 +184,8 @@ export default function OffersScreen() {
     setTitle(o.offer_title);
     setDescription(o.offer_description ?? "");
     setOfferType(o.offer_type);
-    setDiscountValue(String(o.discount_value ?? o.discount_percentage ?? ""));
+    const isPct = ["PERCENTAGE", "CART_PERCENTAGE"].includes(o.offer_type);
+    setDiscountValue(String((isPct ? o.discount_percentage : o.discount_value) ?? ""));
     setMinOrder(o.min_order_amount != null ? String(o.min_order_amount) : "");
     setCouponCode(o.coupon_code ?? "");
     setBuyQty(o.buy_quantity != null ? String(o.buy_quantity) : "");
@@ -179,6 +193,11 @@ export default function OffersScreen() {
     setValidFrom(o.valid_from ? new Date(o.valid_from).toISOString().slice(0, 10) : "");
     setValidTill(o.valid_till ? new Date(o.valid_till).toISOString().slice(0, 10) : "");
     setAutoApply(o.auto_apply ?? true);
+    setMaxDiscountAmount(o.max_discount_amount != null ? String(o.max_discount_amount) : "");
+    setMaxUsesTotal(o.max_uses_total != null ? String(o.max_uses_total) : "");
+    setMaxUsesPerUser(o.max_uses_per_user != null ? String(o.max_uses_per_user) : "");
+    setFirstOrderOnly(o.first_order_only ?? false);
+    setNewUserOnly(o.new_user_only ?? false);
     setImagePreview(o.offer_image_url ?? null);
     setImageFile(null);
     const hasItems = Array.isArray(o.menu_item_ids) && o.menu_item_ids.length > 0;
@@ -222,7 +241,8 @@ export default function OffersScreen() {
     if (!title.trim()) { Alert.alert("Required", "Offer title is required."); return; }
     if (!validFrom || !validTill) { Alert.alert("Required", "Valid from and valid till dates are required."); return; }
 
-    const isPct = offerType === "PERCENTAGE";
+    const isPct = ["PERCENTAGE", "CART_PERCENTAGE"].includes(offerType);
+    const needsBuyGet = ["BUY_X_GET_Y", "BUY_N_GET_M", "BOGO"].includes(offerType);
 
     if (applyToSpecificItems && selectedItemIds.length === 0) {
       Alert.alert("Required", "Select at least one menu item for this offer.");
@@ -230,15 +250,11 @@ export default function OffersScreen() {
     }
 
     if (offerType === "FLAT" && applyToSpecificItems) {
-      // Final guard: ensure no selected item is already mapped to another offer.
       const invalid = menuItems.filter(
         (m) => selectedItemIds.includes(m.item_id) && !isItemEligibleForFlat(m)
       );
       if (invalid.length > 0) {
-        Alert.alert(
-          "Not allowed",
-          "Some selected items are already mapped to another offer."
-        );
+        Alert.alert("Not allowed", "Some selected items are already mapped to another offer.");
         return;
       }
     }
@@ -250,14 +266,19 @@ export default function OffersScreen() {
       offer_sub_type: applyToSpecificItems ? "SPECIFIC_ITEM" : "ALL_ORDERS",
       discount_value: !isPct && discountValue ? Number(discountValue) : null,
       discount_percentage: isPct && discountValue ? Number(discountValue) : null,
+      max_discount_amount: maxDiscountAmount ? Number(maxDiscountAmount) : null,
       min_order_amount: minOrder ? Number(minOrder) : null,
-      buy_quantity: buyQty ? Number(buyQty) : null,
-      get_quantity: getQty ? Number(getQty) : null,
+      buy_quantity: needsBuyGet && buyQty ? Number(buyQty) : null,
+      get_quantity: needsBuyGet && getQty ? Number(getQty) : null,
       coupon_code: offerType === "COUPON" && couponCode.trim() ? couponCode.trim().toUpperCase() : null,
       valid_from: new Date(validFrom).toISOString(),
       valid_till: new Date(validTill).toISOString(),
       is_active: true,
       auto_apply: autoApply,
+      max_uses_total: maxUsesTotal ? Number(maxUsesTotal) : null,
+      max_uses_per_user: maxUsesPerUser ? Number(maxUsesPerUser) : null,
+      first_order_only: firstOrderOnly,
+      new_user_only: newUserOnly,
       menu_item_ids: applyToSpecificItems && selectedItemIds.length > 0 ? selectedItemIds : null,
     };
 
@@ -374,21 +395,30 @@ export default function OffersScreen() {
               </View>
             ) : null}
 
-            {(offerType === "PERCENTAGE" || offerType === "FLAT") && (
+            {["PERCENTAGE", "CART_PERCENTAGE"].includes(offerType) && (
               <>
-                <Text style={styles.label}>{offerType === "PERCENTAGE" ? "Discount %" : "Discount amount (₹)"} *</Text>
+                <Text style={styles.label}>Discount % *</Text>
                 <TextInput style={styles.input} value={discountValue} onChangeText={setDiscountValue} placeholder="e.g. 20" keyboardType="numeric" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+                <Text style={styles.label}>Max discount cap ₹ (optional)</Text>
+                <TextInput style={styles.input} value={maxDiscountAmount} onChangeText={setMaxDiscountAmount} placeholder="e.g. 100" keyboardType="numeric" placeholderTextColor={GatiMitraMerchant.textTertiary} />
               </>
             )}
 
-            {(offerType === "BUY_N_GET_M" || offerType === "BUY_X_GET_Y") && (
+            {["FLAT", "CART_FLAT"].includes(offerType) && (
+              <>
+                <Text style={styles.label}>Flat discount ₹ *</Text>
+                <TextInput style={styles.input} value={discountValue} onChangeText={setDiscountValue} placeholder="e.g. 50" keyboardType="numeric" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+              </>
+            )}
+
+            {["BUY_N_GET_M", "BUY_X_GET_Y", "BOGO"].includes(offerType) && (
               <View style={styles.row}>
                 <View style={styles.halfField}>
                   <Text style={styles.label}>Buy qty</Text>
-                  <TextInput style={styles.input} value={buyQty} onChangeText={setBuyQty} keyboardType="numeric" placeholder="2" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+                  <TextInput style={styles.input} value={buyQty} onChangeText={setBuyQty} keyboardType="numeric" placeholder={offerType === "BOGO" ? "1" : "2"} placeholderTextColor={GatiMitraMerchant.textTertiary} />
                 </View>
                 <View style={styles.halfField}>
-                  <Text style={styles.label}>Get qty</Text>
+                  <Text style={styles.label}>Get free qty</Text>
                   <TextInput style={styles.input} value={getQty} onChangeText={setGetQty} keyboardType="numeric" placeholder="1" placeholderTextColor={GatiMitraMerchant.textTertiary} />
                 </View>
               </View>
@@ -398,13 +428,33 @@ export default function OffersScreen() {
               <>
                 <Text style={styles.label}>Coupon code *</Text>
                 <TextInput style={styles.input} value={couponCode} onChangeText={(t) => setCouponCode(t.toUpperCase())} placeholder="e.g. SAVE20" autoCapitalize="characters" placeholderTextColor={GatiMitraMerchant.textTertiary} />
-                <Text style={styles.label}>Discount value (₹ or %)</Text>
-                <TextInput style={styles.input} value={discountValue} onChangeText={setDiscountValue} keyboardType="numeric" placeholder="e.g. 50" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+                <Text style={styles.label}>Discount % (or leave blank for flat)</Text>
+                <TextInput style={styles.input} value={discountValue} onChangeText={setDiscountValue} keyboardType="numeric" placeholder="e.g. 15 for 15%" placeholderTextColor={GatiMitraMerchant.textTertiary} />
               </>
             )}
 
-            <Text style={styles.label}>Min order amount (₹)</Text>
+            {offerType === "TIERED" && (
+              <View style={styles.infoBox}>
+                <Ionicons name="information-circle-outline" size={16} color="#4b5563" />
+                <Text style={styles.infoText}>
+                  Tiered discounts require tier configuration. Set tiers via the web dashboard or partner portal.
+                </Text>
+              </View>
+            )}
+
+            <Text style={styles.label}>Min order amount ₹</Text>
             <TextInput style={styles.input} value={minOrder} onChangeText={setMinOrder} keyboardType="numeric" placeholder="Optional" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+
+            <View style={styles.row}>
+              <View style={styles.halfField}>
+                <Text style={styles.label}>Total uses limit</Text>
+                <TextInput style={styles.input} value={maxUsesTotal} onChangeText={setMaxUsesTotal} keyboardType="numeric" placeholder="Unlimited" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+              </View>
+              <View style={styles.halfField}>
+                <Text style={styles.label}>Per user limit</Text>
+                <TextInput style={styles.input} value={maxUsesPerUser} onChangeText={setMaxUsesPerUser} keyboardType="numeric" placeholder="Unlimited" placeholderTextColor={GatiMitraMerchant.textTertiary} />
+              </View>
+            </View>
 
             <View style={styles.row}>
               <View style={styles.halfField}>
@@ -419,7 +469,17 @@ export default function OffersScreen() {
 
             <Pressable onPress={() => setAutoApply(!autoApply)} style={styles.toggleRow}>
               <Ionicons name={autoApply ? "checkbox" : "square-outline"} size={20} color={GatiMitraMerchant.primary} />
-              <Text style={styles.toggleLabel}>Auto-apply (no coupon code needed)</Text>
+              <Text style={styles.toggleLabel}>Auto-apply (no coupon needed)</Text>
+            </Pressable>
+
+            <Pressable onPress={() => setFirstOrderOnly(!firstOrderOnly)} style={styles.toggleRow}>
+              <Ionicons name={firstOrderOnly ? "checkbox" : "square-outline"} size={20} color={GatiMitraMerchant.primary} />
+              <Text style={styles.toggleLabel}>First order only</Text>
+            </Pressable>
+
+            <Pressable onPress={() => setNewUserOnly(!newUserOnly)} style={styles.toggleRow}>
+              <Ionicons name={newUserOnly ? "checkbox" : "square-outline"} size={20} color={GatiMitraMerchant.primary} />
+              <Text style={styles.toggleLabel}>New users only</Text>
             </Pressable>
 
             <View style={styles.formActions}>
@@ -569,4 +629,6 @@ const styles = StyleSheet.create({
   actionBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: "#e5e7eb", backgroundColor: "#fafafa" },
   actionPressed: { opacity: 0.7 },
   actionText: { fontSize: 11, fontWeight: "600" },
+  infoBox: { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: "#f3f4f6", borderRadius: 10, padding: 10, marginTop: 8 },
+  infoText: { flex: 1, fontSize: 12, color: "#4b5563", lineHeight: 18 },
 });

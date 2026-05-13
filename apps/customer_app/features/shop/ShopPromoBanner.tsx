@@ -1,5 +1,6 @@
 /**
- * Auto-sliding promotional banner – gradient cards, Shop Now CTA.
+ * Auto-sliding promotional banner — fetches live platform offers from backend.
+ * Falls back to static slides when no offers are available or the fetch fails.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -12,11 +13,14 @@ import {
   Dimensions,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  ActivityIndicator,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { PROMO_SLIDES } from "./data";
+import { useLocationStore } from "@/store/locationStore";
+import { offersService, type PlatformOfferItem } from "@/services/offers.service";
 
 const { width } = Dimensions.get("window");
 const PAD = 16;
@@ -24,14 +28,79 @@ const BANNER_WIDTH = width - PAD * 2;
 const SLIDE_GAP = 12;
 const AUTO_INTERVAL_MS = 5000;
 
+const GRADIENT_SETS: [string, string, string][] = [
+  [GatiMitraColors.emerald, GatiMitraColors.emeraldLight, GatiMitraColors.warmOrange],
+  ["#7c3aed", "#a855f7", "#ec4899"],
+  ["#0ea5e9", "#38bdf8", "#06b6d4"],
+  ["#f59e0b", "#fbbf24", "#f97316"],
+  ["#10b981", "#34d399", "#059669"],
+];
+
+type SlideData = {
+  id: string;
+  title: string;
+  sub: string;
+  cta: string;
+  gradientIndex: number;
+};
+
+function offerToSlide(o: PlatformOfferItem, idx: number): SlideData {
+  return {
+    id: String(o.id),
+    title: o.label,
+    sub: o.sub_label || (o.name ?? "Platform offer"),
+    cta: "View Offer",
+    gradientIndex: idx % GRADIENT_SETS.length,
+  };
+}
+
+const FALLBACK_SLIDES: SlideData[] = [
+  { id: "f1", title: "Upto 40% OFF", sub: "On food & daily essentials", cta: "Order Now", gradientIndex: 0 },
+  { id: "f2", title: "Free Delivery", sub: "On orders above ₹299", cta: "Order Now", gradientIndex: 1 },
+  { id: "f3", title: "New Arrivals", sub: "Fresh deals every day", cta: "Explore", gradientIndex: 2 },
+];
+
 export function ShopPromoBanner() {
   const scrollRef = useRef<ScrollView>(null);
   const [index, setIndex] = useState(0);
+  const locationAddress = useLocationStore((s) => s.address);
+  const coords = useLocationStore((s) => s.coords);
+  const pincode = locationAddress?.pincode ?? undefined;
+  const state = locationAddress?.state ?? undefined;
+  const city = locationAddress?.city ?? undefined;
+  const lat = coords?.latitude ?? undefined;
+  const lng = coords?.longitude ?? undefined;
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["featured-offers", pincode, state, lat, lng],
+    queryFn: () =>
+      offersService.getFeaturedOffers({
+        pincode,
+        state,
+        city,
+        lat,
+        lng,
+        serviceType: "FOOD",
+        limit: 5,
+      }),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+
+  const slides: SlideData[] =
+    data && data.offers.length > 0
+      ? data.offers.map(offerToSlide)
+      : FALLBACK_SLIDES;
+
+  useEffect(() => {
+    setIndex(0);
+    scrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [slides.length]);
 
   useEffect(() => {
     const t = setInterval(() => {
       setIndex((i) => {
-        const next = (i + 1) % PROMO_SLIDES.length;
+        const next = (i + 1) % slides.length;
         scrollRef.current?.scrollTo({
           x: next * (BANNER_WIDTH + SLIDE_GAP),
           animated: true,
@@ -40,13 +109,21 @@ export function ShopPromoBanner() {
       });
     }, AUTO_INTERVAL_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [slides.length]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
     const newIndex = Math.round(x / (BANNER_WIDTH + SLIDE_GAP));
-    if (newIndex >= 0 && newIndex < PROMO_SLIDES.length) setIndex(newIndex);
+    if (newIndex >= 0 && newIndex < slides.length) setIndex(newIndex);
   };
+
+  if (isLoading) {
+    return (
+      <View style={[styles.wrap, styles.loadingWrap]}>
+        <ActivityIndicator color={GatiMitraColors.emerald} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.wrap}>
@@ -62,18 +139,14 @@ export function ShopPromoBanner() {
         scrollEventThrottle={32}
         contentContainerStyle={styles.scrollContent}
       >
-        {PROMO_SLIDES.map((slide) => (
+        {slides.map((slide) => (
           <TouchableOpacity
             key={slide.id}
             activeOpacity={0.9}
             style={[styles.slideWrap, { width: BANNER_WIDTH, marginRight: SLIDE_GAP }]}
           >
             <LinearGradient
-              colors={[
-                GatiMitraColors.emerald,
-                GatiMitraColors.emeraldLight,
-                GatiMitraColors.warmOrange,
-              ]}
+              colors={GRADIENT_SETS[slide.gradientIndex]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0.5 }}
               style={styles.banner}
@@ -94,7 +167,7 @@ export function ShopPromoBanner() {
         ))}
       </ScrollView>
       <View style={styles.dots}>
-        {PROMO_SLIDES.map((_, i) => (
+        {slides.map((_, i) => (
           <View key={i} style={[styles.dot, i === index && styles.dotActive]} />
         ))}
       </View>
@@ -112,6 +185,7 @@ const BANNER_SHADOW = {
 
 const styles = StyleSheet.create({
   wrap: { marginBottom: 12 },
+  loadingWrap: { height: 124, alignItems: "center", justifyContent: "center" },
   scrollContent: { paddingHorizontal: PAD, paddingBottom: 8 },
   slideWrap: {},
   banner: {

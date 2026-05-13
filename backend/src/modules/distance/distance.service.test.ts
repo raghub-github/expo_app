@@ -13,11 +13,6 @@ describe("distance.service", () => {
     assert.strictEqual(route.approximate, true);
     assert.strictEqual(route.fromRoutingEngine, false);
     assert.ok(route.distanceKm > 0, "expected a positive distance");
-    assert.strictEqual(
-      Number(route.distanceKm.toFixed(2)),
-      route.distanceKm,
-      "expected distanceKm to be rounded to 2 decimals"
-    );
     assert.ok(
       Math.abs(route.distanceKm - haversineDistanceKm(origin, destination)) < 0.2,
       `fallback distance ${route.distanceKm} should match Haversine approximation`

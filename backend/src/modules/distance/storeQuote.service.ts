@@ -32,12 +32,12 @@ import {
   getStoreByStoreId,
 } from "../merchants/merchant.service.js";
 import { resolveDropGeoRefsFromPincode } from "../billing/geoRefFromPincode.js";
-import { loadEffectiveDeliveryRateSlabs } from "../delivery-slab-pricing/deliverySlabPricing.repository.js";
+import { loadDirectDeliveryRateSlabs } from "../delivery-slab-pricing/deliverySlabPricing.repository.js";
 import {
   calculateProgressiveSlabAmount,
   type SelectedSlabQuote,
 } from "../delivery-slab-pricing/deliverySlabPricing.service.js";
-import type { DeliveryActorType, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
+import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -87,12 +87,14 @@ export type StoreQuoteResult =
         final_delivery_fee: number;
         serviceable: boolean;
         /** Reason when not serviceable, for UI copy. */
-        unserviceable_reason?: "out_of_range" | "store_inactive" | null;
+        unserviceable_reason?: "out_of_range" | "store_inactive" | "no_delivery_slab" | "no_geo_match" | null;
         service_radius_km: number;
         source: "mapbox" | "osrm" | "haversine";
         cached: boolean;
         approximate: boolean;
-        pricing_engine: "slab_geo" | "fallback_per_km";
+        pricing_engine: "slab_geo" | "fallback_per_km" | "no_slab_configured" | "no_geo_match";
+        /** Geo level at which slabs were resolved (pincode/post_office/district/region/state). */
+        applied_geo_level?: string | null;
         /** Raw slab quote for debugging / breakdowns. */
         slab_quote?: SelectedSlabQuote | null;
       };
@@ -238,92 +240,109 @@ export async function resolveStoreDeliveryQuote(
 
   const serviceRadiusKm = store.radiusKm ?? env.SERVICE_RADIUS_KM_DEFAULT;
   const outOfRange = distanceKm > serviceRadiusKm;
-  const serviceable = store.active && !outOfRange;
 
-  // Geo slab resolution
+  // Geo slab resolution (must run before serviceability is computed)
   const dropGeoRefs = await resolveDropGeoRefsFromPincode(drop.pincode);
 
   let slabQuote: SelectedSlabQuote | null = null;
   let deliveryFee = 0;
-  let pricingEngine: "slab_geo" | "fallback_per_km" = "fallback_per_km";
+  let pricingEngine: "slab_geo" | "fallback_per_km" | "no_slab_configured" | "no_geo_match" = "fallback_per_km";
+  let appliedGeoLevel: string | null = null;
 
   if (dropGeoRefs && distanceKm > 0) {
-    const pickGeo =
-      (dropGeoRefs.pincode && { level: "pincode" as const, refId: dropGeoRefs.pincode }) ||
-      (dropGeoRefs.post_office && { level: "post_office" as const, refId: dropGeoRefs.post_office }) ||
-      (dropGeoRefs.division && { level: "division" as const, refId: dropGeoRefs.division }) ||
-      (dropGeoRefs.district && { level: "district" as const, refId: dropGeoRefs.district }) ||
-      (dropGeoRefs.region && { level: "region" as const, refId: dropGeoRefs.region }) ||
-      (dropGeoRefs.state && { level: "state" as const, refId: dropGeoRefs.state }) ||
-      null;
-    if (pickGeo) {
-      try {
-        const db = getDb();
-        const slabs = await loadEffectiveDeliveryRateSlabs(db, {
-          geoLevel: pickGeo.level,
-          geoRefId: pickGeo.refId,
+    // Walk ancestor levels from most-specific to least-specific using UUIDs already resolved
+    // by resolveDropGeoRefsFromPincode (LEFT JOINs — robust even when chain links are missing).
+    // This avoids the SQL chain walk in delivery_rate_slabs_effective() which uses INNER JOINs
+    // and silently stops at pincode level when pincode_post_offices has no row for the pincode.
+    type GeoCandidate = { level: "state" | "region" | "district" | "division" | "post_office" | "pincode"; refId: string };
+    const geoLevelsToTry: GeoCandidate[] = [];
+    if (dropGeoRefs.pincode)     geoLevelsToTry.push({ level: "pincode",     refId: dropGeoRefs.pincode });
+    if (dropGeoRefs.post_office) geoLevelsToTry.push({ level: "post_office", refId: dropGeoRefs.post_office });
+    if (dropGeoRefs.division)    geoLevelsToTry.push({ level: "division",    refId: dropGeoRefs.division });
+    if (dropGeoRefs.district)    geoLevelsToTry.push({ level: "district",    refId: dropGeoRefs.district });
+    if (dropGeoRefs.region)      geoLevelsToTry.push({ level: "region",      refId: dropGeoRefs.region });
+    if (dropGeoRefs.state)       geoLevelsToTry.push({ level: "state",       refId: dropGeoRefs.state });
+
+    let slabs: DeliveryRateSlabRow[] = [];
+    try {
+      const db = getDb();
+      for (const geo of geoLevelsToTry) {
+        const result = await loadDirectDeliveryRateSlabs(db, {
+          geoLevel: geo.level,
+          geoRefId: geo.refId,
           serviceType: serviceTypeSlab,
           actorType: (actor === "rider" ? "rider" : "customer") as DeliveryActorType,
         });
-        if (slabs.length > 0) {
-          if (actor === "rider") {
-            const calc = calculateProgressiveSlabAmount({
-              distanceKm,
-              slabs,
-              waitingMinutes: input.riderWaitingMinutes ?? 0,
-              applyRiderExtras: true,
-            });
-            if (calc.ok) {
-              // Project rider progressive quote into selected-slab shape for consistent UI.
-              slabQuote = {
-                distanceKm: calc.quote.distanceKm,
-                slabId: calc.quote.segments[0]?.slabId ?? 0,
-                minKm: calc.quote.segments[0]?.minKm ?? 0,
-                maxKm: calc.quote.segments[0]?.maxKm ?? null,
-                baseFareApplied: calc.quote.baseFareApplied,
-                perKmRate: calc.quote.segments[0]?.perKmRate ?? 0,
-                rawDistanceAmount: calc.quote.preMinChargeTotal - calc.quote.baseFareApplied,
-                preMinChargeTotal: calc.quote.preMinChargeTotal,
-                minCharge: null,
-                finalAmount: calc.quote.finalAmount,
-              };
-              deliveryFee = calc.quote.finalAmount;
-              pricingEngine = "slab_geo";
-            }
-          } else {
-            const calc = calculateProgressiveSlabAmount({
-              distanceKm,
-              slabs,
-              applyRiderExtras: false,
-            });
-            if (calc.ok) {
-              // Project customer progressive quote into selected-slab shape for
-              // backward-compatible response payloads (`slab_quote`).
-              slabQuote = {
-                distanceKm: calc.quote.distanceKm,
-                slabId: calc.quote.segments[0]?.slabId ?? 0,
-                minKm: calc.quote.segments[0]?.minKm ?? 0,
-                maxKm: calc.quote.segments[0]?.maxKm ?? null,
-                baseFareApplied: calc.quote.baseFareApplied,
-                perKmRate: calc.quote.segments[0]?.perKmRate ?? 0,
-                rawDistanceAmount: calc.quote.preMinChargeTotal - calc.quote.baseFareApplied,
-                preMinChargeTotal: calc.quote.preMinChargeTotal,
-                // minCharge floor comes from the first slab in progressive mode.
-                minCharge: null,
-                finalAmount: calc.quote.finalAmount,
-              };
-              deliveryFee = calc.quote.finalAmount;
-              pricingEngine = "slab_geo";
-            }
-          }
+        if (result.length > 0) {
+          slabs = result;
+          appliedGeoLevel = geo.level;
+          break;
         }
-      } catch {
-        // fall through to fallback
       }
+    } catch {
+      // fall through to no_slab_configured / fallback
     }
+
+    if (slabs.length > 0) {
+      if (actor === "rider") {
+        const calc = calculateProgressiveSlabAmount({
+          distanceKm,
+          slabs,
+          waitingMinutes: input.riderWaitingMinutes ?? 0,
+          applyRiderExtras: true,
+        });
+        if (calc.ok) {
+          slabQuote = {
+            distanceKm: calc.quote.distanceKm,
+            slabId: calc.quote.segments[0]?.slabId ?? 0,
+            minKm: calc.quote.segments[0]?.minKm ?? 0,
+            maxKm: calc.quote.segments[0]?.maxKm ?? null,
+            baseFareApplied: calc.quote.baseFareApplied,
+            perKmRate: calc.quote.segments[0]?.perKmRate ?? 0,
+            rawDistanceAmount: calc.quote.preMinChargeTotal - calc.quote.baseFareApplied,
+            preMinChargeTotal: calc.quote.preMinChargeTotal,
+            minCharge: null,
+            finalAmount: calc.quote.finalAmount,
+          };
+          deliveryFee = calc.quote.finalAmount;
+          pricingEngine = "slab_geo";
+        }
+      } else {
+        const calc = calculateProgressiveSlabAmount({
+          distanceKm,
+          slabs,
+          applyRiderExtras: false,
+        });
+        if (calc.ok) {
+          slabQuote = {
+            distanceKm: calc.quote.distanceKm,
+            slabId: calc.quote.segments[0]?.slabId ?? 0,
+            minKm: calc.quote.segments[0]?.minKm ?? 0,
+            maxKm: calc.quote.segments[0]?.maxKm ?? null,
+            baseFareApplied: calc.quote.baseFareApplied,
+            perKmRate: calc.quote.segments[0]?.perKmRate ?? 0,
+            rawDistanceAmount: calc.quote.preMinChargeTotal - calc.quote.baseFareApplied,
+            preMinChargeTotal: calc.quote.preMinChargeTotal,
+            minCharge: null,
+            finalAmount: calc.quote.finalAmount,
+          };
+          deliveryFee = calc.quote.finalAmount;
+          pricingEngine = "slab_geo";
+        }
+      }
+    } else {
+      // Pincode is known in geo tables but no delivery slab is configured at any ancestor level.
+      // Mark area as not serviceable — do NOT silently fall back to env defaults here.
+      pricingEngine = "no_slab_configured";
+      deliveryFee = 0;
+    }
+  } else if (!dropGeoRefs) {
+    // Pincode is completely unknown in the geo tables — use env defaults as a last resort
+    // so existing stores in unmapped areas stay operational during data onboarding.
+    pricingEngine = "no_geo_match";
   }
 
-  if (pricingEngine === "fallback_per_km") {
+  if (pricingEngine === "fallback_per_km" || pricingEngine === "no_geo_match") {
     const base = env.DELIVERY_DEFAULT_BASE_INR ?? 25;
     const perKm = env.DELIVERY_DEFAULT_PER_KM_INR ?? 5;
     const computed = round2(base + distanceKm * perKm);
@@ -332,6 +351,10 @@ export async function resolveStoreDeliveryQuote(
   }
 
   deliveryFee = round2(deliveryFee);
+
+  // Serviceability: not serviceable when store inactive, out of range, OR no slab configured for this geo.
+  const noSlabConfigured = pricingEngine === "no_slab_configured";
+  const serviceable = store.active && !outOfRange && !noSlabConfigured;
 
   const gstPct = env.APPLY_GST_ON_DELIVERY_FEE
     ? Math.max(0, Math.min(100, env.DELIVERY_FEE_GST_PERCENT ?? 5))
@@ -350,7 +373,14 @@ export async function resolveStoreDeliveryQuote(
       delivery_gst: deliveryGst,
       final_delivery_fee: finalDeliveryFee,
       serviceable,
-      unserviceable_reason: !store.active ? "store_inactive" : outOfRange ? "out_of_range" : null,
+      unserviceable_reason: !store.active
+        ? "store_inactive"
+        : outOfRange
+          ? "out_of_range"
+          : noSlabConfigured
+            ? "no_delivery_slab"
+            : null,
+      applied_geo_level: appliedGeoLevel,
       service_radius_km: round2(serviceRadiusKm),
       source: route.source,
       cached: route.cached,

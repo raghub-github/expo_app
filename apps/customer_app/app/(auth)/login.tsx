@@ -29,6 +29,10 @@ import { useRouter } from "expo-router";
 import { authService } from "@/services/auth.service";
 import { COUNTRIES, DEFAULT_COUNTRY, type CountryOption } from "@/constants/countries";
 import { getItem, setItem } from "@/utils/storage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
+
+const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 
 const REMEMBERED_PHONE_KEY = "gatimitra_remembered_phone";
 
@@ -132,6 +136,50 @@ export default function LoginScreen() {
   const [selectedCountry, setSelectedCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = useState(false);
   const [logoError, setLogoError] = useState(false);
+  const [apiUrlModalVisible, setApiUrlModalVisible] = useState(false);
+  const [apiUrlInput, setApiUrlInput] = useState("");
+  const [apiUrlSaving, setApiUrlSaving] = useState(false);
+  const [currentApiUrl, setCurrentApiUrl] = useState<string>(() => getConfig().apiBaseUrl);
+
+  const openApiUrlModal = () => {
+    setApiUrlInput(currentApiUrl);
+    setApiUrlModalVisible(true);
+  };
+
+  const saveApiUrl = async () => {
+    const trimmed = apiUrlInput.trim().replace(/\/+$/, "");
+    if (!trimmed) return;
+    if (!/^https?:\/\/.+/.test(trimmed)) {
+      setError("API URL must start with http:// or https://");
+      return;
+    }
+    setApiUrlSaving(true);
+    try {
+      await AsyncStorage.setItem(API_URL_OVERRIDE_KEY, trimmed);
+      setRuntimeApiBaseUrl(trimmed);
+      setCurrentApiUrl(trimmed);
+      setError("");
+      setApiUrlModalVisible(false);
+    } catch (e) {
+      console.warn("[login] saveApiUrl failed", e);
+    } finally {
+      setApiUrlSaving(false);
+    }
+  };
+
+  const resetApiUrl = async () => {
+    setApiUrlSaving(true);
+    try {
+      await AsyncStorage.removeItem(API_URL_OVERRIDE_KEY);
+      setRuntimeApiBaseUrl(null);
+      setCurrentApiUrl(getConfig().apiBaseUrl);
+      setApiUrlModalVisible(false);
+    } catch (e) {
+      console.warn("[login] resetApiUrl failed", e);
+    } finally {
+      setApiUrlSaving(false);
+    }
+  };
 
   useEffect(() => {
     getItem(REMEMBERED_PHONE_KEY).then((v) => {
@@ -252,6 +300,16 @@ export default function LoginScreen() {
                 />
               </View>
               {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              {error && error.toLowerCase().includes("cannot reach server") ? (
+                <TouchableOpacity
+                  onPress={openApiUrlModal}
+                  style={apiUrlStyles.configureBtn}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="settings-outline" size={16} color={GREEN_PRIMARY} />
+                  <Text style={apiUrlStyles.configureBtnText}>Configure API URL</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
 
             <TouchableOpacity
@@ -334,10 +392,153 @@ export default function LoginScreen() {
             </Pressable>
           </Pressable>
         </Modal>
+
+        {/* Configure API URL — runtime override for the backend base URL.
+            Persisted in AsyncStorage, hydrated at app startup. Lets you point
+            an installed APK at a new LAN IP / ngrok URL without rebuilding. */}
+        <Modal
+          visible={apiUrlModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setApiUrlModalVisible(false)}
+        >
+          <Pressable
+            style={apiUrlStyles.backdrop}
+            onPress={() => (apiUrlSaving ? undefined : setApiUrlModalVisible(false))}
+          >
+            <Pressable onPress={() => {}} style={apiUrlStyles.sheet}>
+              <Text style={apiUrlStyles.sheetTitle}>Configure API URL</Text>
+              <Text style={apiUrlStyles.sheetSubtitle}>
+                Point this installed app at a different backend without rebuilding.
+                Use your PC's LAN IP (e.g. http://10.0.0.5:3000) or an ngrok URL.
+              </Text>
+              <Text style={apiUrlStyles.sheetLabel}>Current</Text>
+              <Text style={apiUrlStyles.sheetCurrent} numberOfLines={1}>{currentApiUrl}</Text>
+
+              <Text style={apiUrlStyles.sheetLabel}>New API base URL</Text>
+              <TextInput
+                value={apiUrlInput}
+                onChangeText={setApiUrlInput}
+                placeholder="http://10.113.83.18:3000"
+                placeholderTextColor={PLACEHOLDER_GRAY}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                style={apiUrlStyles.sheetInput}
+                editable={!apiUrlSaving}
+              />
+
+              <TouchableOpacity
+                onPress={saveApiUrl}
+                disabled={apiUrlSaving || apiUrlInput.trim().length === 0}
+                style={[
+                  apiUrlStyles.sheetPrimary,
+                  (apiUrlSaving || apiUrlInput.trim().length === 0) && apiUrlStyles.sheetBtnDisabled,
+                ]}
+                activeOpacity={0.85}
+              >
+                {apiUrlSaving ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={apiUrlStyles.sheetPrimaryText}>Save & use this URL</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={resetApiUrl}
+                disabled={apiUrlSaving}
+                style={apiUrlStyles.sheetSecondary}
+                activeOpacity={0.85}
+              >
+                <Text style={apiUrlStyles.sheetSecondaryText}>Reset to build default</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setApiUrlModalVisible(false)}
+                disabled={apiUrlSaving}
+                style={apiUrlStyles.sheetCancel}
+                activeOpacity={0.85}
+              >
+                <Text style={apiUrlStyles.sheetCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </Pressable>
+          </Pressable>
+        </Modal>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
+
+const apiUrlStyles = StyleSheet.create({
+  configureBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    marginTop: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: GREEN_PRIMARY,
+    gap: 6,
+  },
+  configureBtnText: { fontSize: 13, color: GREEN_PRIMARY, fontWeight: "600" },
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  sheet: {
+    backgroundColor: "#fff",
+    borderRadius: 18,
+    padding: 22,
+  },
+  sheetTitle: { fontSize: 18, fontWeight: "700", color: TITLE_DARK, marginBottom: 6 },
+  sheetSubtitle: { fontSize: 13, color: TEXT_GRAY, lineHeight: 19, marginBottom: 16 },
+  sheetLabel: { fontSize: 12, fontWeight: "600", color: TEXT_GRAY, textTransform: "uppercase", marginBottom: 4 },
+  sheetCurrent: {
+    fontSize: 13,
+    color: TITLE_DARK,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    marginBottom: 14,
+    backgroundColor: "#F3F4F6",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  sheetInput: {
+    borderWidth: 1,
+    borderColor: BORDER_INPUT,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: TITLE_DARK,
+    marginBottom: 16,
+  },
+  sheetPrimary: {
+    backgroundColor: GREEN_PRIMARY,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  sheetPrimaryText: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  sheetBtnDisabled: { opacity: 0.5 },
+  sheetSecondary: {
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: BORDER_INPUT,
+    marginBottom: 4,
+  },
+  sheetSecondaryText: { color: TEXT_GRAY, fontSize: 14, fontWeight: "600" },
+  sheetCancel: { paddingVertical: 10, alignItems: "center" },
+  sheetCancelText: { color: TEXT_GRAY, fontSize: 14, fontWeight: "500" },
+});
 
 const styles = StyleSheet.create({
   container: {

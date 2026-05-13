@@ -49,14 +49,15 @@ export interface CreateOrderResponse {
 }
 
 /**
- * Create Razorpay order.
+ * Create a Razorpay order with auto-capture enabled.
  *
- * We set `payment_capture: 1` explicitly so Razorpay auto-captures the payment
- * as soon as the customer completes it. Leaving this unset falls back to the
- * merchant account default, which some accounts ship as "authorize only"
- * (late authorization). In that mode payments end up in `authorized` state
- * forever and `finalize` will never see `status = captured` → orders never
- * place. Forcing auto-capture is the safe default for B2C food orders.
+ * `payment_capture: 1` is critical — without it the payment is only AUTHORIZED and
+ * never captured automatically, which manifests in the customer app as the
+ * "Confirming Payment" overlay hanging indefinitely (the webhook for `payment.captured`
+ * never fires because Razorpay is waiting for an explicit /capture call).
+ *
+ * `partial_payment: false` ensures the customer must pay the full amount in one go
+ * (no split payments — which would complicate refund/finalization flows).
  */
 export async function createRazorpayOrder(params: CreateOrderParams): Promise<CreateOrderResponse> {
   const razorpay = getRazorpayInstance();
@@ -65,8 +66,9 @@ export async function createRazorpayOrder(params: CreateOrderParams): Promise<Cr
     amount: params.amount,
     currency: params.currency || "INR",
     receipt: params.receipt || `receipt_${Date.now()}`,
-    payment_capture: 1,
     notes: params.notes || {},
+    payment_capture: true,
+    partial_payment: false,
   } as Parameters<typeof razorpay.orders.create>[0]);
 
   return order as CreateOrderResponse;
@@ -82,8 +84,13 @@ export function verifyRazorpaySignature(
 ): boolean {
   const env = getEnv();
 
-  // Allow simulated payments in development
-  if (env.NODE_ENV === "development" && signature === "simulated_signature") {
+  // Allow simulated payments when in dummy mode OR in local development.
+  // Dummy mode is the production-safe path (enable via PAYMENT_DUMMY_MODE=true)
+  // for end-to-end testing without a Razorpay account.
+  if (
+    signature === "simulated_signature" &&
+    (env.PAYMENT_DUMMY_MODE || env.NODE_ENV === "development")
+  ) {
     return true;
   }
 
@@ -133,13 +140,18 @@ export async function verifyRazorpayPaymentDetails(
     return { ok: false, code: "PAYMENT_NOT_VERIFIED", message: "Payment verification failed. Please try again." };
   }
 
-  if (env.NODE_ENV === "development" && razorpaySignature === "simulated_signature") {
+  // Short-circuit for dummy/simulated payments — skip the live Razorpay fetch
+  // since there's no real payment to verify on the gateway side. The pending
+  // order's grand_total is still checked at the finalize step that called us.
+  if (
+    razorpaySignature === "simulated_signature" &&
+    (env.PAYMENT_DUMMY_MODE || env.NODE_ENV === "development")
+  ) {
     return { ok: true, paymentMethod: "simulated" };
   }
 
   try {
     const payment = await getPaymentDetails(razorpayPaymentId);
-    const paymentRecord = payment as unknown as Record<string, unknown>;
     if (String(payment.order_id ?? "").trim() !== String(razorpayOrderId).trim()) {
       return {
         ok: false,
@@ -148,18 +160,7 @@ export async function verifyRazorpayPaymentDetails(
       };
     }
 
-    const status = String(payment.status ?? "").toLowerCase();
-    if (status !== "captured") {
-      // In some flows (esp. netbanking) Razorpay can redirect back quickly while the
-      // payment is still moving from authorized/created → captured. Treat this as a
-      // transient state and let our reconciler/webhook finalize.
-      if (["authorized", "created", "pending", "processed"].includes(status)) {
-        return {
-          ok: false,
-          code: "PAYMENT_PENDING_CONFIRMATION",
-          message: "Payment received. Waiting for final confirmation from the payment gateway.",
-        };
-      }
+    if (String(payment.status ?? "").toLowerCase() !== "captured") {
       return {
         ok: false,
         code: "PAYMENT_NOT_CAPTURED",
@@ -167,7 +168,7 @@ export async function verifyRazorpayPaymentDetails(
       };
     }
 
-    const paidAmount = Number(paymentRecord.amount_paid ?? payment.amount ?? 0);
+    const paidAmount = Number((payment as unknown as Record<string, unknown>).amount_paid ?? payment.amount ?? 0);
     if (!Number.isFinite(paidAmount) || paidAmount <= 0 || paidAmount !== expectedAmountPaise) {
       return {
         ok: false,
@@ -202,34 +203,5 @@ export async function verifyRazorpayPaymentDetails(
 export async function getPaymentDetails(paymentId: string) {
   const razorpay = getRazorpayInstance();
   return await razorpay.payments.fetch(paymentId);
-}
-
-export async function getOrderPayments(orderId: string): Promise<Array<Record<string, unknown>>> {
-  const razorpay = getRazorpayInstance() as unknown as {
-    orders: { fetchPayments: (orderId: string) => Promise<{ items?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>> };
-  };
-  const response = await razorpay.orders.fetchPayments(orderId);
-  if (Array.isArray(response)) return response;
-  return response?.items ?? [];
-}
-
-export async function createRazorpayRefund(params: {
-  paymentId: string;
-  amountPaise?: number;
-  notes?: Record<string, string>;
-}) {
-  const razorpay = getRazorpayInstance() as unknown as {
-    payments: {
-      refund: (
-        paymentId: string,
-        payload: { amount?: number; speed?: string; notes?: Record<string, string> }
-      ) => Promise<Record<string, unknown>>;
-    };
-  };
-  return await razorpay.payments.refund(params.paymentId, {
-    ...(params.amountPaise != null ? { amount: params.amountPaise } : {}),
-    speed: "normal",
-    notes: params.notes ?? {},
-  });
 }
 

@@ -143,6 +143,10 @@ export const billingService = {
     cartSubtotal: number;
     serviceType?: "FOOD" | "PARCEL" | "RIDE" | "ALL";
     userSegment?: "NEW" | "EXISTING" | "ALL";
+    /** Live location from the location store — preferred over saved address fields. */
+    pincode?: string | null;
+    state?: string | null;
+    city?: string | null;
   }): Promise<CheckoutOffersResponse> {
     const { data } = await api.get<CheckoutOffersResponse>(`${BILLING_PREFIX}/checkout-offers`, {
       params: {
@@ -151,6 +155,9 @@ export const billingService = {
         cartSubtotal: params.cartSubtotal,
         ...(params.serviceType != null ? { serviceType: params.serviceType } : {}),
         ...(params.userSegment != null ? { userSegment: params.userSegment } : {}),
+        ...(params.pincode ? { pincode: params.pincode } : {}),
+        ...(params.state ? { state: params.state } : {}),
+        ...(params.city ? { city: params.city } : {}),
       },
     });
     return data;

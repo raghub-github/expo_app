@@ -79,6 +79,9 @@ export async function PATCH(
     const updatePayload: Record<string, unknown> = { ...body };
     updatePayload.updated_by_name = actor.performed_by_name;
     updatePayload.updated_by_at = new Date().toISOString();
+    updatePayload.updated_source_platform = 'MERCHANT_PORTAL';
+    updatePayload.updated_by_role = 'MERCHANT';
+    updatePayload.updated_by_user_id = actor.performed_by_id ?? null;
     delete (updatePayload as any).id;
     delete (updatePayload as any).offer_id;
     delete (updatePayload as any).store_id;

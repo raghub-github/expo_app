@@ -81,12 +81,16 @@ const StoreQuoteResponseSchema = z.object({
   delivery_gst: z.number(),
   final_delivery_fee: z.number(),
   serviceable: z.boolean(),
-  unserviceable_reason: z.enum(["out_of_range", "store_inactive"]).nullable().optional(),
+  unserviceable_reason: z
+    .enum(["out_of_range", "store_inactive", "no_delivery_slab", "no_geo_match"])
+    .nullable()
+    .optional(),
   service_radius_km: z.number(),
   source: z.enum(["mapbox", "osrm", "haversine"]),
   cached: z.boolean(),
   approximate: z.boolean(),
-  pricing_engine: z.enum(["slab_geo", "fallback_per_km"]),
+  pricing_engine: z.enum(["slab_geo", "fallback_per_km", "no_slab_configured", "no_geo_match"]),
+  applied_geo_level: z.string().nullable().optional(),
   slab_quote: z.any().optional().nullable(),
 });
 

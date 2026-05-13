@@ -108,6 +108,12 @@ export async function POST(req: NextRequest) {
       applicable_time_end: body.applicable_time_end ?? null,
       offer_metadata: Object.keys(baseMetadata).length ? baseMetadata : null,
       created_by_name: actor.performed_by_name,
+      // Ownership tracking
+      created_source_platform: 'MERCHANT_PORTAL',
+      created_by_role: 'MERCHANT',
+      approval_status: 'AUTO_APPROVED',
+      created_by_user_id: actor.performed_by_id ?? null,
+      created_by_org_id: parentId ?? null,
     };
 
     const { data, error } = await db

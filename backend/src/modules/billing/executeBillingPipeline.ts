@@ -292,9 +292,6 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
   const disabled = disabledRuleIds(dataset.merchantOverrides);
 
   const state = initialState();
-  // #region agent log
-  fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H4',location:'backend/src/modules/billing/executeBillingPipeline.ts:entry',message:'executeBillingPipeline entry',data:{distanceKm:ctx.distanceKm,deliveryFeeFromSlabsGeoV2:ctx.deliveryFeeFromSlabsGeoV2??null,deliveryFeeFromGeo:ctx.deliveryFeeFromGeo??null,deliveryFeeFromRateCard:ctx.deliveryFeeFromRateCard??null,deliveryChargePerKm:ctx.deliveryChargePerKm,deliveryDefaultBaseInr:ctx.deliveryDefaultBaseInr,deliveryDefaultPerKmInr:ctx.deliveryDefaultPerKmInr,deliveryMinimumInr:ctx.deliveryMinimumInr??null},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const rulesOrdered = [...dataset.rules].sort(
     (a, b) => a.chargeOrderKey - b.chargeOrderKey || a.priority - b.priority || a.id - b.id
@@ -373,9 +370,6 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
             : legacyPerKm > 0
               ? legacyPerKm
               : defaultFormula;
-    // #region agent log
-    fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H4',location:'backend/src/modules/billing/executeBillingPipeline.ts:fallback',message:'delivery fallback computed',data:{stateDeliveryFeeBefore:state.deliveryFee,fromSlabs,fromGeo,fromCard,legacyPerKm,defaultFormula,chosen:fallbackFee,dist:dist??null,baseD,perKmD},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (fallbackFee > 0) {
       state.deliveryFee = fallbackFee;
       const label =
@@ -430,9 +424,6 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     if (next > prev) {
       const delta = round2(next - prev);
       state.deliveryFee = next;
-      // #region agent log
-      fetch('http://127.0.0.1:7918/ingest/1921e81c-618b-431e-b9b9-698313b67d38',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'584fd7'},body:JSON.stringify({sessionId:'584fd7',runId:'pre-fix',hypothesisId:'H5',location:'backend/src/modules/billing/executeBillingPipeline.ts:minimum',message:'delivery minimum floor applied',data:{prev,next,delta,minDel},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       state.charges.push({
         kind: "charge",
         label: delta > 0 && prev <= 0 ? "Delivery fee (minimum)" : "Delivery minimum adjustment",

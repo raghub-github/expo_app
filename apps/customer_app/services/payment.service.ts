@@ -17,6 +17,10 @@ export type CreateRazorpayOrderResponse = {
 export const paymentService = {
   /**
    * Create a Razorpay order (amount in paise). Returns orderId and keyId for opening checkout.
+   *
+   * When the backend has PAYMENT_DUMMY_MODE=true (or no Razorpay creds in dev),
+   * the response carries `keyId === "dummy_key"` and the checkout screen renders
+   * the dummy payment sheet instead of opening Razorpay.
    */
   async createRazorpayOrder(params: {
     amountPaise: number;
@@ -29,6 +33,25 @@ export const paymentService = {
       currency: params.currency ?? "INR",
       receipt: params.receipt,
       pendingId: params.pendingId,
+    });
+    return data;
+  },
+
+  /**
+   * Dummy payment failure — called from the dummy payment sheet's "Simulate Failure"
+   * button. Marks the pending order as FAILED via the same backend logic that
+   * handles a real Razorpay payment.failed webhook, so the order is properly
+   * cleaned up (cart can be retried, no ghost pending row, audit logged).
+   */
+  async markDummyPaymentFailed(params: {
+    pendingId: string;
+    razorpayOrderId: string;
+    reason?: string;
+  }): Promise<{ ok: boolean }> {
+    const { data } = await api.post<{ ok: boolean }>(`${PAYMENT_PREFIX}/dummy/fail`, {
+      pendingId: params.pendingId,
+      razorpayOrderId: params.razorpayOrderId,
+      reason: params.reason,
     });
     return data;
   },

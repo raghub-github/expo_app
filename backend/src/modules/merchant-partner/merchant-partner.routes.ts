@@ -2746,6 +2746,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             return reply.code(400).send({ error: validation.error });
           }
 
+          const sourcePlatform = String(req.headers["x-source-platform"] ?? "MERCHANT_APP");
+          const VALID_SOURCE_PLATFORMS = ["MERCHANT_APP", "MERCHANT_PORTAL", "ADMIN_DASHBOARD", "AGENT_DASHBOARD", "SYSTEM"];
+          const createdSourcePlatform = VALID_SOURCE_PLATFORMS.includes(sourcePlatform) ? sourcePlatform : "MERCHANT_APP";
+
           const sqlAny = sql as any;
           const [row] = await sqlAny`
             INSERT INTO merchant_offers (
@@ -2757,7 +2761,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               is_active, auto_apply, is_stackable, priority,
               per_order_limit, first_order_only, new_user_only,
               max_uses_total, max_uses_per_user,
-              offer_metadata
+              offer_metadata,
+              created_source_platform, created_by_role, approval_status,
+              created_by_user_id, created_by_org_id
             ) VALUES (
               ${offerId}, ${storeId}, ${title}, ${body.offer_description ?? null}, ${offerType}, ${body.offer_sub_type ?? "ALL_ORDERS"},
               ${body.discount_value ?? null}, ${body.discount_percentage ?? null}, ${body.max_discount_amount ?? null},
@@ -2767,7 +2773,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               ${body.is_active ?? true}, ${body.auto_apply ?? true}, ${body.is_stackable ?? false}, ${body.priority ?? 0},
               ${body.per_order_limit ?? 1}, ${body.first_order_only ?? false}, ${body.new_user_only ?? false},
               ${body.max_uses_total ?? null}, ${body.max_uses_per_user ?? null},
-              ${Object.keys(baseMeta).length ? JSON.stringify(baseMeta) : null}
+              ${Object.keys(baseMeta).length ? JSON.stringify(baseMeta) : null},
+              ${createdSourcePlatform}, ${'MERCHANT'}, ${'AUTO_APPROVED'},
+              ${parentId}, ${parentId}
             ) RETURNING *
           `;
           await logStoreActivity({
@@ -2826,6 +2834,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             existingMeta.combo_ids = Array.isArray(body.combo_ids) ? body.combo_ids : null;
           }
 
+          const updateSourcePlatform = String(req.headers["x-source-platform"] ?? "MERCHANT_APP");
+          const VALID_UPDATE_PLATFORMS = ["MERCHANT_APP", "MERCHANT_PORTAL", "ADMIN_DASHBOARD", "AGENT_DASHBOARD", "SYSTEM"];
+          const updatedSourcePlatform = VALID_UPDATE_PLATFORMS.includes(updateSourcePlatform) ? updateSourcePlatform : "MERCHANT_APP";
+
           const sqlAny = sql as any;
           const [updated] = await sqlAny`
             UPDATE merchant_offers SET
@@ -2845,6 +2857,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               is_active = COALESCE(${body.is_active ?? null}, is_active),
               auto_apply = COALESCE(${body.auto_apply ?? null}, auto_apply),
               offer_metadata = ${JSON.stringify(existingMeta)},
+              updated_source_platform = ${updatedSourcePlatform},
+              updated_by_role = ${'MERCHANT'},
+              updated_by_user_id = ${parentId},
               updated_at = NOW()
             WHERE offer_id = ${offerIdParam} AND store_id = ${storeId}
             RETURNING *

@@ -1,7 +1,7 @@
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { getSql } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
+import { getSql } from "../../db/client.js";
 import {
   billingRulesetVersion,
   billingPricingRules,
@@ -12,6 +12,8 @@ import {
   billingPlatformOffers,
   billingDiscounts,
   merchantBillingOverrides,
+  merchantOffers as merchantOffersTable,
+  merchantOfferUsages,
 } from "../../db/schema.js";
 import type {
   BillingDataset,
@@ -396,50 +398,109 @@ export async function loadBillingDatasetUncached(
 
   let merchantOffers: MerchantOfferRow[] = [];
   if (serviceType === "FOOD") {
-    type MoRow = {
-      id: number;
-      offer_title: string;
-      offer_type: string | null;
-      discount_value: string | null;
-      discount_percentage: string | null;
-      max_discount_amount: string | null;
-      min_order_amount: string | null;
-      offer_metadata: unknown;
-      display_priority: number | null;
-    };
+    const now = new Date();
     try {
-      const mo = await pg<MoRow[]>`
-        SELECT
-          id,
-          offer_title,
-          offer_type,
-          discount_value::text AS discount_value,
-          discount_percentage::text AS discount_percentage,
-          max_discount_amount::text AS max_discount_amount,
-          min_order_amount::text AS min_order_amount,
-          offer_metadata,
-          display_priority
-        FROM merchant_offers
-        WHERE store_id = ${opts.merchantStoreId}
-          AND is_active = true
-          AND valid_from <= now()
-          AND valid_till >= now()
-        ORDER BY display_priority DESC NULLS LAST, id ASC
-      `;
+      const mo = await db
+        .select({
+          id:                  merchantOffersTable.id,
+          offerId:             merchantOffersTable.offerId,
+          offerTitle:          merchantOffersTable.offerTitle,
+          offerType:           merchantOffersTable.offerType,
+          offerSubType:        merchantOffersTable.offerSubType,
+          discountValue:       merchantOffersTable.discountValue,
+          discountPercentage:  merchantOffersTable.discountPercentage,
+          maxDiscountAmount:   merchantOffersTable.maxDiscountAmount,
+          minOrderAmount:      merchantOffersTable.minOrderAmount,
+          maxOrderAmount:      merchantOffersTable.maxOrderAmount,
+          buyQuantity:         merchantOffersTable.buyQuantity,
+          getQuantity:         merchantOffersTable.getQuantity,
+          couponCode:          merchantOffersTable.couponCode,
+          autoApply:           merchantOffersTable.autoApply,
+          isStackable:         merchantOffersTable.isStackable,
+          perOrderLimit:       merchantOffersTable.perOrderLimit,
+          firstOrderOnly:      merchantOffersTable.firstOrderOnly,
+          newUserOnly:         merchantOffersTable.newUserOnly,
+          maxUsesTotal:        merchantOffersTable.maxUsesTotal,
+          maxUsesPerUser:      merchantOffersTable.maxUsesPerUser,
+          currentUses:         merchantOffersTable.currentUses,
+          applicableOnDays:    merchantOffersTable.applicableOnDays,
+          applicableTimeStart: merchantOffersTable.applicableTimeStart,
+          applicableTimeEnd:   merchantOffersTable.applicableTimeEnd,
+          maxDiscountPerOrder: merchantOffersTable.maxDiscountPerOrder,
+          offerMetadata:       merchantOffersTable.offerMetadata,
+          displayPriority:     merchantOffersTable.displayPriority,
+          priority:            merchantOffersTable.priority,
+          createdSourcePlatform: merchantOffersTable.createdSourcePlatform,
+          createdByRole:         merchantOffersTable.createdByRole,
+          approvalStatus:        merchantOffersTable.approvalStatus,
+        })
+        .from(merchantOffersTable)
+        .where(
+          and(
+            eq(merchantOffersTable.storeId, opts.merchantStoreId),
+            eq(merchantOffersTable.isActive, true),
+            lte(merchantOffersTable.validFrom, now),
+            gte(merchantOffersTable.validTill, now),
+          )
+        )
+        .orderBy(sql`${merchantOffersTable.displayPriority} DESC NULLS LAST`, asc(merchantOffersTable.id));
+
       merchantOffers = mo.map((r) => ({
-        id: r.id,
-        title: r.offer_title,
-        offerType: String(r.offer_type ?? "PERCENTAGE"),
-        discountValue: r.discount_value != null ? n(r.discount_value) : null,
-        discountPercentage: r.discount_percentage != null ? n(r.discount_percentage) : null,
-        maxDiscountAmount: r.max_discount_amount != null ? n(r.max_discount_amount) : null,
-        minOrderAmount: r.min_order_amount != null ? n(r.min_order_amount) : null,
-        metadata: (r.offer_metadata as Record<string, unknown>) ?? {},
-        displayPriority: r.display_priority ?? 0,
+        id:                  r.id,
+        offerId:             r.offerId,
+        title:               r.offerTitle,
+        offerType:           String(r.offerType ?? "PERCENTAGE"),
+        offerSubType:        r.offerSubType ?? null,
+        discountValue:       n(r.discountValue),
+        discountPercentage:  n(r.discountPercentage),
+        maxDiscountAmount:   n(r.maxDiscountAmount),
+        minOrderAmount:      n(r.minOrderAmount),
+        maxOrderAmount:      n(r.maxOrderAmount),
+        buyQuantity:         r.buyQuantity ?? null,
+        getQuantity:         r.getQuantity ?? null,
+        couponCode:          r.couponCode ?? null,
+        autoApply:           r.autoApply ?? true,
+        isStackable:         r.isStackable ?? false,
+        perOrderLimit:       r.perOrderLimit ?? 1,
+        firstOrderOnly:      r.firstOrderOnly ?? false,
+        newUserOnly:         r.newUserOnly ?? false,
+        maxUsesTotal:        r.maxUsesTotal ?? null,
+        maxUsesPerUser:      r.maxUsesPerUser ?? null,
+        currentUses:         r.currentUses ?? 0,
+        applicableOnDays:    Array.isArray(r.applicableOnDays) ? r.applicableOnDays as string[] : null,
+        applicableTimeStart: r.applicableTimeStart ?? null,
+        applicableTimeEnd:   r.applicableTimeEnd ?? null,
+        maxDiscountPerOrder: n(r.maxDiscountPerOrder),
+        metadata:            (r.offerMetadata as Record<string, unknown>) ?? {},
+        displayPriority:     r.displayPriority ?? 0,
+        priority:            r.priority ?? 0,
+        createdSourcePlatform: r.createdSourcePlatform ?? "MERCHANT_APP",
+        createdByRole:         r.createdByRole ?? "MERCHANT",
+        approvalStatus:        r.approvalStatus ?? "AUTO_APPROVED",
       }));
     } catch {
       merchantOffers = [];
     }
+  }
+
+  // Load per-user usage counts for merchant offers if userId is provided (for max_uses_per_user enforcement).
+  // Callers pass userId via opts; billing.service.ts injects it when computing a real order.
+  let merchantOfferUsagesByUser: Map<number, number> | undefined;
+  const userId = (opts as { userId?: number }).userId;
+  if (userId != null && merchantOffers.length > 0) {
+    const offerIds = merchantOffers.map((o) => o.id);
+    const usageRows = await db
+      .select({ offerId: merchantOfferUsages.offerId, cnt: sql<number>`count(*)::int` })
+      .from(merchantOfferUsages)
+      .where(
+        and(
+          eq(merchantOfferUsages.userId, userId),
+          eq(merchantOfferUsages.isReversed, false),
+          inArray(merchantOfferUsages.offerId, offerIds)
+        )
+      )
+      .groupBy(merchantOfferUsages.offerId);
+    merchantOfferUsagesByUser = new Map(usageRows.map((r) => [r.offerId, r.cnt]));
   }
 
   const [ovRow] = await db
@@ -496,5 +557,30 @@ export async function loadBillingDatasetUncached(
     taxConfigs,
     merchantOverrides: (ovRow?.overrides as Record<string, unknown> | null) ?? null,
     coupon,
+    merchantOfferUsagesByUser,
   };
+}
+
+/**
+ * Load per-user redemption counts for a set of merchant offers.
+ * Called separately from the cached dataset so the cache stays user-agnostic.
+ */
+export async function loadMerchantOfferUsagesByUser(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  userId: number,
+  offerIds: number[]
+): Promise<Map<number, number>> {
+  if (!userId || offerIds.length === 0) return new Map();
+  const rows = await db
+    .select({ offerId: merchantOfferUsages.offerId, cnt: sql<number>`count(*)::int` })
+    .from(merchantOfferUsages)
+    .where(
+      and(
+        eq(merchantOfferUsages.userId, userId),
+        eq(merchantOfferUsages.isReversed, false),
+        inArray(merchantOfferUsages.offerId, offerIds)
+      )
+    )
+    .groupBy(merchantOfferUsages.offerId);
+  return new Map(rows.map((r) => [r.offerId, r.cnt]));
 }

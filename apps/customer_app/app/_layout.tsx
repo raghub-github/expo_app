@@ -29,6 +29,27 @@ import { colors } from "@/theme";
 import { DEFAULT_STATUS_BAR_HEIGHT } from "@/constants/layout";
 import "@/lib/i18n";
 import { setAppLanguage } from "@/lib/i18n";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { setRuntimeApiBaseUrl } from "@/config/env";
+
+/** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
+const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
+
+// Restore the API URL override BEFORE any module-level code makes a request.
+// This runs at JS load time, not in a useEffect, so the override is in place
+// before React starts rendering (and well before the first OTP send).
+void (async () => {
+  try {
+    const stored = await AsyncStorage.getItem(API_URL_OVERRIDE_KEY);
+    if (stored && stored.trim().length > 0) {
+      setRuntimeApiBaseUrl(stored);
+      // eslint-disable-next-line no-console
+      console.log("[env] using stored API base URL override:", stored);
+    }
+  } catch {
+    /* AsyncStorage unavailable on first launch; ignore */
+  }
+})();
 
 // Suppress benign console warnings
 LogBox.ignoreLogs([
