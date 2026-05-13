@@ -67,15 +67,18 @@ export function getConfig(): {
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
   const fromExtra =
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
-    (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL;
+    (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.API_BASE_URL ??
+    "http://localhost:3000"; // Fallback if manifest2 is undefined
   const raw = (
     asNonEmptyString(fromEnv) ??
     asNonEmptyString(fromExtra) ??
     "http://localhost:3000"
   ).trim();
-  const storeIdEnv = process.env.EXPO_PUBLIC_STORE_ID ??
+  const storeIdEnv =
+    process.env.EXPO_PUBLIC_STORE_ID ??
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.STORE_ID ??
-    (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.STORE_ID;
+    (Constants.manifest2?.extra as Record<string, unknown> | undefined)?.STORE_ID ??
+    null; // Fallback if manifest2 is undefined
   const googleWebClientId =
     asNonEmptyString(process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID) ??
     asNonEmptyString((Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.GOOGLE_WEB_CLIENT_ID) ??

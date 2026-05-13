@@ -43,6 +43,11 @@ import { createClient } from '@/lib/supabase/client';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { FoodOrdersEmptyState } from '@/components/FoodOrdersEmptyState';
 import { mapStateMachineStatusToPartnerUi, normFoodStatus } from '@/lib/partner-orders-unify';
+import {
+  PARTNER_DEVICE_ORDER_ALERTS_EVENT,
+  readPartnerDeviceOrderAlerts,
+  writePartnerDeviceOrderAlerts,
+} from '@/lib/partner-device-order-alerts';
 
 // orders_food_status enum: CREATED, ACCEPTED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, RTO, CANCELLED
 const STATUS_LABEL: Record<string, string> = {
@@ -181,7 +186,11 @@ function OrdersPageContent() {
   const [ridersLogModalOrderLabel, setRidersLogModalOrderLabel] = useState<string | null>(null);
   const [ridersLogList, setRidersLogList] = useState<Array<{ rider_id: number; rider_name: string | null; rider_mobile: string | null; selfie_url: string | null; assignment_status: string; assigned_at: string | null; accepted_at: string | null; rejected_at: string | null; reached_merchant_at: string | null; picked_up_at: string | null; delivered_at: string | null; cancelled_at: string | null }>>([]);
   const [ridersLogLoading, setRidersLogLoading] = useState(false);
-  const [acceptanceSettings, setAcceptanceSettings] = useState<{ acceptance_window_minutes: number } | null>(null);
+  const [acceptanceSettings, setAcceptanceSettings] = useState<{
+    acceptance_window_minutes: number;
+    alert_sound_urls_by_slot: [string | null, string | null, string | null];
+    alert_sound_slot_choice: number;
+  } | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [riderImageModalUrl, setRiderImageModalUrl] = useState<string | null>(null);
   const [headerRtoMenuOpen, setHeaderRtoMenuOpen] = useState(false);
@@ -297,15 +306,21 @@ function OrdersPageContent() {
     }
   }, [viewMode]);
 
-  const persistLocal = useCallback((key: 'viewMode' | 'notifyEnabled', value: unknown) => {
-    if (typeof window === 'undefined') return;
-    try {
-      const s = localStorage.getItem(ORDERS_STORAGE_KEY);
-      const prev = s ? JSON.parse(s) : {};
-      const next = { ...prev, [key]: value };
-      localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
-    } catch {}
-  }, []);
+  const persistLocal = useCallback(
+    (key: 'viewMode' | 'notifyEnabled', value: unknown) => {
+      if (typeof window === 'undefined') return;
+      try {
+        const s = localStorage.getItem(ORDERS_STORAGE_KEY);
+        const prev = s ? JSON.parse(s) : {};
+        const next = { ...prev, [key]: value };
+        localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(next));
+        if (key === 'notifyEnabled' && storeId) {
+          writePartnerDeviceOrderAlerts(storeId, { soundAlertsEnabled: value === true });
+        }
+      } catch {}
+    },
+    [storeId]
+  );
 
   const openOrder = useCallback((order: OrdersFoodRow) => {
     setSelectedOrder(order);
@@ -332,6 +347,21 @@ function OrdersPageContent() {
     if (!id) id = DEMO_RESTAURANT_ID;
     setStoreId(id);
   }, [searchParams]);
+
+  useEffect(() => {
+    if (!storeId) return;
+    setNotifyEnabled(readPartnerDeviceOrderAlerts(storeId).soundAlertsEnabled);
+  }, [storeId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncFromDevice = () => {
+      if (!storeId) return;
+      setNotifyEnabled(readPartnerDeviceOrderAlerts(storeId).soundAlertsEnabled);
+    };
+    window.addEventListener(PARTNER_DEVICE_ORDER_ALERTS_EVENT, syncFromDevice);
+    return () => window.removeEventListener(PARTNER_DEVICE_ORDER_ALERTS_EVENT, syncFromDevice);
+  }, [storeId]);
 
   useEffect(() => {
     const f = searchParams?.get('filter');
@@ -464,17 +494,91 @@ function OrdersPageContent() {
     void (async () => {
       try {
         const res = await fetch(`/api/merchant/order-acceptance-settings?store_id=${encodeURIComponent(storeId)}`);
-        const data = (await res.json().catch(() => ({}))) as { settings?: { acceptance_window_minutes?: number } };
-        if (res.ok && data.settings && typeof data.settings.acceptance_window_minutes === 'number') {
-          setAcceptanceSettings({ acceptance_window_minutes: data.settings.acceptance_window_minutes });
+        const data = (await res.json().catch(() => ({}))) as {
+          settings?: {
+            acceptance_window_minutes?: number;
+            alert_sound_urls_by_slot?: [string | null, string | null, string | null];
+            alert_sound_slot_choice?: number;
+          };
+        };
+        if (res.ok && data.settings) {
+          const mins =
+            typeof data.settings.acceptance_window_minutes === 'number'
+              ? data.settings.acceptance_window_minutes
+              : 5;
+          const slots = data.settings.alert_sound_urls_by_slot;
+          const normalizedSlots: [string | null, string | null, string | null] =
+            Array.isArray(slots) && slots.length === 3
+              ? [slots[0] ?? null, slots[1] ?? null, slots[2] ?? null]
+              : [null, null, null];
+          const choice =
+            typeof data.settings.alert_sound_slot_choice === 'number'
+              ? data.settings.alert_sound_slot_choice
+              : 0;
+          setAcceptanceSettings({
+            acceptance_window_minutes: mins,
+            alert_sound_urls_by_slot: normalizedSlots,
+            alert_sound_slot_choice: choice,
+          });
         } else {
-          setAcceptanceSettings({ acceptance_window_minutes: 5 });
+          setAcceptanceSettings({
+            acceptance_window_minutes: 5,
+            alert_sound_urls_by_slot: [null, null, null],
+            alert_sound_slot_choice: 0,
+          });
         }
       } catch {
-        setAcceptanceSettings({ acceptance_window_minutes: 5 });
+        setAcceptanceSettings({
+          acceptance_window_minutes: 5,
+          alert_sound_urls_by_slot: [null, null, null],
+          alert_sound_slot_choice: 0,
+        });
       }
     })();
   }, [storeId]);
+
+  const notificationSoundOptions = useMemo(() => {
+    const slots = acceptanceSettings?.alert_sound_urls_by_slot ?? [null, null, null];
+    const out: { slot: number; label: string }[] = [];
+    slots.forEach((u, i) => {
+      if (u && String(u).trim()) out.push({ slot: i, label: `Gmitra Notification - ${i + 1}` });
+    });
+    return out;
+  }, [acceptanceSettings?.alert_sound_urls_by_slot]);
+
+  const notificationSoundSelectValue = useMemo(() => {
+    const choice = acceptanceSettings?.alert_sound_slot_choice ?? 0;
+    if (notificationSoundOptions.some((o) => o.slot === choice)) return choice;
+    return notificationSoundOptions[0]?.slot ?? 0;
+  }, [acceptanceSettings?.alert_sound_slot_choice, notificationSoundOptions]);
+
+  const patchNotificationSoundSlot = useCallback(
+    async (slot: number) => {
+      if (!storeId) return;
+      try {
+        const res = await fetch('/api/merchant/order-acceptance-settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ store_id: storeId, platform_food_alert_sound_slot: slot }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          toast.error(data.error || 'Could not update notification sound');
+          return;
+        }
+        setAcceptanceSettings((prev) =>
+          prev ? { ...prev, alert_sound_slot_choice: slot } : prev
+        );
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('partner-order-acceptance-settings-changed'));
+        }
+        toast.success('Notification sound updated');
+      } catch {
+        toast.error('Could not update notification sound');
+      }
+    },
+    [storeId]
+  );
 
   /** Source of truth is orders_core; refetch when core or kitchen row changes. */
   useEffect(() => {
@@ -1031,7 +1135,7 @@ function OrdersPageContent() {
   return (
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
-      <PartnerPageHeader title="Food Orders" subtitle={store?.store_name || undefined} />
+      <PartnerPageHeader title="Orders" subtitle={store?.store_name || undefined} />
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
         <header id="food-orders-header" className="sticky top-0 z-20 bg-white shrink-0">
           <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
@@ -1100,7 +1204,11 @@ function OrdersPageContent() {
                 </button>
               </div>
               <button
-                onClick={() => { setNotifyEnabled((v) => { const n = !v; persistLocal('notifyEnabled', n); return n; }); }}
+                onClick={() => {
+                  const next = !notifyEnabled;
+                  setNotifyEnabled(next);
+                  persistLocal('notifyEnabled', next);
+                }}
                 className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                   notifyEnabled ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'
                 }`}
@@ -1109,6 +1217,28 @@ function OrdersPageContent() {
                 {notifyEnabled ? <Bell size={14} /> : <BellOff size={14} />}
                 <span className="hidden sm:inline">{notifyEnabled ? 'Sound On' : 'Sound Off'}</span>
               </button>
+              {notificationSoundOptions.length > 1 ? (
+                <div className="relative shrink-0">
+                  <select
+                    value={notificationSoundSelectValue}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (!Number.isInteger(v) || v < 0 || v > 2) return;
+                      void patchNotificationSoundSlot(v);
+                    }}
+                    className="appearance-none pl-2 pr-7 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-gray-800 cursor-pointer max-w-[140px] sm:max-w-[180px] truncate"
+                    aria-label="Notification sound"
+                    title="Choose which uploaded notification sound plays"
+                  >
+                    {notificationSoundOptions.map(({ slot, label }) => (
+                      <option key={slot} value={slot}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-orange-500 pointer-events-none" aria-hidden />
+                </div>
+              ) : null}
               </div>
             </div>
           </div>

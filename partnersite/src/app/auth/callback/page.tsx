@@ -67,8 +67,8 @@ function AuthCallbackContent() {
 
   useEffect(() => {
     const run = async () => {
-      let next = typeof window !== "undefined" ? sessionStorage.getItem("auth_redirect") || "/auth/post-login" : "/auth/post-login";
-      if (next === "/auth" || next === "/auth/") next = "/auth/post-login";
+      let next = typeof window !== "undefined" ? sessionStorage.getItem("auth_redirect") || "/partners/all-stores" : "/partners/all-stores";
+      if (next === "/auth" || next === "/auth/") next = "/partners/all-stores";
       // Ensure we always redirect on the current origin (avoid redirecting to localhost from production)
       if (typeof window !== "undefined" && next.startsWith("http")) {
         try {
@@ -77,7 +77,7 @@ function AuthCallbackContent() {
             next = nextUrl.pathname + nextUrl.search;
           }
         } catch {
-          next = "/auth/post-login";
+          next = "/partners/all-stores";
         }
       }
 

@@ -23,7 +23,6 @@ interface MXLayoutWhiteProps {
   hideHelpBadge?: boolean
   /** Shown in partner top bar center (e.g. Dashboard) */
   headerTitle?: string
-  headerSubtitle?: string
 }
 
 export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
@@ -36,7 +35,6 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
   sidebarFilters,
   hideHelpBadge = false,
   headerTitle,
-  headerSubtitle,
 }) => {
   const isRight = sidebarPosition === 'right';
   const isSmallScreen = useSyncExternalStore(
@@ -60,7 +58,6 @@ export const MXLayoutWhite: React.FC<MXLayoutWhiteProps> = ({
             restaurantId={restaurantId}
             sidebarCollapsed={collapsed}
             headerTitle={headerTitle}
-            headerSubtitle={headerSubtitle}
             hideHelpBadge={hideHelpBadge}
           />
         )}

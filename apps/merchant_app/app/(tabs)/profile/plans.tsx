@@ -29,6 +29,8 @@ import {
 import { ACTIVE_PLAN_CODE as FALLBACK_ACTIVE_PLAN_CODE } from "@/lib/activePlan";
 import { fetchSubscription } from "@/services/api";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { Alert } from 'react-native';
+import { useAuth } from "@/context/AuthContext";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -262,7 +264,7 @@ function StackCard({
         )}
       </View>
       {plan.description ? (
-        <Text style={[styles.description, isPremium && styles.textWhite]} numberOfLines={1}>
+        <Text style={[styles.description, isPremium && styles.textWhite]} numberOfLines={2}>
           {plan.description}
         </Text>
       ) : null}
@@ -286,26 +288,40 @@ function StackCard({
           ))}
         </ScrollView>
       </View>
-      <Pressable
-        onPress={onSelect}
-        disabled={isCurrentPlan && plan.price === 0}
-        style={({ pressed }) => [
-          styles.cta,
-          isPremium && styles.ctaPremium,
-          isCurrentPlan && plan.price === 0 && styles.ctaActive,
-          pressed && !(isCurrentPlan && plan.price === 0) && styles.ctaPressed,
-        ]}
-      >
-        <Text
-          style={[
-            styles.ctaText,
-            isPremium && styles.ctaTextPremium,
-            isCurrentPlan && plan.price === 0 && styles.ctaTextActive,
+      {plan.price > 0 && (
+        <Pressable
+          onPress={onSelect}
+          disabled={isCurrentPlan}
+          style={({ pressed }) => [
+            styles.cta,
+            isPremium && styles.ctaPremium,
+            isCurrentPlan && styles.ctaActive,
+            pressed && !isCurrentPlan && styles.ctaPressed,
           ]}
         >
-          {isCurrentPlan && plan.price === 0 ? "Active Plan" : "Upgrade"}
-        </Text>
-      </Pressable>
+          <Text
+            style={[
+              styles.ctaText,
+              isPremium && styles.ctaTextPremium,
+              isCurrentPlan && styles.ctaTextActive,
+            ]}
+          >
+            {isCurrentPlan ? "Active Plan" : "Upgrade"}
+          </Text>
+        </Pressable>
+      )}
+      {plan.price === 0 && (
+        <View
+          style={[
+            styles.cta,
+            styles.ctaActive,
+          ]}
+        >
+          <Text style={[styles.ctaText, styles.ctaTextActive]}>
+            {isCurrentPlan ? "Your Current Plan" : "Free Plan"}
+          </Text>
+        </View>
+      )}
     </>
   );
 
@@ -334,12 +350,9 @@ function StackCard({
   );
 }
 
-/** Circular list: [last, ...plans, first] so swipe from last goes to first, from first to last. */
-function buildCircularData(plans: MerchantPlan[]): MerchantPlan[] {
-  if (plans.length <= 1) return plans;
-  const first = plans[0]!;
-  const last = plans[plans.length - 1]!;
-  return [{ ...last, id: -1 }, ...plans, { ...first, id: -2 }];
+/** Return plans as-is without circular wrapping */
+function buildNonCircularData(plans: MerchantPlan[]): MerchantPlan[] {
+  return plans;
 }
 
 export default function PlansScreen() {
@@ -349,9 +362,17 @@ export default function PlansScreen() {
   const [activePlanCode, setActivePlanCode] = useState(FALLBACK_ACTIVE_PLAN_CODE);
 
   const { selectedStore } = useSelectedStore();
+  const { token } = useAuth();
 
-  const circularData = buildCircularData(plans);
-  const realCount = plans.length;
+  // Sort plans to show active plan first
+  const sortedPlans = [...plans].sort((a, b) => {
+    if (a.plan_code === activePlanCode) return -1;
+    if (b.plan_code === activePlanCode) return 1;
+    return a.price - b.price; // Sort by price for non-active plans
+  });
+
+  const displayData = buildNonCircularData(sortedPlans);
+  const realCount = sortedPlans.length;
 
   useEffect(() => {
     let cancelled = false;
@@ -384,35 +405,16 @@ export default function PlansScreen() {
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const x = e.nativeEvent.contentOffset.x;
     const rawIndex = Math.round(x / CARD_WIDTH);
-    let idx = rawIndex;
-    if (rawIndex <= 0) idx = realCount - 1;
-    else if (rawIndex >= circularData.length - 1) idx = 0;
-    else idx = rawIndex - 1;
-    setCurrentIndex(Math.max(0, Math.min(idx, realCount - 1)));
-  }, [realCount, circularData.length]);
+    setCurrentIndex(Math.max(0, Math.min(rawIndex, realCount - 1)));
+  }, [realCount]);
 
   const onMomentumScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const x = e.nativeEvent.contentOffset.x;
       const rawIndex = Math.round(x / CARD_WIDTH);
-      if (realCount <= 1) {
-        setCurrentIndex(0);
-        return;
-      }
-      if (rawIndex <= 0) {
-        listRef.current?.scrollToOffset({
-          offset: (circularData.length - 1) * CARD_WIDTH,
-          animated: false,
-        });
-        setCurrentIndex(0);
-      } else if (rawIndex >= circularData.length - 1) {
-        listRef.current?.scrollToOffset({ offset: CARD_WIDTH, animated: false });
-        setCurrentIndex(0);
-      } else {
-        setCurrentIndex(rawIndex - 1);
-      }
+      setCurrentIndex(Math.max(0, Math.min(rawIndex, realCount - 1)));
     },
-    [realCount, circularData.length]
+    [realCount]
   );
 
   const getItemLayout = useCallback(
@@ -424,40 +426,47 @@ export default function PlansScreen() {
     []
   );
 
-  const snapToOffsets = circularData.map((_, i) => i * CARD_WIDTH);
+  const snapToOffsets = displayData.map((_, i) => i * CARD_WIDTH);
 
   const scrollBottomPadding = TAB_BAR_SCROLL_CONTENT_PADDING;
 
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<MerchantPlan>) => {
-      const displayIndex = index === 0 ? realCount - 1 : index >= circularData.length - 1 ? 0 : index - 1;
       return (
         <View style={styles.cell}>
           <StackCard
             plan={item}
-            index={displayIndex}
+            index={index}
             currentIndex={currentIndex}
             total={realCount}
             isCurrentPlan={(item.plan_code || "").toUpperCase() === activePlanCode.toUpperCase()}
-            onSelect={() => {}}
+            onSelect={() => handleUpgrade(item)}
           />
         </View>
       );
     },
-    [currentIndex, activePlanCode, realCount, circularData.length]
+    [currentIndex, activePlanCode, realCount]
   );
+
+  const handleUpgrade = async (plan: MerchantPlan) => {
+    // Show coming soon message until backend endpoint is implemented
+    Alert.alert(
+      "Coming Soon",
+      "Plan upgrade functionality is being set up. Please contact support to upgrade your plan.\n\nSupport: support@gatimitra.in"
+    );
+  };
 
   return (
     <View style={[styles.container, { paddingBottom: scrollBottomPadding }]}>
       <View style={[styles.header, { paddingTop: CONTENT_TOP }]}>
         <Text style={styles.title}>Plans & Subscription</Text>
-        <Text style={styles.subtitle}>Swipe to compare plans</Text>
+        <Text style={styles.subtitle}>Choose a plan that works best for your restaurant</Text>
       </View>
 
       <View style={[styles.listWrap, { marginTop: CARD_STACK_TOP }]}>
         <FlatList
           ref={listRef}
-          data={circularData}
+          data={displayData}
           keyExtractor={(item, i) => `${item.plan_code}-${i}`}
           renderItem={renderItem}
           horizontal
@@ -472,12 +481,13 @@ export default function PlansScreen() {
           onMomentumScrollEnd={onMomentumScrollEnd}
           scrollEventThrottle={8}
           getItemLayout={getItemLayout}
-          initialScrollIndex={circularData.length > 1 ? 1 : 0}
+          initialScrollIndex={0}
+          scrollEnabled={sortedPlans.length > 1}
         />
       </View>
 
       <View style={styles.dots}>
-        {plans.map((_, i) => (
+        {sortedPlans.map((_, i) => (
           <View
             key={i}
             style={[
@@ -504,6 +514,12 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textTertiary,
     marginTop: 4,
   },
+  subheading: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: GatiMitraMerchant.textSecondary,
+    marginBottom: 12,
+  },
   listContent: {
     paddingHorizontal: PEEK,
     paddingBottom: 8,
@@ -517,15 +533,25 @@ const styles = StyleSheet.create({
   listWrap: { flex: 1, justifyContent: "center" },
   cardBase: {
     backgroundColor: GatiMitraMerchant.cardBg,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: GatiMitraMerchant.border,
     overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   cardActiveOuterWrap: {
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: GatiMitraMerchant.primary,
     borderRadius: CARD_RADIUS + 3,
-    padding: 2,
+    padding: 3,
+    shadowColor: GatiMitraMerchant.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 8,
   },
   cardActiveDoubleBorder: {
     borderWidth: 2,
@@ -546,16 +572,18 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   planName: {
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 18,
+    fontWeight: "800",
     color: GatiMitraMerchant.textPrimary,
+    marginBottom: 2,
   },
   textWhite: { color: "#fff" },
   price: {
-    fontSize: 20,
-    fontWeight: "800",
+    fontSize: 24,
+    fontWeight: "900",
     color: GatiMitraMerchant.primary,
-    marginTop: 2,
+    marginTop: 4,
+    marginBottom: 2,
   },
   taxLine: {
     fontSize: 11,
@@ -579,7 +607,7 @@ const styles = StyleSheet.create({
   },
   currentBadgePremium: { backgroundColor: "rgba(255,255,255,0.2)" },
   currentBadgeText: { fontSize: 10, fontWeight: "600", color: GatiMitraMerchant.statusCompleted },
-  description: { fontSize: 11, color: GatiMitraMerchant.textSecondary, marginBottom: 6 },
+  description: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginBottom: 10, lineHeight: 16, fontWeight: "500" },
   featuresWrap: { flex: 1, minHeight: 0, marginTop: 4 },
   featuresScroll: { flex: 1, minHeight: 0 },
   featuresTitle: {
@@ -599,35 +627,45 @@ const styles = StyleSheet.create({
   benefitLabel: { fontSize: 11, color: GatiMitraMerchant.textSecondary, flex: 1 },
   benefitValue: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.textPrimary, minWidth: 44, textAlign: "right" },
   cta: {
-    paddingVertical: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     borderRadius: BUTTON_RADIUS,
     backgroundColor: GatiMitraMerchant.primary,
     alignItems: "center",
-    marginTop: 8,
+    marginTop: 12,
+    shadowColor: GatiMitraMerchant.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   ctaPremium: { backgroundColor: "rgba(255,255,255,0.28)" },
   ctaActive: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
   ctaPressed: { opacity: 0.9 },
-  ctaText: { fontSize: 13, fontWeight: "700", color: "#fff" },
+  ctaText: { fontSize: 14, fontWeight: "800", color: "#fff", letterSpacing: 0.3 },
   ctaTextPremium: { color: "#fff" },
   ctaTextActive: { color: GatiMitraMerchant.textSecondary },
   dots: {
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    gap: 8,
-    paddingVertical: 16,
+    gap: 10,
+    paddingVertical: 20,
+    backgroundColor: "rgba(0,0,0,0.02)",
+    marginHorizontal: -H_PADDING,
   },
   dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: GatiMitraMerchant.border,
+    opacity: 0.5,
   },
   dotActive: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
     backgroundColor: GatiMitraMerchant.primary,
+    opacity: 1,
   },
 });

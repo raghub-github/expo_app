@@ -47,7 +47,7 @@ export async function signInWithGoogle(redirectTo?: string): Promise<AuthRespons
     const redirectUrl = redirectTo || `${baseUrl}/auth/callback`;
     if (typeof window !== "undefined") {
       const existing = sessionStorage.getItem("auth_redirect");
-      if (!existing) sessionStorage.setItem("auth_redirect", "/auth/post-login");
+      if (!existing) sessionStorage.setItem("auth_redirect", "/partners/all-stores");
     }
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: "google",

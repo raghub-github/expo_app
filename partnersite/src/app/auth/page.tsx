@@ -75,7 +75,7 @@ export default function AuthHome() {
                 <ArrowRight className="h-5 w-5 opacity-90" />
               </Link>
               <Link
-                href="/auth/login?redirect=/auth/post-login"
+                href="/auth/login?redirect=/partners/all-stores"
                 className="flex w-full items-center justify-between gap-3 rounded-xl border-2 border-white/40 bg-white/15 px-6 py-4 text-base font-semibold text-white shadow-lg backdrop-blur-sm transition-all duration-300 hover:bg-white/25 hover:border-white/60 hover:shadow-xl hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-white/50 focus:ring-offset-2 focus:ring-offset-transparent active:translate-y-0"
               >
                 <span className="flex items-center gap-2.5">

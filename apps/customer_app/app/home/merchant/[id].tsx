@@ -127,6 +127,13 @@ function BannerCarousel({
   const zoomScale = useSharedValue(1);
   const frontOpacity = useSharedValue(1);
   const backOpacity = useSharedValue(0);
+  const setNextIndex = useCallback(
+    (next: number) => {
+      indexRef.current = next;
+      setIndex(next);
+    },
+    [setIndex]
+  );
 
   /** Same source as store card: `banner_url` hero first, then gallery — old order used gallery-only and ignored working fallbackUri. */
   const data = (() => {
@@ -163,14 +170,13 @@ function BannerCarousel({
     const next = (indexRef.current + 1) % data.length;
     backOpacity.value = 1;
     frontOpacity.value = withTiming(0, { duration: BANNER_CROSSFADE_MS }, () => {
-      indexRef.current = next;
-      setIndex(next);
+      runOnJS(setNextIndex)(next);
       zoomScale.value = 1;
       frontOpacity.value = 1;
       backOpacity.value = 0;
-      runZoom();
+      runOnJS(runZoom)();
     });
-  }, [data.length, frontOpacity, backOpacity, zoomScale, runZoom]);
+  }, [data.length, frontOpacity, backOpacity, zoomScale, runZoom, setNextIndex]);
 
   useEffect(() => {
     runZoom();

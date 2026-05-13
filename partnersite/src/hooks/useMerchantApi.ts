@@ -46,9 +46,19 @@ export interface LedgerResponse {
 export interface BankAccount {
   id: number;
   account_holder_name: string;
+  account_number: string | null;
   account_number_masked: string | null;
   ifsc_code: string;
   bank_name: string;
+  branch_name: string | null;
+  account_type: string | null;
+  is_verified: boolean;
+  verification_status: string | null;
+  bank_proof_type: string | null;
+  bank_proof_file_url: string | null;
+  upi_qr_screenshot_url: string | null;
+  created_at: string | null;
+  updated_at: string | null;
   upi_id: string | null;
   is_primary: boolean;
   is_active: boolean;
@@ -122,9 +132,19 @@ async function fetchBankAccounts(storeId: string): Promise<BankAccount[]> {
   return data.accounts.map((a: Record<string, unknown>) => ({
     id: a.id as number,
     account_holder_name: a.account_holder_name as string,
+    account_number: (a.account_number as string) ?? null,
     account_number_masked: (a.account_number_masked as string) ?? null,
     ifsc_code: a.ifsc_code as string,
     bank_name: a.bank_name as string,
+    branch_name: (a.branch_name as string) ?? null,
+    account_type: (a.account_type as string) ?? null,
+    is_verified: !!a.is_verified,
+    verification_status: (a.verification_status as string) ?? null,
+    bank_proof_type: (a.bank_proof_type as string) ?? null,
+    bank_proof_file_url: (a.bank_proof_file_url as string) ?? null,
+    upi_qr_screenshot_url: (a.upi_qr_screenshot_url as string) ?? null,
+    created_at: (a.created_at as string) ?? null,
+    updated_at: (a.updated_at as string) ?? null,
     upi_id: (a.upi_id as string) ?? null,
     is_primary: !!a.is_primary,
     is_active: !!a.is_active,

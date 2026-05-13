@@ -12,6 +12,7 @@ import React, {
 export type PartnerShellHeaderState = {
   title?: string;
   subtitle?: string;
+  breadcrumbs?: Array<{ label: string; href?: string }>;
 };
 
 type PartnerShellHeaderContextValue = {
@@ -47,18 +48,26 @@ export function usePartnerShellHeader(): PartnerShellHeaderContextValue | null {
   return useContext(PartnerShellHeaderContext);
 }
 
-/** Register page title/subtitle in the partner top bar; cleared on unmount. */
-export function PartnerPageHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+/** Register page title/subtitle/breadcrumbs in the partner top bar; cleared on unmount. */
+export function PartnerPageHeader({
+  title,
+  subtitle,
+  breadcrumbs,
+}: {
+  title: string;
+  subtitle?: string;
+  breadcrumbs?: Array<{ label: string; href?: string }>;
+}) {
   const ctx = usePartnerShellHeader();
   const setHeader = ctx?.setPartnerShellHeader;
   const clearHeader = ctx?.clearPartnerShellHeader;
   useEffect(() => {
     if (!setHeader || !clearHeader) return;
-    setHeader({ title, subtitle });
+    setHeader({ title, subtitle, breadcrumbs });
     return () => {
       clearHeader();
     };
-  }, [title, subtitle, setHeader, clearHeader]);
+  }, [title, subtitle, breadcrumbs, setHeader, clearHeader]);
   return null;
 }
 

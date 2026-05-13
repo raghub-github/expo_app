@@ -11,6 +11,7 @@ import { SelectedStoreProvider } from "@/context/SelectedStoreContext";
 import { StoreSettingsProvider } from "@/context/StoreSettingsContext";
 import { ProfileNavProvider } from "@/context/ProfileNavContext";
 import { NotificationProvider } from "@/context/NotificationContext";
+import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import FloatingOrdersManager from "../components/FloatingOrdersManager";
 import { SessionRevokedGate } from "@/components/SessionRevokedGate";
 import NotificationSetup from "../components/NotificationSetup";
@@ -35,28 +36,30 @@ export default function RootLayout() {
                 <StoreSettingsProvider>
                   <ProfileNavProvider>
                     <NotificationProvider>
-                      <StatusBar
-                        style="dark"
-                        backgroundColor={GatiMitraMerchant.background}
-                        translucent={false}
-                        hidden={false}
-                      />
-                      <NotificationSetup />
-                      <FloatingOrdersManager />
-                      <SessionRevokedGate />
-                      <Stack
-                        screenOptions={{
-                          headerShown: false,
-                          contentStyle: { backgroundColor: GatiMitraMerchant.background },
-                          animation: "slide_from_right",
-                        }}
-                      >
-                        <Stack.Screen name="index" />
-                        <Stack.Screen name="(auth)" />
-                        <Stack.Screen name="(tabs)" />
-                        <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
-                        <Stack.Screen name="notifications" options={{ headerShown: false }} />
-                      </Stack>
+                      <SubscriptionProvider>
+                        <StatusBar
+                          style="dark"
+                          backgroundColor={GatiMitraMerchant.background}
+                          translucent={false}
+                          hidden={false}
+                        />
+                        <NotificationSetup />
+                        <FloatingOrdersManager />
+                        <SessionRevokedGate />
+                        <Stack
+                          screenOptions={{
+                            headerShown: false,
+                            contentStyle: { backgroundColor: GatiMitraMerchant.background },
+                            animation: "slide_from_right",
+                          }}
+                        >
+                          <Stack.Screen name="index" />
+                          <Stack.Screen name="(auth)" />
+                          <Stack.Screen name="(tabs)" />
+                          <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
+                          <Stack.Screen name="notifications" options={{ headerShown: false }} />
+                        </Stack>
+                      </SubscriptionProvider>
                     </NotificationProvider>
                   </ProfileNavProvider>
                 </StoreSettingsProvider>

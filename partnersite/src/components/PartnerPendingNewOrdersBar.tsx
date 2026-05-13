@@ -135,7 +135,10 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
     };
   }, [internalId, restaurantId, load]);
 
-  const isFoodOrders = pathname.includes('/mx/food-orders');
+  const isFoodOrders =
+    pathname.includes('/partners/orders') ||
+    pathname.includes('/partners/food-orders') ||
+    pathname.includes('/mx/food-orders');
   const filter = (searchParams?.get('filter') || '').toUpperCase();
   /** Already viewing the New orders list — hide floating strip to avoid duplicate UI */
   const onNewOrdersList = isFoodOrders && filter === 'NEW_ORDERS';
@@ -151,7 +154,7 @@ function PartnerPendingNewOrdersBarInner({ restaurantId }: { restaurantId?: stri
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[160] flex justify-center px-3">
       <Link
-        href={`/mx/food-orders?filter=NEW_ORDERS&store_id=${encodeURIComponent(sid)}`}
+        href={`/partners/orders?filter=NEW_ORDERS&store_id=${encodeURIComponent(sid)}`}
         className="pointer-events-auto flex max-w-lg items-center gap-3 rounded-lg bg-emerald-600 px-4 py-3 text-white shadow-lg shadow-emerald-900/25 transition hover:bg-emerald-700"
       >
         <ChevronUp className="h-5 w-5 shrink-0 opacity-90" aria-hidden />

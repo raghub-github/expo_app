@@ -148,61 +148,64 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       id: 'dashboard',
       label: 'Dashboard',
       icon: <LayoutDashboard size={20} />, 
-      href: '/mx/dashboard'
+      href: '/partners/dashboard'
     },
     {
       id: 'orders',
       label: 'Orders',
       icon: <ClipboardList size={20} />, 
-      href: '/mx/food-orders'
+      href: '/partners/orders'
     },
     {
       id: 'menu',
       label: 'Menu',
       icon: <UtensilsCrossed size={20} />, 
-      href: '/mx/menu'
+      href: '/partners/menu'
     },
     {
       id: 'order-history',
       label: 'Order History',
       icon: <History size={20} />,
-      href: '/mx/order-history'
+      href: '/partners/order-history'
     },
     {
       id: 'offers',
       label: 'Offers',
       icon: <Zap size={20} />, 
-      href: '/mx/offers'
+      href: '/partners/offers'
     },
     {
       id: 'payments',
       label: 'Payments',
       icon: <CreditCard size={20} />, 
-      href: '/mx/payments'
+      href: '/partners/payments'
     },
     {
       id: 'user-insights',
       label: 'User Insights',
       icon: <Users size={20} />, 
-      href: '/mx/user-insights'
+      href: '/partners/user-insights'
     },
     {
       id: 'support-inbox',
       label: 'Support Inbox',
       icon: <Inbox size={20} />,
-      href: '/mx/support-inbox'
-    },
+      href: '/partners/support-inbox'
+    }
+  ]
+
+  const storeSettingsItems: SidebarItem[] = [
     {
       id: 'settings',
       label: 'Settings',
       icon: <Settings size={20} />, 
-      href: '/mx/store-settings'
+      href: '/partners/store-settings'
     },
     {
       id: 'profile',
       label: 'Profile',
       icon: <User size={20} />, 
-      href: '/mx/profile'
+      href: '/partners/profile'
     }
   ]
 
@@ -232,15 +235,15 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     }
 
     // Prevent both "User Insights" and "Support Inbox" being active together.
-    if (href === '/mx/user-insights') {
+    if (href === '/partners/user-insights') {
       const current = new URLSearchParams(q);
       if (current.get('view') === 'inbox') return false;
     }
 
     // Dedicated inbox route should activate Support Inbox only.
-    if (href === '/mx/support-inbox') return p === '/mx/support-inbox';
+    if (href === '/partners/support-inbox') return p === '/partners/support-inbox';
 
-    if (href === '/mx/order-history') return p === href || p.startsWith(`${href}/`);
+    if (href === '/partners/order-history') return p === href || p.startsWith(`${href}/`);
     return full === href || p === href || p.startsWith(`${href}?`) || p.startsWith(`${href}/`);
   }
 
@@ -248,7 +251,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
     if (typeof localStorage !== 'undefined') localStorage.setItem('selectedStoreId', storeId);
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
-    const base = (pathname || '/mx/dashboard').split('?')[0];
+    const base = (pathname || '/partners/dashboard').split('?')[0];
     const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
     params.set('storeId', storeId);
     window.location.href = `${base}?${params.toString()}`;
@@ -257,7 +260,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const goToAllStores = () => {
     setStoreDropdownOpen(false);
     setMobileMenuOpen(false);
-    window.location.href = '/auth/post-login';
+    window.location.href = '/partners/all-stores';
   };
 
   const handleLogout = async () => {
@@ -437,10 +440,36 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       )}
 
       {/* Navigation Menu */}
-      <nav className={`flex-1 overflow-y-auto overflow-x-hidden space-y-0.5 hide-scrollbar ${effectiveCollapsed ? 'px-3 py-4 flex flex-col items-center gap-1' : `p-4 space-y-0.5 ${partnerShell ? 'pt-3' : ''}`}`}>
-        {navigationItems.map((item) => (
-          <NavLinkWithTooltip key={item.id} item={item} />
-        ))}
+      <nav className={`flex-1 overflow-y-auto overflow-x-hidden hide-scrollbar ${effectiveCollapsed ? 'px-3 py-4 flex flex-col items-center gap-1' : `p-4 space-y-0.5 ${partnerShell ? 'pt-3' : ''}`}`}>
+        {/* Main Menu Items */}
+        <div className={effectiveCollapsed ? '' : 'space-y-0.5'}>
+          {navigationItems.map((item) => (
+            <NavLinkWithTooltip key={item.id} item={item} />
+          ))}
+        </div>
+
+        {/* Store Settings Section */}
+        {!effectiveCollapsed && (
+          <>
+            <div className="py-3 px-1">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Store Settings</p>
+            </div>
+            <div className="space-y-0.5">
+              {storeSettingsItems.map((item) => (
+                <NavLinkWithTooltip key={item.id} item={item} />
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Store Settings Section - Collapsed */}
+        {effectiveCollapsed && (
+          <div className="flex flex-col items-center gap-1">
+            {storeSettingsItems.map((item) => (
+              <NavLinkWithTooltip key={item.id} item={item} />
+            ))}
+          </div>
+        )}
       </nav>
 
       {/* Sidebar Filters - shown when not collapsed */}
@@ -628,6 +657,39 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
                           {item.badge}
                         </span>
                       )}
+                    </Link>
+                  );
+                })}
+
+                {/* Store Settings Divider */}
+                <div className="py-3 px-1 mt-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Store Settings</p>
+                </div>
+
+                {/* Store Settings Items */}
+                {storeSettingsItems.map((item) => {
+                  const active = isActive(item.href);
+                  return (
+                    <Link
+                      key={item.id}
+                      href={item.href}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setMobileMenuOpen(false);
+                        router.push(item.href);
+                      }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 font-medium text-sm outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-0 ${
+                        active
+                          ? partnerShell
+                            ? 'bg-gray-200/90 text-gray-900 border-l-4 border-gray-800 font-semibold'
+                            : 'bg-orange-50 text-orange-600 border-l-4 border-orange-600'
+                          : partnerShell
+                            ? 'text-gray-700 hover:bg-gray-200/60 border-l-4 border-transparent'
+                            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                      }`}
+                    >
+                      <span className={active ? (partnerShell ? 'text-gray-800' : 'text-orange-600') : 'text-gray-500'}>{item.icon}</span>
+                      <span>{item.label}</span>
                     </Link>
                   );
                 })}

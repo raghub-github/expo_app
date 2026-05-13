@@ -117,7 +117,11 @@ export async function hasActiveSessionForDevice(
     .gt("expires_at", new Date().toISOString())
     .limit(1)
     .maybeSingle();
-  if (error) return false;
+  if (error) {
+    // Fail-open: do not block partner UX on transient DB/network issues.
+    console.error("[merchant-session-db] hasActiveSessionForDevice error (fail-open):", error);
+    return true;
+  }
   return !!data?.id;
 }
 

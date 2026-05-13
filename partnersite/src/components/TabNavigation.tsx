@@ -15,7 +15,7 @@ export function TabNavigation({ newOrderCount = 0 }: TabNavigationProps) {
 
   const tabs = [
     { name: 'Dashboard', href: '/mx/dashboard', id: 'dashboard' },
-    { name: 'Active Orders', href: '/mx/food-orders', id: 'orders', badge: newOrders > 0 ? newOrders : undefined },
+    { name: 'Active Orders', href: '/partners/orders', id: 'orders', badge: newOrders > 0 ? newOrders : undefined },
     { name: 'Completed', href: '/mx/completed', id: 'completed' },
     { name: 'Cancelled', href: '/mx/cancelled', id: 'cancelled' },
     { name: 'Profile', href: '/mx/profile', id: 'profile' },

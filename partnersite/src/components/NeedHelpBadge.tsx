@@ -2,10 +2,12 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2 } from "lucide-react";
+import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Headphones } from "lucide-react";
 import { useMerchantSession } from "@/context/MerchantSessionContext";
 
 const badgeColor = "#2ecc9b";
+const HELP_SECTIONS_CACHE_KEY = "mx_help_sections_cache_v1";
+const HELP_SECTIONS_CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
 type HelpSection = {
   ticket_title_id: number;
@@ -45,31 +47,89 @@ const NeedHelpBadge: React.FC<{
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [createdTicket, setCreatedTicket] = useState<CreatedTicketSummary | null>(null);
 
-  const loadSections = useCallback(async () => {
-    setLoadingSections(true);
-    setSectionsError(false);
+  const readCachedSections = useCallback((): HelpSection[] | null => {
+    if (typeof window === "undefined") return null;
     try {
-      const res = await fetch("/api/merchant/help-sections");
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.ok) {
-        setSections([]);
-        setSectionsError(true);
-        return;
-      }
-      const list = Array.isArray(data.sections) ? data.sections : [];
-      setSections(list as HelpSection[]);
+      const raw = localStorage.getItem(HELP_SECTIONS_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { ts?: unknown; sections?: unknown };
+      const ts = typeof parsed.ts === "number" ? parsed.ts : 0;
+      if (!ts || Date.now() - ts > HELP_SECTIONS_CACHE_TTL_MS) return null;
+      if (!Array.isArray(parsed.sections)) return null;
+      return parsed.sections as HelpSection[];
     } catch {
-      setSections([]);
-      setSectionsError(true);
-    } finally {
-      setLoadingSections(false);
+      return null;
     }
   }, []);
+
+  const writeCachedSections = useCallback((next: HelpSection[]) => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(HELP_SECTIONS_CACHE_KEY, JSON.stringify({ ts: Date.now(), sections: next }));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadSections = useCallback(
+    async ({ force = false, background = false }: { force?: boolean; background?: boolean } = {}) => {
+      // If we already have topics, keep UI responsive and refresh in background.
+      if (!force) {
+        const cached = readCachedSections();
+        if (cached && cached.length > 0) {
+          setSections((prev) => (prev.length > 0 ? prev : cached));
+          if (background) return; // caller only wanted instant data
+        }
+      }
+
+      const shouldShowSpinner = !background && sections.length === 0;
+      if (shouldShowSpinner) setLoadingSections(true);
+      setSectionsError(false);
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      try {
+        const res = await fetch("/api/merchant/help-sections", {
+          signal: controller?.signal,
+          // Avoid long-lived caches; we manage our own cache above.
+          cache: "no-store",
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.ok) {
+          if (sections.length === 0) {
+            setSections([]);
+            setSectionsError(true);
+          }
+          return;
+        }
+        const list = Array.isArray(data.sections) ? (data.sections as HelpSection[]) : [];
+        setSections(list);
+        writeCachedSections(list);
+      } catch {
+        if (sections.length === 0) {
+          setSections([]);
+          setSectionsError(true);
+        }
+      } finally {
+        if (shouldShowSpinner) setLoadingSections(false);
+      }
+    },
+    [readCachedSections, sections.length, writeCachedSections]
+  );
+
+  // Warm cache on mount so opening the sheet is instant.
+  useEffect(() => {
+    if (!session.isAuthenticated) return;
+    const cached = readCachedSections();
+    if (cached && cached.length > 0) setSections((prev) => (prev.length > 0 ? prev : cached));
+    // Background refresh (doesn't block UI)
+    void loadSections({ background: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.isAuthenticated]);
 
   useEffect(() => {
     if (!open) return;
     if (session.isAuthenticated) {
-      loadSections();
+      // Show cached topics immediately; refresh in background.
+      void loadSections({ background: true });
     }
   }, [open, session.isAuthenticated, loadSections]);
 
@@ -244,32 +304,14 @@ const NeedHelpBadge: React.FC<{
         type="button"
         aria-label="Need help — contact support"
         onClick={() => setOpen(true)}
-        style={
-          variant === "headerLink"
-            ? undefined
-            : {
-                position: inline ? "relative" : "fixed",
-                right: inline ? undefined : -12,
-                bottom: inline ? undefined : 40,
-                zIndex: 1000,
-                background: badgeColor,
-                color: "#010004",
-                border: "none",
-                borderRadius: 24,
-                padding: "8px 20px",
-                fontWeight: 600,
-                fontSize: 12,
-                boxShadow: "0 4px 24px rgba(44,204,155,0.18)",
-                cursor: "pointer",
-              }
-        }
         className={
           variant === "headerLink"
-            ? `hidden text-sm text-gray-700 underline decoration-gray-400 underline-offset-2 hover:text-gray-900 lg:inline ${className || ""}`.trim()
-            : className
+            ? `hidden inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm text-gray-700 underline decoration-gray-400 underline-offset-2 hover:text-gray-900 lg:inline-flex ${className || ""}`.trim()
+            : `relative z-[1000] inline-flex items-center gap-2 rounded-full px-3 py-1.5 bg-gradient-to-r from-blue-50 to-blue-100 hover:from-blue-100 hover:to-blue-200 text-blue-900 font-medium text-xs sm:text-sm transition-all duration-200 shadow-sm hover:shadow-md border border-blue-200 hover:border-blue-300 min-w-fit ${className || ""}`.trim()
         }
       >
-        Need a hand !
+        <Headphones size={16} className="text-blue-600 flex-shrink-0" />
+        <span className="whitespace-nowrap text-xs sm:text-sm">Need a hand!</span>
       </button>
 
       {open && (

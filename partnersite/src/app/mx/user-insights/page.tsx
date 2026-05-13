@@ -775,7 +775,7 @@ const UserInsightsContent = () => {
 
   // If URL says inbox OR this is the dedicated inbox route, render inbox immediately.
   const isInboxRoute =
-    searchParams?.get("view") === "inbox" || pathname === "/mx/support-inbox";
+    searchParams?.get("view") === "inbox" || pathname?.includes("support-inbox");
   const effectiveShowQueueView = isInboxRoute || showQueueView;
 
   // Legacy feedback route redirect lands here with `rate=1`.
@@ -3458,6 +3458,16 @@ const UserInsightsContent = () => {
                         onClick={() => setFilter("all")}
                       >
                         All
+                      </button>
+                      <button
+                        type="button"
+                        className="px-2.5 py-1 rounded-lg text-xs font-medium transition-all bg-white text-gray-700 border border-gray-200 hover:bg-gray-50"
+                        onClick={() => {
+                          router.push('/mx/support-inbox');
+                        }}
+                        title="Switch to Support Inbox"
+                      >
+                        Inbox
                       </button>
                       <button
                         type="button"
