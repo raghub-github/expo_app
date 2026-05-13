@@ -12,7 +12,7 @@ import React, {
 import { createPortal } from 'react-dom';
 import Image from 'next/image';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Bell,
   Calendar,
@@ -321,7 +321,6 @@ interface MXPartnerTopBarProps {
   sidebarCollapsed: boolean;
   /** Page heading in the top bar (replaces in-content title on some pages) */
   headerTitle?: string;
-  headerSubtitle?: string;
   /** When true, hides the Need a hand link in header */
   hideHelpBadge?: boolean;
 }
@@ -331,11 +330,11 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
   restaurantId,
   sidebarCollapsed,
   headerTitle,
-  headerSubtitle,
   hideHelpBadge = false,
 }) => {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const merchantSession = useMerchantSession();
   const userEmail = merchantSession?.user?.email ?? merchantSession?.user?.phone ?? '';
 
@@ -796,7 +795,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     };
   }, []);
 
-  // Extra safety: re-measure after header title/subtitle changes (some browsers/fonts
+  // Extra safety: re-measure after header title changes (some browsers/fonts
   // can miss a ResizeObserver tick during fast route transitions).
   useEffect(() => {
     const el = topbarRef.current;
@@ -811,9 +810,7 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     return () => window.clearTimeout(t);
   }, [
     partnerShellHeader?.header.title,
-    partnerShellHeader?.header.subtitle,
     headerTitle,
-    headerSubtitle,
   ]);
 
   useEffect(() => {
@@ -1170,11 +1167,65 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
     headerTitle ||
     ''
   ).trim();
-  const resolvedHeaderSubtitle = (
-    partnerShellHeader?.header.subtitle?.trim() ||
-    headerSubtitle ||
-    ''
-  ).trim();
+  const resolvedHeaderBreadcrumbs = useMemo(() => {
+    const overrideBreadcrumbs = partnerShellHeader?.header.breadcrumbs ?? [];
+    if (overrideBreadcrumbs.length > 0) return overrideBreadcrumbs;
+
+    const parts = pathname.split('/').filter(Boolean);
+    const appRoute = parts[0] === 'partners' ? parts[1] ?? '' : parts[0] ?? '';
+    const storeSettingsTab = (searchParams?.get('tab') || '').trim();
+    const sectionLabelMap: Record<string, string> = {
+      dashboard: 'Dashboard',
+      orders: 'Orders',
+      'store-settings': 'Settings',
+      'order-history': 'Order History',
+      'food-orders': 'Orders',
+      menu: 'Menu',
+      offers: 'Offers',
+      payments: 'Payments',
+      profile: 'Profile',
+      'audit-logs': 'Audit & Activity',
+      customizations: 'Customizations',
+      'refund-policy': 'Refund Policy',
+      'user-insights': 'User Insights',
+      'support-inbox': 'Support Inbox',
+    };
+    const storeSettingsTabLabelMap: Record<string, string> = {
+      plans: 'Plans & Subscription',
+      premium: 'Premium Plans',
+      timings: 'Outlet Timings',
+      operations: 'Store Operations',
+      'menu-capacity': 'Menu & Capacity',
+      delivery: 'Delivery & Riders',
+      address: 'Store Address',
+      pos: 'POS Integration',
+      notifications: 'Notifications',
+      audit: 'Audit & Activity',
+      gatimitra: 'Store on GatiMitra',
+    };
+    const sectionLabel =
+      sectionLabelMap[appRoute] ||
+      (appRoute
+        ? appRoute
+            .split('-')
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ')
+        : '');
+    const pageLabel =
+      appRoute === 'store-settings' && storeSettingsTab
+        ? storeSettingsTabLabelMap[storeSettingsTab] || 'Store Settings'
+        : resolvedHeaderTitle || headerTitle || sectionLabel;
+    const rootCrumb = { label: 'Partner', href: '/partners/dashboard' };
+    const sectionHref = parts.length >= 2 ? `/${parts.slice(0, 2).join('/')}` : '/partners/dashboard';
+    const crumbs: Array<{ label: string; href?: string }> = [rootCrumb];
+    if (sectionLabel && sectionLabel.toLowerCase() !== pageLabel.toLowerCase()) {
+      crumbs.push({ label: sectionLabel, href: sectionHref });
+    }
+    if (pageLabel && pageLabel.toLowerCase() !== sectionLabel.toLowerCase()) {
+      crumbs.push({ label: pageLabel });
+    }
+    return crumbs;
+  }, [headerTitle, pathname, partnerShellHeader?.header.breadcrumbs, resolvedHeaderTitle, searchParams]);
 
   const sheetTitle: Record<PartnerHeaderSheet, string> = {
     notifications: 'Notifications',
@@ -2005,8 +2056,26 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
               <h1 className="truncate text-sm font-bold text-gray-900 sm:text-base md:text-lg">
                 {resolvedHeaderTitle}
               </h1>
-              {resolvedHeaderSubtitle ? (
-                <p className="truncate text-[11px] text-gray-500 sm:text-xs">{resolvedHeaderSubtitle}</p>
+              {resolvedHeaderBreadcrumbs.length > 0 ? (
+                <nav aria-label="Breadcrumb" className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-[11px] text-gray-500 sm:text-xs">
+                  {resolvedHeaderBreadcrumbs.map((crumb, index) => {
+                    const isLast = index === resolvedHeaderBreadcrumbs.length - 1;
+                    return (
+                      <React.Fragment key={`${crumb.label}-${index}`}>
+                        {index > 0 ? <ChevronRight size={12} className="shrink-0 text-gray-300" aria-hidden /> : null}
+                        {crumb.href && !isLast ? (
+                          <Link href={crumb.href} className="truncate hover:text-gray-700">
+                            {crumb.label}
+                          </Link>
+                        ) : (
+                          <span className={`truncate ${isLast ? 'font-medium text-gray-700' : ''}`}>
+                            {crumb.label}
+                          </span>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </nav>
               ) : null}
             </>
           ) : (

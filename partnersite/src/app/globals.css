@@ -216,6 +216,11 @@ body.mx-no-page-scroll {
 .mx-main-scroll {
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.mx-main-scroll::-webkit-scrollbar {
+  display: none;
 }
 html.mx-no-page-scroll .mx-main-scroll,
 body.mx-no-page-scroll .mx-main-scroll {

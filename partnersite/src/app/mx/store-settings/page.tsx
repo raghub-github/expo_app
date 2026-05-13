@@ -11,7 +11,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
-import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck } from 'lucide-react'
+import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, MoreVertical } from 'lucide-react'
 import { PageSkeletonGeneric } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
 import { SettingsSidebar } from './components/SettingsSidebar'
@@ -105,6 +105,8 @@ function StoreSettingsContent() {
   
   const [showStoreTimingModal, setShowStoreTimingModal] = useState(false)
   const [expandedDay, setExpandedDay] = useState<DayType | null>(getCurrentDayKey())
+  const [showMainToggleWarning, setShowMainToggleWarning] = useState(false)
+  const [mainToggleAction, setMainToggleAction] = useState<boolean | null>(null)
 
   // Form state
   const [isStoreOpen, setIsStoreOpen] = useState(true)
@@ -1812,6 +1814,46 @@ function StoreSettingsContent() {
     setExpandedDay(expandedDay === day ? null : day)
   }
 
+  const handleMainToggle = async (turnOn: boolean) => {
+    // Show warning modal
+    setMainToggleAction(turnOn);
+    setShowMainToggleWarning(true);
+  };
+
+  const confirmMainToggle = async () => {
+    if (mainToggleAction === null) return;
+    
+    const turnOn = mainToggleAction;
+    setShowMainToggleWarning(false);
+    
+    const newSchedule = storeSchedule.map(d => {
+      if (turnOn) {
+        // Turn ON all days except scheduled closed days
+        if (d.day === closedDay) {
+          return { ...d, isOpen: false };
+        }
+        return { ...d, isOpen: true, isOutletClosed: false };
+      } else {
+        // Turn OFF all days
+        return { ...d, isOpen: false };
+      }
+    });
+
+    setStoreSchedule(newSchedule);
+    setApplyMondayToAll(false);
+    setForce24Hours(false);
+
+    const saved = await saveCompleteTimings(newSchedule, false, false, closedDay);
+    if (saved) {
+      await logActivity('MAIN_TOGGLE', `Store hours ${turnOn ? 'enabled' : 'disabled'}`, { status: turnOn });
+      await fetchLastUpdatedInfo();
+      toast.success(`Store hours ${turnOn ? 'enabled' : 'disabled'} successfully`);
+    } else {
+      toast.error('Failed to save toggle state');
+    }
+    setMainToggleAction(null);
+  };
+
   const handleDayToggle = async (day: DayType) => {
     const daySchedule = storeSchedule.find(d => d.day === day);
     if (!daySchedule) return;
@@ -2487,7 +2529,10 @@ function StoreSettingsContent() {
   return (
     <>
       <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || DEMO_STORE_ID}>
-        <PartnerPageHeader title="Store Settings" subtitle="Manage store configuration and preferences" />
+        <PartnerPageHeader
+          title="Store Settings"
+          subtitle="Manage store configuration and preferences"
+        />
         <div className="flex h-full min-h-0 bg-gray-50 overflow-hidden">
           {/* Main scroll area — no duplicate strip under MXPartnerTopBar (hamburger lives in top bar) */}
           <div className="flex flex-1 min-w-0 flex-col min-h-0">
@@ -2640,7 +2685,7 @@ function StoreSettingsContent() {
                           premium: {
                             wrapper: `rounded-2xl border-2 bg-white border-orange-300 shadow-md hover:shadow-lg hover:border-orange-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative lg:-mt-3 lg:scale-[1.03] z-[1] ${selectedPlanId === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`,
                             headerBg: 'bg-gradient-to-r from-orange-600 to-amber-500',
-                            badge: 'absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
+                            badge: 'inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
                             priceColor: 'text-white',
                             featureValue: 'text-orange-700 font-semibold',
                             cta: 'bg-gradient-to-r from-orange-600 to-amber-600 text-white border-0 shadow-sm hover:from-orange-700 hover:to-amber-700 active:scale-[0.98] transition-all duration-200',
@@ -2648,7 +2693,7 @@ function StoreSettingsContent() {
                           enterprise: {
                             wrapper: `rounded-2xl border-2 bg-white border-purple-300 shadow-sm hover:shadow-md hover:border-purple-400 hover:-translate-y-0.5 transition-all duration-300 overflow-hidden relative ${selectedPlanId === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''} ${currentPlan?.id === plan.id ? 'ring-2 ring-purple-500 ring-offset-2' : ''}`,
                             headerBg: 'bg-gradient-to-r from-indigo-700 to-purple-700',
-                            badge: 'absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
+                            badge: 'inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm',
                             priceColor: 'text-white',
                             featureValue: 'text-purple-700 font-semibold',
                             cta: 'bg-gradient-to-r from-indigo-700 to-purple-700 text-white border-0 shadow-sm hover:from-indigo-800 hover:to-purple-800 active:scale-[0.98] transition-all duration-200',
@@ -2672,28 +2717,31 @@ function StoreSettingsContent() {
                           }}
                           className={`relative cursor-pointer ${isDisabled ? 'opacity-70 cursor-not-allowed' : ''} ${style.wrapper}`}
                         >
-                          {style.badge && (
-                            <span className={style.badge}>
-                              {tier === 'premium' ? '⭐ MOST POPULAR' : '🚀 ENTERPRISE'}
-                            </span>
-                          )}
-
                           {/* Curved header (keeps light theme; just brand accents) */}
-                          <div className={`relative px-4 pt-4 pb-8 ${style.headerBg}`}>
+                          <div className={`relative px-4 pt-4 pb-10 sm:pb-11 ${style.headerBg}`}>
                             <div className="absolute inset-x-0 bottom-0 h-10 bg-white rounded-t-[2.25rem]" />
-                            {currentPlan?.id === plan.id && (
-                              <span className="absolute top-3 right-3 px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm">
-                                ACTIVE
-                              </span>
-                            )}
+                            <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 min-h-6">
+                              {style.badge ? (
+                                <span className={style.badge}>
+                                  {tier === 'premium' ? '⭐ MOST POPULAR' : '🚀 ENTERPRISE'}
+                                </span>
+                              ) : (
+                                <span aria-hidden="true" className="h-0" />
+                              )}
+                              {currentPlan?.id === plan.id && (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-extrabold tracking-wide bg-white/20 text-white ring-1 ring-white/35 backdrop-blur-sm">
+                                  ACTIVE
+                                </span>
+                              )}
+                            </div>
                             <div className="relative flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <h4 className="text-base font-extrabold tracking-tight text-white truncate">{plan.plan_name}</h4>
-                                <div className="mt-1 flex items-end gap-1">
-                                  <span className={`text-2xl sm:text-[28px] leading-none font-extrabold tracking-tight ${style.priceColor}`}>
+                                <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                                  <span className={`text-2xl sm:text-[28px] leading-tight font-extrabold tracking-tight whitespace-nowrap ${style.priceColor}`}>
                                     ₹{plan.price ?? 0}
                                   </span>
-                                  <span className="text-[11px] text-white/80 font-medium pb-[2px]">per month</span>
+                                  <span className="text-[11px] text-white/85 font-semibold leading-tight whitespace-nowrap">per month</span>
                                 </div>
                               </div>
 
@@ -4077,16 +4125,28 @@ function StoreSettingsContent() {
             )}
 
             {activeTab === 'timings' && (
-              <div className="space-y-3">
-                <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-4 shadow-sm space-y-3">
-                  <h2 className="flex items-center gap-2 text-base font-semibold text-gray-900">
-                    <Clock size={16} className="text-emerald-700" />
-                    GatiMitra Operations
-                  </h2>
+              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                <div className="px-4 py-3.5 border-b border-gray-100">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <h2 className="text-lg font-bold text-gray-900">Store Operating Hours</h2>
+                    <button
+                      type="button"
+                      onClick={() => handleMainToggle(!storeSchedule.some((d) => d.isOpen && !d.isOutletClosed))}
+                      className="inline-flex items-center gap-2 hover:opacity-80 transition"
+                    >
+                      <span className="text-xs font-semibold text-gray-700">Store is Open</span>
+                      <span className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${storeSchedule.some((d) => d.isOpen && !d.isOutletClosed) ? 'bg-emerald-500' : 'bg-gray-200'}`}>
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${storeSchedule.some((d) => d.isOpen && !d.isOutletClosed) ? 'translate-x-4' : 'translate-x-0.5'}`}
+                        />
+                      </span>
+                    </button>
+                  </div>
+                  <p className="text-sm text-gray-500 mb-2">Set your store operating hours for each day of the week</p>
 
                   {/* Last Updated Info */}
                   {lastUpdatedBy && (lastUpdatedBy.email || lastUpdatedBy.at) && (
-                    <div className="flex items-center justify-between text-xs text-gray-500 pb-2 border-b border-gray-100">
+                    <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
                       <span>Last updated:</span>
                       <span className="font-medium text-gray-700">
                         {lastUpdatedBy.email ? `${lastUpdatedBy.email.split('@')[0]}` : 'System'}
@@ -4094,172 +4154,147 @@ function StoreSettingsContent() {
                       </span>
                     </div>
                   )}
-                  
                 </div>
 
-                <div className="space-y-2.5">
+                <div className="grid grid-cols-[80px_80px_1fr_1fr_24px] items-center gap-3 px-4 py-2.5 text-[11px] font-semibold border-b border-gray-100 bg-gray-50 md:grid-cols-[80px_80px_1.2fr_1.2fr_24px] lg:grid-cols-[100px_100px_1.5fr_1.5fr_24px]">
+                    <span className="text-gray-500 truncate">Day</span>
+                    <span className="text-gray-500" />
+                    <span className="text-orange-500 truncate">☀ Morning Slot</span>
+                    <span className="text-violet-600 truncate">◔ Evening Slot</span>
+                    <span />
+                  </div>
                   {storeSchedule.map((daySchedule) => {
-                    const isExpanded = expandedDay === daySchedule.day
                     const isCurrentDay = daySchedule.day === getCurrentDayKey()
                     const hasSlot2 = !!daySchedule.slots[1]
                     const isClosed = daySchedule.isOutletClosed || !daySchedule.isOpen
+                    const slotFieldClassName = `h-8 w-full rounded-md border pl-6 pr-5 text-xs appearance-none focus:outline-none focus:ring-2 [&::-webkit-calendar-picker-indicator]:opacity-0 ${
+                      daySchedule.isOpen
+                        ? 'border-gray-200 bg-white text-gray-800 focus:border-emerald-400 focus:ring-emerald-100'
+                        : 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed opacity-60'
+                    }`
+                    const showActionsPanel = expandedDay === daySchedule.day || manualTimeChanges.has(daySchedule.day)
                     return (
-                      <div key={daySchedule.day} className={`overflow-hidden rounded-xl border shadow-sm transition ${isExpanded ? 'border-emerald-300 bg-white' : 'border-gray-200 bg-white'}`}>
-                        <button
-                          type="button"
-                          onClick={() => toggleDayExpansion(daySchedule.day)}
-                          className={`flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left ${isExpanded ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white' : 'bg-white text-gray-900 hover:bg-emerald-50/50'}`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${isExpanded ? 'bg-white/20 text-white' : isClosed ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                              {isClosed ? 'Closed' : daySchedule.is24Hours ? '24 Hours' : 'Open'}
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold capitalize">{daySchedule.day}</p>
-                              <p className={`text-xs ${isExpanded ? 'text-emerald-50' : 'text-gray-500'}`}>
-                                {isClosed
-                                  ? 'No service'
-                                  : `${daySchedule.slots[0]?.openingTime || '--:--'} - ${daySchedule.slots[0]?.closingTime || '--:--'}${hasSlot2 ? `, ${daySchedule.slots[1]?.openingTime || '--:--'} - ${daySchedule.slots[1]?.closingTime || '--:--'}` : ''}`}
-                              </p>
-                            </div>
-                            {isCurrentDay ? (
-                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${isExpanded ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'}`}>
-                                Today
-                              </span>
-                            ) : null}
+                      <div key={daySchedule.day} className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50/40 transition-colors">
+                        <div className="grid grid-cols-[80px_80px_1fr_1fr_24px] items-center gap-3 px-4 py-2.5 md:grid-cols-[80px_80px_1.2fr_1.2fr_24px] lg:grid-cols-[100px_100px_1.5fr_1.5fr_24px]">
+                          <label className="relative inline-flex items-center cursor-pointer justify-center">
+                            <input
+                              type="checkbox"
+                              checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
+                              onChange={() => handleDayToggle(daySchedule.day)}
+                              className="sr-only peer"
+                            />
+                            <span className="relative inline-flex h-4.5 w-8 items-center rounded-full bg-gray-200 transition peer-checked:bg-emerald-500">
+                              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${daySchedule.isOpen && !daySchedule.isOutletClosed ? 'translate-x-[15px]' : 'translate-x-0.5'}`} />
+                            </span>
+                          </label>
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs font-semibold capitalize text-gray-800 truncate">{daySchedule.day}</span>
+                            {isCurrentDay ? <span className="text-[10px] font-semibold text-emerald-600 flex-shrink-0">•</span> : null}
                           </div>
-                          {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                        </button>
 
-                        {isExpanded ? (
-                          <div className="space-y-3 bg-white p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-2.5">
-                              <div className="flex items-center gap-3">
-                                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                                  <input
-                                    type="checkbox"
-                                    checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
-                                    onChange={() => handleDayToggle(daySchedule.day)}
-                                    className="sr-only peer"
-                                  />
-                                  <span className="relative inline-flex h-5 w-9 items-center rounded-full bg-gray-200 transition peer-checked:bg-emerald-500">
-                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${daySchedule.isOpen && !daySchedule.isOutletClosed ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                                  </span>
-                                  Outlet open
-                                </label>
-                                <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">{daySchedule.duration}</span>
+                          {!daySchedule.is24Hours && daySchedule.slots[0] ? (
+                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                              <div className="relative">
+                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                  type="time"
+                                  value={daySchedule.slots[0]?.openingTime || ''}
+                                  onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'openingTime', e.target.value)}
+                                  disabled={!daySchedule.isOpen}
+                                  className={slotFieldClassName}
+                                />
+                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
                               </div>
-                              {daySchedule.day === 'monday' ? (
-                                <button
-                                  type="button"
-                                  onClick={copyToAllDays}
-                                  className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
-                                >
-                                  <Copy size={14} />
-                                  Copy Monday timing to all days
-                                </button>
-                              ) : null}
+                              <span className="text-xs text-gray-400">-</span>
+                              <div className="relative">
+                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                  type="time"
+                                  value={daySchedule.slots[0]?.closingTime || ''}
+                                  onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'closingTime', e.target.value)}
+                                  disabled={!daySchedule.isOpen}
+                                  className={slotFieldClassName}
+                                />
+                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                              </div>
                             </div>
+                          ) : (
+                            <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">-</div>
+                          )}
 
-                            {!daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
-                              <div className="space-y-2.5">
-                                <div className="py-1">
-                                  <div className="grid gap-3 lg:grid-cols-[72px_minmax(0,1fr)_28px_minmax(0,1fr)_24px_72px_minmax(0,1fr)_28px_minmax(0,1fr)_48px] lg:items-end">
-                                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 1</div>
-                                    <div>
-                                      <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
-                                      <input
-                                        type="time"
-                                        value={daySchedule.slots[0]?.openingTime || ''}
-                                        onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'openingTime', e.target.value)}
-                                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-                                      />
-                                    </div>
-                                    <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
-                                    <div>
-                                      <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
-                                      <input
-                                        type="time"
-                                        value={daySchedule.slots[0]?.closingTime || ''}
-                                        onChange={(e) => daySchedule.slots[0] && updateTimeSlot(daySchedule.day, daySchedule.slots[0].id, 'closingTime', e.target.value)}
-                                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-                                      />
-                                    </div>
-                                    <div className="hidden lg:block" />
-                                    {hasSlot2 ? (
-                                      <>
-                                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-600 lg:pb-2">Slot 2</div>
-                                        <div>
-                                          <label className="mb-1 block text-xs font-medium text-gray-500">Start time</label>
-                                          <input
-                                            type="time"
-                                            value={daySchedule.slots[1]?.openingTime || ''}
-                                            onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'openingTime', e.target.value)}
-                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-                                          />
-                                        </div>
-                                        <div className="pb-2 text-center text-sm font-medium text-gray-400">to</div>
-                                        <div>
-                                          <label className="mb-1 block text-xs font-medium text-gray-500">End time</label>
-                                          <input
-                                            type="time"
-                                            value={daySchedule.slots[1]?.closingTime || ''}
-                                            onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'closingTime', e.target.value)}
-                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-                                          />
-                                        </div>
-                                        <div className="flex items-end justify-end">
-                                          <button
-                                            type="button"
-                                            onClick={() => removeTimeSlot(daySchedule.day, daySchedule.slots[1].id)}
-                                            className="rounded-xl border border-gray-200 bg-white p-2 text-gray-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
-                                          >
-                                            <Trash2 size={14} />
-                                          </button>
-                                        </div>
-                                      </>
-                                    ) : (
-                                      <div className="lg:col-start-6 lg:col-end-10 flex items-end justify-end pb-1">
-                                        <button
-                                          type="button"
-                                          onClick={() => addTimeSlot(daySchedule.day)}
-                                          className="inline-flex items-center justify-end gap-2 px-1 text-sm font-medium text-emerald-700 transition hover:text-emerald-800"
-                                        >
-                                          <Plus size={14} />
-                                          Add time slot
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                          {!daySchedule.is24Hours && hasSlot2 ? (
+                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                              <div className="relative">
+                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                  type="time"
+                                  value={daySchedule.slots[1]?.openingTime || ''}
+                                  onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'openingTime', e.target.value)}
+                                  disabled={!daySchedule.isOpen}
+                                  className={slotFieldClassName}
+                                />
+                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
                               </div>
-                            ) : null}
+                              <span className="text-xs text-gray-400">-</span>
+                              <div className="relative">
+                                <Clock size={11} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                  type="time"
+                                  value={daySchedule.slots[1]?.closingTime || ''}
+                                  onChange={(e) => daySchedule.slots[1] && updateTimeSlot(daySchedule.day, daySchedule.slots[1].id, 'closingTime', e.target.value)}
+                                  disabled={!daySchedule.isOpen}
+                                  className={slotFieldClassName}
+                                />
+                                <ChevronDown size={11} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="h-8 rounded-md border border-gray-200 bg-gray-50 flex items-center justify-center text-gray-400 text-xs">-</div>
+                          )}
 
-                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-2.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleDayExpansion(daySchedule.day)}
+                            className="text-gray-400 hover:text-gray-600"
+                          >
+                            <MoreVertical size={14} />
+                          </button>
+                        </div>
+
+                        {showActionsPanel ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-2.5">
                               <div className="flex items-center gap-3 text-sm">
                                 <button
                                   type="button"
                                   onClick={copyToAllDays}
-                                  className="inline-flex items-center gap-2 text-gray-700"
+                                  className={`inline-flex items-center gap-2 text-gray-700 ${daySchedule.day === 'monday' ? '' : 'hidden'}`}
                                 >
                                   <span className="flex h-4 w-4 items-center justify-center rounded border border-gray-300 bg-white">
                                     <Copy size={11} className="text-gray-500" />
                                   </span>
                                   <span className="text-sm">Copy Monday timing to all days</span>
                                 </button>
-                                <span className="hidden sm:block h-4 w-px bg-gray-200" />
-                                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                                  <input
-                                    type="checkbox"
-                                    checked={daySchedule.isOpen && !daySchedule.isOutletClosed}
-                                    onChange={() => handleDayToggle(daySchedule.day)}
-                                    className="sr-only peer"
-                                  />
-                                  <span className="relative inline-flex h-5 w-9 items-center rounded-full bg-gray-200 transition peer-checked:bg-emerald-500">
-                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${daySchedule.isOpen && !daySchedule.isOutletClosed ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                                  </span>
-                                  Outlet open
-                                </label>
+                                {daySchedule.day === 'monday' ? <span className="hidden sm:block h-4 w-px bg-gray-200" /> : null}
+                                {!hasSlot2 && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => addTimeSlot(daySchedule.day)}
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                                  >
+                                    <Plus size={13} />
+                                    Add evening slot
+                                  </button>
+                                ) : null}
+                                {hasSlot2 && !daySchedule.isOutletClosed && !daySchedule.is24Hours && daySchedule.isOpen ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeTimeSlot(daySchedule.day, daySchedule.slots[1].id)}
+                                    className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-600 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                  >
+                                    <Trash2 size={13} />
+                                    Remove evening slot
+                                  </button>
+                                ) : null}
                               </div>
 
                               {manualTimeChanges.has(daySchedule.day) ? (
@@ -4351,14 +4386,11 @@ function StoreSettingsContent() {
                                   {isSaving ? 'Saving...' : 'Save'}
                                 </button>
                               ) : <div />}
-                            </div>
-                          </div>
+                        </div>
                         ) : null}
                       </div>
                     )
                   })}
-                </div>
-
               </div>
             )}
 
@@ -4507,6 +4539,74 @@ function StoreSettingsContent() {
             </div>
           </div>
         </div>
+
+        {/* Main Toggle Warning Modal */}
+        {typeof document !== 'undefined' && showMainToggleWarning && createPortal(
+          <div className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: 10000 }}>
+            <div
+              className="fixed inset-0 bg-black/50 pointer-events-auto"
+              onClick={() => setShowMainToggleWarning(false)}
+              style={{
+                backdropFilter: 'blur(12px)',
+                WebkitBackdropFilter: 'blur(12px)',
+                zIndex: 9999
+              }}
+            />
+            <div className="bg-white rounded-xl max-w-sm w-full pointer-events-auto relative z-[10001] shadow-xl">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-lg font-bold text-gray-900">
+                  {mainToggleAction ? '🟢 Enable Store Hours' : '🔴 Disable Store Hours'}
+                </h2>
+                <button onClick={() => setShowMainToggleWarning(false)} className="text-gray-500 hover:text-gray-900">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  {mainToggleAction ? (
+                    <div className="space-y-2 text-sm">
+                      <p className="font-semibold text-gray-900">You're about to ENABLE store operating hours</p>
+                      <ul className="space-y-1 text-gray-700 list-disc list-inside text-xs">
+                        <li>All days will open (except scheduled closed days)</li>
+                        <li>Previously saved timings will be restored</li>
+                        <li>Your store will be visible to customers</li>
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 text-sm">
+                      <p className="font-semibold text-gray-900">You're about to DISABLE store operating hours</p>
+                      <ul className="space-y-1 text-gray-700 list-disc list-inside text-xs">
+                        <li>All days will close immediately</li>
+                        <li>Timing data will be saved and restored later</li>
+                        <li>Your store will NOT accept orders</li>
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-gray-600 italic">This action affects all days at once. Individual day toggles override this setting.</p>
+              </div>
+              <div className="flex gap-3 p-6 border-t border-gray-200">
+                <button
+                  onClick={() => setShowMainToggleWarning(false)}
+                  className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-semibold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmMainToggle}
+                  className={`flex-1 px-4 py-2.5 text-white rounded-lg font-semibold transition-colors ${
+                    mainToggleAction
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-red-600 hover:bg-red-700'
+                  }`}
+                >
+                  {mainToggleAction ? '🟢 Enable' : '🔴 Disable'}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
         {/* Temp Off Modal - portaled so backdrop blurs sidebar */}
         {typeof document !== 'undefined' && showTempOffModal && createPortal(

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2 } from "lucide-react";
+import { X, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Headphones } from "lucide-react";
 import { useMerchantSession } from "@/context/MerchantSessionContext";
 
 const badgeColor = "#2ecc9b";
@@ -304,32 +304,14 @@ const NeedHelpBadge: React.FC<{
         type="button"
         aria-label="Need help — contact support"
         onClick={() => setOpen(true)}
-        style={
-          variant === "headerLink"
-            ? undefined
-            : {
-                position: inline ? "relative" : "fixed",
-                right: inline ? undefined : -12,
-                bottom: inline ? undefined : 40,
-                zIndex: 1000,
-                background: badgeColor,
-                color: "#010004",
-                border: "none",
-                borderRadius: 24,
-                padding: "8px 20px",
-                fontWeight: 600,
-                fontSize: 12,
-                boxShadow: "0 4px 24px rgba(44,204,155,0.18)",
-                cursor: "pointer",
-              }
-        }
         className={
           variant === "headerLink"
-            ? `hidden text-sm text-gray-700 underline decoration-gray-400 underline-offset-2 hover:text-gray-900 lg:inline ${className || ""}`.trim()
-            : className
+            ? `hidden inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm text-gray-700 underline decoration-gray-400 underline-offset-2 hover:text-gray-900 lg:inline-flex ${className || ""}`.trim()
+            : `relative z-[1000] inline-flex items-center gap-2 rounded-full px-3 py-1.5 bg-gradient-to-r from-blue-50 to-blue-100 hover:from-blue-100 hover:to-blue-200 text-blue-900 font-medium text-xs sm:text-sm transition-all duration-200 shadow-sm hover:shadow-md border border-blue-200 hover:border-blue-300 min-w-fit ${className || ""}`.trim()
         }
       >
-        Need a hand !
+        <Headphones size={16} className="text-blue-600 flex-shrink-0" />
+        <span className="whitespace-nowrap text-xs sm:text-sm">Need a hand!</span>
       </button>
 
       {open && (

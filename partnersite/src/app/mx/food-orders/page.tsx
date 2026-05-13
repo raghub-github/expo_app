@@ -1135,7 +1135,7 @@ function OrdersPageContent() {
   return (
     <>
     <MXLayoutWhite restaurantName={store?.store_name} restaurantId={storeId || ''} mobileMenuExtra={mobileStatsExtra}>
-      <PartnerPageHeader title="Food Orders" subtitle={store?.store_name || undefined} />
+      <PartnerPageHeader title="Orders" subtitle={store?.store_name || undefined} />
       <div className="flex h-full min-h-0 bg-gray-50 relative flex-col">
         <header id="food-orders-header" className="sticky top-0 z-20 bg-white shrink-0">
           <div className="mx-shell-header !px-3 sm:!px-4 md:!px-4 lg:!px-6">
@@ -1204,7 +1204,11 @@ function OrdersPageContent() {
                 </button>
               </div>
               <button
-                onClick={() => { setNotifyEnabled((v) => { const n = !v; persistLocal('notifyEnabled', n); return n; }); }}
+                onClick={() => {
+                  const next = !notifyEnabled;
+                  setNotifyEnabled(next);
+                  persistLocal('notifyEnabled', next);
+                }}
                 className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap ${
                   notifyEnabled ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'
                 }`}
